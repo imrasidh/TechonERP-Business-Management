@@ -2307,71 +2307,77 @@ var InvoiceThermal = function (props) {
   var SS = String(now.getSeconds()).padStart(2, "0");
   var timeStr = HH + ":" + MM + ":" + SS;
   var shopName = settings.shopName || "Techon Computers";
-  var pad = isNarrow ? "6px 5px" : "10px 8px";
-  var bodyFs = isNarrow ? 10 : 11;
-  var hdrShopSize = Math.max(14, Math.round((settings.thermalShopNameSize || 18) * (isNarrow ? 0.88 : 1)));
-  var hdrInfoFs = isNarrow ? 9 : (settings.thermalInfoSize || 10);
+  var pad = isNarrow ? "8px 6px" : "10px 8px";
+  /* Base receipt text: 13px, monospace — optimized for thermal print clarity */
+  var bodyFs = 13;
+  var hdrShopSize = Math.max(14, Math.round((settings.thermalShopNameSize || 14) * (isNarrow ? 0.92 : 1)));
+  var hdrInfoFs = isNarrow ? 12 : Math.max(12, settings.thermalInfoSize != null ? settings.thermalInfoSize : 12);
   var thermalLogoW = Math.round((settings.thermalLogoSize || 40) * (isNarrow ? 0.88 : 1));
   var tfs = bodyFs;
   var bcH = isNarrow ? 34 : 40;
   var bcW = isNarrow ? 1.05 : 1.2;
+  /* Line-item block header (ITEM / Qty x Price … Total) */
+  var itemHdrFs = isNarrow ? 11 : 12;
   var invNoDisplay = inv.invoiceNo || inv.id;
   var bcVal = String(invNoDisplay).replace(/[^A-Za-z0-9]/g, "");
   if (!bcVal) bcVal = String(inv.id || "0").replace(/[^A-Za-z0-9]/g, "") || "0";
 
   var DashedRule = function () {
-    return <div style={{ borderTop: "1px dashed #000", margin: isNarrow ? "6px 0" : "8px 0" }}></div>;
+    return <div style={{ borderTop: "1px dashed #000", margin: isNarrow ? "8px 0" : "10px 0" }}></div>;
   };
   var SolidRule = function () {
-    return <div style={{ borderTop: "1px solid #000", margin: isNarrow ? "6px 0" : "8px 0" }}></div>;
+    return <div style={{ borderTop: "1px solid #000", margin: isNarrow ? "8px 0" : "10px 0" }}></div>;
   };
 
   return (
     <div
       data-tc-thermal-receipt="1"
       style={{
-        fontFamily: "'Consolas', 'Courier New', Courier, monospace",
+        fontFamily: '"Courier New", "Consolas", "Lucida Console", monospace',
         fontSize: bodyFs,
-        lineHeight: 1.45,
+        lineHeight: 1.5,
+        fontWeight: 600,
         color: "#000",
         background: "#fff",
         width: thermalWidth,
         margin: "0 auto",
         padding: pad,
         boxSizing: "border-box",
+        WebkitFontSmoothing: "antialiased",
+        MozOsxFontSmoothing: "grayscale",
       }}
     >
       {/* ── HEADER (center) ── */}
-      <div style={{ textAlign: "center", marginBottom: isNarrow ? 4 : 6 }}>
+      <div style={{ textAlign: "center", marginBottom: isNarrow ? 8 : 10 }}>
         {settings.invoiceLogo ? (
-          <img src={settings.invoiceLogo} alt="" style={{ width: thermalLogoW, height: "auto", objectFit: "contain", display: "block", margin: "0 auto " + (isNarrow ? 4 : 6) + "px" }} />
+          <img src={settings.invoiceLogo} alt="" style={{ width: thermalLogoW, height: "auto", objectFit: "contain", display: "block", margin: "0 auto " + (isNarrow ? 6 : 8) + "px" }} />
         ) : null}
-        <div style={{ fontWeight: 800, fontSize: hdrShopSize, letterSpacing: "0.04em", color: "#000", wordBreak: "break-word" }}>{shopName}</div>
-        {settings.address ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 4, wordBreak: "break-word", lineHeight: 1.35 }}>{settings.address}</div> : null}
-        {settings.phone ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 2 }}>{L.telPrefix} {settings.phone}{settings.phone2 ? " / " + settings.phone2 : ""}</div> : null}
-        {settings.website ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 2 }}>{settings.website}</div> : null}
-        {settings.email ? <div style={{ fontSize: hdrInfoFs - 0.5, fontWeight: 600, marginTop: 2 }}>{settings.email}</div> : null}
-        {settings.brn ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 2 }}>{L.brnLabel} {settings.brn}</div> : null}
+        <div style={{ fontWeight: 700, fontSize: hdrShopSize, letterSpacing: "0.03em", color: "#000", wordBreak: "break-word", lineHeight: 1.4 }}>{shopName}</div>
+        {settings.address ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 6, wordBreak: "break-word", lineHeight: 1.5 }}>{settings.address}</div> : null}
+        {settings.phone ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 4 }}>{L.telPrefix} {settings.phone}{settings.phone2 ? " / " + settings.phone2 : ""}</div> : null}
+        {settings.website ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 4 }}>{settings.website}</div> : null}
+        {settings.email ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 4 }}>{settings.email}</div> : null}
+        {settings.brn ? <div style={{ fontSize: hdrInfoFs, fontWeight: 600, marginTop: 4 }}>{L.brnLabel} {settings.brn}</div> : null}
       </div>
 
       <DashedRule />
 
       {/* ── TITLE (center) ── */}
-      <div style={{ textAlign: "center", fontWeight: 800, fontSize: bodyFs + 2, letterSpacing: "0.2em", margin: isNarrow ? "6px 0" : "8px 0" }}>RECEIPT</div>
+      <div style={{ textAlign: "center", fontWeight: 700, fontSize: 14, letterSpacing: "0.18em", margin: isNarrow ? "8px 0" : "10px 0", lineHeight: 1.4 }}>RECEIPT</div>
 
       <DashedRule />
 
       {/* ── RECEIPT INFO (left) ── */}
-      <div style={{ textAlign: "left", marginBottom: isNarrow ? 6 : 8 }}>
-        <div style={{ marginBottom: 4, fontWeight: 700 }}>Receipt No: <span style={{ fontWeight: 600 }}>{invNoDisplay}</span></div>
-        <div style={{ marginBottom: 4, fontWeight: 700 }}>
+      <div style={{ textAlign: "left", marginBottom: isNarrow ? 10 : 12, whiteSpace: "pre-wrap", fontSize: bodyFs, lineHeight: 1.5 }}>
+        <div style={{ marginBottom: 6, fontWeight: 700 }}>Receipt No: <span style={{ fontWeight: 600 }}>{invNoDisplay}</span></div>
+        <div style={{ marginBottom: 6, fontWeight: 700 }}>
           {L.dateWord + " & " + L.timeWord}: <span style={{ fontWeight: 600 }}>{fmtDateFull(inv.date)} {timeStr}</span>
         </div>
-        <div style={{ marginBottom: 4, fontWeight: 700 }}>
+        <div style={{ marginBottom: 6, fontWeight: 700 }}>
           {L.customerLabel} <span style={{ fontWeight: 600 }}>{inv.customerName || L.walkInCustomer}</span>
         </div>
         {inv.customerPhone ? (
-          <div style={{ marginBottom: 4, fontWeight: 700 }}>
+          <div style={{ marginBottom: 6, fontWeight: 700 }}>
             {L.phoneLabel} <span style={{ fontWeight: 600 }}>{inv.customerPhone}</span>
           </div>
         ) : null}
@@ -2384,91 +2390,145 @@ var InvoiceThermal = function (props) {
 
       <SolidRule />
 
-      {/* ── ITEM TABLE ── */}
-      <table style={{ width: "100%", fontSize: tfs, borderCollapse: "collapse", marginBottom: 4, tableLayout: "fixed" }}>
-        <thead>
-          <tr>
-            <th style={{ textAlign: "left", padding: "4px 4px 4px 0", fontWeight: 800, borderBottom: "1px solid #000", width: "46%" }}>{L.item}</th>
-            <th style={{ textAlign: "right", padding: "4px 2px", fontWeight: 800, borderBottom: "1px solid #000", width: "12%" }}>{L.qty}</th>
-            <th style={{ textAlign: "right", padding: "4px 2px", fontWeight: 800, borderBottom: "1px solid #000", width: "20%" }}>{L.price}</th>
-            <th style={{ textAlign: "right", padding: "4px 0 4px 2px", fontWeight: 800, borderBottom: "1px solid #000", width: "22%" }}>{L.total}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(inv.items || []).map(function (it, i) {
-            return (
-              <tr key={i}>
-                <td style={{ padding: "5px 4px 5px 0", wordBreak: "break-word", verticalAlign: "top", fontWeight: 600 }}>{it.name}</td>
-                <td style={{ textAlign: "right", padding: "5px 2px", whiteSpace: "nowrap", fontWeight: 600 }}>{fmtStock(it.qty, it.unit)}</td>
-                <td style={{ textAlign: "right", padding: "5px 2px", whiteSpace: "nowrap", fontWeight: 600 }}>{getCurrencySymbol()} {fmtNum(it.price)}</td>
-                <td style={{ textAlign: "right", padding: "5px 0 5px 2px", whiteSpace: "nowrap", fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(it.qty * it.price)}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      {/* ── LINE ITEMS: ITEM / Qty x Price … TOTAL, then each product name + "qty x unit price" | line total ── */}
+      <div style={{ marginBottom: 12, marginTop: 2, fontSize: tfs }}>
+        <div style={{ fontWeight: 800, fontSize: itemHdrFs, letterSpacing: "0.06em", color: "#000", marginBottom: 4, lineHeight: 1.2 }}>{L.item}</div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "baseline",
+            fontWeight: 800,
+            fontSize: itemHdrFs,
+            letterSpacing: "0.02em",
+            color: "#000",
+            marginBottom: 6,
+            gap: 8,
+            lineHeight: 1.2,
+          }}
+        >
+          <span style={{ flex: "1 1 auto", minWidth: 0 }}>{L.qty} x {L.price}</span>
+          <span style={{ flex: "0 0 auto", whiteSpace: "nowrap" }}>{L.total}</span>
+        </div>
+        <div style={{ borderTop: "1px dashed #000", marginBottom: 10 }} />
 
-      <SolidRule />
+        {(inv.items || []).map(function (it, i) {
+          var items = inv.items || [];
+          var len = items.length;
+          var line = it.qty * it.price;
+          var sym = getCurrencySymbol();
+          var leftLine = fmtStock(it.qty, it.unit) + " x " + sym + " " + fmtNum(it.price);
+          var rightLine = sym + " " + fmtNum(line);
+          var numMono = { fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1' };
+          var isLast = i >= len - 1;
+          return (
+            <div
+              key={i}
+              style={{
+                paddingBottom: isLast ? 0 : 8,
+                marginBottom: isLast ? 4 : 10,
+                borderBottom: isLast ? "none" : "1px dashed #000",
+              }}
+            >
+              <div style={{ fontWeight: 600, lineHeight: 1.4, wordBreak: "break-word", overflowWrap: "anywhere", marginBottom: 3, color: "#000" }}>{it.name}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                <span
+                  style={Object.assign({}, numMono, {
+                    flex: "1 1 auto",
+                    minWidth: 0,
+                    paddingRight: 4,
+                    fontWeight: 600,
+                    wordBreak: "break-word",
+                    overflowWrap: "anywhere",
+                    lineHeight: 1.35,
+                    color: "#000",
+                  })}
+                >
+                  {leftLine}
+                </span>
+                <span
+                  style={Object.assign({}, numMono, {
+                    flex: "0 0 auto",
+                    textAlign: "right",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    lineHeight: 1.35,
+                    color: "#000",
+                  })}
+                >
+                  {rightLine}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
-      {/* ── TOTALS (right) ── */}
-      <div style={{ textAlign: "right", fontSize: tfs, marginBottom: 4 }}>
-        <div style={{ marginBottom: 3 }}>
-          <span style={{ fontWeight: 600 }}>{L.subtotal}</span>{" "}
-          <span style={{ fontWeight: 600 }}>{getCurrencySymbol()} {fmtNum(subTotal)}</span>
+      <DashedRule />
+
+      {/* ── TOTALS (label left, amount right — matches POS receipt strip) ── */}
+      <div style={{ fontSize: tfs, marginBottom: 8, lineHeight: 1.5 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+          <span style={{ fontWeight: 600 }}>{L.subtotal}</span>
+          <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(subTotal)}</span>
         </div>
         {discount > 0 ? (
-          <div style={{ marginBottom: 3 }}>
-            <span style={{ fontWeight: 600 }}>{L.discount}</span>{" "}
-            <span style={{ fontWeight: 600 }}>- {getCurrencySymbol()} {fmtNum(discount)}</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontWeight: 600 }}>{L.discount}</span>
+            <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>- {getCurrencySymbol()} {fmtNum(discount)}</span>
           </div>
         ) : null}
         {showTaxBlock ? (
           <React.Fragment>
             {invTaxLines.map(function (tl, i) {
               return (
-                <div key={"tx-" + i + "-" + (tl.name || "")} style={{ marginBottom: 3 }}>
-                  <span style={{ fontWeight: 600 }}>{tl.name} ({fmtNum(tl.rate)}%)</span>{" "}
-                  <span style={{ fontWeight: 600 }}>{getCurrencySymbol()} {fmtNum(tl.amount)}</span>
+                <div key={"tx-" + i + "-" + (tl.name || "")} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 600, wordBreak: "break-word" }}>{tl.name} ({fmtNum(tl.rate)}%)</span>
+                  <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(tl.amount)}</span>
                 </div>
               );
             })}
-            <div style={{ marginBottom: 3 }}>
-              <span style={{ fontWeight: 700 }}>Total Tax</span>{" "}
-              <span style={{ fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(invTotalTax)}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontWeight: 700 }}>{L.totalTax}</span>
+              <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(invTotalTax)}</span>
             </div>
           </React.Fragment>
         ) : null}
-        <div style={{ fontWeight: 900, fontSize: tfs + 2, marginTop: 4, paddingTop: 4, borderTop: "1px solid #000" }}>
-          Grand Total {getCurrencySymbol()} {fmtNum(inv.total)}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, fontWeight: 700, fontSize: 15, marginTop: 6, paddingTop: 6, borderTop: "1px solid #000", lineHeight: 1.45 }}>
+          <span>{L.grandTotal}</span>
+          <span style={{ fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(inv.total)}</span>
         </div>
       </div>
 
       <DashedRule />
 
-      {/* ── PAYMENT (right) ── */}
-      <div style={{ textAlign: "right", fontSize: tfs, marginBottom: 4 }}>
-        <div style={{ marginBottom: 3, fontWeight: 700 }}>
-          {L.paid} {getCurrencySymbol()} {fmtNum(paidN)}
+      {/* ── PAYMENT (label left, amount right) ── */}
+      <div style={{ fontSize: tfs, marginBottom: 8, lineHeight: 1.5 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+          <span style={{ fontWeight: 700 }}>{L.paid}</span>
+          <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(paidN)}</span>
         </div>
         {changeAmt > 0 ? (
-          <div style={{ marginBottom: 3, fontWeight: 700 }}>
-            Change {getCurrencySymbol()} {fmtNum(changeAmt)}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontWeight: 700 }}>{L.change}</span>
+            <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(changeAmt)}</span>
           </div>
         ) : null}
         {balance > 0 ? (
-          <div style={{ fontWeight: 800, marginTop: 2 }}>
-            {L.balanceDue} {getCurrencySymbol()} {fmtNum(balance)}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginTop: 4, fontWeight: 700, fontSize: 14 }}>
+            <span>{L.balanceDue}</span>
+            <span style={{ fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(balance)}</span>
           </div>
         ) : null}
       </div>
 
       {/* ── WARRANTY ── */}
       {inv.includeWarranty && (settings.warrantyText || WARRANTY_TEXT) ? (
-        <div style={{ marginTop: 6 }}>
+        <div style={{ marginTop: 10 }}>
           <DashedRule />
-          <div style={{ fontWeight: 800, fontSize: bodyFs - 1, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{L.warranty}</div>
+          <div style={{ fontWeight: 700, fontSize: 14, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, lineHeight: 1.4 }}>{L.warranty}</div>
           {(settings.warrantyText || WARRANTY_TEXT).split("\n").filter(function (ln) { return ln.trim(); }).map(function (ln, i) {
-            return <div key={i} style={{ fontSize: bodyFs - 1, lineHeight: 1.45, fontWeight: 600 }}>{ln}</div>;
+            return <div key={i} style={{ fontSize: bodyFs, lineHeight: 1.5, fontWeight: 600, whiteSpace: "pre-wrap" }}>{ln}</div>;
           })}
         </div>
       ) : null}
@@ -2476,22 +2536,22 @@ var InvoiceThermal = function (props) {
       <DashedRule />
 
       {/* ── BARCODE (center) ── */}
-      <div style={{ textAlign: "center", marginTop: 6, marginBottom: 4 }}>
-        <div style={{ display: "flex", justifyContent: "center", width: "100%" }}>
+      <div style={{ textAlign: "center", marginTop: 10, marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "center", width: "100%", marginBottom: 10 }}>
           <JsBarcodeWidget value={bcVal} width={bcW} height={bcH} />
         </div>
-        <div style={{ fontSize: bodyFs - 1, fontWeight: 700, marginTop: 4, letterSpacing: "0.02em" }}>{invNoDisplay}</div>
+        <div style={{ fontSize: bodyFs, fontWeight: 700, marginTop: 0, letterSpacing: "0.02em", whiteSpace: "pre" }}>{invNoDisplay}</div>
       </div>
 
       <DashedRule />
 
       {/* ── FOOTER (center) ── */}
-      <div style={{ textAlign: "center", fontSize: bodyFs, fontWeight: 600, lineHeight: 1.5, marginTop: 4 }}>
+      <div style={{ textAlign: "center", fontSize: bodyFs, fontWeight: 600, lineHeight: 1.5, marginTop: 8, whiteSpace: "pre-wrap" }}>
         {settings.footer || "Thank you for shopping with " + shopName + "!"}
       </div>
-      <div style={{ textAlign: "center", fontSize: bodyFs - 1, fontWeight: 600, marginTop: 6 }}>Visit again!</div>
+      <div style={{ textAlign: "center", fontSize: bodyFs, fontWeight: 600, marginTop: 8 }}>Visit again!</div>
 
-      <div style={{ textAlign: "center", fontSize: isNarrow ? 8 : 9, fontWeight: 600, marginTop: 8, paddingTop: 6, borderTop: "1px dashed #000", color: "#000" }}>
+      <div style={{ textAlign: "center", fontSize: isNarrow ? 10 : 11, fontWeight: 600, marginTop: 10, paddingTop: 8, borderTop: "1px dashed #000", color: "#000", lineHeight: 1.45 }}>
         {L.poweredBy}
       </div>
     </div>
