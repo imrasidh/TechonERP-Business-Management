@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
+import { purchaseReturnUiStatus, displayStatusForPurchase } from "../utils/returnDisplay.js";
+import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
+import { validateExtraUnits, buildUnitsPersistFields, getProductUnitRows, factorForNamedUnit } from "../units/productUnits.js";
 
 var Purchases = React.memo(function (props) {
   var state = props.state;
@@ -33,7 +36,6 @@ var Purchases = React.memo(function (props) {
   var genBarcode = props.genBarcode;
   var nextProductId = props.nextProductId;
   var checkProductName = props.checkProductName;
-  var toTitleCase = props.toTitleCase;
   var fmtSumQty = props.fmtSumQty;
   var getCats = props.getCats;
   var fmtStock = props.fmtStock;
@@ -45,6 +47,7 @@ var Purchases = React.memo(function (props) {
   var getUnitCostPrice = props.getUnitCostPrice;
   var getUnitSellPrice = props.getUnitSellPrice;
   var checkPeriodClose = props.checkPeriodClose;
+  var setActive = props.setActive;
   var SplitPaymentModal = props.SplitPaymentModal;
   var PaymentBreakdown = props.PaymentBreakdown;
   var BarcodeLabelSheet = props.BarcodeLabelSheet;
@@ -68,7 +71,7 @@ var Purchases = React.memo(function (props) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         if (!show) return; /* only active when New Purchase modal is open */
         e.preventDefault();
-        setNewProd(null); setTimeout(function () { setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0" }); }, 30);
+        setNewProd(null); setTimeout(function () { setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }, 30);
       }
     };
     window.addEventListener("keydown", handler);
@@ -170,7 +173,8 @@ var Purchases = React.memo(function (props) {
 
   var fp = state.products.filter(function (p) {
     /* FIX 8: Exclude inactive (soft-deleted) products from purchase search */
-    return p.status !== "inactive" && (p.name.toLowerCase().includes(ps.toLowerCase()) || (p.barcode || "").toLowerCase().includes(ps.toLowerCase()));
+    var pn = (p.name == null ? "" : String(p.name)).toLowerCase();
+    return p.status !== "inactive" && (pn.includes(ps.toLowerCase()) || (p.barcode || "").toLowerCase().includes(ps.toLowerCase()));
   });
 
   var formTotal = f.items.reduce(function (a, it) { return a + ((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost); }, 0);
@@ -188,8 +192,24 @@ var Purchases = React.memo(function (props) {
   var editBal = editTotal - editPaid;
   var editStatus = editPaid >= editTotal ? "Paid" : editPaid > 0 ? "Partial" : "Unpaid";
 
+  /* Purchase entry helpers (UI only — uses existing getUnitCostPrice / toProductBaseQty) */
+  var purUnitConversionHint = function (prod, unitName) {
+    if (!prod || !unitName) return "";
+    var f = factorForNamedUnit(prod, unitName);
+    var bu = prod.unit || "Pcs";
+    if (f == null || f <= 0) return "";
+    return "1 " + unitName + " = " + f + " " + bu;
+  };
+  var purCostSeemsLow = function (prod, unitName, enteredCost) {
+    if (!prod) return false;
+    var exp = getUnitCostPrice(prod, unitName || prod.unit || "Pcs");
+    var ent = parseFloat(enteredCost) || 0;
+    if (exp <= 0.001 || ent <= 0) return false;
+    return ent < exp * 0.3;
+  };
+
   var addEditItem = function () {
-    var match = state.products.find(function (p) { return p.name.toLowerCase() === ps.toLowerCase() || (p.barcode && p.barcode === ps); });
+    var match = state.products.find(function (p) { return (p.name == null ? "" : String(p.name)).toLowerCase() === ps.toLowerCase() || (p.barcode && p.barcode === ps); });
     if (!match) return;
     var unit = match.unit || "Pcs";
     var qtyInput = parseFloat(pq) || 1;
@@ -218,7 +238,7 @@ var Purchases = React.memo(function (props) {
   };
 
   var addMatchedItem = function () {
-    var match = state.products.find(function (p) { return p.name.toLowerCase() === ps.toLowerCase() || (p.barcode && p.barcode === ps); });
+    var match = state.products.find(function (p) { return (p.name == null ? "" : String(p.name)).toLowerCase() === ps.toLowerCase() || (p.barcode && p.barcode === ps); });
     if (match) addItem(match);
   };
 
@@ -339,26 +359,9 @@ var Purchases = React.memo(function (props) {
     setShow(false); setF(BLANK); setPurSplitModal(false);
   };
 
-  var deletePurchase = function (id) {
-    showConfirm("Delete this purchase? Stock will be reversed.", function () {
-      var orig = state.purchases.find(function (p) { return p.id === id; });
-      if (!orig) return;
-      var np = state.products.slice();
-      (orig.items || []).forEach(function (it) {
-        np = np.map(function (p) { return p.id === it.id ? Object.assign({}, p, { stock: (p.stock || 0) - it.qty }) : p; });
-      });
-      /* Supplier payable computed dynamically — no s.payable update needed */
-      var np2 = state.purchases.filter(function (p) { return p.id !== id; });
-      /* FIX Bug 2: Void any pending cheques linked to this purchase */
-      var nch = (state.cheques || []).map(function (ch) {
-        if (ch.purchaseId === id && ch.status === "Pending") {
-          return Object.assign({}, ch, { status: "Voided", voidedDate: today(), voidReason: "Linked purchase deleted" });
-        }
-        return ch;
-      });
-      S.set("tc3_products", np); S.set("tc3_purchases", np2); S.set("tc3_cheques", nch);
-      setState(function (st) { return Object.assign({}, st, { products: np, purchases: np2, cheques: nch }); });
-    });
+  var goPurchaseReturn = function () {
+    try { sessionStorage.setItem("tc3_returns_tab", "purchasereturn"); } catch (e) { /* ignore */ }
+    if (typeof setActive === "function") setActive("returns");
   };
 
   var saveEditPur = function () {
@@ -378,6 +381,32 @@ var Purchases = React.memo(function (props) {
 
     /* Validate and apply stock rollback when purchase items are edited */
     if (orig && orig.items && purToSave.items) {
+      /* Cannot reduce purchase qty below units already sold (conservative bound from current stock). */
+      var origQtyByPid = {};
+      (orig.items || []).forEach(function (oi) {
+        var pid = oi.id;
+        origQtyByPid[pid] = (origQtyByPid[pid] || 0) + (Number(oi.qty) || 0);
+      });
+      var newQtyByPid = {};
+      (purToSave.items || []).forEach(function (ni) {
+        var pid = ni.id;
+        newQtyByPid[pid] = (newQtyByPid[pid] || 0) + (Number(ni.qty) || 0);
+      });
+      var soldBlock = null;
+      Object.keys(origQtyByPid).forEach(function (pid) {
+        if (soldBlock) return;
+        var origSum = origQtyByPid[pid];
+        var newSum = newQtyByPid[pid] || 0;
+        if (newSum + 1e-9 >= origSum) return;
+        var prod = state.products.find(function (p) { return p.id === pid; });
+        var Sstk = prod ? (Number(prod.stock) || 0) : 0;
+        var minAllowed = Math.max(0, Math.min(origSum, 2 * origSum - Sstk));
+        if (newSum + 1e-9 < minAllowed) {
+          soldBlock = "Cannot reduce quantity below already sold amount.";
+        }
+      });
+      if (soldBlock) { showAlert(soldBlock); return; }
+
       /* Simulate post-edit stock: current stock already includes orig purchase receipt.
          Undo orig lines (subtract old qty), then apply new lines (add new qty). */
       var stockSim = {};
@@ -392,7 +421,7 @@ var Purchases = React.memo(function (props) {
           stockSim[ni.id] += (ni.qty || 0);
           if (stockSim[ni.id] < 0) {
             var prod = state.products.find(function (p) { return p.id === ni.id; });
-            stockErr = "Cannot edit: stock for \"" + (prod ? prod.name : ni.id) + "\" would go negative. Some units may have already been sold.";
+            stockErr = "Cannot reduce quantity below already sold amount. (" + (prod ? prod.name : ni.id) + ")";
           }
         }
       });
@@ -488,9 +517,10 @@ var Purchases = React.memo(function (props) {
   };
 
   var saveNewProduct = function () {
-    if (!newProd || !newProd.name) return;
-    var cleanName = toTitleCase(newProd.name.trim());
-    var nameCheck = checkProductName(cleanName, state.products, null);
+    if (!newProd) return;
+    var nameStr = String(newProd.name == null ? "" : newProd.name).trim();
+    if (!nameStr || !newProd.price) return;
+    var nameCheck = checkProductName(nameStr, state.products, null);
     if (nameCheck && nameCheck.type === "exact") {
       showAlert("A product named \"" + nameCheck.match + "\" already exists.\nPlease use a different name.");
       return;
@@ -501,18 +531,32 @@ var Purchases = React.memo(function (props) {
     }
     var doSave = function () {
       /* Force stock=0: purchase qty will add stock when saved — avoids double-counting */
-      var bulkUnit = (newProd.bulkUnit || "").trim();
-      var bulkEnabled = !!bulkUnit;
-      var bulkConversion = parseFloat(newProd.bulkConversion) || 0;
-      if (bulkEnabled) {
-        if (!bulkUnit) { showAlert("Please enter bulk unit (e.g. Box, Tray, Carton)."); return; }
-        if (bulkUnit === (newProd.unit || "Pcs")) { showAlert("Bulk unit must be different from base unit."); return; }
-        if (!(bulkConversion > 0)) { showAlert("Please enter a valid conversion value. Example: 1 Box = 12 Pcs."); return; }
-      }
-      var bulkSellPrice = parseFloat(newProd.bulkPrice) || 0;
-      var bulkCostPrice = parseFloat(newProd.bulkCost) || 0;
-      if (bulkEnabled && !(bulkSellPrice > 0)) { showAlert("Please enter secondary unit sell price."); return; }
-      var prod = { id: uid(), productId: nextProductId(state.products), name: cleanName, barcode: newProd.barcode || genBarcode(), category: newProd.category || "General", unit: newProd.unit || getBusinessProfile().units[0] || "Pcs", description: newProd.description || "", cost: parseFloat(newProd.cost) || 0, price: parseFloat(newProd.price) || 0, stock: 0, damaged: 0, bulkEnabled: bulkEnabled, bulkUnit: bulkEnabled ? bulkUnit : "", bulkConversion: bulkEnabled ? bulkConversion : 0, bulkPrice: bulkEnabled ? bulkSellPrice : 0, bulkCost: bulkEnabled ? bulkCostPrice : 0 };
+      var unitErr = validateExtraUnits(newProd.unit, newProd.extraUnits || []);
+      if (unitErr) { showAlert(unitErr); return; }
+      var unitFields = buildUnitsPersistFields({
+        unit: newProd.unit,
+        cost: newProd.cost,
+        price: newProd.price,
+        extraUnits: newProd.extraUnits || [],
+      });
+      var prod = Object.assign(
+        {
+          id: uid(),
+          productId: nextProductId(state.products),
+          name: nameStr,
+          barcode: newProd.barcode || genBarcode(),
+          category: newProd.category || "General",
+          description: newProd.description || "",
+          cost: parseFloat(newProd.cost) || 0,
+          price: parseFloat(newProd.price) || 0,
+          stock: 0,
+          damaged: 0,
+          require_comment: !!newProd.require_comment,
+          comment_label: String(newProd.comment_label || "").trim(),
+        },
+        unitFields
+      );
+      if (!tcTrialGuard(state.products, 'products')) return;
       var np = state.products.concat([prod]);
       S.set("tc3_products", np);
       setState(function (st) { return Object.assign({}, st, { products: np }); });
@@ -524,7 +568,7 @@ var Purchases = React.memo(function (props) {
       setTimeout(function () { setPs(prod.name); }, 100);
     };
     if (nameCheck && nameCheck.type === "similar") {
-      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + cleanName + "\" as a new product?", doSave);
+      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + nameStr + "\" as a new product?", doSave);
     } else {
       doSave();
     }
@@ -534,7 +578,7 @@ var Purchases = React.memo(function (props) {
   var totalBal = state.purchases.reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
   var filtered = state.purchases.slice().reverse().filter(function (p) {
     var q = search.toLowerCase();
-    var mQ = !q || p.supplier.toLowerCase().includes(q) || (p.invoiceNo || "").toLowerCase().includes(q);
+    var mQ = !q || String(p.supplier == null ? "" : p.supplier).toLowerCase().includes(q) || (p.invoiceNo || "").toLowerCase().includes(q);
     var mS = filterStatus === "All" || p.status === filterStatus;
     return mQ && mS;
   });
@@ -565,8 +609,11 @@ var Purchases = React.memo(function (props) {
             <tbody>
               {filtered.length === 0 && <tr><td colSpan={9} style={{ padding: 20, textAlign: "center", color: C.muted }}>No purchases yet</td></tr>}
               {purPager.slice.map(function (p, i) {
+                var purRet = purchaseReturnUiStatus(p, state.purchaseReturns);
+                var statusLabel = displayStatusForPurchase(p, state.purchaseReturns);
+                var rowBg = purRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
                 return (
-                  <TR key={p.id} i={i}>
+                  <tr key={p.id} className="table-row-hover" style={{ background: rowBg, borderBottom: "1px solid " + C.borderLight }} title={purRet.hasReturns ? "This invoice has return activity" : undefined}>
                     <TD>{fmtDate(p.date)}</TD>
                     <TD bold>{p.supplier}</TD>
                     <td style={{ padding: "9px 12px" }}><span style={{ fontFamily: "monospace", fontSize: 12, color: C.cyan }}>{p.invoiceNo || p.id.slice(0, 8)}</span></td>
@@ -574,15 +621,20 @@ var Purchases = React.memo(function (props) {
                     <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(p.total)}</TD>
                     <TD color={C.green}>{getCurrencySymbol()} {fmtNum(p.paidAmount || 0)}</TD>
                     <TD color={Math.max(0, (p.total || 0) - (p.paidAmount || 0)) > 0 ? C.red : C.muted}>{getCurrencySymbol()} {fmtNum(Math.max(0, (p.total || 0) - (p.paidAmount || 0)))}</TD>
-                    <td style={{ padding: "9px 12px" }}><Badge status={p.status || "Unpaid"} /></td>
+                    <td style={{ padding: "9px 12px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <Badge status={statusLabel} />
+                        {purRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 800, color: "#c2410c", background: "#ffedd5", border: "1px solid #fdba74", borderRadius: 6, padding: "2px 6px" }}>↩ Return</span> : null}
+                      </div>
+                    </td>
                     <td style={{ padding: "9px 12px" }}>
                       <div style={{ display: "flex", gap: 4 }}>
                         <Btn sm col="gray" onClick={function () { setViewPur(p); }}>View</Btn>
                         <Btn sm col="blue" onClick={function () { setEditPur(Object.assign({}, p)); }}>Edit</Btn>
-                        <Btn sm col="red" onClick={function () { deletePurchase(p.id); }}>Del</Btn>
+                        <Btn sm col="orange" onClick={goPurchaseReturn} title="Use Purchase Return to reverse stock">Return</Btn>
                       </div>
                     </td>
-                  </TR>
+                  </tr>
                 );
               })}
             </tbody>
@@ -617,38 +669,60 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
 
-              {/* ── EXCEL-STYLE PRODUCT GRID ── */}
-              <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "visible" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 110px 110px 36px", background: "#f1f5f9", padding: "7px 10px", gap: 6, borderRadius: "8px 8px 0 0" }}>
-                  {["PRODUCT", "QTY / UNIT", "COST PRICE", "SELL PRICE", ""].map(function (h, i) {
-                    return <div key={i} style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>{h}</div>;
-                  })}
-                </div>
-                {(f.items || []).map(function (it, idx) {
-                  return (
-                    <div key={it.id || idx} style={{ display: "grid", gridTemplateColumns: "1fr 100px 110px 110px 36px", padding: "6px 10px", gap: 6, alignItems: "center", borderTop: "1px solid " + C.borderLight, background: idx % 2 === 0 ? "#fff" : "#fafbff" }}>
-                      <div style={{ fontWeight: 600, fontSize: 12, color: C.text }}>{it.name}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: C.accent, textAlign: "center" }}>
-                        {fmtStock(it.qty, it.unit)}
-                      </div>
-                      <input type="number" value={it.cost}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items||[]).map(function (r, i) { return i === idx ? Object.assign({}, r, { cost: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
-                        style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit" }} />
-                      <input type="number" value={it.sellPrice}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items||[]).map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
-                        style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit" }} />
-                      <button onClick={function () { setF(function (x) { return Object.assign({}, x, { items: (x.items||[]).filter(function (_, i) { return i !== idx; }) }); }); }}
-                        style={{ width: 28, height: 28, borderRadius: 6, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
-                    </div>
-                  );
-                })}
-                {/* Input row */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 110px 110px 36px", padding: "6px 10px", gap: 6, alignItems: "center", borderTop: "1.5px dashed " + C.border, background: "#f0f9ff" }}>
+              {/* ── Product lines + add row (compact table) ── */}
+              <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: "#f1f5f9" }}>
+                      {["Product", "Qty", "Unit", "Cost", "Sell", "Total", ""].map(function (h, hi) {
+                        return (
+                          <th key={hi} style={{ textAlign: hi >= 3 && hi <= 5 ? "right" : "left", padding: "5px 6px", fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "1px solid " + C.borderLight }}>{h}</th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(f.items || []).map(function (it, idx) {
+                      var lineU = it.inputUnit || it.unit || "Pcs";
+                      var lineTot = (it.inputQty !== undefined ? it.inputQty : it.qty) * (it.cost || 0);
+                      return (
+                        <tr key={it.id || idx} style={{ background: idx % 2 === 0 ? "#fff" : "#fafbff", borderBottom: "1px solid " + C.borderLight }}>
+                          <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
+                            <input type="number" value={it.qty} min="0" step="any"
+                              onChange={function (e) { var v = parseFloat(e.target.value); if (isNaN(v)) v = 0; setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { qty: v }) : r; }) }); }); }}
+                              onFocus={function (e) { e.target.select(); }}
+                              style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
+                          </td>
+                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }}>{lineU}</td>
+                          <td style={{ padding: "4px 6px" }}>
+                            <input type="number" value={it.cost}
+                              onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { cost: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                              onFocus={function (e) { e.target.select(); }}
+                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
+                          </td>
+                          <td style={{ padding: "4px 6px" }}>
+                            <input type="number" value={it.sellPrice}
+                              onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                              onFocus={function (e) { e.target.select(); }}
+                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
+                          </td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(lineTot)}</td>
+                          <td style={{ padding: "4px 4px", width: 30 }}>
+                            <button type="button" onClick={function () { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).filter(function (_, i) { return i !== idx; }) }); }); }} style={{ width: 26, height: 26, borderRadius: 5, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 13, cursor: "pointer", lineHeight: 1 }}>×</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ padding: "6px 8px", borderTop: "1px solid " + C.borderLight, background: "#f7fbff" }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 3, textTransform: "uppercase" }}>Add product</div>
                   <div style={{ position: "relative" }} ref={purSearchRef}>
                     <input value={ps}
                       onChange={function (e) { setPs(e.target.value); setShowPurDrop(true); setPurDropIdx(-1); }}
@@ -669,100 +743,147 @@ var Purchases = React.memo(function (props) {
                       }}
                       placeholder="Search product..." id="pur-search-input"
                       style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 8px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                  {showPurDrop && ps.trim().length > 0 && (
-                    <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
-                      {fp.slice(0, 7).map(function (p, pidx) {
+                    {showPurDrop && ps.trim().length > 0 && (
+                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
+                        {fp.slice(0, 7).map(function (p, pidx) {
+                          return (
+                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPc(String(getUnitCostPrice(p, bu))); setPSell(String(getUnitSellPrice(p, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
+                              <div>
+                                <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
+                                <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
+                              </div>
+                              <div style={{ textAlign: "right" }}>
+                                <div style={{ fontSize: 10, color: C.muted }}>Cost / Sell</div>
+                                <div style={{ fontWeight: 700, color: C.blue, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
+                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
+                          + Create "{ps}" as new product
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div style={{ padding: "6px 8px 8px", borderTop: "1.5px dashed " + C.border, background: "#f0f9ff" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
+                    <div>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Qty</div>
+                      <input id="pur-new-qty" type="number" value={pq} min="0"
+                        step={isDecimalUnit(pUnit || pBaseUnit) ? "0.001" : "1"}
+                        onChange={function (e) { setPq(e.target.value); }}
+                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var ci = document.getElementById("pur-new-cost"); if (ci) ci.focus(); } }}
+                        style={{ width: 64, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit", background: "#fff", fontWeight: 700 }} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 140 }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Unit</div>
+                      {(function () {
+                        var typedPick = pPickedProduct
+                          || state.products.find(function (p) {
+                            return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                          })
+                          || state.products.find(function (p) {
+                            return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                          });
+                        var unitOpts = typedPick ? getProductUnitRows(typedPick).map(function (r) { return r.name; }) : [];
+                        var rows = typedPick ? getProductUnitRows(typedPick) : [];
                         return (
-                          <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPc(String(getUnitCostPrice(p, bu))); setPSell(String(getUnitSellPrice(p, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
-                            <div>
-                              <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
-                              <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
+                              {(unitOpts.length ? unitOpts : [pBaseUnit || "Pcs"]).map(function (uOpt) {
+                                var activeUnit = (pUnit || pBaseUnit) === uOpt;
+                                return (
+                                  <button
+                                    key={uOpt}
+                                    type="button"
+                                    onClick={function () {
+                                      if (!typedPick) return;
+                                      setPUnit(uOpt);
+                                      setPPickedProduct(typedPick);
+                                      setPc(String(getUnitCostPrice(typedPick, uOpt)));
+                                      setPSell(String(getUnitSellPrice(typedPick, uOpt)));
+                                    }}
+                                    style={{
+                                      fontSize: 11, padding: "4px 10px", borderRadius: 6, border: "none", cursor: typedPick ? "pointer" : "default", fontFamily: "inherit", fontWeight: 700,
+                                      background: activeUnit ? C.accent : "transparent", color: activeUnit ? "#fff" : C.textMd
+                                    }}
+                                  >
+                                    {uOpt}
+                                  </button>
+                                );
+                              })}
                             </div>
-                            <div style={{ textAlign: "right" }}>
-                              <div style={{ fontSize: 10, color: C.muted }}>Cost / Sell</div>
-                              <div style={{ fontWeight: 700, color: C.blue, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
-                            </div>
+                            {typedPick && rows.filter(function (r) { return r.factor > 1; }).map(function (r) {
+                              return (
+                                <button
+                                  key={"q-" + r.name}
+                                  type="button"
+                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); setPc(String(getUnitCostPrice(typedPick, r.name))); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
+                                  style={{ fontSize: 10, padding: "3px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                                >
+                                  +1 {r.name}
+                                </button>
+                              );
+                            })}
                           </div>
                         );
-                      })}
-                      {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
-                      <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
-                        + Create "{ps}" as new product
-                      </div>
+                      })()}
                     </div>
-                  )}
-                </div>
-                  {/* qty + fixed unit label */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <input id="pur-new-qty" type="number" value={pq} min="0"
-                      step={isDecimalUnit(pUnit || pBaseUnit) ? "0.001" : "1"}
-                      onChange={function (e) { setPq(e.target.value); }}
-                      onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var ci = document.getElementById("pur-new-cost"); if (ci) ci.focus(); } }}
-                      style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit", background: "#fff", fontWeight: 700 }} />
-                    {(function () {
-                      var typedPick = pPickedProduct
-                        || state.products.find(function (p) {
-                          return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                        })
-                        || state.products.find(function (p) {
-                          return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                        });
-                      var hasSecondary = !!(typedPick && typedPick.bulkUnit && (parseFloat(typedPick.bulkConversion) || 0) > 0);
-                      if (!hasSecondary) return <span style={{ fontSize: 11, color: "#2979ff", fontWeight: 800, minWidth: 34, textAlign: "center" }}>{pBaseUnit || "Pcs"}</span>;
-                      return (
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {[pBaseUnit || "Pcs", typedPick.bulkUnit].map(function (uOpt) {
-                            var activeUnit = (pUnit || pBaseUnit) === uOpt;
-                            return (
-                              <button
-                                key={uOpt}
-                                type="button"
-                                onClick={function () {
-                                  setPUnit(uOpt);
-                                  setPPickedProduct(typedPick);
-                                  setPc(String(getUnitCostPrice(typedPick, uOpt)));
-                                  setPSell(String(getUnitSellPrice(typedPick, uOpt)));
-                                }}
-                                style={{
-                                  fontSize: 9, padding: "2px 7px", borderRadius: 10,
-                                  border: "1px solid " + (activeUnit ? C.accent : "#bfdbfe"),
-                                  background: activeUnit ? C.accentSoft : "#fff",
-                                  color: activeUnit ? C.accent : "#2979ff",
-                                  fontWeight: activeUnit ? 800 : 700,
-                                  cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap"
-                                }}
-                              >
-                                {uOpt}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
+                    <div>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Cost</div>
+                      <input id="pur-new-cost" type="number" value={pc}
+                        onChange={function (e) { setPc(e.target.value); }}
+                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-new-sell"); if (si) si.focus(); } }}
+                        placeholder="Cost"
+                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Sell</div>
+                      <input id="pur-new-sell" type="number" value={pSell}
+                        onChange={function (e) { setPSell(e.target.value); }}
+                        onKeyDown={function (e) {
+                          if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
+                            e.preventDefault();
+                            if (ps.trim()) { addMatchedItem(); setTimeout(function () { var si = document.getElementById("pur-search-input"); if (si) si.focus(); }, 50); }
+                          }
+                        }}
+                        placeholder="Sell"
+                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
+                    </div>
+                    <button type="button" onClick={function () { addMatchedItem(); setTimeout(function () { var si = document.getElementById("pur-search-input"); if (si) si.focus(); }, 50); }} disabled={!ps.trim()}
+                      style={{ width: 30, height: 30, borderRadius: 6, border: "none", background: ps.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 15, cursor: ps.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 1 }}>+</button>
                   </div>
-                  <input id="pur-new-cost" type="number" value={pc}
-                    onChange={function (e) { setPc(e.target.value); }}
-                    onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-new-sell"); if (si) si.focus(); } }}
-                    placeholder="Cost"
-                    style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                  <input id="pur-new-sell" type="number" value={pSell}
-                    onChange={function (e) { setPSell(e.target.value); }}
-                    onKeyDown={function (e) {
-                      if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
-                        e.preventDefault();
-                        if (ps.trim()) { addMatchedItem(); setTimeout(function () { var si = document.getElementById("pur-search-input"); if (si) si.focus(); }, 50); }
-                      }
-                    }}
-                    placeholder="Sell"
-                    style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                  <button onClick={function () { addMatchedItem(); setTimeout(function () { var si = document.getElementById("pur-search-input"); if (si) si.focus(); }, 50); }} disabled={!ps.trim()}
-                    style={{ width: 28, height: 28, borderRadius: 6, border: "none", background: ps.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 16, cursor: ps.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                  {(function () {
+                    var typedPick = pPickedProduct
+                      || state.products.find(function (p) {
+                        return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                      })
+                      || state.products.find(function (p) {
+                        return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                      });
+                    if (!typedPick) return null;
+                    var selU = pUnit || pBaseUnit || typedPick.unit || "Pcs";
+                    var hint = purUnitConversionHint(typedPick, selU);
+                    var addBase = toProductBaseQty(parseFloat(pq) || 0, selU, typedPick);
+                    var curSt = typedPick.stock || 0;
+                    var afterSt = curSt + addBase;
+                    var lowCost = purCostSeemsLow(typedPick, selU, pc);
+                    return (
+                      <div style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+                        {hint ? <div>{hint}</div> : null}
+                        <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
+                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>⚠ Cost seems too low for selected unit (expected ~{getCurrencySymbol()} {fmtNum(getUnitCostPrice(typedPick, selU))} per {selU})</div> : null}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -862,29 +983,6 @@ var Purchases = React.memo(function (props) {
             </div>
           </div>
 
-          {/* ── Product List Table ── */}
-          {f.items.length > 0 && (
-            <div style={{ overflowX: "auto", marginBottom: 16, maxHeight: 220, overflowY: "auto", borderRadius: 10, border: "1.5px solid " + C.border }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead><tr style={{ background: "#f0f4ff", position: "sticky", top: 0 }}><TH>Product</TH><TH>Qty</TH><TH>Cost Price</TH><TH>Sell Price</TH><TH>Line Total</TH><TH></TH></tr></thead>
-                <tbody>
-                  {f.items.map(function (it, idx) {
-                    return (
-                      <TR key={it.id} i={idx}>
-                        <TD bold>{it.name || "Unknown Product"}</TD>
-                        <td style={{ padding: "7px 10px" }}><input type="number" value={it.qty} onChange={function (e) { var v = parseInt(e.target.value, 10) || 1; setF(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii) { return ii.id === it.id ? Object.assign({}, ii, { qty: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 60, border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 7px", fontSize: 13 }} /></td>
-                        <td style={{ padding: "7px 10px" }}><input type="number" value={it.cost} onChange={function (e) { var v = parseFloat(e.target.value) || 0; setF(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii) { return ii.id === it.id ? Object.assign({}, ii, { cost: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 95, border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 7px", fontSize: 13 }} /></td>
-                        <td style={{ padding: "7px 10px" }}><input type="number" value={it.sellPrice || ""} onChange={function (e) { var v = parseFloat(e.target.value) || 0; setF(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii) { return ii.id === it.id ? Object.assign({}, ii, { sellPrice: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 95, border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 7px", fontSize: 13 }} /></td>
-                        <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost)}</TD>
-                        <td style={{ padding: "7px 10px" }}><button onClick={function () { setF(function (x) { return Object.assign({}, x, { items: x.items.filter(function (ii) { return ii.id !== it.id; }) }); }); }} style={{ background: "#fee2e2", border: "none", borderRadius: 6, width: 28, height: 28, color: C.red, cursor: "pointer", fontWeight: 700, fontSize: 14 }}>x</button></td>
-                      </TR>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
           {f.items.length === 0 && (
             <div style={{ textAlign: "center", padding: "22px 0", color: C.muted, fontSize: 13, marginBottom: 16, background: "#f8faff", borderRadius: 10, border: "1.5px dashed " + C.border }}>
               No products added yet — search and add products above
@@ -905,7 +1003,10 @@ var Purchases = React.memo(function (props) {
         </Modal>
       )}
 
-      {viewPur && (
+      {viewPur && (function () {
+        var viewPurRet = purchaseReturnUiStatus(viewPur, state.purchaseReturns);
+        var viewPurStatus = displayStatusForPurchase(viewPur, state.purchaseReturns);
+        return (
         <Modal title={"Purchase - " + (viewPur.invoiceNo || viewPur.id.slice(0, 8))} onClose={function () { setViewPur(null); }} wide>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
             <div style={{ background: "#f7f9ff", borderRadius: 10, padding: "12px 16px" }}>
@@ -914,11 +1015,25 @@ var Purchases = React.memo(function (props) {
                 <div><strong>Supplier:</strong> {viewPur.supplier}</div>
                 <div><strong>PO No:</strong> <span style={{ fontFamily: "monospace", color: C.accent }}>{viewPur.invoiceNo}</span></div>
                 <div><strong>Date:</strong> {fmtDateFull(viewPur.date)}</div>
-                <div><strong>Status:</strong> <Badge status={viewPur.status || "Unpaid"} /></div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <strong>Status:</strong> <Badge status={viewPurStatus} />
+                  {viewPurRet.hasReturns ? <span title="This invoice has return activity" style={{ fontSize: 10, fontWeight: 800, color: "#c2410c" }}>↩ Returns linked</span> : null}
+                </div>
               </div>
             </div>
             <PaymentBreakdown invoice={Object.assign({}, viewPur, { paid: viewPur.paidAmount || 0 })} cheques={state.cheques || []} isSale={false} />
           </div>
+          {viewPurRet.hasReturns ? (
+            <ReturnDetailsPanel
+              mode="purchase"
+              rows={viewPurRet.rows}
+              originalId={viewPur.id}
+              C={C}
+              getCurrencySymbol={getCurrencySymbol}
+              fmtNum={fmtNum}
+              fmtDateFull={fmtDateFull}
+            />
+          ) : null}
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead><tr style={{ background: "#f8fafc" }}><TH>Product</TH><TH>Qty</TH><TH>Cost</TH><TH>Sell Price</TH><TH>Total</TH></tr></thead>
             <tbody>
@@ -928,7 +1043,8 @@ var Purchases = React.memo(function (props) {
             </tbody>
           </table>
         </Modal>
-      )}
+        );
+      })()}
 
       {editPur && (
         <Modal title={"Update Purchase — " + (editPur.invoiceNo || editPur.id.slice(0, 8))} onClose={function () { setEditPur(null); }} wide>
@@ -955,38 +1071,60 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
 
-              {/* ── EXCEL-STYLE PRODUCT GRID (Edit Modal) ── */}
-              <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "visible" }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 110px 110px 36px", background: "#f1f5f9", padding: "7px 10px", gap: 6, borderRadius: "8px 8px 0 0" }}>
-                  {["PRODUCT", "QTY", "COST PRICE", "SELL PRICE", ""].map(function (h, i) {
-                    return <div key={i} style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>{h}</div>;
-                  })}
-                </div>
-                {(editPur.items || []).map(function (it, idx) {
-                  return (
-                    <div key={it.id || idx} style={{ display: "grid", gridTemplateColumns: "1fr 70px 110px 110px 36px", padding: "6px 10px", gap: 6, alignItems: "center", borderTop: "1px solid " + C.borderLight, background: idx % 2 === 0 ? "#fff" : "#fafbff" }}>
-                      <div style={{ fontWeight: 600, fontSize: 12, color: C.text }}>{it.name}</div>
-                      <input type="number" value={it.qty} min="1"
-                        onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { qty: parseInt(e.target.value, 10) || 1 }) : r; }) }); }); }}
-                        style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit" }} />
-                      <input type="number" value={it.cost}
-                        onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { cost: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
-                        style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit" }} />
-                      <input type="number" value={it.sellPrice}
-                        onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
-                        style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit" }} />
-                      <button onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.filter(function (_, i) { return i !== idx; }) }); }); }}
-                        style={{ width: 28, height: 28, borderRadius: 6, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
-                    </div>
-                  );
-                })}
-                {/* Input row */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 100px 110px 110px 36px", padding: "6px 10px", gap: 6, alignItems: "center", borderTop: "1.5px dashed " + C.border, background: "#f0f9ff" }}>
+              {/* ── Product lines + add row (Edit — same layout as new purchase) ── */}
+              <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ background: "#f1f5f9" }}>
+                      {["Product", "Qty", "Unit", "Cost", "Sell", "Total", ""].map(function (h, hi) {
+                        return (
+                          <th key={hi} style={{ textAlign: hi >= 3 && hi <= 5 ? "right" : "left", padding: "5px 6px", fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "1px solid " + C.borderLight }}>{h}</th>
+                        );
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(editPur.items || []).map(function (it, idx) {
+                      var lineTotEd = (it.inputQty !== undefined ? it.inputQty : it.qty) * (it.cost || 0);
+                      var lineUEd = it.inputUnit || it.unit || "Pcs";
+                      return (
+                        <tr key={it.id || idx} style={{ background: idx % 2 === 0 ? "#fff" : "#fafbff", borderBottom: "1px solid " + C.borderLight }}>
+                          <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
+                            <input type="number" value={it.qty} min="0" step="any"
+                              onChange={function (e) { var v = parseFloat(e.target.value); if (isNaN(v)) v = 0; setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { qty: v }) : r; }) }); }); }}
+                              onFocus={function (e) { e.target.select(); }}
+                              style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
+                          </td>
+                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }}>{lineUEd}</td>
+                          <td style={{ padding: "4px 6px" }}>
+                            <input type="number" value={it.cost}
+                              onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { cost: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                              onFocus={function (e) { e.target.select(); }}
+                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
+                          </td>
+                          <td style={{ padding: "4px 6px" }}>
+                            <input type="number" value={it.sellPrice}
+                              onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                              onFocus={function (e) { e.target.select(); }}
+                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
+                          </td>
+                          <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(lineTotEd)}</td>
+                          <td style={{ padding: "4px 4px", width: 30 }}>
+                            <button type="button" onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.filter(function (_, i) { return i !== idx; }) }); }); }} style={{ width: 26, height: 26, borderRadius: 5, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 13, cursor: "pointer", lineHeight: 1 }}>×</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <div style={{ padding: "6px 8px", borderTop: "1px solid " + C.borderLight, background: "#f7fbff" }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 3, textTransform: "uppercase" }}>Add product</div>
                   <div style={{ position: "relative" }} ref={purSearchRef}>
                     <input value={ps}
                       onChange={function (e) { setPs(e.target.value); setShowPurDrop(true); setPurDropIdx(-1); }}
@@ -997,7 +1135,7 @@ var Purchases = React.memo(function (props) {
                         if (e.key === "ArrowUp") { e.preventDefault(); setPurDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
                         if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
                           var pick = purDropIdx >= 0 ? list[purDropIdx] : (list.find(function (p) { return (p.barcode || "").toLowerCase() === ps.toLowerCase(); }) || list[0]);
-                          if (pick) { setPs(pick.name); setPc(String(pick.cost)); setPSell(String(pick.price)); setShowPurDrop(false); setPurDropIdx(-1);
+                          if (pick) { var bu = pick.unit || "Pcs"; setPs(pick.name); setPc(String(getUnitCostPrice(pick, bu))); setPSell(String(getUnitSellPrice(pick, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick); setShowPurDrop(false); setPurDropIdx(-1);
                             e.preventDefault();
                             setTimeout(function () { var qi = document.getElementById("pur-edit-qty"); if (qi) qi.focus(); }, 50);
                           } else { e.preventDefault(); return; }
@@ -1007,56 +1145,147 @@ var Purchases = React.memo(function (props) {
                       }}
                       placeholder="Search product..." id="pur-edit-search"
                       style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 8px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                  {showPurDrop && ps.trim().length > 0 && (
-                    <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
-                      {fp.slice(0, 7).map(function (p, pidx) {
+                    {showPurDrop && ps.trim().length > 0 && (
+                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
+                        {fp.slice(0, 7).map(function (p, pidx) {
+                          return (
+                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPc(String(getUnitCostPrice(p, bu))); setPSell(String(getUnitSellPrice(p, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
+                              <div>
+                                <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
+                                <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
+                              </div>
+                              <div style={{ textAlign: "right" }}>
+                                <div style={{ fontSize: 10, color: C.muted }}>Cost / Sell</div>
+                                <div style={{ fontWeight: 700, color: C.blue, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
+                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
+                          + Create "{ps}" as new product
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div style={{ padding: "6px 8px 8px", borderTop: "1.5px dashed " + C.border, background: "#f0f9ff" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
+                    <div>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Qty</div>
+                      <input id="pur-edit-qty" type="number" value={pq} min="0"
+                        step={isDecimalUnit(pUnit || pBaseUnit) ? "0.001" : "1"}
+                        onChange={function (e) { setPq(e.target.value); }}
+                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var ci = document.getElementById("pur-edit-cost"); if (ci) ci.focus(); } }}
+                        style={{ width: 64, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit", background: "#fff", fontWeight: 700 }} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 140 }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Unit</div>
+                      {(function () {
+                        var typedPick = pPickedProduct
+                          || state.products.find(function (p) {
+                            return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                          })
+                          || state.products.find(function (p) {
+                            return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                          });
+                        var unitOpts = typedPick ? getProductUnitRows(typedPick).map(function (r) { return r.name; }) : [];
+                        var rows = typedPick ? getProductUnitRows(typedPick) : [];
                         return (
-                          <div key={p.id} onClick={function () { setPs(p.name); setPc(String(p.cost)); setPSell(String(p.price)); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
-                            <div>
-                              <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
-                              <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
+                              {(unitOpts.length ? unitOpts : [pBaseUnit || "Pcs"]).map(function (uOpt) {
+                                var activeUnit = (pUnit || pBaseUnit) === uOpt;
+                                return (
+                                  <button
+                                    key={uOpt}
+                                    type="button"
+                                    onClick={function () {
+                                      if (!typedPick) return;
+                                      setPUnit(uOpt);
+                                      setPPickedProduct(typedPick);
+                                      setPc(String(getUnitCostPrice(typedPick, uOpt)));
+                                      setPSell(String(getUnitSellPrice(typedPick, uOpt)));
+                                    }}
+                                    style={{
+                                      fontSize: 11, padding: "4px 10px", borderRadius: 6, border: "none", cursor: typedPick ? "pointer" : "default", fontFamily: "inherit", fontWeight: 700,
+                                      background: activeUnit ? C.accent : "transparent", color: activeUnit ? "#fff" : C.textMd
+                                    }}
+                                  >
+                                    {uOpt}
+                                  </button>
+                                );
+                              })}
                             </div>
-                            <div style={{ textAlign: "right" }}>
-                              <div style={{ fontSize: 10, color: C.muted }}>Cost / Sell</div>
-                              <div style={{ fontWeight: 700, color: C.blue, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
-                            </div>
+                            {typedPick && rows.filter(function (r) { return r.factor > 1; }).map(function (r) {
+                              return (
+                                <button
+                                  key={"qe-" + r.name}
+                                  type="button"
+                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); setPc(String(getUnitCostPrice(typedPick, r.name))); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
+                                  style={{ fontSize: 10, padding: "3px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                                >
+                                  +1 {r.name}
+                                </button>
+                              );
+                            })}
                           </div>
                         );
-                      })}
-                      {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
-                      <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
-                        + Create "{ps}" as new product
-                      </div>
+                      })()}
                     </div>
-                  )}
-                </div>
-                  <input id="pur-edit-qty2" type="number" value={pq} min="1"
-                    onChange={function (e) { setPq(e.target.value); }}
-                    onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var ci = document.getElementById("pur-edit-cost2"); if (ci) ci.focus(); } }}
-                    style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                  <input id="pur-edit-cost2" type="number" value={pc}
-                    onChange={function (e) { setPc(e.target.value); }}
-                    onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-edit-sell2"); if (si) si.focus(); } }}
-                    placeholder="Cost"
-                    style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                  <input id="pur-edit-sell2" type="number" value={pSell}
-                    onChange={function (e) { setPSell(e.target.value); }}
-                    onKeyDown={function (e) {
-                      if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
-                        e.preventDefault();
-                        if (ps.trim()) { addEditItem(); setTimeout(function () { var si = document.getElementById("pur-edit-search"); if (si) si.focus(); }, 50); }
-                      }
-                    }}
-                    placeholder="Sell"
-                    style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                  <button onClick={function () { addEditItem(); setTimeout(function () { var si = document.getElementById("pur-edit-search"); if (si) si.focus(); }, 50); }} disabled={!ps.trim()}
-                    style={{ width: 28, height: 28, borderRadius: 6, border: "none", background: ps.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 16, cursor: ps.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                    <div>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Cost</div>
+                      <input id="pur-edit-cost" type="number" value={pc}
+                        onChange={function (e) { setPc(e.target.value); }}
+                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-edit-sell"); if (si) si.focus(); } }}
+                        placeholder="Cost"
+                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Sell</div>
+                      <input id="pur-edit-sell" type="number" value={pSell}
+                        onChange={function (e) { setPSell(e.target.value); }}
+                        onKeyDown={function (e) {
+                          if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
+                            e.preventDefault();
+                            if (ps.trim()) { addEditItem(); setTimeout(function () { var si = document.getElementById("pur-edit-search"); if (si) si.focus(); }, 50); }
+                          }
+                        }}
+                        placeholder="Sell"
+                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
+                    </div>
+                    <button type="button" onClick={function () { addEditItem(); setTimeout(function () { var si = document.getElementById("pur-edit-search"); if (si) si.focus(); }, 50); }} disabled={!ps.trim()}
+                      style={{ width: 30, height: 30, borderRadius: 6, border: "none", background: ps.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 15, cursor: ps.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 1 }}>+</button>
+                  </div>
+                  {(function () {
+                    var typedPick = pPickedProduct
+                      || state.products.find(function (p) {
+                        return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                      })
+                      || state.products.find(function (p) {
+                        return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                      });
+                    if (!typedPick) return null;
+                    var selU = pUnit || pBaseUnit || typedPick.unit || "Pcs";
+                    var hint = purUnitConversionHint(typedPick, selU);
+                    var addBase = toProductBaseQty(parseFloat(pq) || 0, selU, typedPick);
+                    var curSt = typedPick.stock || 0;
+                    var afterSt = curSt + addBase;
+                    var lowCost = purCostSeemsLow(typedPick, selU, pc);
+                    return (
+                      <div style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+                        {hint ? <div>{hint}</div> : null}
+                        <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
+                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>⚠ Cost seems too low for selected unit (expected ~{getCurrencySymbol()} {fmtNum(getUnitCostPrice(typedPick, selU))} per {selU})</div> : null}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -1143,28 +1372,6 @@ var Purchases = React.memo(function (props) {
             </div>
           </div>
 
-          {/* ── Product List Table ── */}
-          {(editPur.items || []).length > 0 && (
-            <div style={{ overflowX: "auto", marginBottom: 16, maxHeight: 220, overflowY: "auto", borderRadius: 10, border: "1.5px solid " + C.border }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead><tr style={{ background: "#f0f4ff", position: "sticky", top: 0 }}><TH>Product</TH><TH>Qty</TH><TH>Cost Price</TH><TH>Sell Price</TH><TH>Line Total</TH><TH></TH></tr></thead>
-                <tbody>
-                  {(editPur.items || []).map(function (it, idx) {
-                    return (
-                      <TR key={it.id} i={idx}>
-                        <TD bold>{it.name || "Unknown Product"}</TD>
-                        <td style={{ padding: "7px 10px" }}><input type="number" value={it.qty} onChange={function (e) { var v = parseInt(e.target.value, 10) || 1; setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii) { return ii.id === it.id ? Object.assign({}, ii, { qty: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 60, border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 7px", fontSize: 13 }} /></td>
-                        <td style={{ padding: "7px 10px" }}><input type="number" value={it.cost} onChange={function (e) { var v = parseFloat(e.target.value) || 0; setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii) { return ii.id === it.id ? Object.assign({}, ii, { cost: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 95, border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 7px", fontSize: 13 }} /></td>
-                        <td style={{ padding: "7px 10px" }}><input type="number" value={it.sellPrice || ""} onChange={function (e) { var v = parseFloat(e.target.value) || 0; setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii) { return ii.id === it.id ? Object.assign({}, ii, { sellPrice: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 95, border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 7px", fontSize: 13 }} /></td>
-                        <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost)}</TD>
-                        <td style={{ padding: "7px 10px" }}><button onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.filter(function (ii) { return ii.id !== it.id; }) }); }); }} style={{ background: "#fee2e2", border: "none", borderRadius: 6, width: 28, height: 28, color: C.red, cursor: "pointer", fontWeight: 700, fontSize: 14 }}>x</button></td>
-                      </TR>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
           {(editPur.items || []).length === 0 && (
             <div style={{ textAlign: "center", padding: "22px 0", color: C.muted, fontSize: 13, marginBottom: 16, background: "#f8faff", borderRadius: 10, border: "1.5px dashed " + C.border }}>
               No products added yet — search and add products above
@@ -1266,7 +1473,7 @@ var Purchases = React.memo(function (props) {
         <Modal key={"newprod-" + newProdKey} title={"Add New Product — ID: " + nextProductId(state.products)} onClose={function () { setNewProd(null); }} wide>
           <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>Product will be added to inventory. Stock will be updated when the purchase is saved.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Product Name *" value={newProd.name} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: toTitleCase(e.target.value) }); }); }} />
+            <Input label="Product Name *" value={newProd.name} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
@@ -1282,21 +1489,21 @@ var Purchases = React.memo(function (props) {
               <Input label="Sell Price *" type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
               <Sel label="Base Unit" value={newProd.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { unit: e.target.value }); }); }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: "1.5px solid " + C.border, borderRadius: 8, background: "#f8fafc" }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Secondary Unit (optional)</span>
-              </div>
-              <Input label="Secondary Unit" value={newProd.bulkUnit || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { bulkUnit: e.target.value }); }); }} placeholder="Box / Tray / Carton" />
-              <Input label={"1 " + ((newProd.bulkUnit || "secondary")) + " = ? " + (newProd.unit || "Pcs")} type="number" value={newProd.bulkConversion || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { bulkConversion: e.target.value }); }); }} placeholder="e.g. 12" />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label={"Secondary Cost Price (" + (newProd.bulkUnit || "secondary") + ")"} type="number" value={newProd.bulkCost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { bulkCost: e.target.value }); }); }} placeholder="optional" />
-              <Input label={"Secondary Sell Price (" + (newProd.bulkUnit || "secondary") + ") *"} type="number" value={newProd.bulkPrice || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { bulkPrice: e.target.value }); }); }} placeholder="required if secondary used" />
-            </div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: -2 }}>Example: 1 Box = 12 Pcs. Leave secondary unit empty for simple products.</div>
-            <div style={{ fontSize: 11, color: C.textMd }}>
-              Config: Base: <strong>{newProd.unit || "Pcs"}</strong>
-              {newProd.bulkUnit ? (" | Secondary: " + newProd.bulkUnit + (newProd.bulkConversion ? (" | 1 " + newProd.bulkUnit + " = " + newProd.bulkConversion + " " + (newProd.unit || "Pcs")) : "")) : " | Secondary: None"}
+            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{newProd.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>
+              {(newProd.extraUnits || []).map(function (row, idx) {
+                return (
+                  <div key={idx} style={{ display: "grid", gridTemplateColumns: "minmax(80px,1fr) 88px minmax(72px,1fr) minmax(72px,1fr) 34px", gap: 8, marginBottom: 8, alignItems: "end" }}>
+                    <Input label="Unit name" value={row.name || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { name: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="Strip / Box" />
+                    <Input label="Factor" type="number" value={row.factor || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { factor: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="e.g. 12" />
+                    <Input label="Sell (opt.)" type="number" value={row.sellPrice || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { sellPrice: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                    <Input label="Cost (opt.)" type="number" value={row.cost || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { cost: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                    <button type="button" onClick={function () { setNewProd(function (x) { var next = (x.extraUnits || []).filter(function (_, j) { return j !== idx; }); return Object.assign({}, x, { extraUnits: next }); }); }} style={{ height: 36, borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", cursor: "pointer", fontSize: 14, color: C.red }} title="Remove">✕</button>
+                  </div>
+                );
+              })}
+              <button type="button" onClick={function () { setNewProd(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
             </div>
             {newProd.cost && newProd.price && (
               <div style={{ background: C.accentSoft, borderRadius: 8, padding: "10px 14px", fontSize: 13, display: "flex", gap: 16 }}>
@@ -1307,6 +1514,18 @@ var Purchases = React.memo(function (props) {
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
               <textarea value={newProd.description || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
+            </div>
+            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
+                <input type="checkbox" checked={!!newProd.require_comment} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
+                Enable comment field at checkout (IMEI / serial / note)
+              </label>
+              {newProd.require_comment && (
+                <div style={{ marginTop: 10 }}>
+                  <Input label="Label (optional)" value={newProd.comment_label || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Shown on POS and invoice. If empty, the field is labeled &quot;Comment&quot;.</div>
+                </div>
+              )}
             </div>
             {getBusinessProfile().modules.serial && (
               <Input label="Serial Number / IMEI (optional)" value={newProd.serialNo || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { serialNo: e.target.value }); }); }} placeholder="e.g. 358240051111110" />

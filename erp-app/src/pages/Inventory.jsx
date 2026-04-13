@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { validateExtraUnits, buildUnitsPersistFields, formExtraUnitsFromProduct } from "../units/productUnits.js";
 
 var Inventory = React.memo(function (props) {
   var state = props.state;
@@ -8,7 +9,6 @@ var Inventory = React.memo(function (props) {
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var tcTrialGuard = props.tcTrialGuard;
-  var toTitleCase = props.toTitleCase;
   var checkProductName = props.checkProductName;
   var genBarcode = props.genBarcode;
   var nextProductId = props.nextProductId;
@@ -51,7 +51,7 @@ var Inventory = React.memo(function (props) {
     var handler = function (e) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         e.preventDefault();
-        setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", stock: "" });
+        setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: false, comment_label: "" });
       }
     };
     window.addEventListener("keydown", handler);
@@ -108,9 +108,10 @@ var Inventory = React.memo(function (props) {
 
   var invPager = usePager(rows, 50);
   var saveNew = function () {
-    if (!newP || !newP.name || !newP.price) return;
-    var cleanName = toTitleCase(newP.name.trim());
-    var nameCheck = checkProductName(cleanName, state.products, null);
+    if (!newP) return;
+    var nameStr = String(newP.name == null ? "" : newP.name).trim();
+    if (!nameStr || !newP.price) return;
+    var nameCheck = checkProductName(nameStr, state.products, null);
     if (nameCheck && nameCheck.type === "exact") {
       showAlert("A product named \"" + nameCheck.match + "\" already exists.\nPlease use a different name.");
       return;
@@ -120,18 +121,31 @@ var Inventory = React.memo(function (props) {
       return;
     }
     var doSave = function () {
-      var bulkUnit = (newP.bulkUnit || "").trim();
-      var bulkEnabled = !!(bulkUnit);
-      var bulkConversion = parseFloat(newP.bulkConversion) || 0;
-      if (bulkEnabled) {
-        if (!bulkUnit) { showAlert("Please enter bulk unit (e.g. Box, Tray, Carton)."); return; }
-        if (bulkUnit === (newP.unit || "Pcs")) { showAlert("Bulk unit must be different from base unit."); return; }
-        if (!(bulkConversion > 0)) { showAlert("Please enter a valid conversion value. Example: 1 Box = 12 Pcs."); return; }
-      }
-      var bulkSellPrice = parseFloat(newP.bulkPrice) || 0;
-      var bulkCostPrice = parseFloat(newP.bulkCost) || 0;
-      if (bulkEnabled && !(bulkSellPrice > 0)) { showAlert("Please enter secondary unit sell price."); return; }
-      var prod = { id: uid(), productId: nextProductId(state.products), name: cleanName, barcode: newP.barcode || genBarcode(), category: newP.category || "General", unit: newP.unit || getBusinessProfile().units[0] || "Pcs", description: newP.description || "", cost: parseFloat(newP.cost) || 0, price: parseFloat(newP.price) || 0, stock: parseInt(newP.stock) || 0, damaged: 0, bulkEnabled: bulkEnabled, bulkUnit: bulkEnabled ? bulkUnit : "", bulkConversion: bulkEnabled ? bulkConversion : 0, bulkPrice: bulkEnabled ? bulkSellPrice : 0, bulkCost: bulkEnabled ? bulkCostPrice : 0 };
+      var unitErr = validateExtraUnits(newP.unit, newP.extraUnits || []);
+      if (unitErr) { showAlert(unitErr); return; }
+      var unitFields = buildUnitsPersistFields({
+        unit: newP.unit,
+        cost: newP.cost,
+        price: newP.price,
+        extraUnits: newP.extraUnits || [],
+      });
+      var prod = Object.assign(
+        {
+          id: uid(),
+          productId: nextProductId(state.products),
+          name: nameStr,
+          barcode: newP.barcode || genBarcode(),
+          category: newP.category || "General",
+          description: newP.description || "",
+          cost: parseFloat(newP.cost) || 0,
+          price: parseFloat(newP.price) || 0,
+          stock: parseInt(newP.stock) || 0,
+          damaged: 0,
+          require_comment: !!newP.require_comment,
+          comment_label: String(newP.comment_label || "").trim(),
+        },
+        unitFields
+      );
       if (!tcTrialGuard(state.products, 'products')) return;
       var np = state.products.concat([prod]);
       var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Added", productId: prod.id, productName: prod.name, qty: prod.stock, reason: "New product" }]);
@@ -140,7 +154,7 @@ var Inventory = React.memo(function (props) {
       setNewP(null);
     };
     if (nameCheck && nameCheck.type === "similar") {
-      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + cleanName + "\" as a new product?", doSave);
+      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + nameStr + "\" as a new product?", doSave);
     } else {
       doSave();
     }
@@ -160,18 +174,29 @@ var Inventory = React.memo(function (props) {
       return;
     }
     /* Stock field is read-only here — always preserve original stock value */
-    var bulkUnitEdit = (editP.bulkUnit || "").trim();
-    var bulkEnabledEdit = !!bulkUnitEdit;
-    var bulkConversionEdit = parseFloat(editP.bulkConversion) || 0;
-    if (bulkEnabledEdit) {
-      if (!bulkUnitEdit) { showAlert("Please enter bulk unit (e.g. Box, Tray, Carton)."); return; }
-      if (bulkUnitEdit === (editP.unit || "Pcs")) { showAlert("Bulk unit must be different from base unit."); return; }
-      if (!(bulkConversionEdit > 0)) { showAlert("Please enter a valid conversion value. Example: 1 Box = 12 Pcs."); return; }
-    }
-    var bulkSellPriceEdit = parseFloat(editP.bulkPrice) || 0;
-    var bulkCostPriceEdit = parseFloat(editP.bulkCost) || 0;
-    if (bulkEnabledEdit && !(bulkSellPriceEdit > 0)) { showAlert("Please enter secondary unit sell price."); return; }
-    var np = state.products.map(function (p) { return p.id === editP.id ? Object.assign({}, p, { name: editP.name, barcode: editP.barcode, category: editP.category, unit: editP.unit || p.unit || "Pcs", description: editP.description, cost: parseFloat(editP.cost) || 0, price: parseFloat(editP.price) || 0, stock: origStock, bulkEnabled: bulkEnabledEdit, bulkUnit: bulkEnabledEdit ? bulkUnitEdit : "", bulkConversion: bulkEnabledEdit ? bulkConversionEdit : 0, bulkPrice: bulkEnabledEdit ? bulkSellPriceEdit : 0, bulkCost: bulkEnabledEdit ? bulkCostPriceEdit : 0 }) : p; });
+    var unitErrEdit = validateExtraUnits(editP.unit, editP.extraUnits || []);
+    if (unitErrEdit) { showAlert(unitErrEdit); return; }
+    var unitFieldsEdit = buildUnitsPersistFields({
+      unit: editP.unit,
+      cost: editP.cost,
+      price: editP.price,
+      extraUnits: editP.extraUnits || [],
+    });
+    var np = state.products.map(function (p) {
+      return p.id === editP.id
+        ? Object.assign({}, p, {
+            name: editP.name,
+            barcode: editP.barcode,
+            category: editP.category,
+            description: editP.description,
+            cost: parseFloat(editP.cost) || 0,
+            price: parseFloat(editP.price) || 0,
+            stock: origStock,
+            require_comment: !!editP.require_comment,
+            comment_label: String(editP.comment_label || "").trim(),
+          }, unitFieldsEdit)
+        : p;
+    });
     S.set("tc3_products", np);
     addAudit("Edited Product", editP.name + " (" + (editP.productId || editP.id.slice(0, 6)) + ")");
     setState(function (s) { return Object.assign({}, s, { products: np }); });
@@ -245,7 +270,7 @@ var Inventory = React.memo(function (props) {
           return <button key={t[0]} onClick={function () { setItab(t[0]); }} style={{ padding: "10px 18px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (itab === t[0] ? C.border : "transparent"), borderBottom: itab === t[0] ? "2px solid #fff" : "none", background: itab === t[0] ? "#fff" : "transparent", color: itab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: itab === t[0] ? -2 : 0 }}>{t[1]}</button>;
         })}
         <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", paddingBottom: 6 }}>
-          <Btn sm col="cyan" onClick={function () { setNewP(null); setTimeout(function () { setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", stock: "" }); }, 30); }}>+ Add Product</Btn>
+          <Btn sm col="cyan" onClick={function () { setNewP(null); setTimeout(function () { setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: false, comment_label: "" }); }, 30); }}>+ Add Product</Btn>
         </div>
       </div>
 
@@ -354,7 +379,7 @@ var Inventory = React.memo(function (props) {
               {products.slice().sort(function (a, b) { return ((b.stock || 0) * b.price) - ((a.stock || 0) * a.price); }).slice(0, 8).map(function (p, i) {
                 var val = (p.stock || 0) * p.price;
                 var maxVal = ((products[0] || {}).stock || 0) * (products[0] || {}).price || 1;
-                var pct = Math.round(val / stockRetailValue * 100);
+                var pct = stockRetailValue > 0 ? Math.round(val / stockRetailValue * 100) : 0;
                 return (
                   <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid " + C.border }}>
                     <div style={{ width: 22, height: 22, borderRadius: "50%", background: C.accentSoft, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 11, color: C.accent, flexShrink: 0 }}>{i + 1}</div>
@@ -480,7 +505,7 @@ var Inventory = React.memo(function (props) {
                           ) : (
                             <>
                           <Btn sm col="gray" onClick={function () { setViewP(p); }}>View</Btn>
-                          <Btn sm col="blue" onClick={function () { setEditP(Object.assign({}, p)); }}>Edit</Btn>
+                          <Btn sm col="blue" onClick={function () { setEditP(Object.assign({}, p, { extraUnits: formExtraUnitsFromProduct(p) })); }}>Edit</Btn>
                           <Btn sm col="orange" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>Dmg</Btn>
                           <Btn sm col="red" onClick={function () {
                             if ((p.stock || 0) > 0) {
@@ -587,7 +612,8 @@ var Inventory = React.memo(function (props) {
               { label: "Damaged Units", val: String(viewP.damaged || 0), color: (viewP.damaged || 0) > 0 ? C.orange : C.muted },
               { label: "Damage Cost", val: getCurrencySymbol() + " " + fmtNum((viewP.damaged || 0) * (viewP.cost || 0)), color: C.red },
               { label: "Category", val: viewP.category || "General", color: C.text },
-              { label: "Unit", val: viewP.unit || "Pcs", color: C.accent }
+              { label: "Unit", val: viewP.unit || "Pcs", color: C.accent },
+              { label: "POS line comment", val: viewP.require_comment ? ((viewP.comment_label || "").trim() || "Comment") + " (at checkout)" : "Off", color: viewP.require_comment ? C.accent : C.muted }
             ].concat(getBusinessProfile().modules.serial && viewP.serialNo ? [
               { label: "Serial / IMEI", val: viewP.serialNo, color: C.cyan }
             ] : []).concat(getBusinessProfile().name === "Jewelry & Watches" ? [
@@ -610,7 +636,7 @@ var Inventory = React.memo(function (props) {
             {viewP.description && <span style={{ marginLeft: 16 }}>{viewP.description}</span>}
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn col="blue" onClick={function () { setEditP(Object.assign({}, viewP)); setViewP(null); }}>Edit</Btn>
+            <Btn col="blue" onClick={function () { setEditP(Object.assign({}, viewP, { extraUnits: formExtraUnitsFromProduct(viewP) })); setViewP(null); }}>Edit</Btn>
             <Btn col="orange" onClick={function () { setActionP({ product: viewP, mode: "damage" }); setDmgQty("1"); setReason(""); setViewP(null); }}>Mark Damage</Btn>
             <Btn col="gray" onClick={function () { setViewP(null); }}>Close</Btn>
           </div>
@@ -620,7 +646,7 @@ var Inventory = React.memo(function (props) {
       {newP && (
         <Modal title={"Add New Product — ID: " + nextProductId(state.products)} onClose={function () { setNewP(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Product Name *" value={newP.name} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: toTitleCase(e.target.value) }); }); }} />
+            <Input label="Product Name *" value={newP.name} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
@@ -635,21 +661,21 @@ var Inventory = React.memo(function (props) {
               <Input label="Initial Stock" type="number" value={newP.stock} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { stock: e.target.value }); }); }} />
               <Sel label="Base Unit" value={newP.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { unit: e.target.value }); }); }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: "1.5px solid " + C.border, borderRadius: 8, background: "#f8fafc" }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Secondary Unit (optional)</span>
-              </div>
-              <Input label="Secondary Unit" value={newP.bulkUnit || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { bulkUnit: e.target.value }); }); }} placeholder="Box / Tray / Carton" />
-              <Input label={"1 " + ((newP.bulkUnit || "secondary")) + " = ? " + (newP.unit || "Pcs")} type="number" value={newP.bulkConversion || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { bulkConversion: e.target.value }); }); }} placeholder="e.g. 12" />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label={"Secondary Cost Price (" + (newP.bulkUnit || "secondary") + ")"} type="number" value={newP.bulkCost || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { bulkCost: e.target.value }); }); }} placeholder="optional" />
-              <Input label={"Secondary Sell Price (" + (newP.bulkUnit || "secondary") + ") *"} type="number" value={newP.bulkPrice || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { bulkPrice: e.target.value }); }); }} placeholder="required if secondary used" />
-            </div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: -2 }}>Example: 1 Box = 12 Pcs. Leave secondary unit empty for simple products.</div>
-            <div style={{ fontSize: 11, color: C.textMd }}>
-              Config: Base: <strong>{newP.unit || "Pcs"}</strong>
-              {newP.bulkUnit ? (" | Secondary: " + newP.bulkUnit + (newP.bulkConversion ? (" | 1 " + newP.bulkUnit + " = " + newP.bulkConversion + " " + (newP.unit || "Pcs")) : "")) : " | Secondary: None"}
+            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{newP.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>
+              {(newP.extraUnits || []).map(function (row, idx) {
+                return (
+                  <div key={idx} style={{ display: "grid", gridTemplateColumns: "minmax(80px,1fr) 88px minmax(72px,1fr) minmax(72px,1fr) 34px", gap: 8, marginBottom: 8, alignItems: "end" }}>
+                    <Input label="Unit name" value={row.name || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { name: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="Strip / Box" />
+                    <Input label="Factor" type="number" value={row.factor || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { factor: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="e.g. 12" />
+                    <Input label="Sell (opt.)" type="number" value={row.sellPrice || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { sellPrice: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                    <Input label="Cost (opt.)" type="number" value={row.cost || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { cost: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                    <button type="button" onClick={function () { setNewP(function (x) { var next = (x.extraUnits || []).filter(function (_, j) { return j !== idx; }); return Object.assign({}, x, { extraUnits: next }); }); }} style={{ height: 36, borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", cursor: "pointer", fontSize: 14, color: C.red }} title="Remove">✕</button>
+                  </div>
+                );
+              })}
+              <button type="button" onClick={function () { setNewP(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
             </div>
             {newP.cost && newP.price && (
               <div style={{ background: C.accentSoft, borderRadius: 8, padding: "10px 14px", fontSize: 13, display: "flex", gap: 20 }}>
@@ -660,6 +686,18 @@ var Inventory = React.memo(function (props) {
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
               <textarea value={newP.description || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
+            </div>
+            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
+                <input type="checkbox" checked={!!newP.require_comment} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
+                Enable comment field at checkout (IMEI / serial / note)
+              </label>
+              {newP.require_comment && (
+                <div style={{ marginTop: 10 }}>
+                  <Input label="Label (optional)" value={newP.comment_label || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Shown on POS and invoice. If empty, the field is labeled &quot;Comment&quot;.</div>
+                </div>
+              )}
             </div>
             {getBusinessProfile().modules.serial && (
               <Input label="Serial Number / IMEI (optional)" value={newP.serialNo || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { serialNo: e.target.value }); }); }} placeholder="e.g. 358240051111110" />
@@ -682,7 +720,7 @@ var Inventory = React.memo(function (props) {
                 if (!newP.name || !newP.price) return;
                 saveNew();
                 setTimeout(function () {
-                  setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", stock: "" });
+                  setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: false, comment_label: "" });
                 }, 80);
               }} disabled={!newP.name || !newP.price}>Save + Add Another</Btn>
               <Btn col="gray" onClick={function () { setNewP(null); }}>Cancel</Btn>
@@ -711,21 +749,21 @@ var Inventory = React.memo(function (props) {
                 </div>
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, alignItems: "end" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", border: "1.5px solid " + C.border, borderRadius: 8, background: "#f8fafc" }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Secondary Unit (optional)</span>
-              </div>
-              <Input label="Secondary Unit" value={editP.bulkUnit || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { bulkUnit: e.target.value }); }); }} placeholder="Box / Tray / Carton" />
-              <Input label={"1 " + ((editP.bulkUnit || "secondary")) + " = ? " + (editP.unit || "Pcs")} type="number" value={editP.bulkConversion || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { bulkConversion: e.target.value }); }); }} placeholder="e.g. 12" />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label={"Secondary Cost Price (" + (editP.bulkUnit || "secondary") + ")"} type="number" value={editP.bulkCost || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { bulkCost: e.target.value }); }); }} placeholder="optional" />
-              <Input label={"Secondary Sell Price (" + (editP.bulkUnit || "secondary") + ") *"} type="number" value={editP.bulkPrice || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { bulkPrice: e.target.value }); }); }} placeholder="required if secondary used" />
-            </div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: -2 }}>Example: 1 Box = 12 Pcs. Leave secondary unit empty for simple products.</div>
-            <div style={{ fontSize: 11, color: C.textMd }}>
-              Config: Base: <strong>{editP.unit || "Pcs"}</strong>
-              {editP.bulkUnit ? (" | Secondary: " + editP.bulkUnit + (editP.bulkConversion ? (" | 1 " + editP.bulkUnit + " = " + editP.bulkConversion + " " + (editP.unit || "Pcs")) : "")) : " | Secondary: None"}
+            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{editP.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>
+              {(editP.extraUnits || []).map(function (row, idx) {
+                return (
+                  <div key={idx} style={{ display: "grid", gridTemplateColumns: "minmax(80px,1fr) 88px minmax(72px,1fr) minmax(72px,1fr) 34px", gap: 8, marginBottom: 8, alignItems: "end" }}>
+                    <Input label="Unit name" value={row.name || ""} onChange={function (e) { var v = e.target.value; setEditP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { name: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="Strip / Box" />
+                    <Input label="Factor" type="number" value={row.factor || ""} onChange={function (e) { var v = e.target.value; setEditP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { factor: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="e.g. 12" />
+                    <Input label="Sell (opt.)" type="number" value={row.sellPrice || ""} onChange={function (e) { var v = e.target.value; setEditP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { sellPrice: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                    <Input label="Cost (opt.)" type="number" value={row.cost || ""} onChange={function (e) { var v = e.target.value; setEditP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { cost: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                    <button type="button" onClick={function () { setEditP(function (x) { var next = (x.extraUnits || []).filter(function (_, j) { return j !== idx; }); return Object.assign({}, x, { extraUnits: next }); }); }} style={{ height: 36, borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", cursor: "pointer", fontSize: 14, color: C.red }} title="Remove">✕</button>
+                  </div>
+                );
+              })}
+              <button type="button" onClick={function () { setEditP(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
             </div>
             {editP.cost && editP.price && (
               <div style={{ background: C.accentSoft, borderRadius: 8, padding: "10px 14px", fontSize: 13, display: "flex", gap: 20 }}>
@@ -748,6 +786,17 @@ var Inventory = React.memo(function (props) {
                 <Input label="Batch / Lot Number (optional)" value={editP.batchNo || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { batchNo: e.target.value }); }); }} placeholder="e.g. BATCH-2025-001" />
               </div>
             )}
+            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
+                <input type="checkbox" checked={!!editP.require_comment} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
+                Enable comment field at checkout (IMEI / serial / note)
+              </label>
+              {editP.require_comment && (
+                <div style={{ marginTop: 10 }}>
+                  <Input label="Label (optional)" value={editP.comment_label || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
+                </div>
+              )}
+            </div>
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}><Btn col="cyan" onClick={saveEdit}>Save Changes</Btn><Btn col="gray" onClick={function () { setEditP(null); }}>Cancel</Btn></div>
           </div>
         </Modal>

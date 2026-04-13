@@ -34,6 +34,13 @@ import { deriveInventoryEconomics, reconcileInventoryToLedger } from "./accounti
 import { buildFinancialSnapshot, appendSnapshot, sanitizeFinancialSnapshots } from "./accounting/financialSnapshot.js";
 import { mergeRebuildWithImmutableHistory, mergeJournalLinesByTransactionId } from "./accounting/journalMerge.js";
 import { getOrCreateDeviceId } from "./accounting/ids.js";
+import {
+  isProductsUnitsArray,
+  getProductUnitRows,
+  factorForNamedUnit,
+  getUnitSellPriceFromRows,
+  getUnitCostFromRows,
+} from "./units/productUnits.js";
 import Inventory from "./pages/Inventory.jsx";
 import Customers from "./pages/Customers.jsx";
 import Suppliers from "./pages/Suppliers.jsx";
@@ -88,14 +95,19 @@ var uid = function () { return Date.now().toString(36) + Math.random().toString(
 var today = function () { return new Date().toISOString().slice(0, 10); };
 /** Strip JS float noise from money (2 dp) before integer display */
 var roundMoney = function (n) {
-  return Math.round((Number(n) || 0) * 100) / 100;
+  var x = Number(n);
+  if (!isFinite(x)) x = 0;
+  return Math.round(x * 100) / 100;
 };
 /** Qty / unit sums — 2 dp (e.g. 127.57 not 127.56666700000001) */
 var roundQty = function (n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 };
+/** Currency / amounts: 2 dp, no spurious integer rounding (Math.round(2.5) === 3 would break POS). */
 var fmtNum = function (n) {
-  return Math.round(roundMoney(Number(n || 0))).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  var v = roundMoney(n);
+  if (!isFinite(v)) v = 0;
+  return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
 /* ── SHA-256 password hashing via native crypto.subtle ── */
@@ -236,6 +248,11 @@ var toProductBaseQty = function (qty, inputUnit, product) {
   var q = parseFloat(qty) || 0;
   if (!product) return q;
   var baseU = product.unit || "Pcs";
+  if (isProductsUnitsArray(product)) {
+    var f = factorForNamedUnit(product, inputUnit || baseU);
+    if (f != null && f > 0) return Math.round(q * f * 1000000) / 1000000;
+    return toBaseQty(q, inputUnit || baseU, baseU);
+  }
   var bulkU = product.bulkUnit || "";
   var conv = parseFloat(product.bulkConversion) || 0;
   if (!product.bulkEnabled || !bulkU || conv <= 0) {
@@ -257,6 +274,7 @@ var toProductBaseQty = function (qty, inputUnit, product) {
 /* Unit-aware pricing: works for Pcs+Box (stock in Pcs) and Box+Pcs (stock in Box). */
 var getUnitCostPrice = function (product, unit) {
   if (!product) return 0;
+  if (isProductsUnitsArray(product)) return getUnitCostFromRows(product, unit);
   var baseU = product.unit || "Pcs";
   var bulkU = product.bulkUnit || "";
   var conv = parseFloat(product.bulkConversion) || 0;
@@ -290,8 +308,67 @@ var getUnitCostPrice = function (product, unit) {
   }
   return baseCost;
 };
+/** Catalog sell price per base (smallest) unit — factor-1 row or product.price */
+var getBaseSellPcsPrice = function (product) {
+  if (!product) return 0;
+  if (isProductsUnitsArray(product)) {
+    var rows = getProductUnitRows(product);
+    var baseRow = rows[0];
+    if (baseRow && baseRow.factor <= 1) {
+      var fromRow = parseFloat(baseRow.sellPrice) || 0;
+      if (fromRow > 0) return fromRow;
+    }
+  }
+  return parseFloat(product.price) || 0;
+};
+/**
+ * POS / Sales: display & line math = baseSellPcs × unitFactor (ignores per-tier sell overrides on larger rows).
+ * Purchases & reports keep using getUnitSellPrice when explicit tier prices matter.
+ */
+var getPosSellPricePerSaleUnit = function (product, unit) {
+  if (!product) return 0;
+  if (isProductsUnitsArray(product)) {
+    var base = getBaseSellPcsPrice(product);
+    var f = factorForNamedUnit(product, unit || product.unit || "Pcs");
+    if (f == null || f <= 0) f = 1;
+    return Math.round(base * f * 100) / 100;
+  }
+  return getUnitSellPrice(product, unit);
+};
+/** Cost per smallest unit (pcs): base row cost, else product.cost, else infer from a larger tier (cost/factor). */
+var getBaseCostPcsPrice = function (product) {
+  if (!product) return 0;
+  if (!isProductsUnitsArray(product)) return parseFloat(product.cost) || 0;
+  var rows = getProductUnitRows(product);
+  var baseRow = rows[0];
+  if (baseRow && baseRow.factor <= 1) {
+    var fromRow = parseFloat(baseRow.cost) || 0;
+    if (fromRow > 0) return fromRow;
+  }
+  var fromProduct = parseFloat(product.cost) || 0;
+  if (fromProduct > 0) return fromProduct;
+  for (var j = rows.length - 1; j >= 1; j--) {
+    var tr = rows[j];
+    var tf = parseFloat(tr.factor) || 0;
+    var tc = parseFloat(tr.cost) || 0;
+    if (tf > 1 && tc > 0) return tc / tf;
+  }
+  return 0;
+};
+/** POS: cost per selected sale unit = baseCostPcs × factor (matches tiered sell math; avoids comparing strip price to box cost). */
+var getPosCostPerSaleUnit = function (product, unit) {
+  if (!product) return 0;
+  if (isProductsUnitsArray(product)) {
+    var bc = getBaseCostPcsPrice(product);
+    var f = factorForNamedUnit(product, unit || product.unit || "Pcs");
+    if (f == null || f <= 0) f = 1;
+    return Number((bc * f).toFixed(2));
+  }
+  return getUnitCostPrice(product, unit);
+};
 var getUnitSellPrice = function (product, unit) {
   if (!product) return 0;
+  if (isProductsUnitsArray(product)) return getUnitSellPriceFromRows(product, unit);
   var baseU = product.unit || "Pcs";
   var bulkU = product.bulkUnit || "";
   var conv = parseFloat(product.bulkConversion) || 0;
@@ -360,6 +437,16 @@ var fmtSumQty = function (n) {
 /* Bulk products: show "1 Box / 12 Pcs" (whole packages + total count). */
 var getBulkDisplayParts = function (product) {
   if (!product) return null;
+  if (isProductsUnitsArray(product)) {
+    var rows = getProductUnitRows(product);
+    if (rows.length < 2) return null;
+    var sorted = rows.slice().sort(function (a, b) {
+      return a.factor - b.factor;
+    });
+    var base = sorted[0];
+    var largest = sorted[sorted.length - 1];
+    return { conv: largest.factor, pkgUnit: largest.name, pcsUnit: base.name, storageInPcs: true };
+  }
   var baseU = product.unit || "Pcs";
   var bulkU = product.bulkUnit || "";
   var conv = parseFloat(product.bulkConversion) || 0;
@@ -397,19 +484,27 @@ var inventoryQtyForTotals = function (p) {
   if (!p) return 0;
   return getBulkDisplayParts(p) ? stockPcsTotal(p) : (p.stock || 0);
 };
+/** Stock / after-sale display: normalized base qty only (e.g. "132 pcs"; weight/volume keep Kg/L). */
+var fmtStockPlainBase = function (pcsNormalized, product) {
+  if (!product) return String(pcsNormalized || 0);
+  var baseU = (getProductUnitRows(product)[0] || {}).name || product.unit || "Pcs";
+  if (baseU === "Kg" || baseU === "Litre") {
+    return fmtStock(parseFloat(pcsNormalized) || 0, baseU);
+  }
+  var q = parseFloat(pcsNormalized) || 0;
+  return parseFloat(q.toFixed(4)) + " pcs";
+};
 var fmtStockDual = function (product) {
-  var parts = getBulkDisplayParts(product);
-  if (!parts) return fmtStock(product.stock || 0, product.unit || "Pcs");
+  if (!getBulkDisplayParts(product)) return fmtStock(product.stock || 0, product.unit || "Pcs");
   var pcs = stockPcsTotal(product);
-  var whole = Math.floor(pcs / parts.conv);
-  return whole + " " + parts.pkgUnit + " / " + pcs + " " + parts.pcsUnit;
+  return fmtStockPlainBase(pcs, product);
 };
 var fmtDualFromPcs = function (pcs, product) {
+  if (!product || pcs < 0) return fmtStock(product ? (product.stock || 0) : 0, product && product.unit ? product.unit : "Pcs");
   var parts = getBulkDisplayParts(product);
-  if (!parts || pcs < 0) return fmtStock(product.stock || 0, product.unit || "Pcs");
+  if (!parts) return fmtStock(pcs, product.unit || "Pcs");
   var n = normalizeDualPcs(pcs, parts);
-  var whole = Math.floor(n / parts.conv);
-  return whole + " " + parts.pkgUnit + " / " + n + " " + parts.pcsUnit;
+  return fmtStockPlainBase(n, product);
 };
 var remainingPcsAfterCartForProduct = function (product, cart) {
   var parts = getBulkDisplayParts(product);
@@ -745,19 +840,22 @@ var encodeCost = function (cost, key) {
 
 /* ─── PRODUCT NAME HELPERS ──────────────────────────── */
 var toTitleCase = function (str) {
-  return str.replace(/\w\S*/g, function (w) { return w.charAt(0).toUpperCase() + w.slice(1); });
+  var s = String(str == null ? "" : str).trim();
+  return s.replace(/\w\S*/g, function (w) { return w.charAt(0).toUpperCase() + w.slice(1); });
 };
 var checkProductName = function (name, products, excludeId) {
-  var trimmed = name.trim().toLowerCase();
-  var active = products.filter(function (p) { return p.status !== "inactive" && (!excludeId || p.id !== excludeId); });
+  var trimmed = String(name == null ? "" : name).trim().toLowerCase();
+  var active = (products || []).filter(function (p) { return p.status !== "inactive" && (!excludeId || p.id !== excludeId); });
   /* Exact match */
-  var exact = active.find(function (p) { return p.name.trim().toLowerCase() === trimmed; });
+  var exact = active.find(function (p) {
+    return String(p.name == null ? "" : p.name).trim().toLowerCase() === trimmed;
+  });
   if (exact) return { type: "exact", match: exact.name };
   /* Similar — 2+ meaningful words overlap */
   var words = trimmed.split(/\s+/).filter(function (w) { return w.length > 2; });
   if (words.length < 1) return null;
   var similar = active.find(function (p) {
-    var pw = p.name.trim().toLowerCase().split(/\s+/).filter(function (w) { return w.length > 2; });
+    var pw = String(p.name == null ? "" : p.name).trim().toLowerCase().split(/\s+/).filter(function (w) { return w.length > 2; });
     var common = words.filter(function (w) { return pw.includes(w); });
     return common.length >= 2 || (words.length === 1 && pw.includes(words[0]));
   });
@@ -1609,7 +1707,14 @@ var BUSINESS_PROFILES = {
 /* Helper: get the active business profile (defaults to general retail if unset / bad key — neutral UX) */
 var getBusinessProfile = function () {
   var bt = S.get("tc3_businessType", null);
-  return BUSINESS_PROFILES[bt] || BUSINESS_PROFILES.general;
+  var p = BUSINESS_PROFILES[bt] || BUSINESS_PROFILES.general;
+  var d = { name: "", modules: { repairs: false, barcode: true, serial: false, expiry: false }, categories: [], units: ["Pcs"] };
+  var o = Object.assign({}, d, p || {});
+  if (!Array.isArray(o.categories)) o.categories = d.categories.slice();
+  if (!Array.isArray(o.units)) o.units = d.units.slice();
+  if (!o.modules || typeof o.modules !== "object") o.modules = Object.assign({}, d.modules);
+  else o.modules = Object.assign({}, d.modules, o.modules);
+  return o;
 };
 
 var loadState = function () {
@@ -2120,7 +2225,9 @@ var Badge = function (props) {
     Completed: { bg: "#e6f7f2", c: "#0a7a53", br: "#9ee8ce" },
     Damage: { bg: "#fde8ed", c: "#c0152e", br: "#f9a8ba" },
     Added: { bg: "#e6f7f2", c: "#0a7a53", br: "#9ee8ce" },
-    Deleted: { bg: "#fde8ed", c: "#c0152e", br: "#f9a8ba" }
+    Deleted: { bg: "#fde8ed", c: "#c0152e", br: "#f9a8ba" },
+    Returned: { bg: "#ffe4e6", c: "#9f1239", br: "#fda4af" },
+    "Partially Returned": { bg: "#ffedd5", c: "#c2410c", br: "#fdba74" }
   };
   var m = MAP[s] || { bg: "#f0f4ff", c: "#3d5280", br: "#c8d8f8" };
   return <span style={{ background: m.bg, color: m.c, border: "1px solid " + m.br, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700, letterSpacing: "0.02em" }}>{s}</span>;
@@ -2176,7 +2283,20 @@ var Modal = function (props) {
 
 var StatCard = function (props) {
   var isMoney = props.money !== false;
-  var displayVal = isMoney ? (getCurrencySymbol() + " " + fmtNum(props.value)) : fmtNum(props.value || 0);
+  var displayVal;
+  if (isMoney) {
+    displayVal = getCurrencySymbol() + " " + fmtNum(props.value);
+  } else {
+    var rawV = props.value;
+    if (typeof rawV === "string" && rawV !== "" && isNaN(parseFloat(rawV))) {
+      displayVal = rawV;
+    } else {
+      var nv = parseFloat(rawV);
+      if (isNaN(nv)) displayVal = String(rawV != null ? rawV : "0");
+      else if (Math.abs(nv - Math.round(nv)) < 1e-9) displayVal = String(Math.round(nv));
+      else displayVal = fmtNum(nv);
+    }
+  }
   return (
     <div className="stat-card-hover" style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", border: "1.5px solid " + C.border, position: "relative", overflow: "hidden", boxShadow: C.shadowCard }}>
       <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: props.accent || C.accent, borderRadius: "14px 14px 0 0" }}></div>
@@ -2431,6 +2551,15 @@ var InvoiceThermal = function (props) {
               }}
             >
               <div style={{ fontWeight: 600, lineHeight: 1.4, wordBreak: "break-word", overflowWrap: "anywhere", marginBottom: 3, color: "#000" }}>{it.name}</div>
+              {(function () {
+                var ctext = String(it.comment != null ? it.comment : it.itemNote || "").trim();
+                if (!ctext) return null;
+                return (
+                  <div style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.35, wordBreak: "break-word", overflowWrap: "anywhere", marginBottom: 4, color: "#222" }}>
+                    {ctext}
+                  </div>
+                );
+              })()}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
                 <span
                   style={Object.assign({}, numMono, {
@@ -2674,11 +2803,15 @@ var InvoiceA4 = function (props) {
                         <td style={{ padding: "7px 10px", fontWeight: 500, color: "#111" }}>
                           <div style={{ fontWeight: 600 }}>{it.name || L.unknownProduct}</div>
                           {it.description && <div style={{ fontSize: fs - 3, color: "#555", marginTop: 1 }}>{it.description}</div>}
-                          {it.itemNote && <div style={{ fontSize: fs - 3, color: "#888", marginTop: 1, fontStyle: "italic" }}>{it.itemNote}</div>}
+                          {(function () {
+                            var ctext = String(it.comment != null ? it.comment : it.itemNote || "").trim();
+                            if (!ctext) return null;
+                            return <div style={{ fontSize: fs - 2, color: "#444", marginTop: 3, lineHeight: 1.35 }}>{ctext}</div>;
+                          })()}
                         </td>
                         <td style={{ padding: "7px 10px", textAlign: "center", color: "#333" }}>{fmtStock(it.qty, it.unit)}</td>
-                        <td style={{ padding: "7px 10px", textAlign: "right", color: "#333" }}>{fmtNum(it.price)}.00</td>
-                        <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 600, color: "#111" }}>{fmtNum(it.qty * it.price)}.00</td>
+                        <td style={{ padding: "7px 10px", textAlign: "right", color: "#333" }}>{fmtNum(it.price)}</td>
+                        <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 600, color: "#111" }}>{fmtNum(it.qty * it.price)}</td>
                       </tr>
                     );
                   })}
@@ -2694,25 +2827,25 @@ var InvoiceA4 = function (props) {
       <div style={{ margin: "0 " + px, marginBottom: 14, display: "flex", justifyContent: "flex-end" }}>
         <table style={{ fontSize: fs, borderCollapse: "collapse", minWidth: 220 }}>
           <tbody>
-            <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>{L.subtotal}:</td><td style={{ padding: "5px 0", textAlign: "right", fontWeight: 500, minWidth: 80 }}>{fmtNum(subTotal)}.00</td></tr>
-            {discount > 0 && <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>{L.discount}:</td><td style={{ padding: "5px 0", textAlign: "right", color: "#dc2626" }}>{fmtNum(discount)}.00</td></tr>}
+            <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>{L.subtotal}:</td><td style={{ padding: "5px 0", textAlign: "right", fontWeight: 500, minWidth: 80 }}>{fmtNum(subTotal)}</td></tr>
+            {discount > 0 && <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>{L.discount}:</td><td style={{ padding: "5px 0", textAlign: "right", color: "#dc2626" }}>{fmtNum(discount)}</td></tr>}
             {showTaxBlockA4 && invTaxLinesA4.map(function (tl, i) {
               return (
                 <tr key={"a4tx-" + i}>
                   <td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>{tl.name} ({fmtNum(tl.rate)}%):</td>
-                  <td style={{ padding: "5px 0", textAlign: "right", fontWeight: 500, minWidth: 80 }}>{fmtNum(tl.amount)}.00</td>
+                  <td style={{ padding: "5px 0", textAlign: "right", fontWeight: 500, minWidth: 80 }}>{fmtNum(tl.amount)}</td>
                 </tr>
               );
             })}
-            {showTaxBlockA4 && <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>Total Tax:</td><td style={{ padding: "5px 0", textAlign: "right", fontWeight: 600 }}>{fmtNum(invTotalTaxA4)}.00</td></tr>}
+            {showTaxBlockA4 && <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>Total Tax:</td><td style={{ padding: "5px 0", textAlign: "right", fontWeight: 600 }}>{fmtNum(invTotalTaxA4)}</td></tr>}
             <tr>
               <td style={{ padding: "6px 16px 6px 0", textAlign: "right" }}><div style={{ background: accent, color: "#fff", fontWeight: 800, fontSize: fs + 1, padding: "5px 12px", borderRadius: "4px 0 0 4px" }}>Grand Total:</div></td>
-              <td style={{ background: accent, color: "#fff", fontWeight: 800, fontSize: fs + 1, padding: "5px 12px", textAlign: "right", borderRadius: "0 4px 4px 0" }}>{fmtNum(inv.total)}.00</td>
+              <td style={{ background: accent, color: "#fff", fontWeight: 800, fontSize: fs + 1, padding: "5px 12px", textAlign: "right", borderRadius: "0 4px 4px 0" }}>{fmtNum(inv.total)}</td>
             </tr>
-            <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>{L.paid}:</td><td style={{ padding: "5px 0", textAlign: "right", color: "#16a34a", fontWeight: 600 }}>{fmtNum(inv.paid || 0)}.00</td></tr>
+            <tr><td style={{ padding: "5px 16px 5px 0", color: "#555", textAlign: "right" }}>{L.paid}:</td><td style={{ padding: "5px 0", textAlign: "right", color: "#16a34a", fontWeight: 600 }}>{fmtNum(inv.paid || 0)}</td></tr>
             <tr style={{ borderTop: "1px solid #e5e7eb" }}>
               <td style={{ padding: "5px 16px 5px 0", color: balance > 0 ? "#dc2626" : "#555", fontWeight: balance > 0 ? 700 : 400, textAlign: "right" }}>{L.balanceLabel}</td>
-              <td style={{ padding: "5px 0", textAlign: "right", fontWeight: balance > 0 ? 800 : 500, color: balance > 0 ? "#dc2626" : "#555" }}>{fmtNum(balance)}.00</td>
+              <td style={{ padding: "5px 0", textAlign: "right", fontWeight: balance > 0 ? 800 : 500, color: balance > 0 ? "#dc2626" : "#555" }}>{fmtNum(balance)}</td>
             </tr>
           </tbody>
         </table>
@@ -2822,7 +2955,7 @@ var Pager = function (props) {
 /* CATS computed fresh each render so changing business type reflects immediately */
 var getCats = function () {
   var profile = getBusinessProfile();
-  var base = profile.categories.slice();
+  var base = Array.isArray(profile.categories) ? profile.categories.slice() : [];
   if (base.indexOf("Other") < 0) base.push("Other");
   if (base.indexOf("General") < 0) base.push("General");
   return base;
@@ -4765,7 +4898,7 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
   }
   return true;
 }
-export default function App(props) {
+function App(props) {
   if (!props) props = {};
 
   /* ── Network / System mode (from SetupWizard via LicenseGate) ── */
@@ -5925,8 +6058,11 @@ export default function App(props) {
               validateTxnAmounts={validateTxnAmounts}
               toProductBaseQty={toProductBaseQty}
               isDecimalUnit={isDecimalUnit}
-              getUnitCostPrice={getUnitCostPrice}
               getUnitSellPrice={getUnitSellPrice}
+              getUnitCostPrice={getUnitCostPrice}
+              getPosSellPricePerSaleUnit={getPosSellPricePerSaleUnit}
+              getBaseSellPcsPrice={getBaseSellPcsPrice}
+              getPosCostPerSaleUnit={getPosCostPerSaleUnit}
               getQuickAmounts={getQuickAmounts}
               remainingPcsAfterCartForProduct={remainingPcsAfterCartForProduct}
               fmtDualFromPcs={fmtDualFromPcs}
@@ -6353,11 +6489,8 @@ export default function App(props) {
   );
 }
 
-/* Wrap the default export with the error boundary */
+/* Default export must be wrapped so AppErrorBoundary mounts (ESM ignores module.exports). */
 var WrappedApp = function (props) {
   return React.createElement(AppErrorBoundary, null, React.createElement(App, props));
 };
-/* Re-export as the module default so index.js gets the wrapped version */
-if (typeof module !== "undefined" && module.exports) {
-  module.exports = WrappedApp;
-}
+export default WrappedApp;

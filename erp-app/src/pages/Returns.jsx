@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { computeSaleTaxFromSnapshot } from "../tax/taxCompute.js";
 
 /* ─── RETURNS PAGE ────────────────────────────────────────────────────────── */
@@ -28,6 +28,15 @@ var Returns = function (props) {
   var Badge = props.Badge;
   var [tab, setTab] = useState("salesreturn");
   var TABS = [["salesreturn", "↩ Sales Return"], ["purchasereturn", "🔄 Purchase Return"]];
+  useEffect(function () {
+    try {
+      var t = sessionStorage.getItem("tc3_returns_tab");
+      if (t === "salesreturn" || t === "purchasereturn") {
+        setTab(t);
+        sessionStorage.removeItem("tc3_returns_tab");
+      }
+    } catch (e) { /* ignore */ }
+  }, []);
   return (
     <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "flex", gap: 4, background: "#fff", borderRadius: 12, padding: 5, border: "1.5px solid " + C.border, boxShadow: C.shadowCard, alignSelf: "flex-start" }}>

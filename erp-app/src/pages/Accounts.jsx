@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { round2 } from "../accounting/generalLedger.js";
 import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
 import { SnapshotIntegrityBadge } from "../ui/SnapshotIntegrityBadge.jsx";
+import { validateExtraUnits, buildUnitsPersistFields } from "../units/productUnits.js";
 
 /** Group GL lines by transactionId / entryGroupId for developer debug view only */
 function tcGroupJournalByTransaction(lines) {
@@ -158,7 +159,7 @@ var Accounts = function (props) {
         setShowObStockDrop(false);
         setObStockSearch("");
         setObStockModal(true);
-        setObStockForm(function (prev) { return Object.assign({}, prev, { name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", qty: "1" }); });
+        setObStockForm(function (prev) { return Object.assign({}, prev, { name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", qty: "1", require_comment: false, comment_label: "" }); });
       }
     };
     window.addEventListener("keydown", handler);
@@ -186,7 +187,7 @@ var Accounts = function (props) {
   var [obAssetModal, setObAssetModal] = useState(false);
   var [obRecvForm, setObRecvForm] = useState({ person: "", amount: "", note: "" });
   var [obPayForm, setObPayForm] = useState({ source: "", amount: "", note: "" });
-  var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", bulkUnit: "", bulkConversion: "", bulkCost: "", bulkPrice: "", cost: "", price: "", qty: "" });
+  var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: false, comment_label: "" });
   var [obAssetForm, setObAssetForm] = useState({ name: "", category: "Equipment / Machinery", value: "", note: "" });
 
   var obCalcCapital = function (d) {
@@ -242,7 +243,10 @@ var Accounts = function (props) {
         }
       } else {
         // New product - create it
-        var np = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", unit: s.unit || getBusinessProfile().units[0] || "Pcs", bulkEnabled: !!(s.bulkUnit && (parseFloat(s.bulkConversion) || 0) > 0), bulkUnit: s.bulkUnit || "", bulkConversion: parseFloat(s.bulkConversion) || 0, bulkCost: parseFloat(s.bulkCost) || 0, bulkPrice: parseFloat(s.bulkPrice) || 0, description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true };
+        var npBase = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true, require_comment: !!s.require_comment, comment_label: String(s.comment_label || "").trim() };
+        var np = Array.isArray(s.units) && s.units.length > 0
+          ? Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", units: s.units, bulkEnabled: false, bulkUnit: "", bulkConversion: 0, bulkPrice: 0, bulkCost: 0 })
+          : Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", bulkEnabled: !!(s.bulkUnit && (parseFloat(s.bulkConversion) || 0) > 0), bulkUnit: s.bulkUnit || "", bulkConversion: parseFloat(s.bulkConversion) || 0, bulkCost: parseFloat(s.bulkCost) || 0, bulkPrice: parseFloat(s.bulkPrice) || 0 });
         newProds.push(np);
         newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: np.id, productName: np.name, qty: np.stock, reason: "Opening Balance (New)" });
       }
@@ -1505,7 +1509,11 @@ var Accounts = function (props) {
             var fresh = Object.assign({}, S.get("tc3_openBal", {}));
             fresh.receivables = S.get("tc3_manualReceivables", []).filter(function (r) { return r._isOpening; }).map(function (r) { return { _srcId: r.id, person: r.person, phone: r.phone || "", amount: r.amount, dueDate: r.dueDate || "", note: r.note || "" }; });
             fresh.payables = S.get("tc3_manualPayables", []).filter(function (p) { return p._isOpening; }).map(function (p) { return { _srcId: p.id, source: p.source, phone: p.phone || "", amount: p.amount, dueDate: p.dueDate || "", note: p.note || "" }; });
-            fresh.stock = (state.products || []).filter(function (p) { return p._isOpening; }).map(function (p) { return { _srcId: p.id, name: p.name, barcode: p.barcode, category: p.category, unit: p.unit || "Pcs", bulkUnit: p.bulkUnit || "", bulkConversion: p.bulkConversion || 0, bulkCost: p.bulkCost || 0, bulkPrice: p.bulkPrice || 0, description: p.description || "", cost: p.cost, price: p.price, qty: p.stock }; });
+            fresh.stock = (state.products || []).filter(function (p) { return p._isOpening; }).map(function (p) {
+              var row = { _srcId: p.id, name: p.name, barcode: p.barcode, category: p.category, unit: p.unit || "Pcs", bulkUnit: p.bulkUnit || "", bulkConversion: p.bulkConversion || 0, bulkCost: p.bulkCost || 0, bulkPrice: p.bulkPrice || 0, description: p.description || "", cost: p.cost, price: p.price, qty: p.stock };
+              if (Array.isArray(p.units) && p.units.length > 0) row.units = p.units;
+              return row;
+            });
             fresh.assets = (state.assets || []).filter(function (a) { return a._isOpening; }).map(function (a) { return { _srcId: a.id, name: a.name, category: a.category, purchaseDate: a.date || today(), value: a.amount, note: a.note || "" }; });
             setObDraft(fresh);
             setObEditMode(true);
@@ -1578,7 +1586,7 @@ var Accounts = function (props) {
               var existNonOB = (state.products || []).filter(function (p) { return !p._isOpening; });
               var obNextId = nextProductId(existNonOB);
               return (
-                <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", bulkUnit: "", bulkConversion: "", bulkCost: "", bulkPrice: "", description: "", cost: "", price: "", qty: "" }); }} wide>
+                <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: false, comment_label: "" }); }} wide>
                   <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>New product will be added to your Inventory with opening stock quantity.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     <Input label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
@@ -1599,18 +1607,21 @@ var Accounts = function (props) {
                         {getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}
                       </Sel>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                      <Input label="Secondary Unit (optional)" value={obStockForm.bulkUnit || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { bulkUnit: e.target.value }); }); }} placeholder="Box / Tray / Carton" />
-                      <Input label={"1 " + ((obStockForm.bulkUnit || "secondary")) + " = ? " + (obStockForm.unit || "Pcs")} type="number" value={obStockForm.bulkConversion || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { bulkConversion: e.target.value }); }); }} placeholder="e.g. 12" />
-                    </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                      <Input label={"Secondary Cost Price (" + (obStockForm.bulkUnit || "secondary") + ")"} type="number" value={obStockForm.bulkCost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { bulkCost: e.target.value }); }); }} placeholder="optional" />
-                      <Input label={"Secondary Sell Price (" + (obStockForm.bulkUnit || "secondary") + ") *"} type="number" value={obStockForm.bulkPrice || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { bulkPrice: e.target.value }); }); }} placeholder="required if secondary used" />
-                    </div>
-                    <div style={{ fontSize: 11, color: C.muted, marginTop: -2 }}>Example: 1 Box = 12 Pcs. Leave secondary unit empty for simple products.</div>
-                    <div style={{ fontSize: 11, color: C.textMd }}>
-                      Config: Base: <strong>{obStockForm.unit || "Pcs"}</strong>
-                      {obStockForm.bulkUnit ? (" | Secondary: " + obStockForm.bulkUnit + (obStockForm.bulkConversion ? (" | 1 " + obStockForm.bulkUnit + " = " + obStockForm.bulkConversion + " " + (obStockForm.unit || "Pcs")) : "")) : " | Secondary: None"}
+                    <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
+                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{obStockForm.unit || "Pcs"}</strong> (base) are in one of that unit.</div>
+                      {(obStockForm.extraUnits || []).map(function (row, idx) {
+                        return (
+                          <div key={idx} style={{ display: "grid", gridTemplateColumns: "minmax(80px,1fr) 88px minmax(72px,1fr) minmax(72px,1fr) 34px", gap: 8, marginBottom: 8, alignItems: "end" }}>
+                            <Input label="Unit name" value={row.name || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { name: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="Strip / Box" />
+                            <Input label="Factor" type="number" value={row.factor || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { factor: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="e.g. 12" />
+                            <Input label="Sell (opt.)" type="number" value={row.sellPrice || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { sellPrice: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                            <Input label="Cost (opt.)" type="number" value={row.cost || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { cost: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
+                            <button type="button" onClick={function () { setObStockForm(function (x) { var next = (x.extraUnits || []).filter(function (_, j) { return j !== idx; }); return Object.assign({}, x, { extraUnits: next }); }); }} style={{ height: 36, borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", cursor: "pointer", fontSize: 14, color: C.red }} title="Remove">✕</button>
+                          </div>
+                        );
+                      })}
+                      <button type="button" onClick={function () { setObStockForm(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
                     </div>
                     <div style={{ background: "#e0f2fe", borderRadius: 8, padding: "8px 14px", fontSize: 12, color: "#0369a1", fontWeight: 600 }}>
                       💡 Qty will be set from the opening stock grid row
@@ -1625,24 +1636,46 @@ var Accounts = function (props) {
                       <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
                       <textarea value={obStockForm.description || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
                     </div>
+                    <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
+                        <input type="checkbox" checked={!!obStockForm.require_comment} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
+                        Enable comment field at checkout (IMEI / serial / note)
+                      </label>
+                      {obStockForm.require_comment && (
+                        <div style={{ marginTop: 10 }}>
+                          <Input label="Label (optional)" value={obStockForm.comment_label || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
+                          <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Shown on POS and invoice. If empty, the field is labeled &quot;Comment&quot;.</div>
+                        </div>
+                      )}
+                    </div>
                     <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                       <Btn col="cyan" onClick={function () {
                         if (!obStockForm.name.trim()) { showAlert("Please enter a product name."); return; }
                         if (!obStockForm.cost || parseFloat(obStockForm.cost) <= 0) { showAlert("Please enter a valid cost price."); return; }
-                        var obBulkUnit = (obStockForm.bulkUnit || "").trim();
-                        var obBulkConv = parseFloat(obStockForm.bulkConversion) || 0;
-                        var obBulkCost = parseFloat(obStockForm.bulkCost) || 0;
-                        var obBulkPrice = parseFloat(obStockForm.bulkPrice) || 0;
-                        if (obBulkUnit) {
-                          if (obBulkUnit === (obStockForm.unit || "Pcs")) { showAlert("Secondary unit must be different from base unit."); return; }
-                          if (!(obBulkConv > 0)) { showAlert("Please enter valid conversion. Example: 1 Box = 12 Pcs."); return; }
-                          if (!(obBulkPrice > 0)) { showAlert("Please enter secondary unit sell price."); return; }
-                        }
+                        var unitErrOb = validateExtraUnits(obStockForm.unit, obStockForm.extraUnits || []);
+                        if (unitErrOb) { showAlert(unitErrOb); return; }
+                        var unitFieldsOb = buildUnitsPersistFields({
+                          unit: obStockForm.unit,
+                          cost: obStockForm.cost,
+                          price: obStockForm.price,
+                          extraUnits: obStockForm.extraUnits || [],
+                        });
                         /* Use qty from the grid input row — avoids double-counting */
                         var obQtyToUse = parseInt(obStockQty, 10) || 1;
                         var bc = (obStockForm.barcode || "").trim() || genBarcode();
-                        setD({ stock: (d.stock || []).concat([{ name: obStockForm.name.trim(), barcode: bc, category: obStockForm.category, unit: obStockForm.unit || getBusinessProfile().units[0] || "Pcs", bulkUnit: obBulkUnit, bulkConversion: obBulkUnit ? obBulkConv : 0, bulkCost: obBulkUnit ? obBulkCost : 0, bulkPrice: obBulkUnit ? obBulkPrice : 0, description: (obStockForm.description || "").trim(), cost: parseFloat(obStockForm.cost), price: parseFloat(obStockForm.price) || parseFloat(obStockForm.cost), qty: obQtyToUse, _isNew: true }]) });
-                        setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", bulkUnit: "", bulkConversion: "", bulkCost: "", bulkPrice: "", description: "", cost: "", price: "", qty: "" });
+                        setD({ stock: (d.stock || []).concat([Object.assign({
+                          name: obStockForm.name.trim(),
+                          barcode: bc,
+                          category: obStockForm.category,
+                          description: (obStockForm.description || "").trim(),
+                          cost: parseFloat(obStockForm.cost),
+                          price: parseFloat(obStockForm.price) || parseFloat(obStockForm.cost),
+                          qty: obQtyToUse,
+                          _isNew: true,
+                          require_comment: !!obStockForm.require_comment,
+                          comment_label: String(obStockForm.comment_label || "").trim(),
+                        }, unitFieldsOb)]) });
+                        setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: false, comment_label: "" });
                         setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
                       }} disabled={!obStockForm.name || !obStockForm.price || !obStockForm.cost}>Save Product</Btn>
                       <Btn col="gray" onClick={function () { setObStockModal(false); }}>Cancel</Btn>
@@ -1688,7 +1721,9 @@ var Accounts = function (props) {
                                 if (qty === null) return;
                                 var q = parseInt(qty);
                                 if (!q || q <= 0) { showAlert("Please enter a valid quantity."); return; }
-                                setD({ stock: (d.stock || []).concat([{ name: p.name, barcode: p.barcode, category: p.category, unit: p.unit || "Pcs", bulkUnit: p.bulkUnit || "", bulkConversion: p.bulkConversion || 0, bulkCost: p.bulkCost || 0, bulkPrice: p.bulkPrice || 0, description: p.description || "", cost: p.cost, price: p.price, qty: q, _srcProdId: p.id, _existingProduct: true }]) });
+                                var obRow = { name: p.name, barcode: p.barcode, category: p.category, unit: p.unit || "Pcs", bulkUnit: p.bulkUnit || "", bulkConversion: p.bulkConversion || 0, bulkCost: p.bulkCost || 0, bulkPrice: p.bulkPrice || 0, description: p.description || "", cost: p.cost, price: p.price, qty: q, _srcProdId: p.id, _existingProduct: true };
+                                if (Array.isArray(p.units) && p.units.length > 0) obRow.units = p.units;
+                                setD({ stock: (d.stock || []).concat([obRow]) });
                               }} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 700, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>+ Select</button>
                             )}
                           </div>
@@ -2063,7 +2098,7 @@ var Accounts = function (props) {
                                 {obStockSearch.trim() && (
                                   <div onClick={function () {
                                     setObStockModal(true);
-                                    setObStockForm({ name: obStockSearch, barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", bulkUnit: "", bulkConversion: "", bulkCost: "", bulkPrice: "", description: "", cost: obStockCost, price: obStockSell, qty: obStockQty });
+                                    setObStockForm({ name: obStockSearch, barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: obStockCost, price: obStockSell, qty: obStockQty, require_comment: false, comment_label: "" });
                                     setShowObStockDrop(false);
                                   }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, color: C.green, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
                                     + Create "{obStockSearch}" as new product
@@ -2096,11 +2131,11 @@ var Accounts = function (props) {
                                   return (p.name || "").toLowerCase() === q || (p.productId || "") === q || (p.barcode || "").toLowerCase() === q;
                                 });
                                 if (existProd) {
-                                  setD({ stock: (d.stock || []).concat([{ name: existProd.name, barcode: existProd.barcode, category: existProd.category, unit: existProd.unit || "Pcs", bulkUnit: existProd.bulkUnit || "", bulkConversion: existProd.bulkConversion || 0, bulkCost: existProd.bulkCost || 0, bulkPrice: existProd.bulkPrice || 0, description: existProd.description || "", cost: cost || existProd.cost, price: sell || existProd.price, qty: qty, _srcProdId: existProd.id, _existingProduct: true }]) });
+                                  var obRow2 = { name: existProd.name, barcode: existProd.barcode, category: existProd.category, unit: existProd.unit || "Pcs", bulkUnit: existProd.bulkUnit || "", bulkConversion: existProd.bulkConversion || 0, bulkCost: existProd.bulkCost || 0, bulkPrice: existProd.bulkPrice || 0, description: existProd.description || "", cost: cost || existProd.cost, price: sell || existProd.price, qty: qty, _srcProdId: existProd.id, _existingProduct: true };
+                                  if (Array.isArray(existProd.units) && existProd.units.length > 0) obRow2.units = existProd.units;
+                                  setD({ stock: (d.stock || []).concat([obRow2]) });
                                 } else {
-                                  /* New product */
-                                  var obId = "OB" + uid().slice(0, 6).toUpperCase();
-                                  setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty }]) });
+                                  setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: false, comment_label: "" }]) });
                                 }
                                 setObStockSearch(""); setObStockQty("1"); setObStockCost(""); setObStockSell("");
                                 setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
@@ -2118,9 +2153,11 @@ var Accounts = function (props) {
                               return (p.name || "").toLowerCase() === q || (p.productId || "") === q || (p.barcode || "").toLowerCase() === q;
                             });
                             if (existProd) {
-                              setD({ stock: (d.stock || []).concat([{ name: existProd.name, barcode: existProd.barcode, category: existProd.category, unit: existProd.unit || "Pcs", bulkUnit: existProd.bulkUnit || "", bulkConversion: existProd.bulkConversion || 0, bulkCost: existProd.bulkCost || 0, bulkPrice: existProd.bulkPrice || 0, description: existProd.description || "", cost: cost || existProd.cost, price: sell || existProd.price, qty: qty, _srcProdId: existProd.id, _existingProduct: true }]) });
+                              var obRow3 = { name: existProd.name, barcode: existProd.barcode, category: existProd.category, unit: existProd.unit || "Pcs", bulkUnit: existProd.bulkUnit || "", bulkConversion: existProd.bulkConversion || 0, bulkCost: existProd.bulkCost || 0, bulkPrice: existProd.bulkPrice || 0, description: existProd.description || "", cost: cost || existProd.cost, price: sell || existProd.price, qty: qty, _srcProdId: existProd.id, _existingProduct: true };
+                              if (Array.isArray(existProd.units) && existProd.units.length > 0) obRow3.units = existProd.units;
+                              setD({ stock: (d.stock || []).concat([obRow3]) });
                             } else {
-                              setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty }]) });
+                              setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: false, comment_label: "" }]) });
                             }
                             setObStockSearch(""); setObStockQty("1"); setObStockCost(""); setObStockSell("");
                             setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);

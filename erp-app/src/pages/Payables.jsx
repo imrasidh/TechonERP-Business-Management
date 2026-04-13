@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { purchaseReturnUiStatus } from "../utils/returnDisplay.js";
+import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 
 /* ═══════════════════════════════════════════════════════════
    ENHANCED PAYABLES — Purchase invoices + Manual (Borrowed, Other)
@@ -45,7 +47,8 @@ var EnhancedPayables = function (props) {
   /* ── Build unified list ── */
   var purchaseEntries = state.purchases.map(function (p) {
     var bal = Math.max(0, p.total - (p.paidAmount || 0));
-    return { id: p.id, _type: "purchase", date: p.date, source: p.supplier || "", type: "Purchase Invoice", amount: p.total, paid: p.paidAmount || 0, balance: bal, reference: p.invoiceNo || p.id.slice(0, 8), note: "", paymentHistory: p.paymentHistory || [], _purObj: p };
+    var retMeta = purchaseReturnUiStatus(p, state.purchaseReturns);
+    return { id: p.id, _type: "purchase", date: p.date, source: p.supplier || "", type: "Purchase Invoice", amount: p.total, paid: p.paidAmount || 0, balance: bal, reference: p.invoiceNo || p.id.slice(0, 8), note: "", paymentHistory: p.paymentHistory || [], _purObj: p, _returnMeta: retMeta };
   });
   var manualEntries = manualPays.map(function (mp) {
     var paid = (mp.paymentHistory || []).reduce(function (a, ph) { return a + ph.amount; }, 0);
@@ -253,12 +256,17 @@ var EnhancedPayables = function (props) {
               {filtered.length === 0 && <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", color: C.muted }}>No payables found</td></tr>}
               {filtered.map(function (e, i) {
                 var isOut = e.balance > 0;
+                var purRet = e._type === "purchase" && e._returnMeta ? e._returnMeta : { hasReturns: false };
+                var rowBg = purRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
                 return (
-                  <TR key={e.id} i={i}>
+                  <tr key={e.id} className="table-row-hover" style={{ background: rowBg, borderBottom: "1px solid " + C.borderLight }} title={purRet.hasReturns ? "This invoice has return activity" : undefined}>
                     <TD>{fmtDateFull(e.date)}</TD>
                     <TD bold>{e.source}</TD>
                     <td style={{ padding: "10px 12px" }}>
-                      <span style={{ background: e._type === "purchase" ? C.warnSoft : "#f3e8ff", color: e._type === "purchase" ? C.amber : C.purple, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{e.type}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span style={{ background: e._type === "purchase" ? C.warnSoft : "#f3e8ff", color: e._type === "purchase" ? C.amber : C.purple, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{e.type}</span>
+                        {purRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 800, color: "#c2410c", background: "#ffedd5", border: "1px solid #fdba74", borderRadius: 6, padding: "2px 6px" }}>↩ Return</span> : null}
+                      </div>
                     </td>
                     <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
                     <TD color={C.green}>{getCurrencySymbol()} {fmtNum(e.paid)}</TD>
@@ -279,7 +287,7 @@ var EnhancedPayables = function (props) {
                         {e._type === "manual" && <Btn sm col="red" onClick={function () { deleteManual(e.id); }}>Del</Btn>}
                       </div>
                     </td>
-                  </TR>
+                  </tr>
                 );
               })}
             </tbody>
@@ -344,11 +352,29 @@ var EnhancedPayables = function (props) {
 
       {/* View Modal */}
       {viewItem && (
-        <Modal title={"Payable — " + viewItem.source} onClose={function () { setViewItem(null); }}>
+        <Modal title={"Payable — " + viewItem.source} onClose={function () { setViewItem(null); }} wide={viewItem._type === "purchase" && viewItem._returnMeta && viewItem._returnMeta.hasReturns}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {[["Date", fmtDateFull(viewItem.date)], ["Source", viewItem.source], ["Type", viewItem.type], ["Total Amount", getCurrencySymbol() + " " + fmtNum(viewItem.amount)], ["Paid", getCurrencySymbol() + " " + fmtNum(viewItem.paid)], ["Balance", getCurrencySymbol() + " " + fmtNum(viewItem.balance)], ["Reference", viewItem.reference || "—"], ["Note", viewItem.note || "—"]].map(function (r) {
+            {[["Date", fmtDateFull(viewItem.date)], ["Source", viewItem.source], ["Type", viewItem.type], ["Total Amount", getCurrencySymbol() + " " + fmtNum(viewItem.amount)], ["Paid", getCurrencySymbol() + " " + fmtNum(viewItem.paid)], ["Balance (after returns)", getCurrencySymbol() + " " + fmtNum(viewItem.balance)], ["Reference", viewItem.reference || "—"], ["Note", viewItem.note || "—"]].map(function (r) {
               return <div key={r[0]} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid " + C.borderLight }}><span style={{ color: C.muted, fontSize: 13 }}>{r[0]}</span><span style={{ fontWeight: 700, fontSize: 13 }}>{r[1]}</span></div>;
             })}
+            {viewItem._type === "purchase" && viewItem._returnMeta && viewItem._returnMeta.hasReturns ? (
+              <div style={{ padding: "10px 12px", background: "#fff7ed", borderRadius: 8, border: "1px solid #fed7aa", fontSize: 12, color: "#9a3412" }}>
+                <strong>Return summary:</strong>{" "}
+                {getCurrencySymbol()} {fmtNum(viewItem._returnMeta.totalRet)} returned (goods value) · adjusted balance shown above reflects the current purchase total after returns.
+                <div style={{ fontSize: 11, marginTop: 4, color: C.muted }}>Original invoice link: purchase ID <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{viewItem._purObj && viewItem._purObj.id}</span></div>
+              </div>
+            ) : null}
+            {viewItem._type === "purchase" && viewItem._returnMeta && viewItem._returnMeta.hasReturns ? (
+              <ReturnDetailsPanel
+                mode="purchase"
+                rows={viewItem._returnMeta.rows}
+                originalId={viewItem._purObj ? viewItem._purObj.id : viewItem.id}
+                C={C}
+                getCurrencySymbol={getCurrencySymbol}
+                fmtNum={fmtNum}
+                fmtDateFull={fmtDateFull}
+              />
+            ) : null}
             {viewItem.paymentHistory && viewItem.paymentHistory.length > 0 && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Payment History</div>

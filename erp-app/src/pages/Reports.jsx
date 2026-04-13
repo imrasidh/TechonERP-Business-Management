@@ -1710,11 +1710,19 @@ var Reports = React.memo(function (props) {
           passed.push("All cleared cheques are linked to a transaction ✓");
         }
 
-        /* ── CHECK 6: Purchase total vs sum of items (+ tax when present) ── */
+        /* ── CHECK 6: Purchase total vs sum of items (+ tax when present), return-aware ──
+           Stored purchase.total is reduced when purchase returns exist (see Returns.jsx), but line
+           items are unchanged — expected = full invoice expected (from lines + tax/discount) minus
+           linked return amounts. Line cost uses same inputQty/qty × cost rule as Purchases save. */
         var purMismatches = [];
         (state.purchases || []).forEach(function (p) {
-          var itemsSum = (p.items || []).reduce(function (a, it) { return a + it.qty * (it.cost || 0); }, 0);
-          var expectedPur = integrityExpectedGrand(p, itemsSum);
+          var itemsSum = (p.items || []).reduce(function (a, it) {
+            var q = it.inputQty !== undefined ? it.inputQty : it.qty;
+            return a + q * (it.cost || 0);
+          }, 0);
+          var returnsSum = (state.purchaseReturns || []).filter(function (r) { return r.purchaseId === p.id; })
+            .reduce(function (a, r) { return a + (r.amount || 0); }, 0);
+          var expectedPur = Math.max(0, integrityExpectedGrand(p, itemsSum) - returnsSum);
           var actualPur = integrityStoredGrand(p);
           if (Math.abs(expectedPur - actualPur) > INT_TOL) {
             purMismatches.push({ ref: p.invoiceNo || p.id.slice(0, 8), expected: expectedPur, actual: actualPur });
@@ -1723,7 +1731,7 @@ var Reports = React.memo(function (props) {
         if (purMismatches.length > 0) {
           issues.push({ label: "Purchase Total Mismatches", count: purMismatches.length, detail: purMismatches.map(function (m) { return m.ref + ": expected " + cur + " " + fmtNum(m.expected) + ", got " + cur + " " + fmtNum(m.actual); }).join(" | "), severity: "error" });
         } else {
-          passed.push("All " + (state.purchases || []).length + " purchase totals match their line items ✓");
+          passed.push("All " + (state.purchases || []).length + " purchase totals match their line amounts (after purchase returns) ✓");
         }
 
         /* ── CHECK 6b: Expense amount vs components (only when subTotal/totalTax stored) ── */

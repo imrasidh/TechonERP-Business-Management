@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { computeSaleTax } from "../tax/taxCompute.js";
+import { saleReturnUiStatus, displayStatusForSale } from "../utils/returnDisplay.js";
+import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 
 /* ─── QUOTATION FORM (top-level to prevent cursor loss on re-render) ──────── */
 var QuotationForm = function (props) {
@@ -608,138 +610,32 @@ var SalesInvoices = React.memo(function (props) {
   var paidShown = filtered.reduce(function (a, s) { return a + (s.paid || 0); }, 0);
   var outstandingShown = totalShown - paidShown;
 
-  /* FIX 3 (Gemini): Paid invoices should be Voided rather than deleted to preserve cash audit trail.
-     Deletion removes paymentHistory and makes the cash that was collected disappear from accounts. */
-  var deleteSale = function (id) {
-    var orig = state.sales.find(function (s) { return s.id === id; });
-    if (!orig) return;
-    var hasCashMoved = (orig.paid || 0) > 0;
-    var confirmMsg = hasCashMoved
-      ? "⚠ This invoice has " + getCurrencySymbol() + " " + fmtNum(orig.paid) + " recorded as paid.\n\nDeleting it will ERASE that cash record from your accounts (audit risk).\n\nAre you sure you want to permanently delete it? Consider editing it to Rs 0 instead."
-      : "Delete this invoice? Stock will be restored.";
-    showConfirm(confirmMsg, function () {
-      var np = state.products.map(function (p) {
-        var ci = (orig.items || []).find(function (it) { return it.id === p.id; });
-        return ci ? Object.assign({}, p, { stock: p.stock + (ci.qty || 0) }) : p;
-      });
-      var nc = state.customers.map(function (c) {
-        if (c.id === orig.customerId) { return Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - (orig.balance || 0)), totalSpent: Math.max(0, (c.totalSpent || 0) - orig.total) }); }
-        return c;
-      });
-      var ns = state.sales.filter(function (s) { return s.id !== id; });
-      /* FIX Bug 2: Cancel any pending cheques linked to this sale so they don't orphan.
-         Cleared cheques stay as audit trail; only Pending ones are voided. */
-      var nch = (state.cheques || []).map(function (ch) {
-        if (ch.saleId === id && ch.status === "Pending") {
-          return Object.assign({}, ch, { status: "Voided", voidedDate: today(), voidReason: "Linked sale deleted" });
-        }
-        return ch;
-      });
-      S.set("tc3_products", np); S.set("tc3_customers", nc); S.set("tc3_sales", ns); S.set("tc3_cheques", nch);
-      setState(function (st) { return Object.assign({}, st, { products: np, customers: nc, sales: ns, cheques: nch }); });
-      if (viewSale && viewSale.id === id) setViewSale(null);
-    });
+  var goSalesReturn = function () {
+    try { sessionStorage.setItem("tc3_returns_tab", "salesreturn"); } catch (e) { /* ignore */ }
+    if (typeof setActive === "function") setActive("returns");
   };
 
+  /* Invoice edit: metadata only — no line items, totals, or stock (use Sales Return for quantity/amount corrections). */
   var saveEdit = function () {
     if (!editSale) return;
     var orig = state.sales.find(function (s) { return s.id === editSale.id; });
-    var editSaleAmtErr = validateTxnAmounts("Edited sale invoice", editSale.total || 0, editSale.paid || 0, editSale.balance || 0);
+    if (!orig) return;
+    var editSaleAmtErr = validateTxnAmounts("Edited sale invoice", orig.total || 0, orig.paid || 0, orig.balance || 0);
     if (editSaleAmtErr) { showAlert("❌ " + editSaleAmtErr); return; }
-    /* Period close warning */
-    checkPeriodClose(orig ? orig.date : null, state.settings, function () {
-    // Simulate restored stock (as if original sale was reversed) then check new quantities
-    var available = {};
-    state.products.forEach(function (p) { available[p.id] = p.stock || 0; });
-    if (orig) { (orig.items || []).forEach(function (oi) { if (available[oi.id] !== undefined) available[oi.id] += (oi.qty || 0); }); }
-    var stockErr = null;
-    (editSale.items || []).forEach(function (ni) {
-      if (stockErr) return;
-      if (available[ni.id] !== undefined && ni.qty > available[ni.id]) {
-        var prod = state.products.find(function (p) { return p.id === ni.id; });
-        stockErr = "Not enough stock for \"" + (prod ? prod.name : ni.id) + "\". Available: " + available[ni.id] + ", requested: " + ni.qty + ".";
-      }
-    });
-    if (stockErr) { showAlert(stockErr); return; }
-    var np = state.products.slice();
-    if (orig) {
-      (orig.items || []).forEach(function (oi) {
-        np = np.map(function (p) { return p.id === oi.id ? Object.assign({}, p, { stock: p.stock + (oi.qty || 0) }) : p; });
+    checkPeriodClose(orig.date, state.settings, function () {
+      var merged = Object.assign({}, orig, {
+        invoiceNo: editSale.invoiceNo,
+        date: editSale.date,
+        customerName: editSale.customerName,
+        customerPhone: editSale.customerPhone,
+        saleNote: editSale.saleNote !== undefined ? editSale.saleNote : orig.saleNote,
       });
-    }
-    (editSale.items || []).forEach(function (ni) {
-      np = np.map(function (p) { return p.id === ni.id ? Object.assign({}, p, { stock: p.stock - (ni.qty || 0) }) : p; });
+      var ns = state.sales.map(function (s) { return s.id === merged.id ? merged : s; });
+      S.set("tc3_sales", ns);
+      addAudit("Edited Sale Invoice (details)", merged.invoiceNo || merged.id.slice(0, 8));
+      setState(function (st) { return Object.assign({}, st, { sales: ns }); });
+      setEditSale(null);
     });
-    var nc = state.customers.map(function (c) {
-      if (c.id === editSale.customerId) {
-        var oldBal = orig ? (orig.balance || 0) : 0;
-        var newBal = editSale.balance || 0;
-        var oldTot = orig ? (orig.total || 0) : 0;
-        var newTot = editSale.total || 0;
-        return Object.assign({}, c, {
-          credit: Math.max(0, (c.credit || 0) - oldBal + newBal),
-          totalSpent: Math.max(0, (c.totalSpent || 0) - oldTot + newTot)
-        });
-      }
-      return c;
-    });
-    var ns = state.sales.map(function (s) { return s.id === editSale.id ? editSale : s; });
-    S.set("tc3_products", np); S.set("tc3_customers", nc); S.set("tc3_sales", ns);
-    addAudit("Edited Sale Invoice", editSale.invoiceNo || editSale.id.slice(0, 8));
-    setState(function (st) { return Object.assign({}, st, { products: np, customers: nc, sales: ns }); });
-    setEditSale(null);
-    }); /* end checkPeriodClose */
-  };
-
-  var recomputeEditSaleTaxAndBalance = function (draft) {
-    var newSub = (draft.items || []).reduce(function (a, it) { return a + it.qty * (it.price || 0); }, 0);
-    var disc = Math.min(draft.discount || 0, newSub);
-    var net = Math.max(0, newSub - disc);
-    var tc = computeSaleTax(state.settings, net);
-    var finalTotal = tc.grandTotal;
-    var paid = draft.paid || 0;
-    var safePaid = Math.min(paid, finalTotal);
-    var status = safePaid >= finalTotal ? "Paid" : safePaid > 0 ? "Partial" : "Unpaid";
-    var taxLinesStore = (tc.selectedTaxes || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; });
-    var ph = (draft.paymentHistory || []).slice();
-    var diff = safePaid - paid;
-    if (diff < 0) {
-      var totalCash = 0; var totalBank = 0;
-      ph.forEach(function (e) {
-        if (!e.cashMethod || e.cashMethod === "Cheque" || (e.amount || 0) === 0) return;
-        if (e.cashMethod === "Bank") totalBank += e.amount;
-        else totalCash += e.amount;
-      });
-      var totalReal = totalCash + totalBank;
-      if (totalReal <= 0) {
-        ph = ph.concat([{ id: uid(), date: today(), amount: diff, cashMethod: "Cash", note: "Correction — invoice total reduced (edit)" }]);
-      } else if (totalBank <= 0) {
-        ph = ph.concat([{ id: uid(), date: today(), amount: diff, cashMethod: "Cash", note: "Correction — invoice total reduced (edit)" }]);
-      } else if (totalCash <= 0) {
-        ph = ph.concat([{ id: uid(), date: today(), amount: diff, cashMethod: "Bank", note: "Correction — invoice total reduced (edit)" }]);
-      } else {
-        var cashCorr = Math.round(diff * (totalCash / totalReal) * 100) / 100;
-        var bankCorr = Math.round((diff - cashCorr) * 100) / 100;
-        if (cashCorr !== 0) ph = ph.concat([{ id: uid(), date: today(), amount: cashCorr, cashMethod: "Cash", note: "Correction — invoice total reduced (edit)" }]);
-        if (bankCorr !== 0) ph = ph.concat([{ id: uid(), date: today(), amount: bankCorr, cashMethod: "Bank", note: "Correction — invoice total reduced (edit)" }]);
-      }
-    }
-    var taxPatch = {};
-    if (state.settings && state.settings.taxEnabled) {
-      taxPatch.taxMode = tc.taxMode || "exclusive";
-      taxPatch.totalTax = tc.totalTax || 0;
-      taxPatch.selectedTaxes = taxLinesStore;
-    } else {
-      taxPatch.taxMode = undefined;
-      taxPatch.totalTax = 0;
-      taxPatch.selectedTaxes = [];
-    }
-    return Object.assign({}, draft, taxPatch, { total: finalTotal, subTotal: newSub, discount: disc, payStatus: status, balance: finalTotal - safePaid, paid: safePaid, paymentHistory: ph });
-  };
-
-  var recalcTotal = function () {
-    if (!editSale) return;
-    setEditSale(function (x) { return recomputeEditSaleTaxAndBalance(x); });
   };
 
   var recordPayment = function (saleId, amount, note, mode, __forcedId, __legacyAll) {
@@ -917,8 +813,11 @@ var SalesInvoices = React.memo(function (props) {
                 var bal = Math.max(0, s.total - (s.paid || 0));
                 var lastPay = (s.paymentHistory || []).slice(-1)[0];
                 var hasPendingChq = (state.cheques || []).some(function (ch) { return ch.saleId === s.id && ch.status === "Pending"; });
+                var saleRet = saleReturnUiStatus(s, state.salesReturns);
+                var saleStatusLabel = displayStatusForSale(s, state.salesReturns);
+                var saleRowBg = saleRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
                 return (
-                  <TR key={s.id} i={i}>
+                  <tr key={s.id} className="table-row-hover" style={{ background: saleRowBg, borderBottom: "1px solid " + C.borderLight }} title={saleRet.hasReturns ? "This invoice has return activity" : undefined}>
                     <td style={{ padding: "10px 14px" }}>
                       <span
                         onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}
@@ -937,7 +836,12 @@ var SalesInvoices = React.memo(function (props) {
                         : <span style={{ background: C.successSoft, color: C.green, padding: "3px 10px", borderRadius: 20, fontWeight: 700, fontSize: 12 }}>Settled</span>
                       }
                     </td>
-                    <td style={{ padding: "10px 14px" }}><Badge status={s.payStatus || "Paid"} /></td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <Badge status={saleStatusLabel} />
+                        {saleRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 800, color: "#9f1239", background: "#ffe4e6", border: "1px solid #fda4af", borderRadius: 6, padding: "2px 6px" }}>↩ Return</span> : null}
+                      </div>
+                    </td>
                     <TD>{lastPay ? fmtDate(lastPay.date) + " · " + getCurrencySymbol() + " " + fmtNum(lastPay.amount) : "—"}</TD>
                     <td style={{ padding: "8px 10px", verticalAlign: "middle", textAlign: "right", whiteSpace: "nowrap" }}>
                       <div
@@ -969,10 +873,10 @@ var SalesInvoices = React.memo(function (props) {
                         <div style={{ flex: "0 0 66px", width: 66, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 28 }}>
                           {bal > 0 ? <Btn sm col="cyan" onClick={function () { setSplitPayModal(s); }}>Pay</Btn> : null}
                         </div>
-                        <Btn sm col="red" onClick={function () { deleteSale(s.id); }}>Del</Btn>
+                        <Btn sm col="orange" onClick={goSalesReturn} title="Use Sales Return to reverse stock and amounts">Return</Btn>
                       </div>
                     </td>
-                  </TR>
+                  </tr>
                 );
               })}
             </tbody>
@@ -1088,6 +992,12 @@ var SalesInvoices = React.memo(function (props) {
             >✕ Close</button>
           </div>
 
+          {saleReturnUiStatus(fullViewSale, state.salesReturns).hasReturns ? (
+            <div style={{ flexShrink: 0, padding: "8px 20px", background: "#fff7ed", borderBottom: "1px solid #fed7aa", fontSize: 12, color: "#9a3412", fontWeight: 600 }}>
+              <span title="This invoice has return activity">↩ This invoice has sales return activity — open Details for full return lines.</span>
+            </div>
+          ) : null}
+
           {/* Invoice document — scrollable area */}
           <div style={{
             flex: 1, overflow: "auto", width: "100%",
@@ -1122,7 +1032,10 @@ var SalesInvoices = React.memo(function (props) {
         </div>
       )}
 
-      {viewSale && (
+      {viewSale && (function () {
+        var vr = saleReturnUiStatus(viewSale, state.salesReturns);
+        var vsDisp = displayStatusForSale(viewSale, state.salesReturns);
+        return (
         <Modal title={"Invoice — " + (viewSale.invoiceNo || viewSale.id.slice(0, 8))} onClose={function () { setViewSale(null); }} wide>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
             <div style={{ background: "#f7f9ff", borderRadius: 10, padding: "12px 16px" }}>
@@ -1130,15 +1043,43 @@ var SalesInvoices = React.memo(function (props) {
               <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>{viewSale.customerName || "Walk-in"}</div>
               <div style={{ color: C.muted, marginTop: 3, fontSize: 13 }}>{viewSale.customerPhone || "—"}</div>
               <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{fmtDateFull(viewSale.date)}</div>
+              <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: C.muted }}>Status:</span>
+                <Badge status={vsDisp} />
+                {vr.hasReturns ? <span title="This invoice has return activity" style={{ fontSize: 10, fontWeight: 800, color: "#9f1239" }}>↩ Returns on file</span> : null}
+              </div>
             </div>
             <PaymentBreakdown invoice={viewSale} cheques={state.cheques || []} isSale={true} />
           </div>
+          {vr.hasReturns ? (
+            <ReturnDetailsPanel
+              mode="sale"
+              rows={vr.rows}
+              originalId={viewSale.id}
+              C={C}
+              getCurrencySymbol={getCurrencySymbol}
+              fmtNum={fmtNum}
+              fmtDateFull={fmtDateFull}
+            />
+          ) : null}
 
           <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 14 }}>
             <thead><tr><TH>#</TH><TH>Item</TH><TH>Qty</TH><TH>Unit Price</TH><TH>Total</TH></tr></thead>
             <tbody>
               {(viewSale.items || []).map(function (it, i) {
-                return <TR key={i} i={i}><TD color={C.muted}>{i + 1}</TD><TD bold>{it.name || "Unknown Product"}</TD><TD center>{fmtStock(it.qty, it.unit)}</TD><TD>{getCurrencySymbol()} {fmtNum(it.price)}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(it.qty * it.price)}</TD></TR>;
+                var cmt = String(it.comment != null ? it.comment : it.itemNote || "").trim();
+                return (
+                  <TR key={i} i={i}>
+                    <TD color={C.muted}>{i + 1}</TD>
+                    <TD bold>
+                      <div>{it.name || "Unknown Product"}</div>
+                      {cmt ? <div style={{ fontSize: 11, color: C.muted, fontWeight: 600, marginTop: 3 }}>{cmt}</div> : null}
+                    </TD>
+                    <TD center>{fmtStock(it.qty, it.unit)}</TD>
+                    <TD>{getCurrencySymbol()} {fmtNum(it.price)}</TD>
+                    <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(it.qty * it.price)}</TD>
+                  </TR>
+                );
               })}
             </tbody>
           </table>
@@ -1230,11 +1171,12 @@ var SalesInvoices = React.memo(function (props) {
               <Btn col="cyan" onClick={function () { setSplitPayModal(viewSale); }}>+ Record Payment</Btn>
             )}
             <Btn col="blue" onClick={function () { setEditSale(Object.assign({}, viewSale)); setViewSale(null); }}>Edit Invoice</Btn>
-            <Btn col="red" onClick={function () { deleteSale(viewSale.id); }}>Delete</Btn>
+            <Btn col="orange" onClick={goSalesReturn}>Sales Return</Btn>
             <Btn col="gray" onClick={function () { setViewSale(null); }}>Close</Btn>
           </div>
         </Modal>
-      )}
+        );
+      })()}
 
       {splitPayModal && (
         <SplitPaymentModal
@@ -1249,78 +1191,28 @@ var SalesInvoices = React.memo(function (props) {
 
       {editSale && (
         <Modal title={"Edit Invoice — " + (editSale.invoiceNo || editSale.id.slice(0, 8))} onClose={function () { setEditSale(null); }} wide>
-          <div style={{ background: C.successSoft, border: "1px solid #9ee8ce", borderRadius: 8, padding: "8px 14px", marginBottom: 14, fontSize: 12, color: C.green }}>Smart edit: stock and customer balance will be auto-recalculated on save.</div>
+          <div style={{ background: "#fef3e2", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#92400e", lineHeight: 1.5 }}>
+            Only invoice header details can be changed here. To adjust quantities, pricing, or stock, use <strong>Sales Return</strong> (sidebar → Returns).
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 12 }}>
             <Input label="Invoice No" value={editSale.invoiceNo || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }} />
             <Input label="Date" type="date" value={editSale.date} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
             <Input label="Customer" value={editSale.customerName || editSale.customer || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { customerName: e.target.value }); }); }} />
+            <Input label="Phone" value={editSale.customerPhone || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { customerPhone: e.target.value }); }); }} placeholder="Optional" />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 12 }}>
-            <Input label="Paid Amount" type="number" value={editSale.paid || 0} onChange={function (e) {
-              var newPaid = parseFloat(e.target.value) || 0;
-              setEditSale(function (x) {
-                var orig = state.sales.find(function (s) { return s.id === x.id; });
-                var origPaid = orig ? (orig.paid || 0) : 0;
-                var diff = Math.round((newPaid - origPaid) * 100) / 100;
-                /* Rebuild paymentHistory to reflect the new total paid amount.
-                   Keep existing entries, add/adjust a correction entry so the
-                   total matches the new paid amount — cash balance stays correct. */
-                var existingPh = (orig ? (orig.paymentHistory || []) : (x.paymentHistory || [])).slice();
-                if (diff !== 0) {
-                  /* Distribute adjustment proportionally across Cash and Bank */
-                  var adjCash = 0; var adjBank = 0;
-                  existingPh.forEach(function (e) {
-                    if (!e.cashMethod || e.cashMethod === "Cheque" || (e.amount || 0) === 0) return;
-                    if (e.cashMethod === "Bank") adjBank += e.amount;
-                    else adjCash += e.amount;
-                  });
-                  var adjTotal = adjCash + adjBank;
-                  if (adjTotal <= 0 || adjBank <= 0) {
-                    existingPh = existingPh.concat([{ id: uid(), date: today(), amount: diff, cashMethod: adjBank > 0 ? "Bank" : "Cash", note: "Manual adjustment (edit)" }]);
-                  } else if (adjCash <= 0) {
-                    existingPh = existingPh.concat([{ id: uid(), date: today(), amount: diff, cashMethod: "Bank", note: "Manual adjustment (edit)" }]);
-                  } else {
-                    var cCorr = Math.round(diff * (adjCash / adjTotal) * 100) / 100;
-                    var bCorr = Math.round((diff - cCorr) * 100) / 100;
-                    if (cCorr !== 0) existingPh = existingPh.concat([{ id: uid(), date: today(), amount: cCorr, cashMethod: "Cash", note: "Manual adjustment (edit)" }]);
-                    if (bCorr !== 0) existingPh = existingPh.concat([{ id: uid(), date: today(), amount: bCorr, cashMethod: "Bank", note: "Manual adjustment (edit)" }]);
-                  }
-                }
-                var newBal = Math.max(0, (x.total || 0) - newPaid);
-                var newStatus = newPaid >= (x.total || 0) ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-                return Object.assign({}, x, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: existingPh });
-              });
-            }} />
-            <Input label="Discount" type="number" value={editSale.discount || 0} onChange={function (e) {
-              var d = parseFloat(e.target.value) || 0;
-              setEditSale(function (x) { return recomputeEditSaleTaxAndBalance(Object.assign({}, x, { discount: d })); });
-            }} />
-            <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
-              <Btn col="gray" sm onClick={recalcTotal}>↻ Recalculate Total</Btn>
-            </div>
-          </div>
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.07em" }}>Line Items</div>
+          <Input label="Note (internal)" value={editSale.saleNote || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { saleNote: e.target.value }); }); }} placeholder="Optional — stored on this invoice" />
+          <div style={{ marginTop: 16, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.07em" }}>Line items (read-only)</div>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><TH>Product</TH><TH>Qty</TH><TH>Unit Price</TH><TH>Subtotal</TH><TH></TH></tr></thead>
+              <thead><tr><TH>Product</TH><TH>Qty</TH><TH>Unit Price</TH><TH>Subtotal</TH></tr></thead>
               <tbody>
                 {(editSale.items || []).map(function (it, idx) {
                   return (
                     <tr key={it.id || idx} style={{ borderBottom: "1px solid " + C.border }}>
-                      <td style={{ padding: "7px 10px" }}>
-                        <select value={it.id || ""} onChange={function (e) {
-                          var selProd = state.products.find(function (p) { return p.id === e.target.value; });
-                          if (!selProd) return;
-                          setEditSale(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii, jj) { return jj === idx ? Object.assign({}, ii, { id: selProd.id, name: selProd.name, cost: selProd.cost, price: selProd.price }) : ii; }) }); });
-                        }} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 6, padding: "6px 10px", fontSize: 12, fontFamily: "inherit", background: "#fff" }}>
-                          {state.products.map(function (p) { return <option key={p.id} value={p.id}>{p.name}</option>; })}
-                        </select>
-                        <div style={{ fontSize: 10.5, color: C.muted, marginTop: 2, paddingLeft: 2 }}>Cost: {getCurrencySymbol()} {fmtNum(it.cost || 0)}</div>
-                      </td>
-                      <td style={{ padding: "7px 6px" }}><input type="number" value={it.qty} onChange={function (e) { var v = parseInt(e.target.value) || 1; setEditSale(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii, jj) { return jj === idx ? Object.assign({}, ii, { qty: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 64, border: "1.5px solid " + C.border, borderRadius: 6, padding: "6px 8px", fontSize: 12, fontFamily: "inherit", textAlign: "center" }} /></td>
-                      <td style={{ padding: "7px 6px" }}><input type="number" value={it.price} onChange={function (e) { var v = parseFloat(e.target.value) || 0; setEditSale(function (x) { return Object.assign({}, x, { items: x.items.map(function (ii, jj) { return jj === idx ? Object.assign({}, ii, { price: v }) : ii; }) }); }); }} onFocus={function (e) { e.target.select(); }} style={{ width: 100, border: "1.5px solid " + C.border, borderRadius: 6, padding: "6px 8px", fontSize: 12, fontFamily: "inherit" }} /></td>
-                      <td style={{ padding: "7px 10px", fontWeight: 700, color: C.blue }}>{getCurrencySymbol()} {fmtNum(it.qty * it.price)}</td>
-                      <td style={{ padding: "7px 6px" }}><button onClick={function () { setEditSale(function (x) { return Object.assign({}, x, { items: x.items.filter(function (_, jj) { return jj !== idx; }) }); }); }} style={{ background: C.dangerSoft, border: "none", color: C.red, cursor: "pointer", borderRadius: 6, padding: "4px 8px", fontWeight: 700 }}>×</button></td>
+                      <td style={{ padding: "7px 10px", fontWeight: 600 }}>{it.name}</td>
+                      <td style={{ padding: "7px 10px" }}>{fmtStock(it.qty, it.unit)}</td>
+                      <td style={{ padding: "7px 10px" }}>{getCurrencySymbol()} {fmtNum(it.price || 0)}</td>
+                      <td style={{ padding: "7px 10px", fontWeight: 700, color: C.blue }}>{getCurrencySymbol()} {fmtNum(it.qty * (it.price || 0))}</td>
                     </tr>
                   );
                 })}
@@ -1335,8 +1227,9 @@ var SalesInvoices = React.memo(function (props) {
             </div>
             <div style={{ fontWeight: 900, fontSize: 16, color: C.blue }}>Total: {getCurrencySymbol()} {fmtNum(editSale.total || 0)}</div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Btn col="cyan" onClick={saveEdit}>Save Changes</Btn>
+            <Btn col="orange" onClick={goSalesReturn}>Open Sales Return</Btn>
             <Btn col="gray" onClick={function () { setEditSale(null); }}>Cancel</Btn>
           </div>
         </Modal>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { computeSaleTax } from "../tax/taxCompute.js";
+import { getProductUnitRows, factorForNamedUnit } from "../units/productUnits.js";
 
 /* ─── POS / SALES ─────────────────────────────────── */
 var POS = React.memo(function (props) {
@@ -29,8 +30,9 @@ var POS = React.memo(function (props) {
   var validateTxnAmounts = props.validateTxnAmounts;
   var toProductBaseQty = props.toProductBaseQty;
   var isDecimalUnit = props.isDecimalUnit;
-  var getUnitCostPrice = props.getUnitCostPrice;
-  var getUnitSellPrice = props.getUnitSellPrice;
+  var getPosCostPerSaleUnit = props.getPosCostPerSaleUnit;
+  var getPosSellPricePerSaleUnit = props.getPosSellPricePerSaleUnit;
+  var getBaseSellPcsPrice = props.getBaseSellPcsPrice;
   var SplitPaymentModal = props.SplitPaymentModal;
   var resolvePaymentCreditTargetIds = props.resolvePaymentCreditTargetIds;
   var warnPaymentCustomerMatchSafety = props.warnPaymentCustomerMatchSafety;
@@ -62,9 +64,12 @@ var POS = React.memo(function (props) {
 
   var [cart, setCart] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
-    if (pf && pf.items) { return pf.items; }
+    if (pf && pf.items) {
+      return pf.items.map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); });
+    }
     return [];
   });
+  var cartLineKey = function (it) { return it.cartLineId != null ? it.cartLineId : it.id; };
   var [custMode, setCustMode] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     if (pf && pf.customerId) return "existing";
@@ -199,7 +204,19 @@ var POS = React.memo(function (props) {
     if (!prod) return it.qty || 0;
     return toProductBaseQty(it.qty || 0, it.saleUnit || it.unit || "Pcs", prod);
   };
-  var subTotal = cart.reduce(function (a, it) { return a + (it.qty || 0) * (it.price || 0); }, 0);
+  /** Line total = qty × price (or baseQty × baseSellPcs); cents via toFixed(2) to avoid float noise */
+  var posLineAmount = function (it) {
+    var prod = state.products.find(function (p) { return p.id === it.id; });
+    var raw;
+    if (!prod) raw = (Number(it.qty) || 0) * (Number(it.price) || 0);
+    else if (it.customPrice) raw = (Number(it.qty) || 0) * (Number(it.price) || 0);
+    else {
+      var baseQty = toProductBaseQty(it.qty || 0, it.saleUnit || it.unit || "Pcs", prod);
+      raw = baseQty * getBaseSellPcsPrice(prod);
+    }
+    return Number(raw.toFixed(2));
+  };
+  var subTotal = Number(cart.reduce(function (a, it) { return a + posLineAmount(it); }, 0).toFixed(2));
   var discAmt = Math.min(parseFloat(discount) || 0, subTotal);
   var taxableNet = Math.max(0, subTotal - discAmt);
   var taxApplyBase = (state.settings && state.settings.taxApplyBase) || "after_discount";
@@ -207,8 +224,8 @@ var POS = React.memo(function (props) {
   var taxCalcInput = useTaxBeforeDisc ? subTotal : taxableNet;
   var posTaxCalc = computeSaleTax(state.settings, taxCalcInput);
   var total = useTaxBeforeDisc
-    ? Math.round((subTotal - discAmt + (posTaxCalc.totalTax || 0)) * 100) / 100
-    : posTaxCalc.grandTotal;
+    ? Number((subTotal - discAmt + (posTaxCalc.totalTax || 0)).toFixed(2))
+    : Number((posTaxCalc.grandTotal != null ? posTaxCalc.grandTotal : 0).toFixed(2));
   var posTaxLines = posTaxCalc.selectedTaxes || [];
   var posTotalTax = posTaxCalc.totalTax || 0;
   /* Live paid/balance: use splitRows non-cheque total when splits are set */
@@ -227,8 +244,9 @@ var POS = React.memo(function (props) {
     : (paidNum >= total ? "Paid" : paidNum > 0 ? "Partial" : "Unpaid");
 
   var addToCart = function (p) {
-    var inCart = (cart.find(function (x) { return x.id === p.id; }) || { qty: 0, unit: p.unit || "Pcs" });
-    var inCartBaseQty = toProductBaseQty(inCart.qty || 0, inCart.saleUnit || inCart.unit || (p.unit || "Pcs"), p);
+    var inCartBaseQty = cart.filter(function (x) { return x.id === p.id; }).reduce(function (a, x) {
+      return a + toProductBaseQty(x.qty || 0, x.saleUnit || x.unit || (p.unit || "Pcs"), p);
+    }, 0);
     if ((p.stock || 0) === 0) { showAlert("\"" + p.name + "\" is out of stock."); setSearch(""); return; }
     if (inCartBaseQty >= (p.stock || 0)) {
       var leftMsg = getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit);
@@ -238,13 +256,38 @@ var POS = React.memo(function (props) {
     }
     try { sessionStorage.setItem("tc3_dirty", "pos"); } catch (e) { }
     var step = isDecimalUnit(p.unit) ? 0.5 : 1;
+    var needLinePerUnit = !!p.require_comment;
     setCart(function (prev) {
-      var ex = prev.find(function (x) { return x.id === p.id; });
-      if (ex) return prev.map(function (x) {
-        return x.id === p.id ? Object.assign({}, x, { qty: Math.round((x.qty + step) * 10000) / 10000 }) : x;
-      });
+      if (!needLinePerUnit) {
+        var ex = prev.find(function (x) { return x.id === p.id; });
+        if (ex) return prev.map(function (x) {
+          if (x.id !== p.id) return x;
+          return Object.assign({}, x, {
+            cartLineId: x.cartLineId || uid(),
+            qty: Math.round((x.qty + step) * 10000) / 10000,
+          });
+        });
+      }
       var su = p.unit || "Pcs";
-      return prev.concat([{ id: p.id, name: p.name, barcode: p.barcode || "", unit: su, saleUnit: su, qty: step, price: getUnitSellPrice(p, su), cost: getUnitCostPrice(p, su), stock: p.stock, description: p.description || "", itemNote: "" }]);
+      var lbl = String(p.comment_label || "").trim();
+      return prev.concat([{
+        cartLineId: uid(),
+        id: p.id,
+        name: p.name,
+        barcode: p.barcode || "",
+        unit: su,
+        saleUnit: su,
+        qty: step,
+        price: getPosSellPricePerSaleUnit(p, su),
+        cost: getPosCostPerSaleUnit(p, su),
+        stock: p.stock,
+        description: p.description || "",
+        comment: "",
+        commentLabel: lbl || "Comment",
+        requireComment: needLinePerUnit,
+        itemNote: "",
+        customPrice: false,
+      }]);
     });
     setSearch("");
     setTimeout(function () {
@@ -255,10 +298,15 @@ var POS = React.memo(function (props) {
   };
 
   /* Simple qty update — one unit, decimals handle g/ml etc. */
-  var updateQty = function (id, qty) {
+  var updateQty = function (lineKey, qty) {
     var q = Math.round(qty * 10000) / 10000;
-    if (q <= 0) { setCart(function (prev) { return prev.filter(function (x) { return x.id !== id; }); }); return; }
-    setCart(function (prev) { return prev.map(function (x) { return x.id === id ? Object.assign({}, x, { qty: q }) : x; }); });
+    if (q <= 0) {
+      setCart(function (prev) { return prev.filter(function (x) { return cartLineKey(x) !== lineKey; }); });
+      return;
+    }
+    setCart(function (prev) {
+      return prev.map(function (x) { return cartLineKey(x) === lineKey ? Object.assign({}, x, { qty: q }) : x; });
+    });
   };
 
   var posIsSavingRef = useRef(false);  /* synchronous re-entry guard (same event-loop tick) */
@@ -319,25 +367,31 @@ var POS = React.memo(function (props) {
       }
     }
     var stockErr = null;
+    var seenStockPid = {};
     cart.forEach(function (item) {
       if (stockErr) return;
+      if (seenStockPid[item.id]) return;
+      seenStockPid[item.id] = 1;
       var prod = state.products.find(function (p) { return p.id === item.id; });
-      var reqBase = prod ? toProductBaseQty(item.qty || 0, item.saleUnit || item.unit || "Pcs", prod) : (item.qty || 0);
-      if (prod && reqBase > (prod.stock || 0)) {
+      if (!prod) return;
+      var totalReq = cart.filter(function (x) { return x.id === item.id; }).reduce(function (a, x) {
+        return a + toProductBaseQty(x.qty || 0, x.saleUnit || x.unit || "Pcs", prod);
+      }, 0);
+      if (totalReq > (prod.stock || 0)) {
         var availMsg = getBulkDisplayParts(prod) ? fmtStockDual(prod) : fmtStock(prod.stock || 0, prod.unit || "Pcs");
-        stockErr = "Not enough stock for \"" + item.name + "\". Available: " + availMsg + ", requested: " + fmtQtyUnit(item.qty || 0, item.saleUnit || item.unit || "Pcs") + ".";
+        stockErr = "Not enough stock for \"" + item.name + "\". Available: " + availMsg + ", requested (all lines): " + fmtStock(totalReq, prod.unit || "Pcs") + ".";
       }
     });
     if (stockErr) { showAlert(stockErr); return; }
     /* Block selling below cost */
     var belowCostItem = cart.find(function (item) {
       var pr = state.products.find(function (p) { return p.id === item.id; });
-      var lc = pr ? getUnitCostPrice(pr, item.saleUnit || item.unit || "Pcs") : (item.cost || 0);
+      var lc = pr ? getPosCostPerSaleUnit(pr, item.saleUnit || item.unit || "Pcs") : (item.cost || 0);
       return (item.price || 0) < lc;
     });
     if (belowCostItem) {
       var pr2 = state.products.find(function (p) { return p.id === belowCostItem.id; });
-      var minCost = pr2 ? getUnitCostPrice(pr2, belowCostItem.saleUnit || belowCostItem.unit || "Pcs") : (belowCostItem.cost || 0);
+      var minCost = pr2 ? getPosCostPerSaleUnit(pr2, belowCostItem.saleUnit || belowCostItem.unit || "Pcs") : (belowCostItem.cost || 0);
       showAlert("\u274C Cannot sell below cost price.\n\n\"" + belowCostItem.name + "\" is priced at " + getCurrencySymbol() + " " + fmtNum(belowCostItem.price) + " but cost is " + getCurrencySymbol() + " " + fmtNum(minCost) + " per " + (belowCostItem.saleUnit || belowCostItem.unit || "Pcs") + ".\n\nPlease increase the price to at least " + getCurrencySymbol() + " " + fmtNum(minCost) + ".");
       return;
     }
@@ -389,19 +443,35 @@ var POS = React.memo(function (props) {
     var saleItems = cart.map(function (it) {
       var prod = state.products.find(function (p) { return p.id === it.id; });
       var baseQty = prod ? toProductBaseQty(it.qty || 0, it.saleUnit || it.unit || "Pcs", prod) : (it.qty || 0);
-      return Object.assign({}, it, { qty: baseQty, inputQty: it.qty, inputUnit: it.saleUnit || it.unit || "Pcs" });
+      var comm = String(it.comment || "").trim();
+      var lineLbl = prod ? (String(prod.comment_label || "").trim() || "Comment") : "Comment";
+      var row = Object.assign({}, it, {
+        qty: baseQty,
+        inputQty: it.qty,
+        inputUnit: it.saleUnit || it.unit || "Pcs",
+        product_id: it.id,
+      });
+      delete row.comment;
+      delete row.commentLabel;
+      delete row.requireComment;
+      delete row.itemNote;
+      if (comm) {
+        row.comment = comm;
+        row.commentLabel = lineLbl;
+      }
+      return row;
     });
     if (state.settings && state.settings.taxEnabled && posTotalTax > 0 && subTotal > 0.005) {
-      var lineAmts = cart.map(function (it) { return (it.qty || 0) * (it.price || 0); });
+      var lineAmts = cart.map(function (it) { return posLineAmount(it); });
       var subSum = lineAmts.reduce(function (a, b) { return a + b; }, 0);
       var remTax = posTotalTax;
       saleItems = saleItems.map(function (it, sidx) {
         var lt;
         if (sidx === saleItems.length - 1) {
-          lt = Math.round(remTax * 100) / 100;
+          lt = Number(remTax.toFixed(2));
         } else if (subSum > 0.005) {
-          lt = Math.round(posTotalTax * (lineAmts[sidx] / subSum) * 100) / 100;
-          remTax = Math.round((remTax - lt) * 100) / 100;
+          lt = Number((posTotalTax * (lineAmts[sidx] / subSum)).toFixed(2));
+          remTax = Number((remTax - lt).toFixed(2));
         } else {
           lt = 0;
         }
@@ -426,16 +496,18 @@ var POS = React.memo(function (props) {
       var _origSale = state.sales.find(function (s) { return s.id === editingSaleId; });
       if (_origSale) {
         _baseProds = state.products.map(function (p) {
-          var oi = (_origSale.items || []).find(function (x) { return x.id === p.id; });
-          if (!oi) return p;
-          return Object.assign({}, p, { stock: (p.stock || 0) + (oi.qty || 0) });
+          var back = (_origSale.items || []).filter(function (x) { return x.id === p.id; }).reduce(function (a, oi) { return a + (oi.qty || 0); }, 0);
+          if (!back) return p;
+          return Object.assign({}, p, { stock: (p.stock || 0) + back });
         });
       }
     }
     var np = _baseProds.map(function (p) {
-      var ci = cart.find(function (x) { return x.id === p.id; });
-      if (!ci) return p;
-      var deductQty = toProductBaseQty(ci.qty || 0, ci.saleUnit || ci.unit || "Pcs", p);
+      var lines = cart.filter(function (x) { return x.id === p.id; });
+      if (!lines.length) return p;
+      var deductQty = lines.reduce(function (acc, ci) {
+        return acc + toProductBaseQty(ci.qty || 0, ci.saleUnit || ci.unit || "Pcs", p);
+      }, 0);
       return Object.assign({}, p, { stock: (p.stock || 0) - deductQty });
     });
     var nc = state.customers.slice();
@@ -559,8 +631,10 @@ var POS = React.memo(function (props) {
   var loadSaleForEdit = function (sale) {
     var restoredCart = (sale.items || []).map(function (it) {
       return Object.assign({}, it, {
+        cartLineId: it.cartLineId || uid(),
         qty: it.inputQty !== undefined ? it.inputQty : it.qty,
         saleUnit: it.inputUnit || it.unit || "Pcs",
+        customPrice: true,
       });
     });
     setCart(restoredCart);
@@ -655,7 +729,7 @@ var POS = React.memo(function (props) {
 
   /* ── Load a held invoice — keeps it in IDB until completed or manually deleted ── */
   var loadHeldInvoice = function (h) {
-    setCart(h.cart || []);
+    setCart((h.cart || []).map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); }));
     setCustMode(h.custMode || "existing");
     setCustSearch(h.custSearch || "");
     setCustId(h.custId || "");
@@ -874,7 +948,7 @@ var POS = React.memo(function (props) {
                 {cart.map(function (item, i) {
                   var prodRow = state.products.find(function (p) { return p.id === item.id; });
                   var saleU = item.saleUnit || item.unit || "Pcs";
-                  var lineCost = prodRow ? getUnitCostPrice(prodRow, saleU) : (item.cost || 0);
+                  var lineCost = prodRow ? getPosCostPerSaleUnit(prodRow, saleU) : (item.cost || 0);
                   /* Keyboard nav helper — focuses a specific cell in the cart grid */
                   var focusCell = function (row, col) {
                     var el = document.querySelector("[data-cartrow='" + row + "'][data-cartcol='" + col + "']");
@@ -908,12 +982,32 @@ var POS = React.memo(function (props) {
                     }
                   };
                   return (
-                    <tr key={item.id} style={{ borderBottom: "1px solid " + C.border, background: "transparent" }}
+                    <tr key={String(cartLineKey(item)) + "-" + i} style={{ borderBottom: "1px solid " + C.border, background: "transparent" }}
                       onMouseEnter={function (e) { e.currentTarget.style.background = "#f8faff"; }}
                       onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}>
                       <td style={{ padding: "5px 8px", fontSize: 13, maxWidth: 160 }}>
                         <div style={{ fontWeight: 600, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
                         {item.description && <div style={{ fontSize: 10, color: C.muted }}>{item.description}</div>}
+                        {prodRow && prodRow.require_comment && (
+                          <div style={{ marginTop: 6, maxWidth: 220 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMd, marginBottom: 3 }}>
+                              {String(prodRow.comment_label || "").trim() || "Comment"}
+                            </div>
+                            <input
+                              type="text"
+                              value={item.comment || ""}
+                              onChange={function (e) {
+                                var v = e.target.value;
+                                var lk = cartLineKey(item);
+                                setCart(function (prev) {
+                                  return prev.map(function (x) { return cartLineKey(x) === lk ? Object.assign({}, x, { comment: v }) : x; });
+                                });
+                              }}
+                              placeholder={String(prodRow.comment_label || "").trim() || "Optional"}
+                              style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit", outline: "none" }}
+                            />
+                          </div>
+                        )}
                         {!isDecimalUnit(item.unit) && item.unit && item.unit !== "Pcs" && (
                           <div style={{ fontSize: 9, color: C.accent, fontWeight: 700 }}>{item.unit}</div>
                         )}
@@ -923,7 +1017,7 @@ var POS = React.memo(function (props) {
                           data-cartrow={i} data-cartcol="0"
                           type="number"
                           value={item.price}
-                          onChange={function (e) { var v = parseFloat(e.target.value) || 0; setCart(function (prev) { return prev.map(function (x) { return x.id === item.id ? Object.assign({}, x, { price: v }) : x; }); }); }}
+                          onChange={function (e) { var v = parseFloat(e.target.value) || 0; var lk = cartLineKey(item); setCart(function (prev) { return prev.map(function (x) { return cartLineKey(x) === lk ? Object.assign({}, x, { price: v, customPrice: true }) : x; }); }); }}
                           onFocus={function (e) { e.target.select(); }}
                           onKeyDown={function (e) { handleKey(e, i, 0); }}
                           style={{ width: 72, border: "1.5px solid " + (item.price < lineCost ? C.red : C.border), borderRadius: 6, padding: "5px 6px", fontSize: 13, textAlign: "right", fontFamily: "inherit", outline: "none", background: item.price < lineCost ? "#fde8ed" : "#fff" }}
@@ -937,69 +1031,115 @@ var POS = React.memo(function (props) {
                           </div>
                         )}
                       </td>
-                      <td style={{ padding: "4px 6px", minWidth: 110 }}>
+                      <td style={{ padding: "4px 6px", minWidth: 130 }}>
                         {(function () {
                           var unit = item.saleUnit || item.unit || "Pcs";
                           var prodForUnit = state.products.find(function (p) { return p.id === item.id; });
-                          var hasSecondary = !!(prodForUnit && prodForUnit.bulkEnabled && prodForUnit.bulkUnit && (parseFloat(prodForUnit.bulkConversion) || 0) > 0);
+                          var unitRows = prodForUnit ? getProductUnitRows(prodForUnit) : [];
+                          var unitOpts = unitRows.map(function (r) { return r.name; });
+                          var hasSecondary = unitOpts.length > 1;
                           var quickAmts = getQuickAmounts(unit);
+                          var baseU = unitRows[0] && unitRows[0].name ? unitRows[0].name : "Pcs";
+                          var fCur = prodForUnit ? factorForNamedUnit(prodForUnit, unit) : null;
+                          var convHint = fCur != null && fCur > 1
+                            ? "1 " + unit + " = " + (fCur % 1 === 0 ? fCur : parseFloat(fCur.toFixed(4))) + " " + baseU
+                            : null;
                           return (
                             <div>
-                              <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-                                <input
-                                  data-cartrow={i} data-cartcol="1"
-                                  type="number"
-                                  min="0"
-                                  step={isDecimalUnit(unit) ? "0.001" : "1"}
-                                  value={item.qty}
-                                  onChange={function (e) {
-                                    var v = parseFloat(e.target.value);
-                                    updateQty(item.id, isNaN(v) ? 0 : v);
-                                  }}
-                                  onFocus={function (e) { e.target.select(); }}
-                                  onKeyDown={function (e) { handleKey(e, i, 1); }}
-                                  style={{ width: 62, border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 6px", fontSize: 13, textAlign: "center", fontFamily: "inherit", outline: "none", background: "#fff", fontWeight: 700 }}
-                                  onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
-                                  onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
-                                />
-                                <span style={{ fontSize: 11, color: C.accent, fontWeight: 800, whiteSpace: "nowrap" }}>{unit}</span>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Qty</span>
+                                  <input
+                                    data-cartrow={i} data-cartcol="1"
+                                    type="number"
+                                    min="0"
+                                    step={isDecimalUnit(unit) ? "0.001" : "1"}
+                                    value={item.qty}
+                                    onChange={function (e) {
+                                      var v = parseFloat(e.target.value);
+                                      updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
+                                    }}
+                                    onFocus={function (e) { e.target.select(); }}
+                                    onKeyDown={function (e) { handleKey(e, i, 1); }}
+                                    style={{ width: 56, border: "1.5px solid " + C.border, borderRadius: 6, padding: "4px 5px", fontSize: 12, textAlign: "center", fontFamily: "inherit", outline: "none", background: "#fff", fontWeight: 700 }}
+                                    onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
+                                    onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
+                                  />
+                                </div>
                                 {hasSecondary && (
-                                  <div style={{ display: "flex", gap: 4, marginLeft: 2 }}>
-                                    {[item.unit || "Pcs", prodForUnit.bulkUnit].map(function (uOpt) {
-                                      var activeUnit = unit === uOpt;
+                                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+                                    <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Unit</span>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
+                                      {unitOpts.map(function (uOpt) {
+                                        var activeUnit = unit === uOpt;
+                                        var fOpt = prodForUnit ? factorForNamedUnit(prodForUnit, uOpt) : 1;
+                                        var label = uOpt + (fOpt != null && fOpt > 1 ? " (" + (fOpt % 1 === 0 ? fOpt : parseFloat(fOpt.toFixed(2))) + " " + baseU + ")" : "");
+                                        return (
+                                          <button
+                                            key={uOpt}
+                                            type="button"
+                                            onClick={function () {
+                                              setCart(function (prev) {
+                                                return prev.map(function (x) {
+                                                  if (cartLineKey(x) !== cartLineKey(item)) return x;
+                                                  return Object.assign({}, x, {
+                                                    saleUnit: uOpt,
+                                                    price: getPosSellPricePerSaleUnit(prodForUnit, uOpt),
+                                                    cost: getPosCostPerSaleUnit(prodForUnit, uOpt),
+                                                    customPrice: false,
+                                                  });
+                                                });
+                                              });
+                                            }}
+                                            title={label}
+                                            style={{
+                                              fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+                                              background: activeUnit ? "#3b82f6" : "#fff", color: activeUnit ? "#fff" : "#4b5563", boxShadow: activeUnit ? "0 1px 2px rgba(0,0,0,0.06)" : "none", whiteSpace: "nowrap"
+                                            }}
+                                          >
+                                            {uOpt}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    {unitRows.filter(function (r) { return r.factor > 1; }).map(function (r) {
                                       return (
                                         <button
-                                          key={uOpt}
+                                          key={"qb-" + r.name}
                                           type="button"
                                           onClick={function () {
                                             setCart(function (prev) {
                                               return prev.map(function (x) {
-                                                return x.id === item.id ? Object.assign({}, x, { saleUnit: uOpt, qty: 1, price: getUnitSellPrice(prodForUnit, uOpt), cost: getUnitCostPrice(prodForUnit, uOpt) }) : x;
+                                                if (cartLineKey(x) !== cartLineKey(item)) return x;
+                                                var q = parseFloat(x.qty) || 0;
+                                                return Object.assign({}, x, {
+                                                  saleUnit: r.name,
+                                                  qty: q + 1,
+                                                  price: getPosSellPricePerSaleUnit(prodForUnit, r.name),
+                                                  cost: getPosCostPerSaleUnit(prodForUnit, r.name),
+                                                  customPrice: false,
+                                                });
                                               });
                                             });
                                           }}
-                                          style={{
-                                            fontSize: 9, padding: "2px 7px", borderRadius: 10,
-                                            border: "1px solid " + (activeUnit ? C.accent : C.border),
-                                            background: activeUnit ? C.accentSoft : "#fff",
-                                            color: activeUnit ? C.accent : C.muted,
-                                            fontWeight: activeUnit ? 800 : 600,
-                                            cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap"
-                                          }}
+                                          style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
                                         >
-                                          {uOpt}
+                                          +1 {r.name}
                                         </button>
                                       );
                                     })}
                                   </div>
                                 )}
                               </div>
+                              {convHint && (
+                                <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{convHint}</div>
+                              )}
                               {quickAmts.length > 0 && !hasSecondary && (
                                 <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4 }}>
                                   {quickAmts.map(function (qa) {
                                     var active = item.qty === qa.qty;
                                     return (
-                                      <button key={qa.label} onClick={function () { updateQty(item.id, qa.qty); }} style={{
+                                      <button key={qa.label} onClick={function () { updateQty(cartLineKey(item), qa.qty); }} style={{
                                         fontSize: 9, padding: "2px 6px", borderRadius: 10,
                                         border: "1px solid " + (active ? C.accent : C.border),
                                         background: active ? C.accentSoft : "#fff",
@@ -1011,11 +1151,12 @@ var POS = React.memo(function (props) {
                                   })}
                                 </div>
                               )}
-                              {hasSecondary && prodForUnit && (
+                              {prodForUnit && (
                                 <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.35 }}>
-                                  <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span> {fmtStockDual(prodForUnit)}
+                                  <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span>{" "}
+                                  {getBulkDisplayParts(prodForUnit) ? fmtStockDual(prodForUnit) : fmtStock(prodForUnit.stock || 0, prodForUnit.unit || "Pcs")}
                                   {" · "}
-                                  <span style={{ fontWeight: 600, color: C.textMd }}>After:</span>{" "}
+                                  <span style={{ fontWeight: 600, color: C.textMd }}>After sale:</span>{" "}
                                   {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForUnit, cart), prodForUnit)}
                                 </div>
                               )}
@@ -1023,8 +1164,8 @@ var POS = React.memo(function (props) {
                           );
                         })()}
                       </td>
-                      <td style={{ padding: "5px 8px", fontWeight: 700, color: C.blue, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum((item.qty || 0) * (item.price || 0))}</td>
-                      <td style={{ padding: "4px 6px" }}><button onClick={function () { updateQty(item.id, 0); }} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px" }}>✕</button></td>
+                      <td style={{ padding: "5px 8px", fontWeight: 700, color: C.blue, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
+                      <td style={{ padding: "4px 6px" }}><button onClick={function () { updateQty(cartLineKey(item), 0); }} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px" }}>✕</button></td>
                     </tr>
                   );
                 })}
@@ -1216,7 +1357,7 @@ var POS = React.memo(function (props) {
                 var hTime = h.heldAt ? new Date(h.heldAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
                 var hDate = h.heldAt ? new Date(h.heldAt).toLocaleDateString() : "";
                 var cartCount = (h.cart || []).length;
-                var cartTotal = (h.cart || []).reduce(function (a, it) { return a + it.qty * (it.price || 0); }, 0) - (parseFloat(h.discount) || 0);
+                var cartTotal = (h.cart || []).reduce(function (a, it) { return a + posLineAmount(it); }, 0) - (parseFloat(h.discount) || 0);
                 var custLabel = h.custSearch || (h.custMode === "walkin" ? "Walk-in" : h.newCust && h.newCust.name ? h.newCust.name : "Walk-in");
                 return (
                   <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", background: "#f0f4ff", borderRadius: 9, border: "1.5px solid #c7d4f8" }}>
