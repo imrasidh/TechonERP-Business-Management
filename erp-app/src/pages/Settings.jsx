@@ -638,10 +638,11 @@ var Settings = function (props) {
   };
 
   var embWiz = props.embeddedWizard === "shop_limited" || props.embeddedWizard === "langcurrency";
+  var denseWiz = !!props.embeddedWizard;
   var langWizShell = wizardUi && props.embeddedWizard === "langcurrency";
-  var wizPanelStyle = { background: "#fff", borderRadius: 16, border: "1px solid #e8ecf4", boxShadow: "0 4px 24px rgba(15,23,42,0.06)", padding: "20px 22px", marginBottom: 16 };
+  var wizPanelStyle = { background: "#fff", borderRadius: 12, border: "1px solid #e8ecf4", boxShadow: "0 2px 14px rgba(15,23,42,0.05)", padding: "14px 16px", marginBottom: 10 };
   var wizHeading = function (t) {
-    return <div style={{ fontSize: 11, fontWeight: 900, color: "#64748b", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>{t}</div>;
+    return <div style={{ fontSize: 10, fontWeight: 600, color: "#64748b", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>{t}</div>;
   };
   var runWizardCoreIdentityStep = function (afterValid) {
     if (!embWiz) {
@@ -693,24 +694,24 @@ var Settings = function (props) {
             <React.Fragment>
               <div style={wizPanelStyle}>
                 {wizHeading("Basic information")}
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {(function () {
                     var bp = getBusinessProfile();
                     return (
-                      <div style={{ display: "flex", alignItems: "center", gap: 12, background: "linear-gradient(135deg," + bp.color + "14," + bp.color + "08)", border: "1.5px solid " + bp.color + "40", borderRadius: 12, padding: "12px 16px" }}>
-                        <span style={{ fontSize: 24 }}>{bp.emoji}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, background: "linear-gradient(135deg," + bp.color + "14," + bp.color + "08)", border: "1.5px solid " + bp.color + "40", borderRadius: 10, padding: "8px 12px" }}>
+                        <span style={{ fontSize: 20 }}>{bp.emoji}</span>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Business Type</div>
-                          <div style={{ fontSize: 14, fontWeight: 800, color: bp.color }}>{bp.name}</div>
-                          <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{bp.units.length} units · {bp.categories.length} categories{bp.modules.repairs ? " · Repairs enabled" : ""}</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: bp.color }}>{bp.name}</div>
+                          <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{bp.units.length} units · {bp.categories.length} categories{bp.modules.repairs ? " · Repairs enabled" : ""}</div>
                         </div>
-                        <div style={{ fontSize: 10, background: bp.color + "20", color: bp.color, borderRadius: 6, padding: "4px 10px", fontWeight: 800, letterSpacing: "0.04em" }}>FIXED</div>
+                        <div style={{ fontSize: 9, background: bp.color + "20", color: bp.color, borderRadius: 6, padding: "3px 8px", fontWeight: 600, letterSpacing: "0.04em" }}>FIXED</div>
                       </div>
                     );
                   })()}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <div>
-                      <Input id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
+                      <Input compact={denseWiz} id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
                       {embWiz && coreStartupErr.shopName && <div id="tc-core-hint-shopName" role="status" aria-live="polite" style={{ fontSize: 11, color: "#e03151", fontWeight: 600, marginTop: 2, transition: "opacity .15s ease" }}>Required</div>}
                     </div>
                     <div />
@@ -719,36 +720,36 @@ var Settings = function (props) {
               </div>
               <div style={wizPanelStyle}>
                 {wizHeading("Contact information")}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                   <div>
-                    <Input id="tc-core-phone" error={embWiz && coreStartupErr.phone} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Primary Phone" value={f.phone || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} placeholder="+94 77 123 4567" />
+                    <Input compact={denseWiz} id="tc-core-phone" error={embWiz && coreStartupErr.phone} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Primary Phone" value={f.phone || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} placeholder="+94 77 123 4567" />
                   </div>
-                  <Input label="Second Phone" value={f.phone2 || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone2: e.target.value }); }); }} placeholder="+94 11 234 5678" />
-                  <Input label="WhatsApp Number" value={f.whatsapp || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { whatsapp: e.target.value }); }); }} placeholder="+94 77 123 4567" />
+                  <Input compact={denseWiz} label="Second Phone" value={f.phone2 || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone2: e.target.value }); }); }} placeholder="+94 11 234 5678" />
+                  <Input compact={denseWiz} label="WhatsApp Number" value={f.whatsapp || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { whatsapp: e.target.value }); }); }} placeholder="+94 77 123 4567" />
                 </div>
               </div>
               <div style={wizPanelStyle}>
                 {wizHeading("Online information")}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <Input label="Email Address" value={f.email || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { email: e.target.value }); }); }} placeholder="info@techon.lk" />
-                  <Input label="Website" value={f.website || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { website: e.target.value }); }); }} placeholder="www.techon.lk" />
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <Input compact={denseWiz} label="Email Address" value={f.email || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { email: e.target.value }); }); }} placeholder="info@techon.lk" />
+                  <Input compact={denseWiz} label="Website" value={f.website || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { website: e.target.value }); }); }} placeholder="www.techon.lk" />
                 </div>
               </div>
-              <div style={Object.assign({}, wizPanelStyle, { marginBottom: 8 })}>
+              <div style={Object.assign({}, wizPanelStyle, { marginBottom: 6 })}>
                 {wizHeading("Address & invoice footer")}
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div>
-                    <Input id="tc-core-address" error={embWiz && coreStartupErr.address} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Shop Address" value={f.address || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} />
+                    <Input compact={denseWiz} id="tc-core-address" error={embWiz && coreStartupErr.address} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Shop Address" value={f.address || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} />
                     {embWiz && (coreStartupErr.phone || coreStartupErr.address) && <div id="tc-core-hint-contact" role="status" aria-live="polite" style={{ fontSize: 11, color: "#e03151", fontWeight: 600, marginTop: 2, transition: "opacity .15s ease" }}>Enter at least one</div>}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <Input label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
-                    <Input label="Invoice Footer Message" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <Input compact={denseWiz} label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
+                    <Input compact={denseWiz} label="Invoice Footer Message" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
                   </div>
                 </div>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", paddingTop: 8, borderTop: "1px solid #e8ecf4", marginTop: 4 }}>
-                <button type="button" onClick={function () { if (onWizardBack) onWizardBack(); }} style={{ padding: "12px 22px", borderRadius: 12, border: "1.5px solid #e2e8f0", background: "#fff", fontSize: 14, fontWeight: 800, color: "#475569", cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 6, borderTop: "1px solid #e8ecf4", marginTop: 2 }}>
+                <button type="button" onClick={function () { if (onWizardBack) onWizardBack(); }} style={{ padding: "8px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "#fff", fontSize: 13, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
                 <Btn col="cyan" onClick={function () { runWizardCoreIdentityStep(function () { save({ silent: true }); if (props.onWizardNext) props.onWizardNext(); }); }}>Continue →</Btn>
               </div>
             </React.Fragment>
@@ -773,27 +774,27 @@ var Settings = function (props) {
               })()}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <div>
-                  <Input id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
+                  <Input compact={denseWiz} id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
                   {embWiz && coreStartupErr.shopName && <div id="tc-core-hint-shopName" role="status" aria-live="polite" style={{ fontSize: 11, color: "#e03151", fontWeight: 600, marginTop: 2, transition: "opacity .15s ease" }}>Required</div>}
                 </div>
                 <div>
-                  <Input id="tc-core-phone" error={embWiz && coreStartupErr.phone} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Primary Phone" value={f.phone || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} placeholder="+94 77 123 4567" />
+                  <Input compact={denseWiz} id="tc-core-phone" error={embWiz && coreStartupErr.phone} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Primary Phone" value={f.phone || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} placeholder="+94 77 123 4567" />
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input label="Second Phone" value={f.phone2 || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone2: e.target.value }); }); }} placeholder="+94 11 234 5678" />
-                <Input label="WhatsApp Number" value={f.whatsapp || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { whatsapp: e.target.value }); }); }} placeholder="+94 77 123 4567" />
+                <Input compact={denseWiz} label="Second Phone" value={f.phone2 || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone2: e.target.value }); }); }} placeholder="+94 11 234 5678" />
+                <Input compact={denseWiz} label="WhatsApp Number" value={f.whatsapp || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { whatsapp: e.target.value }); }); }} placeholder="+94 77 123 4567" />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input label="Email Address" value={f.email || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { email: e.target.value }); }); }} placeholder="info@techon.lk" />
-                <Input label="Website" value={f.website || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { website: e.target.value }); }); }} placeholder="www.techon.lk" />
+                <Input compact={denseWiz} label="Email Address" value={f.email || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { email: e.target.value }); }); }} placeholder="info@techon.lk" />
+                <Input compact={denseWiz} label="Website" value={f.website || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { website: e.target.value }); }); }} placeholder="www.techon.lk" />
               </div>
               <div>
-                <Input id="tc-core-address" error={embWiz && coreStartupErr.address} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Shop Address" value={f.address || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} />
+                <Input compact={denseWiz} id="tc-core-address" error={embWiz && coreStartupErr.address} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Shop Address" value={f.address || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} />
                 {embWiz && (coreStartupErr.phone || coreStartupErr.address) && <div id="tc-core-hint-contact" role="status" aria-live="polite" style={{ fontSize: 11, color: "#e03151", fontWeight: 600, marginTop: 2, transition: "opacity .15s ease" }}>Enter at least one</div>}
               </div>
-              <Input label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
-              <Input label="Invoice Footer Message" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
+              <Input compact={denseWiz} label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
+              <Input compact={denseWiz} label="Invoice Footer Message" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
               <div style={{ marginTop: 4 }}>
                 {props.embeddedWizard === "shop_limited" ? (
                   <Btn col="cyan" onClick={function () { runWizardCoreIdentityStep(function () { save({ silent: true }); if (props.onWizardNext) props.onWizardNext(); }); }}>Save &amp; Continue</Btn>
@@ -813,7 +814,7 @@ var Settings = function (props) {
                   <div style={{ background: C.accentSoft, borderRadius: 9, padding: "10px 14px", fontSize: 12, color: C.accent }}>
                     Set a &quot;Books Closed&quot; date. Any edit to records dated before this date will show a warning to protect historical data.
                   </div>
-                  <Input label="Books Closed Date" type="date" value={f.booksClosedDate || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { booksClosedDate: e.target.value }); }); }} />
+                  <Input compact={denseWiz} label="Books Closed Date" type="date" value={f.booksClosedDate || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { booksClosedDate: e.target.value }); }); }} />
                   {f.booksClosedDate && <div style={{ fontSize: 11, color: C.muted }}>⚠ Edits to records before <strong>{fmtDate(f.booksClosedDate)}</strong> will require confirmation.</div>}
                   {f.booksClosedDate && <button onClick={function () { setF(function (x) { return Object.assign({}, x, { booksClosedDate: "" }); }); }} style={{ background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", textAlign: "left", fontWeight: 600 }}>✕ Clear date</button>}
                 </div>
@@ -992,7 +993,7 @@ var Settings = function (props) {
 
       {stab === "langcurrency" && (
         <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 0 : 14 }}>
-          <Card wizardChrome={langWizShell} pad={langWizShell ? 22 : 20}>
+          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20}>
             {langWizShell ? (
               <CardTitle variant="wizard" sub="Choose your country and currency—they stay aligned for symbols and regional options. For Euro (€), pick the country that matches your business (for example Germany, France, or Italy).">
                 Country &amp; currency
@@ -1002,9 +1003,9 @@ var Settings = function (props) {
                 🌍 1. Country &amp; currency
               </CardTitle>
             )}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, alignItems: "end" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: langWizShell ? 8 : 12, alignItems: "end" }}>
               <div ref={countryPickerWrapRef} style={{ position: "relative", zIndex: countrySearchOpen ? 50 : 1 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Country</div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Country</div>
                 <input
                   type="text"
                   placeholder="Search curated countries…"
@@ -1019,7 +1020,7 @@ var Settings = function (props) {
                   }}
                   autoComplete="off"
                   spellCheck={false}
-                  style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", background: "#fff", color: C.text }}
+                  style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: langWizShell ? "7px 10px" : "9px 12px", fontSize: langWizShell ? 12 : 13, outline: "none", background: "#fff", color: C.text }}
                 />
                 {countrySearchOpen && (
                   <div
@@ -1107,7 +1108,7 @@ var Settings = function (props) {
                 )}
               </div>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Currency</div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Currency</div>
                 <select
                   value={currencySelectValue}
                   onChange={function (e) {
@@ -1127,7 +1128,7 @@ var Settings = function (props) {
                       });
                     });
                   }}
-                  style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
+                  style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: langWizShell ? "7px 10px" : "9px 12px", fontSize: langWizShell ? 12 : 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
                 >
                   {APP_CURRENCY_OPTIONS.map(function (opt) {
                     return <option key={opt.value} value={opt.value}>{opt.label}</option>;
@@ -1135,18 +1136,18 @@ var Settings = function (props) {
                 </select>
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12, alignItems: "stretch" }}>
-              <div style={{ padding: "10px 14px", background: C.accentSoft, borderRadius: 8, border: "1.5px solid " + C.border }}>
-                <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Live amount preview</div>
-                <div style={{ fontSize: 18, fontWeight: 800, color: C.accent }}>{currencySelectValue + " " + fmtNum(1234567)}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: langWizShell ? 8 : 12, marginTop: langWizShell ? 8 : 12, alignItems: "stretch" }}>
+              <div style={{ padding: langWizShell ? "8px 10px" : "10px 14px", background: C.accentSoft, borderRadius: 8, border: "1.5px solid " + C.border }}>
+                <div style={{ fontSize: 10, color: C.muted, fontWeight: 600, textTransform: "uppercase", marginBottom: 3 }}>Live amount preview</div>
+                <div style={{ fontSize: langWizShell ? 15 : 18, fontWeight: 700, color: C.accent }}>{currencySelectValue + " " + fmtNum(1234567)}</div>
               </div>
-              <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45, padding: "8px 0" }}>
+              <div style={{ fontSize: langWizShell ? 11 : 12, color: C.muted, lineHeight: 1.4, padding: langWizShell ? "4px 0" : "8px 0" }}>
                 Only supported country–currency pairs are listed. Picking a currency sets the matching country; picking a country sets its currency.
               </div>
             </div>
           </Card>
 
-          <Card wizardChrome={langWizShell} pad={langWizShell ? 22 : 20}>
+          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20}>
             {langWizShell ? (
               <CardTitle variant="wizard" sub="Default is English. Suggested languages follow your country; you can change them anytime.">
                 Invoice language
@@ -1154,9 +1155,9 @@ var Settings = function (props) {
             ) : (
               <CardTitle sub="Default is English. Suggested languages are based on your selected country. You can still add or remove languages anytime. Custom languages you add are kept when you change country or currency.">🌐 2. Invoice languages</CardTitle>
             )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 10 : 16 }}>
               <div style={{ maxWidth: 420 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Default print language</div>
+                <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Default print language</div>
                 <select
                   value={f.defaultInvoiceLang || "en"}
                   onChange={function (e) {
@@ -1170,7 +1171,7 @@ var Settings = function (props) {
                       });
                     });
                   }}
-                  style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
+                  style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: langWizShell ? "7px 10px" : "9px 12px", fontSize: langWizShell ? 12 : 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
                 >
                   {INVOICE_LANG_KEYS.map(function (k) {
                     return <option key={k} value={k}>{INVOICE_LANG_NAMES[k] || k}</option>;
@@ -1184,9 +1185,9 @@ var Settings = function (props) {
                 var cust = f.customInvoiceLangs || [];
                 var suggestedForUi = sugg.filter(function (k) { return k !== def && cust.indexOf(k) < 0; });
                 return (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 8 : 14 }}>
                     <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>A) Suggested for this country</div>
+                      <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>A) Suggested for this country</div>
                       {!f.shopCountry ? (
                         <div style={{ fontSize: 12, color: C.muted }}>Select a country to see suggested languages (e.g. Sri Lanka → Sinhala, Tamil). You can still add any language below.</div>
                       ) : suggestedForUi.length === 0 ? (
@@ -1222,8 +1223,8 @@ var Settings = function (props) {
                       )}
                     </div>
 
-                    <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>B) Add more languages</div>
+                    <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: langWizShell ? 8 : 12 }}>
+                      <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>B) Add more languages</div>
                       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
                         <span style={{ fontSize: 13, fontWeight: 600, color: C.textMd }}>+ Add language</span>
                         <select
@@ -1244,7 +1245,7 @@ var Settings = function (props) {
                             });
                             e.target.value = "";
                           }}
-                          style={{ minWidth: 220, border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
+                          style={{ minWidth: 200, border: "1.5px solid " + C.border, borderRadius: 8, padding: langWizShell ? "6px 8px" : "8px 10px", fontSize: langWizShell ? 12 : 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
                         >
                           <option value="">Choose language…</option>
                           {ALL_LANGUAGES.filter(function (L) {
@@ -1291,7 +1292,7 @@ var Settings = function (props) {
             </div>
           </Card>
 
-          <Card wizardChrome={langWizShell} pad={langWizShell ? 22 : 20}>
+          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20}>
             {langWizShell ? (
               <CardTitle variant="wizard" sub="Optional. Suggested rates match your country; you can edit or add custom taxes.">
                 Tax
@@ -1301,8 +1302,8 @@ var Settings = function (props) {
                 💰 3. Tax
               </CardTitle>
             )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 14px", borderRadius: 9, border: "1.5px solid " + (f.taxEnabled ? C.accent : C.border), background: f.taxEnabled ? C.accentSoft : "#fff" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 8 : 14 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: langWizShell ? "6px 10px" : "10px 14px", borderRadius: 8, border: "1.5px solid " + (f.taxEnabled ? C.accent : C.border), background: f.taxEnabled ? C.accentSoft : "#fff" }}>
                 <input
                   type="checkbox"
                   checked={f.taxEnabled === true}
@@ -1318,11 +1319,11 @@ var Settings = function (props) {
                   }}
                   style={{ width: 16, height: 16, accentColor: C.accent }}
                 />
-                <span style={{ fontWeight: 700, fontSize: 13, color: f.taxEnabled ? C.accent : C.textMd }}>Enable Tax</span>
+                <span style={{ fontWeight: 600, fontSize: langWizShell ? 12 : 13, color: f.taxEnabled ? C.accent : C.textMd }}>Enable Tax</span>
               </label>
 
               {f.taxEnabled && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 8 : 14 }}>
                   <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>
                     {f.shopCountry
                       ? "Taxes below match your country where we provide defaults. Change country above to refresh suggestions — your custom taxes are kept."
@@ -1551,21 +1552,21 @@ var Settings = function (props) {
           <div>
             {props.embeddedWizard === "langcurrency" ? (
               langWizShell ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", paddingTop: 8, borderTop: "1px solid #e8ecf4", marginTop: 4 }}>
-                    <button type="button" onClick={function () { if (onWizardBack) onWizardBack(); }} style={{ padding: "12px 22px", borderRadius: 12, border: "1.5px solid #e2e8f0", background: "#fff", fontSize: 14, fontWeight: 800, color: "#475569", cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
-                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, justifyContent: "flex-end", flex: "1 1 auto" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 6, borderTop: "1px solid #e8ecf4", marginTop: 2 }}>
+                    <button type="button" onClick={function () { if (onWizardBack) onWizardBack(); }} style={{ padding: "8px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "#fff", fontSize: 13, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
+                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, justifyContent: "flex-end", flex: "1 1 auto" }}>
                       <button
                         type="button"
                         onClick={function () { runWizardCoreIdentityStep(function () { save({ silent: true }); if (props.onWizardComplete) props.onWizardComplete(); }); }}
                         style={{
-                          padding: "12px 18px",
-                          borderRadius: 12,
+                          padding: "8px 14px",
+                          borderRadius: 8,
                           border: "1.5px solid #e2e8f0",
                           background: "#fff",
                           color: C.textMd,
-                          fontSize: 14,
-                          fontWeight: 800,
+                          fontSize: 13,
+                          fontWeight: 600,
                           cursor: "pointer",
                           fontFamily: "inherit",
                         }}
@@ -2118,8 +2119,8 @@ var Settings = function (props) {
                 <div style={{ background: C.accentSoft, borderRadius: 9, padding: "10px 14px", fontSize: 12, color: C.accent }}>
                   Connect your ERP to <strong>app.techon.lk</strong> — enter your dashboard login credentials below.
                 </div>
-                <Input label="Dashboard Email" type="email" value={cloudEmail} onChange={function (e) { setCloudEmail(e.target.value); setCloudMsg(null); }} placeholder="your@email.com" />
-                <Input label="Dashboard Password" type="password" value={cloudPass} onChange={function (e) { setCloudPass(e.target.value); setCloudMsg(null); }} placeholder="Your dashboard password" />
+                <Input compact={denseWiz} label="Dashboard Email" type="email" value={cloudEmail} onChange={function (e) { setCloudEmail(e.target.value); setCloudMsg(null); }} placeholder="your@email.com" />
+                <Input compact={denseWiz} label="Dashboard Password" type="password" value={cloudPass} onChange={function (e) { setCloudPass(e.target.value); setCloudMsg(null); }} placeholder="Your dashboard password" />
                 {cloudMsg && <div style={{ background: cloudMsg.type === "error" ? "#fde8ed" : "#dcfce7", color: cloudMsg.type === "error" ? C.red : C.green, borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 600 }}>{cloudMsg.text}</div>}
                 <Btn col="blue" disabled={cloudLoading || !cloudEmail || !cloudPass} onClick={function () {
                   setCloudLoading(true); setCloudMsg(null);
@@ -2275,7 +2276,7 @@ var Settings = function (props) {
               {/* Admin name */}
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Administrator Name</div>
-                <Input label="Name shown in sidebar" value={adminNameEdit} onChange={function (e) { setAdminNameEdit(e.target.value); }} placeholder="e.g. Rashid" />
+                <Input compact={denseWiz} label="Name shown in sidebar" value={adminNameEdit} onChange={function (e) { setAdminNameEdit(e.target.value); }} placeholder="e.g. Rashid" />
               </div>
 
               <div style={{ borderTop: "1px solid " + C.border }} />
@@ -2286,7 +2287,7 @@ var Settings = function (props) {
                 <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#92400e", fontWeight: 600, marginBottom: 10 }}>
                   🔐 This PIN switches from Sales Mode to Admin Mode. Use 4–6 digits.
                 </div>
-                <Input label="Admin PIN (4–6 digits)" type="password" value={f.adminPin || ""} onChange={function (e) { var v = e.target.value.replace(/\D/g, "").slice(0, 6); setF(function (x) { return Object.assign({}, x, { adminPin: v }); }); }} placeholder="Enter 4–6 digit PIN..." />
+                <Input compact={denseWiz} label="Admin PIN (4–6 digits)" type="password" value={f.adminPin || ""} onChange={function (e) { var v = e.target.value.replace(/\D/g, "").slice(0, 6); setF(function (x) { return Object.assign({}, x, { adminPin: v }); }); }} placeholder="Enter 4–6 digit PIN..." />
                 {f.adminPin && f.adminPin.length >= 4 && (
                   <div style={{ background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 8, padding: "8px 14px", fontSize: 12, color: "#065f46", fontWeight: 700, marginTop: 8 }}>
                     ✅ PIN set{f.adminPin.startsWith && f.adminPin.startsWith("sha256:") ? " (secured)" : " — " + f.adminPin.length + " digits"}
@@ -2331,9 +2332,9 @@ var Settings = function (props) {
                   {pwMsg && (
                     <div style={{ background: pwMsg.type === "error" ? C.dangerSoft : C.successSoft, color: pwMsg.type === "error" ? C.red : C.green, borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600 }}>{pwMsg.text}</div>
                   )}
-                  <Input label="Current Password" type="password" value={pwOld} onChange={function (e) { setPwOld(e.target.value); setPwMsg(null); }} placeholder="Enter current password..." />
-                  <Input label="New Password" type="password" value={pwNew} onChange={function (e) { setPwNew(e.target.value); setPwMsg(null); }} placeholder="Min 4 characters..." />
-                  <Input label="Confirm New Password" type="password" value={pwNew2} onChange={function (e) { setPwNew2(e.target.value); setPwMsg(null); }} placeholder="Repeat new password..." />
+                  <Input compact={denseWiz} label="Current Password" type="password" value={pwOld} onChange={function (e) { setPwOld(e.target.value); setPwMsg(null); }} placeholder="Enter current password..." />
+                  <Input compact={denseWiz} label="New Password" type="password" value={pwNew} onChange={function (e) { setPwNew(e.target.value); setPwMsg(null); }} placeholder="Min 4 characters..." />
+                  <Input compact={denseWiz} label="Confirm New Password" type="password" value={pwNew2} onChange={function (e) { setPwNew2(e.target.value); setPwMsg(null); }} placeholder="Repeat new password..." />
                 </div>
               </div>
 

@@ -2018,9 +2018,11 @@ var TR = function (props) {
 var Input = function (props) {
   var label = props.label;
   var error = props.error;
+  var compact = props.compact === true;
   var rest = Object.assign({}, props);
   delete rest.label;
   delete rest.error;
+  delete rest.compact;
   var origFocus = rest.onFocus; delete rest.onFocus;
   var origBlur = rest.onBlur; delete rest.onBlur;
   var origKeyDown = rest.onKeyDown; delete rest.onKeyDown;
@@ -2057,9 +2059,9 @@ var Input = function (props) {
   };
   var errBorder = error ? "#e03151" : C.border;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {label && <label style={{ fontSize: 11, fontWeight: 700, color: error ? "#e03151" : C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</label>}
-      <input {...rest} aria-invalid={error ? "true" : "false"} style={{ border: "1.5px solid " + errBorder, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s" }}
+    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 3 : 4 }}>
+      {label && <label style={{ fontSize: compact ? 10 : 11, fontWeight: 600, color: error ? "#e03151" : C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</label>}
+      <input {...rest} aria-invalid={error ? "true" : "false"} style={{ border: "1.5px solid " + errBorder, borderRadius: 8, padding: compact ? "7px 10px" : "9px 13px", fontSize: compact ? 12 : 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s" }}
         onFocus={composedFocus}
         onBlur={composedBlur}
         onKeyDown={composedKeyDown} />
@@ -2128,7 +2130,7 @@ var Card = function (props) {
   var pad = props.pad !== undefined ? props.pad : 20;
   var wiz = props.wizardChrome === true;
   var base = wiz
-    ? { background: "#fff", borderRadius: 16, border: "1px solid #e8ecf4", boxShadow: "0 4px 24px rgba(15,23,42,0.06)", marginBottom: 16 }
+    ? { background: "#fff", borderRadius: 12, border: "1px solid #e8ecf4", boxShadow: "0 2px 16px rgba(15,23,42,0.05)", marginBottom: 10 }
     : { background: "#ffffff", borderRadius: 12, border: "1.5px solid " + C.border, boxShadow: C.shadowCard };
   return (
     <div style={Object.assign({ padding: pad, transition: "box-shadow .2s" }, base)}>
@@ -2141,8 +2143,8 @@ var CardTitle = function (props) {
   if (props.variant === "wizard") {
     return (
       <div style={{ marginBottom: 0 }}>
-        <div style={{ fontSize: 11, fontWeight: 900, color: "#64748b", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: props.sub ? 8 : 14 }}>{props.children}</div>
-        {props.sub && <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14, lineHeight: 1.45, fontWeight: 500 }}>{props.sub}</div>}
+        <div style={{ fontSize: 10, fontWeight: 600, color: "#64748b", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: props.sub ? 5 : 10 }}>{props.children}</div>
+        {props.sub && <div style={{ fontSize: 11, color: "#64748b", marginBottom: 10, lineHeight: 1.4, fontWeight: 500 }}>{props.sub}</div>}
       </div>
     );
   }
@@ -3785,92 +3787,92 @@ var StartupOnboardingWizard = function (props) {
       background: "linear-gradient(160deg,#0f172a 0%,#1e1b4b 42%,#0f172a 100%)",
       fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif",
       overflowY: "auto",
-      padding: "28px 18px 48px",
+      padding: "14px 14px 28px",
       boxSizing: "border-box"
     }}>
-      <div style={{ maxWidth: 920, margin: "0 auto" }}>
+      <div style={{ maxWidth: 960, margin: "0 auto" }}>
         {phase === "admin" ? (
           <React.Fragment>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
-              <img src={TECHON_LOGO} alt="" style={{ width: 36, height: 36, borderRadius: 10 }} />
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              <img src={TECHON_LOGO} alt="" style={{ width: 32, height: 32, borderRadius: 8 }} />
               <div>
-                <div style={{ fontSize: 11, fontWeight: 800, color: "rgba(138,170,212,0.9)", letterSpacing: "0.12em", textTransform: "uppercase" }}>Setup Wizard</div>
-                <div style={{ fontSize: 16, fontWeight: 900, color: "#fff" }}>Welcome — let&apos;s finish your profile</div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(138,170,212,0.9)", letterSpacing: "0.12em", textTransform: "uppercase" }}>Setup Wizard</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Welcome — let&apos;s finish your profile</div>
               </div>
             </div>
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 800, color: "rgba(200,220,255,0.95)" }}>Step {stepOf5} of 5</span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(138,170,212,0.9)" }}>Profile data {dpProgress.done}/{dpProgress.total} · {dpProgress.pct}%</span>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 6 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(200,220,255,0.95)" }}>Step {stepOf5} of 5</span>
+                <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(138,170,212,0.9)" }}>Profile data {dpProgress.done}/{dpProgress.total} · {dpProgress.pct}%</span>
               </div>
-              <div style={{ height: 6, borderRadius: 99, background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
+              <div style={{ height: 5, borderRadius: 99, background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
                 <div style={{ height: "100%", width: dpProgress.pct + "%", borderRadius: 99, background: "linear-gradient(90deg,#6366f1,#3b82f6)", transition: "width .28s ease" }} />
               </div>
             </div>
-            <div style={{ background: "#fff", borderRadius: 16, padding: 24, border: "1px solid #e2e8f0", boxShadow: "0 12px 40px rgba(0,0,0,0.15)" }}>
-              <div style={{ fontSize: 18, fontWeight: 900, color: "#0d1b3e", marginBottom: 8 }}>Administrator</div>
-              <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>This name appears in the sidebar. You can change it later in Settings.</div>
+            <div style={{ background: "#fff", borderRadius: 12, padding: 16, border: "1px solid #e2e8f0", boxShadow: "0 8px 28px rgba(0,0,0,0.12)" }}>
+              <div style={{ fontSize: 16, fontWeight: 600, color: "#0d1b3e", marginBottom: 6 }}>Administrator</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>This name appears in the sidebar. You can change it later in Settings.</div>
               <Input label="Your name" value={adminName} onChange={function (e) { setAdminName(e.target.value); }} placeholder="e.g. Rashid" />
-              <div style={{ marginTop: 16 }}><Btn col="cyan" onClick={goAdmin}>Continue</Btn></div>
+              <div style={{ marginTop: 12 }}><Btn col="cyan" onClick={goAdmin}>Continue</Btn></div>
             </div>
           </React.Fragment>
         ) : (
           <React.Fragment>
             <div style={{
               background: "linear-gradient(135deg,#1e293b 0%,#312e81 55%,#1e1b4b 100%)",
-              borderRadius: "16px 16px 0 0",
-              padding: "18px 22px 16px",
+              borderRadius: "12px 12px 0 0",
+              padding: "12px 16px 10px",
               border: "1px solid rgba(255,255,255,0.08)",
               borderBottom: "none",
-              boxShadow: "0 4px 24px rgba(0,0,0,0.2)",
+              boxShadow: "0 4px 20px rgba(0,0,0,0.18)",
             }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 22 }} aria-hidden>🚀</span>
-                  <span style={{ fontSize: 17, fontWeight: 900, color: "#f8fafc", letterSpacing: "-0.02em" }}>Setup Wizard</span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 18 }} aria-hidden>🚀</span>
+                  <span style={{ fontSize: 15, fontWeight: 600, color: "#f8fafc", letterSpacing: "-0.02em" }}>Setup Wizard</span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "rgba(226,232,240,0.95)" }}>Step {stepOf5} of 5</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(226,232,240,0.95)" }}>Step {stepOf5} of 5</span>
                   <div style={{ display: "flex", gap: 4 }}>
                     <button type="button" onClick={function () { if (canWizardBack) goWizardBack(); }} disabled={!canWizardBack}
                       style={{
-                        width: 34, height: 34, borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: canWizardBack ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)",
-                        color: canWizardBack ? "#e2e8f0" : "rgba(148,163,184,0.5)", cursor: canWizardBack ? "pointer" : "default", fontSize: 15, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
+                        width: 30, height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.15)", background: canWizardBack ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)",
+                        color: canWizardBack ? "#e2e8f0" : "rgba(148,163,184,0.5)", cursor: canWizardBack ? "pointer" : "default", fontSize: 14, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
                       }} title="Back">‹</button>
                     <button type="button" disabled style={{
-                      width: 34, height: 34, borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)",
-                      color: "rgba(148,163,184,0.45)", cursor: "default", fontSize: 15, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
+                      width: 30, height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)",
+                      color: "rgba(148,163,184,0.45)", cursor: "default", fontSize: 14, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
                     }} title="Next step">›</button>
                   </div>
                 </div>
               </div>
-              <div style={{ marginTop: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 6 }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(148,163,184,0.95)" }}>Profile setup</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(165,180,252,0.95)" }}>{dpProgress.done}/{dpProgress.total} · {dpProgress.pct}%</span>
+              <div style={{ marginTop: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(148,163,184,0.95)" }}>Profile setup</span>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(165,180,252,0.95)" }}>{dpProgress.done}/{dpProgress.total} · {dpProgress.pct}%</span>
                 </div>
-                <div style={{ height: 8, borderRadius: 99, background: "rgba(255,255,255,0.12)", overflow: "hidden" }}>
+                <div style={{ height: 6, borderRadius: 99, background: "rgba(255,255,255,0.12)", overflow: "hidden" }}>
                   <div style={{ height: "100%", width: dpProgress.pct + "%", borderRadius: 99, background: "linear-gradient(90deg,#818cf8,#38bdf8)", transition: "width .35s cubic-bezier(.4,0,.2,1)" }} />
                 </div>
               </div>
             </div>
             <div style={{
               background: "#fafbfc",
-              borderRadius: "0 0 16px 16px",
+              borderRadius: "0 0 12px 12px",
               border: "1px solid #e2e8f0",
               borderTop: "1px solid #e8ecf4",
-              boxShadow: "0 24px 48px rgba(15,23,42,0.12)",
+              boxShadow: "0 16px 36px rgba(15,23,42,0.1)",
               overflow: "hidden",
             }}>
-              <div style={{ padding: "28px 28px 8px", background: "#fff" }}>
-                <div style={{ fontSize: 24, fontWeight: 900, color: "#0f172a", letterSpacing: "-0.03em", lineHeight: 1.25, textAlign: "center" }}>
+              <div style={{ padding: "14px 18px 6px", background: "#fff" }}>
+                <div style={{ fontSize: 18, fontWeight: 600, color: "#0f172a", letterSpacing: "-0.02em", lineHeight: 1.3, textAlign: "center" }}>
                   {wizTitles[phase] ? wizTitles[phase].title : ""}
                 </div>
-                <div style={{ fontSize: 14, color: "#64748b", marginTop: 10, fontWeight: 500, lineHeight: 1.5, textAlign: "center", maxWidth: 560, marginLeft: "auto", marginRight: "auto" }}>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 6, fontWeight: 500, lineHeight: 1.45, textAlign: "center", maxWidth: 520, marginLeft: "auto", marginRight: "auto" }}>
                   {wizTitles[phase] ? wizTitles[phase].sub : ""}
                 </div>
               </div>
-              <div style={{ padding: "8px 24px 32px", background: "#fff" }}>
+              <div style={{ padding: "6px 16px 20px", background: "#fff" }}>
                 {phase === "industry" && (
                   <BusinessTypeSelector embedInWizard={true} onBack={goWizardBack} onSelect={function (bt) { setBusinessType(bt); setPhase("shop"); }} />
                 )}
@@ -3977,8 +3979,8 @@ var BusinessTypeSelector = function (props) {
   if (embed) {
     return (
       <div style={{ fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif" }}>
-        <div style={{ position: "relative", marginBottom: 22 }}>
-          <span style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", fontSize: 17, opacity: 0.4, pointerEvents: "none" }} aria-hidden>🔍</span>
+        <div style={{ position: "relative", marginBottom: 12 }}>
+          <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4, pointerEvents: "none" }} aria-hidden>🔍</span>
           <input
             autoFocus
             type="text"
@@ -3986,9 +3988,9 @@ var BusinessTypeSelector = function (props) {
             value={search}
             onChange={function (e) { setSearch(e.target.value); setSelected(null); }}
             style={{
-              width: "100%", boxSizing: "border-box", padding: "15px 46px 15px 48px",
+              width: "100%", boxSizing: "border-box", padding: "8px 40px 8px 40px",
               background: "#f8fafc", border: "1.5px solid #e2e8f0", borderRadius: 999,
-              fontSize: 15, color: "#0f172a", outline: "none", fontWeight: 500,
+              fontSize: 13, color: "#0f172a", outline: "none", fontWeight: 500,
               boxShadow: "0 1px 2px rgba(15,23,42,0.04)",
             }}
             onFocus={function (e) { e.target.style.borderColor = "#6366f1"; e.target.style.boxShadow = "0 0 0 3px rgba(99,102,241,0.2)"; }}
@@ -3999,11 +4001,11 @@ var BusinessTypeSelector = function (props) {
           ) : null}
         </div>
         {filtered.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "36px 12px", color: LP.muted, fontSize: 14 }}>
+          <div style={{ textAlign: "center", padding: "20px 12px", color: LP.muted, fontSize: 13 }}>
             No business type matched &quot;{search}&quot;. Try another keyword or choose <strong style={{ color: LP.text }}>General Retail &amp; Services</strong>.
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
             {filtered.map(function (key) {
               var p = BUSINESS_PROFILES[key];
               var isSelected = selected === key;
@@ -4024,8 +4026,8 @@ var BusinessTypeSelector = function (props) {
                     position: "relative",
                     background: isSelected ? "#eff6ff" : "#ffffff",
                     border: isSelected ? "2px solid #3b82f6" : "1px solid " + (isHov ? "#cbd5e1" : "#e8ecf4"),
-                    borderRadius: 16,
-                    padding: "18px 18px 0",
+                    borderRadius: 12,
+                    padding: "12px 12px 0",
                     cursor: "pointer",
                     transition: "box-shadow .2s, transform .18s, border-color .18s",
                     boxShadow: isSelected ? "0 10px 32px rgba(59,130,246,0.18)" : isHov ? "0 6px 20px rgba(15,23,42,0.08)" : "0 2px 12px rgba(15,23,42,0.06)",
@@ -4034,22 +4036,22 @@ var BusinessTypeSelector = function (props) {
                   }}
                 >
                   {isSelected ? (
-                    <div style={{ position: "absolute", top: 12, right: 12, fontSize: 10, fontWeight: 900, color: "#fff", background: "linear-gradient(135deg,#3b82f6,#2563eb)", padding: "4px 10px", borderRadius: 8, letterSpacing: "0.04em" }}>SELECTED</div>
+                    <div style={{ position: "absolute", top: 8, right: 8, fontSize: 9, fontWeight: 700, color: "#fff", background: "linear-gradient(135deg,#3b82f6,#2563eb)", padding: "3px 8px", borderRadius: 6, letterSpacing: "0.04em" }}>SELECTED</div>
                   ) : null}
-                  <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-                    <div style={{ fontSize: 36, lineHeight: 1, flexShrink: 0 }}>{p.emoji}</div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <div style={{ fontSize: 28, lineHeight: 1, flexShrink: 0 }}>{p.emoji}</div>
                     <div style={{ flex: 1, minWidth: 0, paddingRight: isSelected ? 72 : 0 }}>
-                      <div style={{ fontSize: 16, fontWeight: 900, color: "#0f172a", letterSpacing: "-0.02em", marginBottom: 6 }}>{p.name}</div>
-                      <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5, fontWeight: 500 }}>{covShort}</div>
-                      <div style={{ fontSize: 12, color: "#047857", fontWeight: 700, marginTop: 12, display: "flex", alignItems: "flex-start", gap: 6, lineHeight: 1.45 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#0f172a", letterSpacing: "-0.02em", marginBottom: 4 }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.45, fontWeight: 500 }}>{covShort}</div>
+                      <div style={{ fontSize: 11, color: "#047857", fontWeight: 600, marginTop: 8, display: "flex", alignItems: "flex-start", gap: 5, lineHeight: 1.4 }}>
                         <span aria-hidden style={{ flexShrink: 0 }}>✔</span>
                         <span>What&apos;s included: {whatsIncludedLine(p)}</span>
                       </div>
                     </div>
                   </div>
                   {isEx ? (
-                    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #e8edf4", animation: "fadeIn .2s ease" }}>
-                      <div style={{ fontSize: 10, fontWeight: 900, color: "#64748b", letterSpacing: "0.12em", marginBottom: 8 }}>MODULES</div>
+                    <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e8edf4", animation: "fadeIn .2s ease" }}>
+                      <div style={{ fontSize: 9, fontWeight: 700, color: "#64748b", letterSpacing: "0.12em", marginBottom: 6 }}>MODULES</div>
                       <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#334155", lineHeight: 1.65 }}>
                         {p.modules.repairs ? <li>Repair &amp; service tickets</li> : null}
                         <li>Barcode &amp; product labels</li>
@@ -4066,10 +4068,10 @@ var BusinessTypeSelector = function (props) {
                     type="button"
                     onClick={function (e) { e.stopPropagation(); setExpandKey(isEx ? null : key); }}
                     style={{
-                      width: "calc(100% + 36px)", marginLeft: -18, marginRight: -18, marginTop: 14,
-                      padding: "12px 16px", border: "none", borderTop: "1px solid #eef2f7",
+                      width: "calc(100% + 24px)", marginLeft: -12, marginRight: -12, marginTop: 10,
+                      padding: "8px 12px", border: "none", borderTop: "1px solid #eef2f7",
                       background: "linear-gradient(180deg,#fafbfc 0%,#f1f5f9 100%)",
-                      cursor: "pointer", fontSize: 13, fontWeight: 800, color: "#2563eb",
+                      cursor: "pointer", fontSize: 12, fontWeight: 600, color: "#2563eb",
                       borderRadius: 0,
                       fontFamily: "inherit",
                     }}
@@ -4081,13 +4083,13 @@ var BusinessTypeSelector = function (props) {
             })}
           </div>
         )}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, marginTop: 28, paddingTop: 22, borderTop: "1px solid #e8ecf4", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 4, paddingTop: 12, borderTop: "1px solid #e8ecf4", flexWrap: "wrap" }}>
           <button
             type="button"
             onClick={function () { if (onBack) onBack(); }}
             style={{
-              padding: "12px 22px", borderRadius: 12, border: "1.5px solid #e2e8f0", background: "#fff",
-              fontSize: 14, fontWeight: 800, color: "#475569", cursor: "pointer", fontFamily: "inherit",
+              padding: "8px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "#fff",
+              fontSize: 14, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: "inherit",
             }}
           >
             ← Back
@@ -4097,9 +4099,9 @@ var BusinessTypeSelector = function (props) {
             onClick={handleConfirm}
             disabled={!selected || confirming}
             style={{
-              padding: "12px 28px", borderRadius: 12, border: "none",
+              padding: "8px 20px", borderRadius: 8, border: "none",
               background: profile ? "linear-gradient(135deg," + profile.color + "," + profile.color + "dd)" : "#cbd5e1",
-              color: "#fff", fontSize: 14, fontWeight: 800, cursor: !selected || confirming ? "not-allowed" : "pointer",
+              color: "#fff", fontSize: 14, fontWeight: 600, cursor: !selected || confirming ? "not-allowed" : "pointer",
               opacity: !selected ? 0.55 : confirming ? 0.75 : 1,
               boxShadow: profile ? "0 6px 20px rgba(0,0,0,0.12)" : "none",
               fontFamily: "inherit",

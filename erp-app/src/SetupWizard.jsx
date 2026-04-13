@@ -16,6 +16,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
+import packageJson from '../package.json';
 
 /* ─── Design tokens ─────────────────────────────────────────────── */
 const C = {
@@ -41,8 +42,8 @@ const C = {
 function Card({ children, style }) {
   return (
     <div style={{
-      background: C.card, borderRadius: 16, border: '1.5px solid ' + C.border,
-      boxShadow: C.shadow, padding: '28px 30px',
+      background: C.card, borderRadius: 12, border: '1.5px solid ' + C.border,
+      boxShadow: C.shadow, padding: '16px 18px',
       ...style
     }}>
       {children}
@@ -73,8 +74,8 @@ function PrimaryBtn({ children, onClick, disabled, loading, col = 'blue', style 
   const c = colors[col] || colors.blue;
   return (
     <button className="tc-btn" onClick={onClick} disabled={disabled || loading} style={{
-      background: c.bg, color: c.txt, border: 'none', borderRadius: 10,
-      padding: '12px 24px', fontSize: 14, fontWeight: 700, cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
+      background: c.bg, color: c.txt, border: 'none', borderRadius: 8,
+      padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
       display: 'inline-flex', alignItems: 'center', gap: 8,
       opacity: (disabled || loading) ? 0.55 : 1,
       boxShadow: (disabled || loading) ? 'none' : c.shadow,
@@ -107,9 +108,9 @@ function StatusRow({ icon, text, status }) {
   };
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 10,
-      padding: '7px 0', borderBottom: '1px solid ' + C.border,
-      fontSize: 13, color: status === 'error' ? C.red : status === 'done' ? C.green : C.textMd,
+      display: 'flex', alignItems: 'center', gap: 8,
+      padding: '5px 0', borderBottom: '1px solid ' + C.border,
+      fontSize: 12, color: status === 'error' ? C.red : status === 'done' ? C.green : C.textMd,
     }}>
       <span style={{ width: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
         {iconMap[status] || iconMap.pending}
@@ -121,12 +122,12 @@ function StatusRow({ icon, text, status }) {
 
 function ProgressBar({ steps, current }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 28 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 14 }}>
       {steps.map((s, i) => (
         <React.Fragment key={s}>
           <div style={{
-            width: 28, height: 28, borderRadius: '50%', display: 'flex', alignItems: 'center',
-            justifyContent: 'center', fontSize: 12, fontWeight: 800,
+            width: 24, height: 24, borderRadius: '50%', display: 'flex', alignItems: 'center',
+            justifyContent: 'center', fontSize: 11, fontWeight: 700,
             background: i < current ? C.blue : i === current ? C.blue : '#e8eeff',
             color: i <= current ? '#fff' : C.muted,
             boxShadow: i === current ? '0 0 0 4px rgba(41,121,255,0.18)' : 'none',
@@ -134,7 +135,7 @@ function ProgressBar({ steps, current }) {
           }}>
             {i < current ? '✓' : i + 1}
           </div>
-          <div style={{ fontSize: 11, fontWeight: i === current ? 700 : 500, color: i === current ? '#7db8ff' : 'rgba(255,255,255,0.4)', whiteSpace: 'nowrap' }}>{s}</div>
+          <div style={{ fontSize: 10, fontWeight: i === current ? 600 : 500, color: i === current ? '#7db8ff' : 'rgba(255,255,255,0.4)', whiteSpace: 'nowrap' }}>{s}</div>
           {i < steps.length - 1 && (
             <div style={{ flex: 1, height: 2, background: i < current ? C.blue : 'rgba(255,255,255,0.15)', borderRadius: 2, minWidth: 12, transition: 'background .25s' }} />
           )}
@@ -183,15 +184,15 @@ function ModeSelector({ onSelect }) {
 
   return (
     <div>
-      <div style={{ textAlign: 'center', marginBottom: 28 }}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>👋</div>
-        <div style={{ fontSize: 22, fontWeight: 900, color: C.text, marginBottom: 6 }}>Welcome to Techon ERP</div>
-        <div style={{ fontSize: 14, color: C.muted, maxWidth: 440, margin: '0 auto', lineHeight: 1.6 }}>
+      <div style={{ textAlign: 'center', marginBottom: 14 }}>
+        <div style={{ fontSize: 28, marginBottom: 6 }}>👋</div>
+        <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 4 }}>Welcome to Techon ERP</div>
+        <div style={{ fontSize: 13, color: C.muted, maxWidth: 440, margin: '0 auto', lineHeight: 1.45 }}>
           Let's set up your system. Choose how you'll use this computer.
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div className="tc-wizard-modes-grid">
         {modes.map(m => {
           const isHov = hovered === m.id;
           return (
@@ -202,24 +203,24 @@ function ModeSelector({ onSelect }) {
               onMouseLeave={() => setHovered(null)}
               style={{
                 border: '2px solid ' + (isHov ? m.color : C.border),
-                borderRadius: 14, padding: '18px 20px', cursor: 'pointer',
+                borderRadius: 12, padding: '12px 14px', cursor: 'pointer',
                 background: isHov ? m.bg : C.card,
                 transition: 'all .18s cubic-bezier(.22,1,.36,1)',
-                display: 'flex', alignItems: 'center', gap: 16,
+                display: 'flex', alignItems: 'center', gap: 12,
                 transform: isHov ? 'translateX(3px)' : 'none',
                 boxShadow: isHov ? '0 4px 20px rgba(13,27,62,0.10)' : 'none',
               }}
             >
-              <div style={{ fontSize: 34, flexShrink: 0 }}>{m.icon}</div>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                  <span style={{ fontSize: 16, fontWeight: 800, color: C.text }}>{m.title}</span>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: m.color, background: m.bg, border: '1px solid ' + m.color, borderRadius: 20, padding: '2px 9px' }}>{m.subtitle}</span>
+              <div style={{ fontSize: 26, flexShrink: 0 }}>{m.icon}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{m.title}</span>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: m.color, background: m.bg, border: '1px solid ' + m.color, borderRadius: 16, padding: '1px 7px' }}>{m.subtitle}</span>
                 </div>
-                <div style={{ fontSize: 13, color: C.textMd, lineHeight: 1.5, marginBottom: 8 }}>{m.desc}</div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: C.textMd, lineHeight: 1.45, marginBottom: 6 }}>{m.desc}</div>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                   {m.tags.map(t => (
-                    <span key={t} style={{ fontSize: 11, color: C.muted, background: '#f0f4ff', border: '1px solid ' + C.border, borderRadius: 20, padding: '2px 9px' }}>{t}</span>
+                    <span key={t} style={{ fontSize: 10, color: C.muted, background: '#f0f4ff', border: '1px solid ' + C.border, borderRadius: 16, padding: '1px 7px' }}>{t}</span>
                   ))}
                 </div>
               </div>
@@ -387,38 +388,38 @@ function ServerSetup({ onComplete }) {
   if (phase === 'intro') {
     return (
       <div>
-        <div style={{ textAlign: 'center', marginBottom: 20 }}>
-          <div style={{ fontSize: 36, marginBottom: 8 }}>🗄️</div>
-          <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 6 }}>Server Auto Setup</div>
-          <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+        <div style={{ textAlign: 'center', marginBottom: 12 }}>
+          <div style={{ fontSize: 28, marginBottom: 4 }}>🗄️</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 4 }}>Server Auto Setup</div>
+          <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>
             This will install and configure XAMPP on your computer. It runs once and takes about 3–5 minutes.
           </div>
         </div>
 
-        <div style={{ background: C.orangeLight, border: '1.5px solid ' + C.orange, borderRadius: 12, padding: '14px 16px', marginBottom: 20 }}>
-          <div style={{ fontWeight: 800, color: C.orange, marginBottom: 6, fontSize: 14 }}>⚙️ Important Setup Step</div>
-          <div style={{ fontSize: 13, color: '#7c4a00', lineHeight: 1.6 }}>
+        <div style={{ background: C.orangeLight, border: '1.5px solid ' + C.orange, borderRadius: 10, padding: '10px 12px', marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, color: C.orange, marginBottom: 4, fontSize: 13 }}>⚙️ Important Setup Step</div>
+          <div style={{ fontSize: 12, color: '#7c4a00', lineHeight: 1.45 }}>
             • XAMPP must be installed at <strong>C:\xampp</strong> (recommended)<br />
             • <strong>Do NOT install inside Program Files</strong><br />
             • This is required only once. It takes 2–3 minutes.
           </div>
         </div>
 
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontWeight: 700, fontSize: 13, color: C.textMd, marginBottom: 10 }}>Checklist:</div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, fontSize: 12, color: C.textMd, marginBottom: 6 }}>Checklist:</div>
           {[
             { done: true,  text: 'Step 1 — Choose "Network Server" mode (done)' },
             { done: false, text: 'Step 2 — Install XAMPP (click button below if not installed)' },
             { done: false, text: 'Step 3 — Run automatic setup (everything else is handled)' },
           ].map((item, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0', fontSize: 13, color: item.done ? C.green : C.textMd }}>
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0', fontSize: 12, color: item.done ? C.green : C.textMd }}>
               <span>{item.done ? '✅' : '⬜'}</span>
               <span>{item.text}</span>
             </div>
           ))}
         </div>
 
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <PrimaryBtn col="orange" onClick={openXamppInstaller} style={{ flex: 1 }}>
             📥 Open XAMPP Installer
           </PrimaryBtn>
@@ -426,7 +427,7 @@ function ServerSetup({ onComplete }) {
             ▶ Run Automatic Setup
           </PrimaryBtn>
         </div>
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 10, textAlign: 'center' }}>
+        <div style={{ fontSize: 10, color: C.muted, marginTop: 6, textAlign: 'center' }}>
           Already have XAMPP installed? Just click "Run Automatic Setup".
         </div>
       </div>
@@ -437,33 +438,33 @@ function ServerSetup({ onComplete }) {
   if (phase === 'running' || phase === 'error') {
     return (
       <div>
-        <div style={{ textAlign: 'center', marginBottom: 18 }}>
-          <div style={{ fontSize: 30, marginBottom: 6 }}>{phase === 'error' ? '⚠️' : '⚙️'}</div>
-          <div style={{ fontSize: 18, fontWeight: 900, color: phase === 'error' ? C.red : C.text }}>
+        <div style={{ textAlign: 'center', marginBottom: 10 }}>
+          <div style={{ fontSize: 24, marginBottom: 4 }}>{phase === 'error' ? '⚠️' : '⚙️'}</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: phase === 'error' ? C.red : C.text }}>
             {phase === 'error' ? 'Setup Issue' : 'Setting Up Server...'}
           </div>
-          {phase === 'running' && <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Please wait. Do not close the app.</div>}
+          {phase === 'running' && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Please wait. Do not close the app.</div>}
         </div>
 
-        <div style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 10 }}>
           {SERVER_STEPS.map(s => (
             <StatusRow key={s.key} text={s.label} status={steps[s.key]} />
           ))}
         </div>
 
         <div ref={logRef} style={{
-          background: '#0d1b3e', borderRadius: 8, padding: '10px 12px',
-          fontFamily: 'monospace', fontSize: 11, color: '#7ed6a8',
-          height: 90, overflowY: 'auto', marginBottom: 14,
+          background: '#0d1b3e', borderRadius: 8, padding: '8px 10px',
+          fontFamily: 'monospace', fontSize: 10, color: '#7ed6a8',
+          height: 72, overflowY: 'auto', marginBottom: 10,
         }}>
           {log.map((l, i) => <div key={i}>&gt; {l}</div>)}
           {phase === 'running' && <div style={{ color: '#5ca8ff' }}>&gt; _</div>}
         </div>
 
         {phase === 'error' && (
-          <div style={{ background: C.redLight, border: '1.5px solid ' + C.red, borderRadius: 10, padding: '12px 14px', marginBottom: 14, fontSize: 13, color: C.red }}>
+          <div style={{ background: C.redLight, border: '1.5px solid ' + C.red, borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 12, color: C.red }}>
             <strong>Error:</strong> {errorMsg}
-            <div style={{ fontSize: 11, marginTop: 6, color: '#9f1239' }}>
+            <div style={{ fontSize: 10, marginTop: 4, color: '#9f1239' }}>
               Make sure XAMPP is installed at C:\xampp, then click Retry.
             </div>
           </div>
@@ -525,34 +526,36 @@ function ServerSetup({ onComplete }) {
 
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 46, marginBottom: 10 }}>🎉</div>
-      <div style={{ fontSize: 20, fontWeight: 900, color: C.green, marginBottom: 6 }}>Server Setup Complete!</div>
-      <div style={{ fontSize: 13, color: C.muted, marginBottom: 18, lineHeight: 1.6 }}>
+      <div style={{ fontSize: 32, marginBottom: 6 }}>🎉</div>
+      <div style={{ fontSize: 18, fontWeight: 600, color: C.green, marginBottom: 4 }}>Server Setup Complete!</div>
+      <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.45 }}>
         Your server is running. Use the details below on other computers.
       </div>
 
-      {/* Network URL */}
-      <div style={{ background: C.greenLight, border: '1.5px solid ' + C.green, borderRadius: 12, padding: '14px 18px', marginBottom: 12, textAlign: 'left' }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: C.green, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Network Address</div>
-        <div style={{ fontSize: 14, fontWeight: 900, color: C.text, fontFamily: 'monospace', wordBreak: 'break-all', marginBottom: 6 }}>{apiUrl}</div>
-        <button onClick={() => { navigator.clipboard.writeText(apiUrl); }} style={{ background: C.green, color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>📋 Copy</button>
-      </div>
+      <div className="tc-wizard-server-done-grid" style={{ marginBottom: 10 }}>
+        {/* Network URL */}
+        <div style={{ background: C.greenLight, border: '1.5px solid ' + C.green, borderRadius: 10, padding: '10px 12px', textAlign: 'left' }}>
+          <div style={{ fontSize: 9, fontWeight: 600, color: C.green, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 3 }}>Network Address</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.text, fontFamily: 'monospace', wordBreak: 'break-all', marginBottom: 4 }}>{apiUrl}</div>
+          <button onClick={() => { navigator.clipboard.writeText(apiUrl); }} style={{ background: C.green, color: '#fff', border: 'none', borderRadius: 6, padding: '3px 10px', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>📋 Copy</button>
+        </div>
 
-      {/* Security Key */}
-      <div style={{ background: '#fef3e2', border: '1.5px solid ' + C.orange, borderRadius: 12, padding: '14px 18px', marginBottom: 12, textAlign: 'left' }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: C.orange, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Security Key <span style={{ color: C.red }}>(required for client PCs)</span></div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: C.text, fontFamily: 'monospace', wordBreak: 'break-all', letterSpacing: '0.05em', marginBottom: 6 }}>{generatedKey}</div>
-        <button onClick={() => { navigator.clipboard.writeText(generatedKey); setKeyCopied(true); setTimeout(() => setKeyCopied(false), 2000); }}
-          style={{ background: C.orange, color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>
-          {keyCopied ? '✓ Copied!' : '📋 Copy Key'}
-        </button>
+        {/* Security Key */}
+        <div style={{ background: '#fef3e2', border: '1.5px solid ' + C.orange, borderRadius: 10, padding: '10px 12px', textAlign: 'left' }}>
+          <div style={{ fontSize: 9, fontWeight: 600, color: C.orange, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 3 }}>Security Key <span style={{ color: C.red }}>(required for client PCs)</span></div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: C.text, fontFamily: 'monospace', wordBreak: 'break-all', letterSpacing: '0.05em', marginBottom: 4 }}>{generatedKey}</div>
+          <button onClick={() => { navigator.clipboard.writeText(generatedKey); setKeyCopied(true); setTimeout(() => setKeyCopied(false), 2000); }}
+            style={{ background: C.orange, color: '#fff', border: 'none', borderRadius: 6, padding: '3px 10px', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+            {keyCopied ? '✓ Copied!' : '📋 Copy Key'}
+          </button>
+        </div>
       </div>
 
       {/* Data Migration */}
       {hasExistingData && !migrated && (
-        <div style={{ background: '#e8eeff', border: '1.5px solid ' + C.blue, borderRadius: 12, padding: '14px 18px', marginBottom: 14, textAlign: 'left' }}>
-          <div style={{ fontWeight: 800, color: C.blue, marginBottom: 6, fontSize: 13 }}>📦 Existing Data Found</div>
-          <div style={{ fontSize: 12, color: C.textMd, marginBottom: 10, lineHeight: 1.5 }}>
+        <div style={{ background: '#e8eeff', border: '1.5px solid ' + C.blue, borderRadius: 10, padding: '10px 12px', marginBottom: 10, textAlign: 'left' }}>
+          <div style={{ fontWeight: 600, color: C.blue, marginBottom: 4, fontSize: 12 }}>📦 Existing Data Found</div>
+          <div style={{ fontSize: 11, color: C.textMd, marginBottom: 8, lineHeight: 1.45 }}>
             You have existing shop data on this computer. Do you want to import it into the server?
           </div>
           <PrimaryBtn col="blue" onClick={handleMigrate} loading={migrating} style={{ fontSize: 12 }}>
@@ -561,14 +564,14 @@ function ServerSetup({ onComplete }) {
         </div>
       )}
       {migrated && (
-        <div style={{ background: C.greenLight, border: '1.5px solid ' + C.green, borderRadius: 10, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: C.green, fontWeight: 700 }}>
+        <div style={{ background: C.greenLight, border: '1.5px solid ' + C.green, borderRadius: 8, padding: '8px 10px', marginBottom: 8, fontSize: 12, color: C.green, fontWeight: 600 }}>
           ✓ Existing data imported to server successfully
         </div>
       )}
 
-      <div style={{ background: '#fff', border: '1.5px solid ' + C.border, borderRadius: 10, padding: '10px 14px', marginBottom: 16, fontSize: 12, color: C.textMd, textAlign: 'left' }}>
+      <div style={{ background: '#fff', border: '1.5px solid ' + C.border, borderRadius: 8, padding: '8px 10px', marginBottom: 10, fontSize: 11, color: C.textMd, textAlign: 'left' }}>
         <strong>On each counter computer:</strong>
-        <ol style={{ margin: '6px 0 0 14px', lineHeight: 1.9 }}>
+        <ol style={{ margin: '4px 0 0 14px', lineHeight: 1.55 }}>
           <li>Install Techon ERP → choose "Counter Computer"</li>
           <li>Enter the <strong>Network Address</strong> above</li>
           <li>Enter the <strong>Security Key</strong> above</li>
@@ -600,9 +603,10 @@ function ClientSetup({ onComplete }) {
 
   const inputStyle = (hasErr) => ({
     width: '100%', border: '1.5px solid ' + (hasErr ? C.red : status === 'ok' ? C.green : C.border),
-    borderRadius: 10, padding: '11px 14px', fontSize: 14, outline: 'none',
+    borderRadius: 8, padding: '7px 10px', fontSize: 13, lineHeight: 1.25, outline: 'none',
     fontFamily: 'inherit', color: C.text, background: '#f8faff',
     boxSizing: 'border-box', transition: 'border-color .15s',
+    minHeight: 36,
   });
 
   async function testAndSave() {
@@ -652,48 +656,50 @@ function ClientSetup({ onComplete }) {
 
   return (
     <div>
-      <div style={{ textAlign: 'center', marginBottom: 20 }}>
-        <div style={{ fontSize: 34, marginBottom: 8 }}>🖨️</div>
-        <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 6 }}>Connect to Server</div>
-        <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+      <div style={{ textAlign: 'center', marginBottom: 12 }}>
+        <div style={{ fontSize: 26, marginBottom: 4 }}>🖨️</div>
+        <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 4 }}>Connect to Server</div>
+        <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>
           Enter the Network Address and Security Key shown on your server computer.
         </div>
       </div>
 
-      {/* URL field */}
-      <div style={{ marginBottom: 14 }}>
-        <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 5 }}>
-          Network Address
-        </label>
-        <input value={url} onChange={e => { setUrl(e.target.value); setStatus(null); }}
-          placeholder="http://192.168.1.100/api/"
-          style={inputStyle(status === 'error' && !url)} />
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-          Shown on the server computer — starts with http://
+      <div className="tc-wizard-client-grid" style={{ marginBottom: 10 }}>
+        {/* URL field */}
+        <div>
+          <label style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>
+            Network Address
+          </label>
+          <input value={url} onChange={e => { setUrl(e.target.value); setStatus(null); }}
+            placeholder="http://192.168.1.100/api/"
+            style={inputStyle(status === 'error' && !url)} />
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>
+            Shown on the server computer — starts with http://
+          </div>
         </div>
-      </div>
 
-      {/* API key field */}
-      <div style={{ marginBottom: 16 }}>
-        <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 5 }}>
-          Security Key
-        </label>
-        <input value={apiKey} onChange={e => { setApiKey(e.target.value); setStatus(null); }}
-          onKeyDown={e => e.key === 'Enter' && !isConnecting && url && apiKey && testAndSave()}
-          placeholder="Paste security key from server computer"
-          style={inputStyle(status === 'error' && !apiKey)} />
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-          Found on the server computer's setup completion screen
+        {/* API key field */}
+        <div>
+          <label style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: 'uppercase', letterSpacing: '0.08em', display: 'block', marginBottom: 4 }}>
+            Security Key
+          </label>
+          <input value={apiKey} onChange={e => { setApiKey(e.target.value); setStatus(null); }}
+            onKeyDown={e => e.key === 'Enter' && !isConnecting && url && apiKey && testAndSave()}
+            placeholder="Paste security key from server computer"
+            style={inputStyle(status === 'error' && !apiKey)} />
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>
+            Found on the server computer's setup completion screen
+          </div>
         </div>
       </div>
 
       {status === 'error' && (
-        <div style={{ background: C.redLight, border: '1.5px solid ' + C.red, borderRadius: 10, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: C.red }}>
+        <div style={{ background: C.redLight, border: '1.5px solid ' + C.red, borderRadius: 8, padding: '8px 10px', marginTop: 10, marginBottom: 10, fontSize: 12, color: C.red }}>
           ⚠️ {errMsg}
         </div>
       )}
       {status === 'ok' && (
-        <div style={{ background: C.greenLight, border: '1.5px solid ' + C.green, borderRadius: 10, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: C.green, fontWeight: 700 }}>
+        <div style={{ background: C.greenLight, border: '1.5px solid ' + C.green, borderRadius: 8, padding: '8px 10px', marginTop: 10, marginBottom: 10, fontSize: 12, color: C.green, fontWeight: 600 }}>
           ✓ Connected! Starting POS terminal...
         </div>
       )}
@@ -709,6 +715,15 @@ function ClientSetup({ onComplete }) {
 export default function SetupWizard({ onComplete }) {
   const [step, setStep]   = useState('mode'); // mode | server | client
   const [mode, setMode]   = useState(null);
+  const [appVersion, setAppVersion] = useState(packageJson.version || '—');
+
+  useEffect(function () {
+    if (window.electronAPI && window.electronAPI.getAppVersion) {
+      window.electronAPI.getAppVersion().then(function (v) {
+        if (v) setAppVersion(v);
+      }).catch(function () { /* keep package.json */ });
+    }
+  }, []);
 
   function handleModeSelect(selectedMode) {
     setMode(selectedMode);
@@ -742,17 +757,41 @@ export default function SetupWizard({ onComplete }) {
       <style>{`
         @keyframes tc-spin { to { transform: rotate(360deg); } }
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800;900&display=swap');
+        .tc-wizard-modes-grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
+        }
+        @media (min-width: 768px) {
+          .tc-wizard-modes-grid { grid-template-columns: 1fr 1fr; }
+        }
+        .tc-wizard-client-grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
+        }
+        @media (min-width: 768px) {
+          .tc-wizard-client-grid { grid-template-columns: 1fr 1fr; }
+        }
+        .tc-wizard-server-done-grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
+        }
+        @media (min-width: 768px) {
+          .tc-wizard-server-done-grid { grid-template-columns: 1fr 1fr; }
+        }
       `}</style>
       <div style={{
         position: 'fixed', inset: 0, background: C.bg,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif", zIndex: 9999,
-        padding: 20,
+        padding: 16,
       }}>
-        <div style={{ width: '100%', maxWidth: 560 }}>
+        <div style={{ width: '100%', maxWidth: 720 }}>
           {/* Header */}
-          <div style={{ textAlign: 'center', marginBottom: 20 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 4 }}>
+          <div style={{ textAlign: 'center', marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 2 }}>
               Techon ERP — First Run Setup
             </div>
           </div>
@@ -783,13 +822,13 @@ export default function SetupWizard({ onComplete }) {
           {step !== 'mode' && (
             <button
               onClick={() => setStep('mode')}
-              style={{ marginTop: 14, background: 'none', border: 'none', color: C.muted, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', display: 'block', marginLeft: 'auto', marginRight: 'auto' }}>
+              style={{ marginTop: 10, background: 'none', border: 'none', color: C.muted, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', display: 'block', marginLeft: 'auto', marginRight: 'auto' }}>
               ← Back to mode selection
             </button>
           )}
 
-          <div style={{ textAlign: 'center', marginTop: 16, fontSize: 11, color: C.muted }}>
-            Techon ERP v1.3.0 — This setup runs once and can be reset from Settings.
+          <div style={{ textAlign: 'center', marginTop: 10, fontSize: 10, color: C.muted }}>
+            Techon ERP v{appVersion} — This setup runs once and can be reset from Settings.
           </div>
         </div>
       </div>
