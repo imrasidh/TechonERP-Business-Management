@@ -1,0 +1,16 @@
+# Techon ERP — Admin Panel Security
+# File: admin/.htaccess
+
+# Block direct access to config.php
+<Files "config.php">
+    Order allow,deny
+    Deny from all
+</Files>
+
+# Prevent directory listing
+Options -Indexes
+
+# Force HTTPS (uncomment if your host supports it)
+# RewriteEngine On
+# RewriteCond %{HTTPS} off
+# RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]

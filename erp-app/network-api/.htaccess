@@ -1,0 +1,7 @@
+Options -Indexes
+Header always set X-Content-Type-Options "nosniff"
+
+# Block direct access to config
+<Files "config.php">
+    Require all denied
+</Files>

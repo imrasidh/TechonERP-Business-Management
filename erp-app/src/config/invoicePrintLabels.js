@@ -1,0 +1,332 @@
+/**
+ * Labels for invoice & quotation print only (not full-app i18n).
+ * Keys fall back to English for any missing translation.
+ */
+
+export var INVOICE_LANG_KEYS = [
+  "en", "ta", "si", "id", "ar", "hi", "te", "kn", "ml", "ur", "bn",
+  "ms", "th", "fil", "vi", "zh", "ja", "ko", "ne", "dv",
+];
+
+export var INVOICE_LANG_NAMES = {
+  en: "English",
+  ta: "Tamil",
+  si: "Sinhala",
+  id: "Indonesian",
+  ar: "Arabic",
+  hi: "Hindi",
+  te: "Telugu",
+  kn: "Kannada",
+  ml: "Malayalam",
+  ur: "Urdu",
+  bn: "Bengali",
+  ms: "Malay",
+  th: "Thai",
+  fil: "Filipino",
+  vi: "Vietnamese",
+  zh: "Chinese",
+  ja: "Japanese",
+  ko: "Korean",
+  ne: "Nepali",
+  dv: "Dhivehi",
+};
+
+var BASE = {
+  invoiceTitle: "INVOICE",
+  quotationTitle: "QUOTATION",
+  dateLabel: "Date:",
+  timeLabel: "Time:",
+  cashierLabel: "Cashier:",
+  billTo: "Bill To",
+  customerLabel: "Customer:",
+  phoneLabel: "Phone:",
+  emailLabel: "Email:",
+  websiteLabel: "Web:",
+  brnLabel: "BRN:",
+  telPrefix: "Tel:",
+  item: "Item",
+  qty: "Qty",
+  price: "Price",
+  total: "TOTAL",
+  subtotal: "Subtotal",
+  discount: "Discount",
+  paid: "Paid",
+  balanceDue: "BALANCE DUE",
+  warranty: "Warranty",
+  invoiceNo: "Invoice No:",
+  dateWord: "Date",
+  timeWord: "Time",
+  cashierWord: "Cashier",
+  productDescription: "Product Description",
+  paymentMethod: "Payment Method",
+  amountReceived: "Amount Received",
+  balanceLabel: "Balance:",
+  balanceDueShort: "Balance Due:",
+  authorizedSignature: "Authorized Signature",
+  customerSignature: "Customer Signature",
+  warrantyPolicy: "Warranty Policy:",
+  walkInCustomer: "Walk-in Customer",
+  quotationNoLabel: "No:",
+  quotationDateLabel: "Date:",
+  quotationTo: "To:",
+  unitPrice: "Unit Price",
+  amount: "Amount",
+  notesTerms: "Notes / Terms:",
+  quotationFooter:
+    "⚠ This is a quotation / estimate only and is NOT a tax invoice. Prices are subject to change without notice. Valid for 7 days from the date of issue.",
+  tableIndex: "#",
+  poweredBy: "Powered by TechonERP • www.erp.techon.lk",
+  unknownProduct: "Unknown Product",
+  footerPowered: "Powered by",
+};
+
+export var INVOICE_PRINT_LABELS = {
+  en: {},
+  ta: {
+    invoiceTitle: "விலைப்பட்டியல்",
+    quotationTitle: "மதிப்பீடு",
+    dateLabel: "தேதி:",
+    timeLabel: "நேரம்:",
+    cashierLabel: "விற்பனையாளர்:",
+    billTo: "பில் செய்ய",
+    customerLabel: "வாடிக்கையாளர்:",
+    phoneLabel: "தொலைபேசி:",
+    emailLabel: "மின்னஞ்சல்:",
+    websiteLabel: "வலை:",
+    brnLabel: "BRN:",
+    telPrefix: "தொலை:",
+    item: "பொருள்",
+    qty: "அளவு",
+    price: "விலை",
+    total: "மொத்தம்",
+    subtotal: "கூட்டுத் தொகை",
+    discount: "தள்ளுபடி",
+    paid: "செலுத்தப்பட்டது",
+    balanceDue: "நிலுவைத் தொகை",
+    warranty: "உத்தரவாதம்",
+    invoiceNo: "இன்வாய்ஸ் எண்:",
+    dateWord: "தேதி",
+    timeWord: "நேரம்",
+    cashierWord: "விற்பனையாளர்",
+    productDescription: "பொருள் விவரம்",
+    paymentMethod: "கட்டண முறை",
+    amountReceived: "பெற்ற தொகை",
+    balanceLabel: "இருப்பு:",
+    balanceDueShort: "நிலுவை:",
+    authorizedSignature: "அங்கீகரிக்கப்பட்ட கையொப்பம்",
+    customerSignature: "வாடிக்கையாளர் கையொப்பம்",
+    warrantyPolicy: "உத்தரவாதக் கொள்கை:",
+    walkInCustomer: "நேரடி வாடிக்கையாளர்",
+    quotationNoLabel: "எண்:",
+    quotationDateLabel: "தேதி:",
+    quotationTo: "அனுப்ப வேண்டியவர்:",
+    unitPrice: "அலகு விலை",
+    amount: "தொகை",
+    notesTerms: "குறிப்புகள் / விதிமுறைகள்:",
+    quotationFooter:
+      "⚠ இது மதிப்பீடு மட்டுமே; வரி விலைப்பட்டியல் அல்ல. விலைகள் மாறக்கூடும். வெளியிடப்பட்ட தேதியிலிருந்து 7 நாட்களுக்கு செல்லுபடியாகும்.",
+    tableIndex: "#",
+    poweredBy: "Powered by TechonERP • www.erp.techon.lk",
+    unknownProduct: "தெரியாத பொருள்",
+    footerPowered: "இயக்குவது",
+  },
+  si: {
+    invoiceTitle: "ඉන්වොයිසිය",
+    quotationTitle: "මිල කිරීම",
+    dateLabel: "දිනය:",
+    timeLabel: "වේලාව:",
+    cashierLabel: "කැෂියර්:",
+    billTo: "බිල් කරන්නේ",
+    customerLabel: "පාරිභෝගිකයා:",
+    phoneLabel: "දුරකථනය:",
+    emailLabel: "ඊමේල්:",
+    websiteLabel: "වෙබ්:",
+    brnLabel: "BRN:",
+    telPrefix: "දුර:",
+    item: "අයිතමය",
+    qty: "ප්‍රමාණය",
+    price: "මිල",
+    total: "එකතුව",
+    subtotal: "උප එකතුව",
+    discount: "වට්ටම",
+    paid: "ගෙවූ",
+    balanceDue: "ඉතිරි මුදල",
+    warranty: "වගකීම",
+    invoiceNo: "ඉන්වොයිස් අංකය:",
+    dateWord: "දිනය",
+    timeWord: "වේලාව",
+    cashierWord: "කැෂියර්",
+    productDescription: "භාණ්ඩ විස්තරය",
+    paymentMethod: "ගෙවීමේ ක්‍රමය",
+    amountReceived: "ලැබුණු මුදල",
+    balanceLabel: "ඉතිරිය:",
+    balanceDueShort: "ගෙවිය යුතු:",
+    authorizedSignature: "අනුමත අත්සන",
+    customerSignature: "පාරිභෝගික අත්සන",
+    warrantyPolicy: "වගකීම් ප්‍රතිපත්තිය:",
+    walkInCustomer: "සෘජු පාරිභෝගිකයා",
+    quotationNoLabel: "අංකය:",
+    quotationDateLabel: "දිනය:",
+    quotationTo: "වෙත:",
+    unitPrice: "ඒකක මිල",
+    amount: "මුදල",
+    notesTerms: "සටහන් / කොන්දේසි:",
+    quotationFooter:
+      "⚠ මෙය ඇස්තමේන්තුවක් පමණි; බදු ඉන්වොයිසියක් නොවේ. මිල වෙනස් විය හැක. නිකුත් කළ දිනයේ සිට දින 7ක් වලංගුය.",
+    tableIndex: "#",
+    poweredBy: "Powered by TechonERP • www.erp.techon.lk",
+    unknownProduct: "නොදන්නා භාණ්ඩය",
+    footerPowered: "බලගන්වන්නේ",
+  },
+  id: {
+    invoiceTitle: "FAKTUR",
+    quotationTitle: "PENAWARAN",
+    dateLabel: "Tanggal:",
+    timeLabel: "Waktu:",
+    cashierLabel: "Kasir:",
+    billTo: "Tagihan ke",
+    customerLabel: "Pelanggan:",
+    phoneLabel: "Telepon:",
+    emailLabel: "Email:",
+    websiteLabel: "Web:",
+    brnLabel: "NIB:",
+    telPrefix: "Telp:",
+    item: "Item",
+    qty: "Qty",
+    price: "Harga",
+    total: "TOTAL",
+    subtotal: "Subtotal",
+    discount: "Diskon",
+    paid: "Dibayar",
+    balanceDue: "SISA TAGIHAN",
+    warranty: "Garansi",
+    invoiceNo: "No. Faktur:",
+    dateWord: "Tanggal",
+    timeWord: "Waktu",
+    cashierWord: "Kasir",
+    productDescription: "Deskripsi Produk",
+    paymentMethod: "Metode Pembayaran",
+    amountReceived: "Jumlah Diterima",
+    balanceLabel: "Saldo:",
+    balanceDueShort: "Sisa:",
+    authorizedSignature: "Tanda Tangan Berwenang",
+    customerSignature: "Tanda Tangan Pelanggan",
+    warrantyPolicy: "Kebijakan Garansi:",
+    walkInCustomer: "Langsung",
+    quotationNoLabel: "No:",
+    quotationDateLabel: "Tanggal:",
+    quotationTo: "Kepada:",
+    unitPrice: "Harga Satuan",
+    amount: "Jumlah",
+    notesTerms: "Catatan / Syarat:",
+    quotationFooter:
+      "⚠ Ini hanya penawaran/perkiraan dan BUKAN faktur pajak. Harga dapat berubah. Berlaku 7 hari sejak tanggal diterbitkan.",
+    tableIndex: "#",
+    poweredBy: "Powered by TechonERP • www.erp.techon.lk",
+    unknownProduct: "Produk tidak diketahui",
+    footerPowered: "Ditenagai oleh",
+  },
+  hi: {},
+  te: {},
+  kn: {},
+  ml: {},
+  ur: {},
+  bn: {},
+  ms: {},
+  th: {},
+  fil: {},
+  vi: {},
+  zh: {},
+  ja: {},
+  ko: {},
+  ne: {},
+  dv: {},
+  ar: {
+    invoiceTitle: "فاتورة",
+    quotationTitle: "عرض سعر",
+    dateLabel: "التاريخ:",
+    timeLabel: "الوقت:",
+    cashierLabel: "أمين الصندوق:",
+    billTo: "الفاتورة إلى",
+    customerLabel: "العميل:",
+    phoneLabel: "الهاتف:",
+    emailLabel: "البريد:",
+    websiteLabel: "الموقع:",
+    brnLabel: "السجل التجاري:",
+    telPrefix: "هاتف:",
+    item: "البند",
+    qty: "الكمية",
+    price: "السعر",
+    total: "الإجمالي",
+    subtotal: "المجموع الفرعي",
+    discount: "الخصم",
+    paid: "المدفوع",
+    balanceDue: "المستحق",
+    warranty: "الضمان",
+    invoiceNo: "رقم الفاتورة:",
+    dateWord: "التاريخ",
+    timeWord: "الوقت",
+    cashierWord: "أمين الصندوق",
+    productDescription: "وصف المنتج",
+    paymentMethod: "طريقة الدفع",
+    amountReceived: "المبلغ المستلم",
+    balanceLabel: "الرصيد:",
+    balanceDueShort: "المستحق:",
+    authorizedSignature: "توقيع المفوض",
+    customerSignature: "توقيع العميل",
+    warrantyPolicy: "سياسة الضمان:",
+    walkInCustomer: "زائر",
+    quotationNoLabel: "رقم:",
+    quotationDateLabel: "التاريخ:",
+    quotationTo: "إلى:",
+    unitPrice: "سعر الوحدة",
+    amount: "المبلغ",
+    notesTerms: "ملاحظات / شروط:",
+    quotationFooter:
+      "⚠ هذا عرض سعر فقط وليس فاتورة ضريبية. الأسعار قابلة للتغيير. صالح لمدة 7 أيام من تاريخ الإصدار.",
+    tableIndex: "#",
+    poweredBy: "Powered by TechonERP • www.erp.techon.lk",
+    unknownProduct: "منتج غير معروف",
+    footerPowered: "مدعوم من",
+  },
+};
+
+/** Every key in INVOICE_LANG_KEYS is a valid print locale (missing strings fall back to English labels). */
+export function getInvoicePrintLabels(lang) {
+  var code = lang && INVOICE_LANG_KEYS.indexOf(lang) >= 0 ? lang : "en";
+  if (code === "en") return Object.assign({}, BASE);
+  return Object.assign({}, BASE, INVOICE_PRINT_LABELS[code] || {});
+}
+
+/** Global catalog for settings UI: { code, name }[], sorted by display name. */
+export var ALL_LANGUAGES = (function () {
+  var arr = INVOICE_LANG_KEYS.map(function (k) {
+    return { code: k, name: INVOICE_LANG_NAMES[k] || k };
+  });
+  arr.sort(function (a, b) {
+    if (a.code === "en") return -1;
+    if (b.code === "en") return 1;
+    return (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" });
+  });
+  return arr;
+})();
+
+export function normalizeOptionalInvoiceLangs(defaultLang, optionalArr) {
+  var d = defaultLang || "en";
+  var o = Array.isArray(optionalArr) ? optionalArr.filter(Boolean) : [];
+  return o.filter(function (x) { return x !== d; });
+}
+
+/** Ordered list: default first, then optional (unique). */
+export function getAllowedInvoiceLangCodes(settings) {
+  var s = settings || {};
+  var def = s.defaultInvoiceLang || "en";
+  var opt = normalizeOptionalInvoiceLangs(def, s.optionalInvoiceLangs);
+  var out = [def].concat(opt);
+  var seen = {};
+  return out.filter(function (x) {
+    if (!x || seen[x]) return false;
+    seen[x] = true;
+    return INVOICE_LANG_KEYS.indexOf(x) >= 0;
+  });
+}

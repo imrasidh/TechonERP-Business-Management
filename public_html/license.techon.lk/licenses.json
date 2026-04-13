@@ -1,0 +1,212 @@
+[
+    {
+        "key": "TCERP-A7F3-92KD",
+        "plan": "lifetime",
+        "expires": null,
+        "device": "7c5e81657c9befa25d871e5f2fe108b5",
+        "shop": "Techon Computers",
+        "activated_at": "2026-03-24",
+        "dashboard_access": true,
+        "dashboard_expires": "2027-03-30"
+    },
+    {
+        "key": "TCERP-19DK-7A3F",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-55D2-8B91",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-8KF1-29D3",
+        "plan": "yearly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-88K1-72AD",
+        "plan": "yearly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-77DS-12KF",
+        "plan": "2year",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-43JK-9AD2",
+        "plan": "2year",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-62AD-7KD1",
+        "plan": "lifetime",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-91KD-2A3F",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-71AD-33KF",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-99AD-12KS",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-72KD-1SAD",
+        "plan": "yearly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-63AD-19KS",
+        "plan": "yearly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-81KS-32AD",
+        "plan": "2year",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-74AD-22KS",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-93KS-12AD",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-44AD-61KS",
+        "plan": "yearly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-58KS-23AD",
+        "plan": "2year",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-67AD-81KS",
+        "plan": "lifetime",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-38KS-94AD",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-21AD-73KS",
+        "plan": "yearly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-62KS-84AD",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-83AD-41KS",
+        "plan": "2year",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-56KS-72AD",
+        "plan": "yearly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-12AD-55KS",
+        "plan": "monthly",
+        "expires": null,
+        "device": null,
+        "shop": null,
+        "activated_at": null
+    },
+    {
+        "key": "TCERP-LXZD-7W6X",
+        "plan": "3days",
+        "expires": "2026-03-27",
+        "device": "a0a12d6e704fe90475fdeef3682fd587",
+        "shop": "macline",
+        "activated_at": "2026-03-24"
+    }
+]

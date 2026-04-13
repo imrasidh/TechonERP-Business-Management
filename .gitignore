@@ -1,0 +1,49 @@
+# =========================
+# NODE MODULES (ALL)
+# =========================
+node_modules/
+**/node_modules/
+
+# =========================
+# ERP APP (electron/react)
+# =========================
+erp-app/dist/
+erp-app/build/
+erp-app/release/
+
+# =========================
+# PUBLIC HTML
+# =========================
+public_html/downloads/
+
+# =========================
+# SITE (inside public_html)
+# =========================
+public_html/site/node_modules/
+
+# =========================
+# FILE TYPES
+# =========================
+*.zip
+*.exe
+*.rar
+
+# =========================
+# ENV / SECRETS
+# =========================
+.env
+.env.*
+
+# =========================
+# LOGS
+# =========================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
