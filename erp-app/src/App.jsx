@@ -1636,6 +1636,55 @@ var loadState = function () {
   return st;
 };
 
+/** Body for https://api.techon.lk/sync.php — always reads live storage via loadState()/S.get (never stale React state). */
+var buildCloudSyncPayload = function () {
+  var st = S.get("tc3_settings", {});
+  var balances = getCashBalances(loadState());
+  var totalRecv = (function () {
+    var sales = S.get("tc3_sales", []);
+    var manR = S.get("tc3_manualReceivables", []);
+    var salesBal = sales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
+    var manBal = manR.reduce(function (a, r) {
+      var paid = (r.paymentHistory || []).reduce(function (b, ph) { return b + (ph.amount || 0); }, 0);
+      return a + Math.max(0, (r.amount || 0) - paid);
+    }, 0);
+    return salesBal + manBal;
+  })();
+  var totalPay = (function () {
+    var purch = S.get("tc3_purchases", []);
+    var manP = S.get("tc3_manualPayables", []);
+    var purBal = purch.reduce(function (a, p) { return a + Math.max(0, p.total - (p.paidAmount || 0)); }, 0);
+    var manBal = manP.reduce(function (a, p) {
+      var paid = (p.paymentHistory || []).reduce(function (b, ph) { return b + (ph.amount || 0); }, 0);
+      return a + Math.max(0, (p.amount || 0) - paid);
+    }, 0);
+    return purBal + manBal;
+  })();
+  var stockVal = S.get("tc3_products", []).filter(function (p) { return p.status !== "inactive"; })
+    .reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
+  return {
+    api_key: S.get("tc3_cloud_api_key", null),
+    sales: S.get("tc3_sales", []),
+    purchases: S.get("tc3_purchases", []),
+    products: S.get("tc3_products", []),
+    customers: S.get("tc3_customers", []),
+    suppliers: S.get("tc3_suppliers", []),
+    expenses: S.get("tc3_expenses", []),
+    repairs: S.get("tc3_repairs", []),
+    cheques: S.get("tc3_cheques", []),
+    salesReturns: S.get("tc3_salesReturns", []),
+    manualReceivables: S.get("tc3_manualReceivables", []),
+    manualPayables: S.get("tc3_manualPayables", []),
+    snapshot: {
+      shopName: st.shopName || "", address: st.address || "", phone: st.phone || "",
+      email: st.email || "", website: st.website || "", currency: st.currency || "Rs",
+      capitalInvested: st.capitalInvested || 0, cashBalance: balances.cash || 0,
+      bankBalance: balances.bank || 0, totalReceivable: totalRecv,
+      totalPayable: totalPay, stockValue: stockVal
+    }
+  };
+};
+
 validateAccountingMutation = function (k, v, oldV) {
   var settings = Object.assign({}, SEED.settings, S.get("tc3_settings", {}));
   if (k === "tc3_products" && settings.preventNegativeStock === true) {
@@ -3682,6 +3731,8 @@ var StartupOnboardingWizard = function (props) {
     validateCoreStartupIdentity: validateCoreStartupIdentity,
     getCoreStartupIdentityAlertMessage: getCoreStartupIdentityAlertMessage,
     getBusinessProfile: getBusinessProfile,
+    buildCloudSyncPayload: buildCloudSyncPayload,
+    cloudSyncBump: 0,
     _idbCache: _idbCache,
     _idbWrite: _idbWrite,
     AboutTab: AboutTab,
@@ -4685,6 +4736,8 @@ export default function App(props) {
   var [businessType, setBusinessType] = useState(resolveInitialBusinessType);
   /* Bump after wizard completes so the main shell re-renders with the flag set */
   var [, setStartupWizBump] = useState(0);
+  /* Bump when background cloud sync succeeds — clears stale “no internet” banner in Settings */
+  var [cloudSyncBump, setCloudSyncBump] = useState(0);
   var [holdModal, setHoldModal] = useState(null); /* targetId when user tries to leave POS with cart */
   var [isAdminMode, setIsAdminMode] = useState(false);
   var [pinModal, setPinModal] = useState(false); /* show PIN entry */
@@ -4703,6 +4756,18 @@ export default function App(props) {
   useEffect(function () {
     appMountedRef.current = true;
     return function () { appMountedRef.current = false; };
+  }, []);
+
+  /* Vite dev loads http://127.0.0.1 — a different web origin than file:// in the packaged app, so IDB/LS are empty vs .exe */
+  useEffect(function () {
+    try {
+      if (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) {
+        console.warn(
+          "[TechonERP] Dev server storage is separate from the installed .exe (see main.cjs). " +
+          "Use Settings → backup JSON from the desktop app, then Restore here to test with real data."
+        );
+      }
+    } catch (e) {}
   }, []);
 
   /* Repair mode: debounced rebuild from canonical ERP records (live mode uses S.set + persistTechonGLJournal) */
@@ -5368,54 +5433,6 @@ export default function App(props) {
 
     if (!syncEnabled || !syncApiKey) return;
 
-    var buildPayload = function () {
-      var st       = S.get("tc3_settings", {});
-      var balances = getCashBalances(state);
-      var totalRecv = (function () {
-        var sales = S.get("tc3_sales", []);
-        var manR  = S.get("tc3_manualReceivables", []);
-        var salesBal = sales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
-        var manBal   = manR.reduce(function (a, r) {
-          var paid = (r.paymentHistory || []).reduce(function (b, ph) { return b + (ph.amount || 0); }, 0);
-          return a + Math.max(0, (r.amount || 0) - paid);
-        }, 0);
-        return salesBal + manBal;
-      })();
-      var totalPay = (function () {
-        var purch = S.get("tc3_purchases", []);
-        var manP  = S.get("tc3_manualPayables", []);
-        var purBal = purch.reduce(function (a, p) { return a + Math.max(0, p.total - (p.paidAmount || 0)); }, 0);
-        var manBal = manP.reduce(function (a, p) {
-          var paid = (p.paymentHistory || []).reduce(function (b, ph) { return b + (ph.amount || 0); }, 0);
-          return a + Math.max(0, (p.amount || 0) - paid);
-        }, 0);
-        return purBal + manBal;
-      })();
-      var stockVal = S.get("tc3_products", []).filter(function (p) { return p.status !== "inactive"; })
-        .reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
-      return {
-        api_key:           S.get("tc3_cloud_api_key",     null),  /* auth in body — avoids header stripping */
-        sales:             S.get("tc3_sales",             []),
-        purchases:         S.get("tc3_purchases",         []),
-        products:          S.get("tc3_products",          []),
-        customers:         S.get("tc3_customers",         []),
-        suppliers:         S.get("tc3_suppliers",         []),
-        expenses:          S.get("tc3_expenses",          []),
-        repairs:           S.get("tc3_repairs",           []),
-        cheques:           S.get("tc3_cheques",           []),
-        salesReturns:      S.get("tc3_salesReturns",      []),
-        manualReceivables: S.get("tc3_manualReceivables", []),
-        manualPayables:    S.get("tc3_manualPayables",    []),
-        snapshot: {
-          shopName: st.shopName||"", address: st.address||"", phone: st.phone||"",
-          email: st.email||"", website: st.website||"", currency: st.currency||"Rs",
-          capitalInvested: st.capitalInvested||0, cashBalance: balances.cash||0,
-          bankBalance: balances.bank||0, totalReceivable: totalRecv,
-          totalPayable: totalPay, stockValue: stockVal
-        }
-      };
-    };
-
     var doSync = function () {
       try {
         var apiKey = S.get("tc3_cloud_api_key", null);
@@ -5424,10 +5441,18 @@ export default function App(props) {
         fetch(SYNC_API + "/sync.php", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(buildPayload())
-        }).then(function (r) { return r.json(); }).then(function (d) {
-          if (d && d.success) { S.set("tc3_last_cloud_sync", new Date().toISOString()); }
-        }).catch(function () { /* no internet — retry next interval */ });
+          body: JSON.stringify(buildCloudSyncPayload())
+        })
+          .then(function (r) { return r.text().then(function (txt) { return { r: r, txt: txt }; }); })
+          .then(function (o) {
+            var d = null;
+            try { d = o.txt && o.txt.trim() ? JSON.parse(o.txt) : null; } catch (e) { d = null; }
+            if (o.r.ok && d && d.success) {
+              S.set("tc3_last_cloud_sync", new Date().toISOString());
+              setCloudSyncBump(function (n) { return n + 1; });
+            }
+          })
+          .catch(function () { /* retry next interval */ });
       } catch (ignore) { /* never crash ERP */ }
     };
 
@@ -5777,6 +5802,7 @@ export default function App(props) {
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 20px", minWidth: 0, position: "relative" }}>
             <ActivePage
               key={active}
+              cloudSyncBump={cloudSyncBump}
               state={state}
               setState={setState}
               setActive={safeSetActive}
@@ -5867,6 +5893,7 @@ export default function App(props) {
               getTotalReceivableDerived={getTotalReceivableDerived}
               getTotalPayableDerived={getTotalPayableDerived}
               getCashBalances={getCashBalances}
+              buildCloudSyncPayload={buildCloudSyncPayload}
               getTrialBalanceSnapshot={function () {
                 var lines = S.get("tc3_journal_lines", []);
                 var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);

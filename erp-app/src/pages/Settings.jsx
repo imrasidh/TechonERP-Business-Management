@@ -46,6 +46,8 @@ var Settings = function (props) {
   var validateCoreStartupIdentity = props.validateCoreStartupIdentity;
   var getCoreStartupIdentityAlertMessage = props.getCoreStartupIdentityAlertMessage;
   var getBusinessProfile = props.getBusinessProfile;
+  var buildCloudSyncPayload = props.buildCloudSyncPayload;
+  var cloudSyncBump = props.cloudSyncBump || 0;
   var _idbCache = props._idbCache;
   var _idbWrite = props._idbWrite;
   var AboutTab = props.AboutTab;
@@ -145,6 +147,13 @@ var Settings = function (props) {
   var [cloudPass,    setCloudPass]    = useState("");
   var [cloudMsg,     setCloudMsg]     = useState(null);
   var [cloudLoading, setCloudLoading] = useState(false);
+
+  /* Background sync (App.jsx) can succeed after a failed “Sync Now” — clear stale error banner */
+  useEffect(function () {
+    if (cloudSyncBump > 0) {
+      setCloudMsg(function (m) { return m && m.type === "error" ? null : m; });
+    }
+  }, [cloudSyncBump]);
 
   var ALL_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
 
@@ -2064,27 +2073,36 @@ var Settings = function (props) {
                   <Btn col="green" onClick={function () {
                     var apiKey = S.get("tc3_cloud_api_key", null);
                     if (!apiKey) { setCloudMsg({ type: "error", text: "Not connected. Please disconnect and reconnect." }); return; }
+                    if (typeof buildCloudSyncPayload !== "function") { setCloudMsg({ type: "error", text: "Sync unavailable — please update the app." }); return; }
                     setCloudMsg({ type: "info", text: "Syncing…" });
-                    var st = S.get("tc3_settings", {});
-                    var balances = getCashBalances(state);
                     fetch("https://api.techon.lk/sync.php", {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({
-                        api_key: apiKey,
-                        sales: S.get("tc3_sales",[]), purchases: S.get("tc3_purchases",[]),
-                        products: S.get("tc3_products",[]), customers: S.get("tc3_customers",[]),
-                        suppliers: S.get("tc3_suppliers",[]), expenses: S.get("tc3_expenses",[]),
-                        repairs: S.get("tc3_repairs",[]), cheques: S.get("tc3_cheques",[]),
-                        salesReturns: S.get("tc3_salesReturns",[]),
-                        manualReceivables: S.get("tc3_manualReceivables",[]),
-                        manualPayables: S.get("tc3_manualPayables",[]),
-                        snapshot: { shopName: st.shopName||"", address: st.address||"", phone: st.phone||"", email: st.email||"", website: st.website||"", currency: st.currency||"Rs", capitalInvested: st.capitalInvested||0, cashBalance: balances.cash||0, bankBalance: balances.bank||0, totalReceivable: 0, totalPayable: 0, stockValue: 0 }
+                      body: JSON.stringify(buildCloudSyncPayload())
+                    })
+                      .then(function (r) { return r.text().then(function (txt) { return { r: r, txt: txt }; }); })
+                      .then(function (o) {
+                        var d = null;
+                        try { d = o.txt && o.txt.trim() ? JSON.parse(o.txt) : null; } catch (e) { d = null; }
+                        if (!o.r.ok) {
+                          var errTxt = (d && (d.error || d.message)) ? (d.error || d.message) : (o.txt ? o.txt.slice(0, 160) : "");
+                          setCloudMsg({ type: "error", text: "Sync failed (HTTP " + o.r.status + "): " + (errTxt || "Unknown error") });
+                          return;
+                        }
+                        if (d && d.success) {
+                          S.set("tc3_last_cloud_sync", new Date().toISOString());
+                          setCloudMsg({ type: "success", text: "✅ Synced successfully!" });
+                        } else {
+                          setCloudMsg({ type: "error", text: "Sync error: " + (d && (d.error || d.message) ? (d.error || d.message) : "Unknown") });
+                        }
                       })
-                    }).then(function (r) { return r.json(); }).then(function (d) {
-                      if (d && d.success) { S.set("tc3_last_cloud_sync", new Date().toISOString()); setCloudMsg({ type: "success", text: "✅ Synced successfully!" }); }
-                      else { setCloudMsg({ type: "error", text: "Sync error: " + (d.error || "Unknown") }); }
-                    }).catch(function () { setCloudMsg({ type: "error", text: "No internet connection." }); });
+                      .catch(function (err) {
+                        setCloudMsg({
+                          type: "error",
+                          text: "Could not reach api.techon.lk — " + (err && err.message ? err.message : "check firewall, VPN, or try again.") +
+                            " (Your PC can be online even if this request fails.)",
+                        });
+                      });
                   }}>🔄 Sync Now</Btn>
                   <Btn col="red" onClick={function () {
                     showConfirm("Disconnect from cloud dashboard?", function () {

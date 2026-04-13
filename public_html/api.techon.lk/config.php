@@ -91,7 +91,7 @@ function validateToken($token) {
     if (!$token) return false;
     $pdo = db();
     $stmt = $pdo->prepare(
-        'SELECT u.*, s.name as shop_name, s.api_key, s.currency, s.license_key
+        'SELECT u.*, s.name as shop_name, s.api_key, s.currency, s.license_key, s.id AS shop_pk
          FROM users u
          JOIN shops s ON u.shop_id = s.id
          WHERE u.session_token = ?
@@ -106,7 +106,7 @@ function validateApiKey($apiKey) {
     if (!$apiKey) return false;
     $pdo = db();
     $stmt = $pdo->prepare(
-        'SELECT u.*, s.name as shop_name, s.api_key, s.currency, s.license_key
+        'SELECT u.*, s.name as shop_name, s.api_key, s.currency, s.license_key, s.id AS shop_pk
          FROM shops s
          JOIN users u ON u.shop_id = s.id
          WHERE s.api_key = ?
