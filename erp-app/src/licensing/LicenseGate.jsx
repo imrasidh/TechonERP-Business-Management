@@ -128,7 +128,11 @@ function ActivationScreen(props) {
         setSuccess('Licensed to: ' + result.shopName);
         setTimeout(() => onActivated(result.shopName), 1500);
       } else {
-        setError(result.message || 'Activation failed. Please try again.');
+        if (result && result.status === 'blocked') {
+          setError('This license is already used on another PC.\nPlease contact your provider to reset it.');
+        } else {
+          setError(result.message || 'Activation failed. Please try again.');
+        }
       }
     } catch (e) {
       setError('Unexpected error. Please restart and try again.');
@@ -1321,6 +1325,14 @@ export default function LicenseGate() {
         }
         const cfg = await api.loadNetworkConfig();
         if (cfg && cfg.wizardComplete) {
+          if (cfg.role === 'network_client') {
+            const url = String(cfg.apiUrl || '').trim();
+            const key = String(cfg.apiKey || '').trim();
+            if (!url || !key) {
+              setNetworkConfig(false);
+              return;
+            }
+          }
           setNetworkConfig(cfg);
         } else {
           setNetworkConfig(false);
@@ -1354,6 +1366,17 @@ export default function LicenseGate() {
       }
     }
     check();
+  }, []);
+  /* Auto-refresh license so cloud recovery exits read-only without restart */
+  useEffect(function () {
+    var t = setInterval(function () {
+      var api = window.electronAPI;
+      if (!api || !api.getLicenseStatus) return;
+      api.getLicenseStatus().then(function (s) {
+        if (s) setLicStatus(s);
+      }).catch(function () {});
+    }, 60000);
+    return function () { clearInterval(t); };
   }, []);
 
   /* Load IndexedDB usage counts once on mount (before App renders) */
@@ -1537,8 +1560,26 @@ export default function LicenseGate() {
 
   /* -- Network Client: special routing (no activation UI) ------------------- */
   const isNetworkClient = networkConfig && networkConfig.role === 'network_client';
+  var blockedReason = String(
+    (licStatus && (licStatus.reason || licStatus.blockReason || licStatus.readOnlyReason)) || ''
+  ).toLowerCase();
+  var blockedMessage = 'Access blocked. Please contact your provider.';
+  if (blockedReason === 'no_clients_allowed' || String(licStatus && licStatus.message || '').toLowerCase().indexOf('does not allow client pcs') !== -1) {
+    blockedMessage = 'This license does not allow connecting from other PCs.\nPlease use the main server computer or contact your provider to upgrade.';
+  } else if (blockedReason === 'client_limit_reached' || String(licStatus && licStatus.message || '').toLowerCase().indexOf('client limit reached') !== -1) {
+    blockedMessage = 'Client limit reached.\nPlease contact server admin to remove a device or upgrade your license.';
+  }
 
   if (isNetworkClient) {
+    if (licStatus.status === 'blocked') {
+      return (
+        <ClientLicenseLocked
+          message={blockedMessage}
+          checkedAt={licStatus.checkedAt}
+          serverUrl={networkConfig.apiUrl}
+        />
+      );
+    }
     if (licStatus.status === 'locked') {
       return (
         <ClientLicenseLocked
@@ -1635,6 +1676,26 @@ export default function LicenseGate() {
     );
   }
 
+  if (licStatus.isReadOnly) {
+    const roInfo = Object.assign({}, licStatus, { status: 'expired', isReadOnly: true });
+    return (
+      <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <ExpiredReadOnlyBanner onActivate={function() { setShowActivation(true); }} />
+        <div style={ERP_APP_SHELL_STYLE}>
+          <App licenseInfo={roInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+        </div>
+        {showActivation && (
+          <ActivationScreen
+            onActivated={handleActivated}
+            isExpired={false}
+            daysLeft={0}
+            onClose={function() { setShowActivation(false); }}
+          />
+        )}
+      </div>
+    );
+  }
+
   /* Hard lock (device/server issues) — must resolve, not just activate */
   if (licStatus.status === 'locked') {
     if (licStatus.reason === 'no_electron' || licStatus.reason === 'license_error') {
@@ -1665,7 +1726,7 @@ export default function LicenseGate() {
 
   /* Expired — show read-only mode so staff can still view data */
   if (licStatus.status === 'expired') {
-    const expiredLicInfo = Object.assign({}, licStatus, { status: 'expired', isReadOnly: true });
+    const expiredLicInfo = Object.assign({}, licStatus, { status: 'expired', isReadOnly: true, readOnlyReason: 'license_expired' });
     return (
       <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
         <ExpiredReadOnlyBanner onActivate={function() { setShowActivation(true); }} />
@@ -1696,7 +1757,7 @@ export default function LicenseGate() {
     if (usageCounts && (usageCounts.sales >= MAX || usageCounts.products >= MAX ||
                         usageCounts.customers >= MAX || usageCounts.expenses >= MAX ||
                         usageCounts.purchases >= MAX)) {
-      const limitLicInfo = Object.assign({}, licStatus, { status: 'expired', isReadOnly: true });
+      const limitLicInfo = Object.assign({}, licStatus, { status: 'expired', isReadOnly: true, readOnlyReason: 'license_expired' });
       return (
         <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
           <div style={{

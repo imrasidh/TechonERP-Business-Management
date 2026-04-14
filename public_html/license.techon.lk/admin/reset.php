@@ -2,7 +2,7 @@
 /**
  * Techon ERP — License Admin Panel
  * File: admin/reset.php
- * POST-only: clears device, shop, activated_at, expires so the key can be reactivated.
+ * POST-only: clears device binding so the key can be reactivated on a new PC.
  */
 require_once __DIR__ . '/config.php';
 requireLogin();
@@ -27,9 +27,12 @@ $found    = false;
 foreach ($licenses as &$lic) {
     if (($lic['key'] ?? '') === $targetKey) {
         $lic['device']       = null;
+        $lic['device_id']    = null;
+        $lic['device_name']  = null;
         $lic['shop']         = null;
+        $lic['shop_name']    = null;
         $lic['activated_at'] = null;
-        $lic['expires']      = null;   // ← also clear expiry on reset
+        /* Keep plan/expires/max_clients unchanged; reset only unbinds device. */
         /* blocked flag intentionally preserved — reset ≠ unblock */
         $found = true;
         break;
@@ -43,7 +46,7 @@ if (!$found) {
 }
 
 if (writeLicenses($licenses)) {
-    flash('ok', 'License reset: ' . $targetKey . ' — device binding and expiry cleared, ready for a new device.');
+    flash('ok', 'License reset: ' . $targetKey . ' — device binding cleared, ready for a new device.');
 } else {
     flash('err', 'Failed to save changes. Check file permissions on licenses.json.');
 }

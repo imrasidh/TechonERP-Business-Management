@@ -48,6 +48,8 @@ var Purchases = React.memo(function (props) {
   var getUnitSellPrice = props.getUnitSellPrice;
   var checkPeriodClose = props.checkPeriodClose;
   var setActive = props.setActive;
+  var systemConfig = props.systemConfig || {};
+  var isNetworkClient = systemConfig.role === "network_client";
   var SplitPaymentModal = props.SplitPaymentModal;
   var PaymentBreakdown = props.PaymentBreakdown;
   var BarcodeLabelSheet = props.BarcodeLabelSheet;
@@ -63,6 +65,11 @@ var Purchases = React.memo(function (props) {
   var [purSplitModal, setPurSplitModal] = useState(false);
   /* newProd declared here so the Ctrl++ useEffect below can safely reference setNewProd */
   var [newProd, setNewProd] = useState(null);
+
+  useEffect(function () {
+    if (!isNetworkClient || typeof setActive !== "function") return;
+    setActive("pos");
+  }, [isNetworkClient, setActive]);
   var [newProdKey, setNewProdKey] = useState(0);
 
   /* Ctrl++ shortcut — open Add New Product */

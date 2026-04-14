@@ -615,9 +615,19 @@ var SalesInvoices = React.memo(function (props) {
     if (typeof setActive === "function") setActive("returns");
   };
 
+  var saleInvoiceEditAllowed = function (s) {
+    if (!s) return false;
+    return (s.date || "").slice(0, 10) === today();
+  };
+
   /* Invoice edit: metadata only — no line items, totals, or stock (use Sales Return for quantity/amount corrections). */
   var saveEdit = function () {
     if (!editSale) return;
+    var sd0 = (editSale.date || "").slice(0, 10);
+    if (sd0 !== today()) {
+      showAlert("Only same-day invoices can be edited.");
+      return;
+    }
     var orig = state.sales.find(function (s) { return s.id === editSale.id; });
     if (!orig) return;
     var editSaleAmtErr = validateTxnAmounts("Edited sale invoice", orig.total || 0, orig.paid || 0, orig.balance || 0);
@@ -869,7 +879,16 @@ var SalesInvoices = React.memo(function (props) {
                         </span>
                         <Btn sm col="cyan" onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}>🧾</Btn>
                         <Btn sm col="gray" onClick={function () { setViewSale(s); setSiWarranty(s.includeWarranty || false); }}>Details</Btn>
-                        <Btn sm col="blue" onClick={function () { setEditSale(Object.assign({}, s)); }}>Edit</Btn>
+                        <Btn
+                          sm
+                          col="blue"
+                          disabled={!saleInvoiceEditAllowed(s)}
+                          title={!saleInvoiceEditAllowed(s) ? "Only same-day invoices can be edited (for accounting safety)" : undefined}
+                          onClick={function () {
+                            if (!saleInvoiceEditAllowed(s)) return;
+                            setEditSale(Object.assign({}, s));
+                          }}
+                        >Edit</Btn>
                         <div style={{ flex: "0 0 66px", width: 66, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 28 }}>
                           {bal > 0 ? <Btn sm col="cyan" onClick={function () { setSplitPayModal(s); }}>Pay</Btn> : null}
                         </div>
@@ -1170,7 +1189,16 @@ var SalesInvoices = React.memo(function (props) {
             {Math.max(0, viewSale.total - (viewSale.paid || 0)) > 0 && (
               <Btn col="cyan" onClick={function () { setSplitPayModal(viewSale); }}>+ Record Payment</Btn>
             )}
-            <Btn col="blue" onClick={function () { setEditSale(Object.assign({}, viewSale)); setViewSale(null); }}>Edit Invoice</Btn>
+            <Btn
+              col="blue"
+              disabled={!saleInvoiceEditAllowed(viewSale)}
+              title={!saleInvoiceEditAllowed(viewSale) ? "Only same-day invoices can be edited (for accounting safety)" : undefined}
+              onClick={function () {
+                if (!saleInvoiceEditAllowed(viewSale)) return;
+                setEditSale(Object.assign({}, viewSale));
+                setViewSale(null);
+              }}
+            >Edit Invoice</Btn>
             <Btn col="orange" onClick={goSalesReturn}>Sales Return</Btn>
             <Btn col="gray" onClick={function () { setViewSale(null); }}>Close</Btn>
           </div>

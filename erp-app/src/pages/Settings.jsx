@@ -15,6 +15,7 @@ import { getCountryMeta, getPrimaryCountryForCurrency, APP_CURRENCY_OPTIONS } fr
 import { mergeTaxesOnCountryChange, normalizeTaxList } from "../tax/countryTaxMeta.js";
 import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
 import { SnapshotIntegrityBadge } from "../ui/SnapshotIntegrityBadge.jsx";
+import { tcIsDevEnv } from "../utils/clientElectronGuard.js";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
 
@@ -29,6 +30,7 @@ var Settings = function (props) {
   var systemConfig    = props.systemConfig || { role: 'standalone', apiUrl: '' };
   var isNetworkServer = systemConfig.role === 'network_server';
   var isNetworkClient = systemConfig.role === 'network_client';
+  var clientConnStatus = props.clientConnStatus || "unknown";
   var isNetworkMode   = isNetworkServer || isNetworkClient;
   var S = props.S;
   var C = props.C;
@@ -60,7 +62,10 @@ var Settings = function (props) {
   var Sel = props.Sel;
   var Modal = props.Modal;
   var StatCard = props.StatCard;
-  var [stab, setStab] = useState("shop");
+  var [stab, setStab] = useState(function () {
+    var sc = props.systemConfig || {};
+    return sc.role === "network_client" ? "network" : "shop";
+  });
   var [showSupportPinResetHint, setShowSupportPinResetHint] = useState(false);
   var [showAppPasswordResetHint, setShowAppPasswordResetHint] = useState(false);
   var [invFmt, setInvFmt] = useState("a4a5"); /* A4/A5 vs Thermal tab in Invoice Design */
@@ -147,6 +152,43 @@ var Settings = function (props) {
   var [cloudPass,    setCloudPass]    = useState("");
   var [cloudMsg,     setCloudMsg]     = useState(null);
   var [cloudLoading, setCloudLoading] = useState(false);
+  var [licSyncBusy, setLicSyncBusy] = useState(false);
+  var [clientSlotsBusy, setClientSlotsBusy] = useState(false);
+  var [clientSlots, setClientSlots] = useState({ max_clients: 0, connected: 0, clients: [] });
+  var [clientLabelDrafts, setClientLabelDrafts] = useState({});
+  var [clientLabelFlashDk, setClientLabelFlashDk] = useState(null);
+  var [clientLabelAdjustedHintDk, setClientLabelAdjustedHintDk] = useState(null);
+  var [clientNetUrl, setClientNetUrl] = useState("");
+  var [clientNetKey, setClientNetKey] = useState("");
+  var [clientNetBusy, setClientNetBusy] = useState(false);
+  var [clientNetErr, setClientNetErr] = useState(null);
+
+  useEffect(function () {
+    if (!isNetworkClient) return;
+    setStab("network");
+  }, [isNetworkClient]);
+
+  useEffect(function () {
+    if (!isNetworkClient) return;
+    setClientNetUrl((systemConfig.apiUrl || "").replace(/\/?$/, ""));
+    setClientNetKey(systemConfig.apiKey || "");
+  }, [isNetworkClient, systemConfig.apiUrl, systemConfig.apiKey]);
+
+  var refreshConnectedClients = function () {
+    var api = window.electronAPI;
+    if (!isNetworkServer || !api || !api.getConnectedClients) return;
+    setClientSlotsBusy(true);
+    api.getConnectedClients().then(function (r) {
+      if (r && r.ok) {
+        setClientSlots({ max_clients: r.max_clients || 0, connected: r.connected || 0, clients: r.clients || [] });
+        setClientLabelDrafts({});
+      }
+    }).finally(function () { setClientSlotsBusy(false); });
+  };
+
+  useEffect(function () {
+    if (stab === "network" && isNetworkServer) refreshConnectedClients();
+  }, [stab, isNetworkServer]);
 
   /* Background sync (App.jsx) can succeed after a failed “Sync Now” — clear stale error banner */
   useEffect(function () {
@@ -522,6 +564,9 @@ var Settings = function (props) {
   var TABS = [["shop", "Shop Info"], ["langcurrency", "Language & Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["security", "Security"]];
   if (isNetworkMode) TABS.push(["network", "Network"]);
   TABS.push(["about", "About"]);
+  if (isNetworkClient) {
+    TABS = [["network", "Network"]];
+  }
 
   var applyShopCountry = function (v) {
     setF(function (x) {
@@ -558,6 +603,7 @@ var Settings = function (props) {
 
   useEffect(function () {
     try {
+      if (isNetworkClient) return;
       if (props.embeddedWizard) return;
       var pinReset = sessionStorage.getItem("tc3_open_security_pin_reset") === "1";
       var appPwReset = sessionStorage.getItem("tc3_open_app_password_reset") === "1";
@@ -572,7 +618,7 @@ var Settings = function (props) {
         setShowAppPasswordResetHint(true);
       }
     } catch (e) { /* ignore */ }
-  }, [props.embeddedWizard]);
+  }, [props.embeddedWizard, isNetworkClient]);
 
   /* Startup wizard: force correct tab when embedding Settings */
   useEffect(function () {
@@ -601,7 +647,7 @@ var Settings = function (props) {
     return function () { clearTimeout(t); };
   }, [stab, props.embeddedWizard]);
 
-  var hideWizardTabs = !!props.embeddedWizard;
+  var hideWizardTabs = !!props.embeddedWizard || isNetworkClient;
   var taxTipFine = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
   useEffect(function () {
     if (!taxModeTooltipOpen) return;
@@ -675,6 +721,57 @@ var Settings = function (props) {
     }
     setCoreStartupErr({ shopName: false, phone: false, address: false });
     afterValid();
+  };
+
+  var clientNormaliseNetUrl = function (raw) {
+    var u = (raw || "").trim();
+    if (!u) return u;
+    if (!u.endsWith("/")) u += "/";
+    if (u.indexOf("/api/") < 0) u += "api/";
+    return u;
+  };
+  var clientConnectToServer = function () {
+    if (clientNetBusy) return;
+    var api = window.electronAPI;
+    if (!api || !api.saveNetworkConfig) { showAlert("Network setup is not available in this build."); return; }
+    var apiUrl = clientNormaliseNetUrl(clientNetUrl);
+    if (!apiUrl || apiUrl.indexOf("http") !== 0) { setClientNetErr("Address must start with http:// or https://"); return; }
+    if (!clientNetKey.trim()) { setClientNetErr("Enter the Security Key from the server PC."); return; }
+    setClientNetBusy(true);
+    setClientNetErr(null);
+    fetch(apiUrl + "ping.php", { signal: AbortSignal.timeout(8000) })
+      .then(function (pingRes) {
+        if (!pingRes.ok) throw new Error("Server returned HTTP " + pingRes.status);
+        return pingRes.json();
+      })
+      .then(function (pingJson) {
+        if (!pingJson.success) throw new Error("Server is not ready: " + (pingJson.message || "unknown"));
+        return fetch(apiUrl + "get_products.php", {
+          headers: { "X-TC-KEY": clientNetKey.trim() },
+          signal: AbortSignal.timeout(8000),
+        });
+      })
+      .then(function (prodRes) {
+        if (prodRes.status === 401) throw new Error("Security Key is incorrect.");
+        if (!prodRes.ok) throw new Error("Server returned HTTP " + prodRes.status);
+        return prodRes.json();
+      })
+      .then(function (prodJson) {
+        if (!Array.isArray(prodJson.products)) throw new Error("Invalid response from server.");
+        return api.saveNetworkConfig({
+          role: "network_client",
+          apiUrl: apiUrl,
+          apiKey: clientNetKey.trim(),
+          wizardComplete: true,
+        });
+      })
+      .then(function () {
+        window.location.reload();
+      })
+      .catch(function (err) {
+        setClientNetErr(err && err.message ? err.message : "Cannot connect.");
+        setClientNetBusy(false);
+      });
   };
 
   return (
@@ -2407,27 +2504,98 @@ var Settings = function (props) {
       )}
 
 
-      {stab === "network" && isNetworkMode && (
+      {stab === "network" && isNetworkClient && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <CardTitle sub="POS terminal connection">Network</CardTitle>
+            {(function () {
+              var st = clientConnStatus;
+              var row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Connecting" };
+              if (clientNetBusy) {
+                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Connecting" };
+              } else if (st === "connected") {
+                row = { emoji: "🟢", bg: "#e6f7f2", border: "#9ee8ce", title: "Connected" };
+              } else if (st === "disconnected") {
+                row = { emoji: "🔴", bg: "#fde8ed", border: "#f9a8ba", title: "Disconnected" };
+              } else if (st === "reconnecting") {
+                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Connecting" };
+              } else {
+                row = { emoji: "🟡", bg: "#f0f4ff", border: C.border, title: "Connecting" };
+              }
+              return (
+                <div
+                  title={row.title}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    marginBottom: 12, padding: "10px 14px", borderRadius: 10,
+                    border: "1.5px solid " + row.border, background: row.bg,
+                  }}
+                >
+                  <span style={{ fontSize: 20, lineHeight: 1 }} aria-hidden="true">{row.emoji}</span>
+                </div>
+              );
+            })()}
+            {(systemConfig && systemConfig.apiUrl) ? (
+              <div style={{ background: "#f0f4ff", border: "1.5px solid #c7d8ff", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
+                  Current server (read-only)
+                </div>
+                <div style={{ fontFamily: "monospace", fontSize: 12, color: C.blue, fontWeight: 700, wordBreak: "break-all" }}>
+                  {systemConfig.apiUrl}
+                </div>
+              </div>
+            ) : null}
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+              Enter the server address and security key from your main PC. Other settings are managed on the server.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 560 }}>
+              <Input label="Network Address" value={clientNetUrl} onChange={function (e) { setClientNetUrl(e.target.value); setClientNetErr(null); }} placeholder="http://192.168.1.100/api/" readOnly={!!(systemConfig && systemConfig.apiUrl && clientConnStatus === "connected")} />
+              <Input label="Security Key" value={clientNetKey} onChange={function (e) { setClientNetKey(e.target.value); setClientNetErr(null); }} placeholder="Key from server PC" />
+            </div>
+            {clientNetErr ? <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600 }}>{clientNetErr}</div> : null}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+              <Btn col="blue" onClick={clientConnectToServer} disabled={clientNetBusy || clientConnStatus === "reconnecting"}>{clientNetBusy ? "Connecting…" : "Connect to Server"}</Btn>
+              <Btn col="cyan" onClick={function () { window.location.reload(); }} disabled={clientNetBusy || clientConnStatus === "reconnecting"}>Reconnect</Btn>
+              <Btn col="orange" onClick={function () {
+                showConfirm("Are you sure you want to reset connection?\n\nThis will disconnect from server and require setup again.", function () {
+                  if (tcIsDevEnv()) {
+                    try { console.info("[TC_CLIENT] reset connection confirmed"); } catch (e) {}
+                  }
+                  var api = window.electronAPI;
+                  if (api && api.resetNetworkConfig) {
+                    api.resetNetworkConfig().then(function () {
+                      try { sessionStorage.clear(); } catch (e) {}
+                      window.location.reload();
+                    });
+                  }
+                });
+              }} disabled={clientNetBusy}>Reset Connection</Btn>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {stab === "network" && isNetworkServer && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
 
           {/* ── Mode & Status ── */}
           <Card>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-              <div style={{ width: 42, height: 42, borderRadius: 12, background: isNetworkServer ? "#e6f7f2" : "#e8eeff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>
-                {isNetworkServer ? "🗄️" : "🖨️"}
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "#e6f7f2", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>
+                🗄️
               </div>
               <div>
                 <div style={{ fontSize: 16, fontWeight: 900, color: C.text, letterSpacing: "-0.01em" }}>
-                  {isNetworkServer ? "Network Server Mode" : "Network Client (POS) Mode"}
+                  Network Server Mode
                 </div>
                 <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
-                  {isNetworkServer ? "This PC stores all shop data in local MySQL (XAMPP)" : "POS terminal only — data comes from the server PC"}
+                  This PC stores all shop data in local MySQL (XAMPP)
                 </div>
               </div>
-              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, background: isNetworkServer ? "#e6f7f2" : "#e8eeff", border: "1px solid " + (isNetworkServer ? "#0f9e6e" : "#2979ff"), borderRadius: 20, padding: "4px 12px" }}>
-                <div style={{ width: 7, height: 7, borderRadius: "50%", background: isNetworkServer ? "#0f9e6e" : "#2979ff" }}></div>
-                <span style={{ fontSize: 11, fontWeight: 700, color: isNetworkServer ? "#0f9e6e" : "#2979ff" }}>
-                  {isNetworkServer ? "Server" : "Client"}
+              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, background: "#e6f7f2", border: "1px solid #0f9e6e", borderRadius: 20, padding: "4px 12px" }}>
+                <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#0f9e6e" }}></div>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#0f9e6e" }}>
+                  Server
                 </span>
               </div>
             </div>
@@ -2435,7 +2603,7 @@ var Settings = function (props) {
             {/* API URL row */}
             <div style={{ background: "#f0f4ff", border: "1.5px solid #c7d8ff", borderRadius: 10, padding: "12px 16px", marginBottom: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-                {isNetworkServer ? "Server API URL (share with client PCs)" : "Connected Server URL"}
+                Server API URL (share with client PCs)
               </div>
               <div style={{ fontFamily: "monospace", fontSize: 13, color: C.blue, fontWeight: 700, wordBreak: "break-all" }}>
                 {systemConfig.apiUrl || "Not configured"}
@@ -2452,7 +2620,7 @@ var Settings = function (props) {
             {systemConfig.apiKey && (
               <div style={{ background: "#fef3e2", border: "1.5px solid #fcd34d", borderRadius: 10, padding: "12px 16px", marginBottom: 14 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-                  🔑 Security Key {isNetworkServer ? "(install on each client PC)" : "(used to connect to this server)"}
+                  🔑 Security Key (install on each client PC)
                 </div>
                 <div style={{ fontFamily: "monospace", fontSize: 12, color: "#78350f", fontWeight: 700, wordBreak: "break-all", letterSpacing: "0.04em" }}>
                   {systemConfig.apiKey}
@@ -2471,9 +2639,9 @@ var Settings = function (props) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               {[
                 { label: "System Mode", value: "Network" },
-                { label: "Role", value: isNetworkServer ? "Main Server" : "POS Terminal" },
-                { label: "Data Storage", value: isNetworkServer ? "Local MySQL (XAMPP)" : "Server (via API)" },
-                { label: "ERP Access", value: isNetworkServer ? "Full ERP" : "Sales Only" },
+                { label: "Role", value: "Main Server" },
+                { label: "Data Storage", value: "Local MySQL (XAMPP)" },
+                { label: "ERP Access", value: "Full ERP" },
               ].map(function (row) {
                 return (
                   <div key={row.label} style={{ background: "#f8faff", border: "1px solid " + C.border, borderRadius: 8, padding: "10px 12px" }}>
@@ -2485,8 +2653,149 @@ var Settings = function (props) {
             </div>
           </Card>
 
+          <Card>
+              <CardTitle sub="Cloud is source of truth for license">License Sync</CardTitle>
+              {(function () {
+                var isTrialMode = !!(licenseInfo && licenseInfo.status === "trial");
+                var maxClientsRaw = isTrialMode ? 2 : ((licenseInfo && licenseInfo.maxClients != null) ? licenseInfo.maxClients : clientSlots.max_clients);
+                var maxClients = Number(maxClientsRaw) || 0;
+                var connectedCount = Number(clientSlots.connected) || 0;
+                maxClients = Math.max(0, maxClients);
+                connectedCount = Math.max(0, connectedCount);
+                var noClientsAllowed = maxClients === 0;
+                var connectedText = connectedCount + " / " + (noClientsAllowed ? "Not Allowed" : String(maxClients));
+                return (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                <div style={{ fontSize: 12, color: C.muted }}>
+                  Allowed PCs:{" "}
+                  {isTrialMode ? (
+                    <span style={{ marginLeft: 2, display: "inline-block", padding: "1px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.2, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe" }}>
+                      2 (Trial)
+                    </span>
+                  ) : noClientsAllowed ? (
+                    <span style={{ marginLeft: 2, display: "inline-block", padding: "1px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.2, color: "#7f1d1d", background: "#fee2e2", border: "1px solid #fecaca" }}>
+                      Not Allowed
+                    </span>
+                  ) : (
+                    <span style={{ marginLeft: 2, display: "inline-block", padding: "1px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.2, color: "#334155", background: "#e2e8f0", border: "1px solid #cbd5e1" }}>
+                      {String(maxClients)}
+                    </span>
+                  )}
+                  {" · "}Connected PCs: <strong style={{ color: C.text }}>{connectedText}</strong>
+                  {(licenseInfo && licenseInfo.lastSuccessfulSyncTime) ? (
+                    <span>{" · "}Last sync: <strong style={{ color: C.text }}>{(function () { var dt = new Date(parseInt(licenseInfo.lastSuccessfulSyncTime, 10)); return isNaN(dt.getTime()) ? "-" : dt.toLocaleString(); })()}</strong></span>
+                  ) : null}
+                  {isTrialMode ? (
+                    <div style={{ marginTop: 5, fontSize: 11, color: C.muted }}>
+                      Upgrade license to add more PCs.
+                    </div>
+                  ) : null}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <Btn sm col="cyan" onClick={refreshConnectedClients} disabled={clientSlotsBusy}>🔄 Refresh PCs</Btn>
+                  <Btn sm col="blue" onClick={function () {
+                    var api = window.electronAPI;
+                    if (!api || !api.syncLicenseNow) { showAlert("License sync API is not available."); return; }
+                    setLicSyncBusy(true);
+                    api.syncLicenseNow().then(function (r) {
+                      if (r && r.ok) showAlert("✅ License synced from cloud.\nMax clients: " + (r.max_clients != null ? r.max_clients : "—"));
+                      else showAlert("Sync failed: " + ((r && r.message) || "Unknown error"));
+                    }).finally(function () { setLicSyncBusy(false); refreshConnectedClients(); });
+                  }} disabled={licSyncBusy}>☁️ Sync License</Btn>
+                </div>
+              </div>
+                );
+              })()}
+              <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 10 }}>
+                If a PC was reformatted/replaced, remove the old device to free a slot.
+              </div>
+
+              <div style={{ border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead><tr style={{ background: "#f8faff" }}><th style={{ textAlign: "left", padding: "8px 10px" }}>Admin label</th><th style={{ textAlign: "left", padding: "8px 10px" }}>Reported name</th><th style={{ textAlign: "left", padding: "8px 10px" }}>Device ID</th><th style={{ textAlign: "left", padding: "8px 10px" }}>Last seen</th><th style={{ textAlign: "right", padding: "8px 10px" }}>Action</th></tr></thead>
+                  <tbody>
+                    {(clientSlots.clients || []).map(function (c, i) {
+                      var dk = c.device_id || "";
+                      var draftVal = clientLabelDrafts[dk] !== undefined ? clientLabelDrafts[dk] : (c.client_label != null ? String(c.client_label) : "");
+                      return (
+                        <tr key={(c.device_id || "") + "-" + i} style={{ borderTop: "1px solid " + C.borderLight }}>
+                          <td style={{ padding: "8px 10px", minWidth: 160 }}>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0, flex: "1 1 120px" }}>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                              <input
+                                value={draftVal}
+                                onChange={function (e) {
+                                  var v = e.target.value;
+                                  setClientLabelDrafts(function (prev) { var n = Object.assign({}, prev); n[dk] = v; return n; });
+                                }}
+                                placeholder="e.g. Counter 1"
+                                style={{
+                                  flex: "1 1 120px",
+                                  minWidth: 100,
+                                  padding: "5px 8px",
+                                  borderRadius: 6,
+                                  border: clientLabelFlashDk === dk ? "2px solid #f59e0b" : "1px solid " + C.border,
+                                  fontSize: 12,
+                                  boxShadow: clientLabelFlashDk === dk ? "0 0 0 3px rgba(245,158,11,0.25)" : "none",
+                                  transition: "border-color .2s ease, box-shadow .2s ease",
+                                }}
+                              />
+                              <Btn sm col="blue" onClick={function () {
+                                var api = window.electronAPI;
+                                if (!api || !api.setConnectedClientLabel) { showAlert("Label update is not available."); return; }
+                                var v = clientLabelDrafts[dk] !== undefined ? clientLabelDrafts[dk] : (c.client_label || "");
+                                api.setConnectedClientLabel({ deviceId: c.device_id, clientLabel: v }).then(function (r) {
+                                  if (r && r.ok) {
+                                    showAlert((r && r.message) ? String(r.message) : "Label saved.");
+                                    if (r.labelAdjusted && r.clientLabel != null && String(r.clientLabel).length) {
+                                      setClientLabelDrafts(function (prev) { var n = Object.assign({}, prev); n[dk] = String(r.clientLabel); return n; });
+                                      setClientLabelFlashDk(dk);
+                                      setClientLabelAdjustedHintDk(dk);
+                                      setTimeout(function () {
+                                        setClientLabelFlashDk(null);
+                                        setClientLabelAdjustedHintDk(null);
+                                      }, 2000);
+                                    }
+                                    refreshConnectedClients();
+                                  } else {
+                                    showAlert((r && r.message) || "Could not save label.");
+                                  }
+                                });
+                              }}>Save</Btn>
+                            </div>
+                            {clientLabelAdjustedHintDk === dk ? (
+                              <div style={{ fontSize: 10, fontWeight: 600, color: "#b45309" }}>Adjusted to avoid duplicate</div>
+                            ) : null}
+                            </div>
+                          </td>
+                          <td style={{ padding: "8px 10px", fontWeight: 600, color: C.textMd }}>{c.device_name || "—"}</td>
+                          <td style={{ padding: "8px 10px", fontFamily: "monospace", color: C.muted, fontSize: 11 }}>{c.device_id || "-"}</td>
+                          <td style={{ padding: "8px 10px", color: C.text }}>{c.last_seen || "-"}</td>
+                          <td style={{ padding: "8px 10px", textAlign: "right" }}>
+                            <button onClick={function () {
+                              var api = window.electronAPI;
+                              if (!api || !api.removeConnectedClient) return;
+                              showConfirm("Remove this client slot?\n\n" + (c.device_name || c.device_id || "Client"), function () {
+                                api.removeConnectedClient({ deviceId: c.device_id }).then(function (r) {
+                                  if (r && r.ok) showAlert("Client removed.");
+                                  else showAlert("Remove failed: " + ((r && r.message) || "Unknown error"));
+                                  refreshConnectedClients();
+                                });
+                              });
+                            }} style={{ background: "#fee2e2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontWeight: 700, fontSize: 11 }}>Remove</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {(!clientSlots.clients || clientSlots.clients.length === 0) && (
+                      <tr><td colSpan={5} style={{ padding: 14, color: C.muted, textAlign: "center" }}>{clientSlotsBusy ? "Loading connected clients..." : "No connected client devices found."}</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
           {/* ── Server Actions (server only) ── */}
-          {isNetworkServer && (
             <Card>
               <CardTitle sub="Database backup and maintenance">Server Actions</CardTitle>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -2509,7 +2818,6 @@ var Settings = function (props) {
                 </div>
               </div>
             </Card>
-          )}
 
           {/* ── Logs ── */}
           <Card>
@@ -2539,6 +2847,7 @@ var Settings = function (props) {
                   var api = window.electronAPI;
                   if (api && api.resetNetworkConfig) {
                     api.resetNetworkConfig().then(function () {
+                      try { sessionStorage.clear(); } catch (e) {}
                       showAlert("Setup wizard has been reset. Please restart Techon ERP.");
                     });
                   }

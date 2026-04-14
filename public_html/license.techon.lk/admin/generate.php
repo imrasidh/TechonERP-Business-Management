@@ -20,6 +20,8 @@ if (!in_array($plan, $valid_plans, true)) {
     flash('err', 'Invalid plan selected.');
     header('Location: index.php'); exit;
 }
+$max_clients = isset($_POST['max_clients']) ? intval($_POST['max_clients']) : 0;
+if ($max_clients < 0) $max_clients = 0;
 
 $licenses = readLicenses();
 $newKey   = generateKey($licenses);
@@ -30,7 +32,8 @@ $licenses[] = [
     'expires'      => null,
     'device'       => null,
     'shop'         => null,
-    'activated_at' => null
+    'activated_at' => null,
+    'max_clients'  => $max_clients
 ];
 
 if (writeLicenses($licenses)) {

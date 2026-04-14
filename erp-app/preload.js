@@ -47,6 +47,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncClockViaLicense: function() {
     return ipcRenderer.invoke('tc-sync-clock-via-license');
   },
+  syncLicenseNow: function() {
+    return ipcRenderer.invoke('tc-license-sync-now');
+  },
+  getConnectedClients: function() {
+    return ipcRenderer.invoke('tc-connected-clients-list');
+  },
+  removeConnectedClient: function(payload) {
+    return ipcRenderer.invoke('tc-connected-client-remove', payload || {});
+  },
+  setConnectedClientLabel: function(payload) {
+    return ipcRenderer.invoke('tc-connected-client-set-label', payload || {});
+  },
 
   /**
    * Get the current app version from package.json (via app.getVersion()).
@@ -112,6 +124,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Load saved network config from userData/tc_network.json */
   loadNetworkConfig: function() {
     return ipcRenderer.invoke('tc-network-config-load');
+  },
+
+  /** POS client header: OS hostname + short device id (display only). */
+  getClientMachineLabel: function() {
+    return ipcRenderer.invoke('tc-client-machine-label');
   },
 
   /** Save network config { role, apiUrl, xamppPath, port, wizardComplete } */

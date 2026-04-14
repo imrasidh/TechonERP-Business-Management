@@ -148,7 +148,8 @@ foreach ($licenses as $entry) {
         'status'    => 'VALID',
         'shop_name' => $entry['shop'] ?? '',
         'plan'      => $plan,
-        'expires'   => $expires
+        'expires'   => $expires,
+        'max_clients' => intval($entry['max_clients'] ?? 0)
     ]);
     exit;
 }

@@ -286,6 +286,7 @@ const LIC_FILE              = path.join(app.getPath('userData'), 'tc_lic.dat');
 const CLIENT_LIC_CACHE_FILE = path.join(app.getPath('userData'), 'tc_cli_lic.dat');
 /* HMAC-signed file recording the last time a valid license check completed (all modes) */
 const LAST_VERIFIED_FILE    = path.join(app.getPath('userData'), 'tc_clock.dat');
+const LAST_KNOWN_TIME_FILE  = path.join(app.getPath('userData'), 'tc_last_known_time.dat');
 /** Legacy passphrase (pre–per-user key file). Used only when upgrading or if key file missing. */
 const LEGACY_ENC_PASS       = 'TC-ERP-2025-X9K7-HARDKEY-OBFS';
 const LEGACY_CACHE_HMAC_KEY = 'TC-ERP-CACHE-HMAC-2025-v1';
@@ -492,6 +493,31 @@ function loadLastVerifiedTime() {
   } catch (e) { return null; }
 }
 
+function saveLastKnownTime(ts) {
+  try {
+    const v = String(parseInt(ts || Date.now(), 10));
+    const k = crypto.scryptSync(getCryptoRootSecret(), 'tc-last-known-time', 32);
+    const sig = crypto.createHmac('sha256', k).update(v).digest('hex');
+    fs.writeFileSync(LAST_KNOWN_TIME_FILE, v + ':' + sig, 'utf8');
+  } catch (_e) {}
+}
+
+function loadLastKnownTime() {
+  try {
+    if (!fs.existsSync(LAST_KNOWN_TIME_FILE)) return null;
+    const raw = fs.readFileSync(LAST_KNOWN_TIME_FILE, 'utf8').trim();
+    const sep = raw.lastIndexOf(':');
+    if (sep < 1) return null;
+    const v = raw.slice(0, sep);
+    const sig = raw.slice(sep + 1);
+    const k = crypto.scryptSync(getCryptoRootSecret(), 'tc-last-known-time', 32);
+    const exp = crypto.createHmac('sha256', k).update(v).digest('hex');
+    if (sig.length !== exp.length) return null;
+    if (!crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(exp, 'hex'))) return null;
+    return parseInt(v, 10);
+  } catch (_e) { return null; }
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    DEVICE ID GENERATION
    ═══════════════════════════════════════════════════════════════════ */
@@ -614,6 +640,7 @@ const TRIAL_MAX_RECORDS   = 20;
 const TRIAL_MAX_SALES     = TRIAL_MAX_RECORDS;
 const TRIAL_MAX_PRODUCTS  = TRIAL_MAX_RECORDS;
 const TRIAL_MAX_CUSTOMERS = TRIAL_MAX_RECORDS;
+const TRIAL_MAX_CLIENTS   = 2;
 
 /* ── ProgramData anti-wipe device cache ────────────────────────────
    Stored in C:\ProgramData\TechonERP — survives per-user AppData wipes.
@@ -658,6 +685,13 @@ const OFFLINE_GRACE = {
   '2year'   : 2,
   'lifetime': 2
 };
+/* Extended offline policy (standalone + network_server only):
+   0-7 days   : full access
+   7-15 days  : warning (non-blocking)
+   15+ days   : read-only until next successful sync */
+const OFFLINE_FULL_ACCESS_DAYS = 7;
+const OFFLINE_READONLY_DAYS    = 15;
+const CLOUD_SYNC_INTERVAL_MS   = 8 * 60 * 60 * 1000; /* every 8 hours */
 
 function getVerifyInterval(plan) {
   return VERIFY_INTERVALS[String(plan).toLowerCase()] || 7;
@@ -762,6 +796,23 @@ function lanGet(url, apiKey) {
   });
 }
 
+function getClientDeviceName() {
+  try { return os.hostname() || 'Client-PC'; } catch (_e) { return 'Client-PC'; }
+}
+
+function applyVerifyPayloadToLicense(lic, resp, nowTs) {
+  if (!lic || !resp) return lic;
+  const now = nowTs || Date.now();
+  lic.lastVerify = now;
+  lic.lastSuccessfulSyncTime = now;
+  if (resp.plan) lic.plan = resp.plan;
+  if (resp.expires !== undefined) lic.expires = resp.expires;
+  if (resp.max_clients !== undefined && resp.max_clients !== null && !isNaN(parseInt(resp.max_clients, 10))) {
+    lic.max_clients = parseInt(resp.max_clients, 10);
+  }
+  return lic;
+}
+
 /** POST JSON to a LAN API endpoint with optional extra headers. */
 function lanPost(url, body, extraHeaders) {
   return new Promise((resolve, reject) => {
@@ -858,10 +909,40 @@ function syncLicenseToMySQL(licData, cfg) {
       plan          : licData.plan        || null,
       expires_at    : licData.expires     || null,
       trial_ends_at : licData.trialEndsAt || null,
+      max_clients   : licData.maxClients  != null ? licData.maxClients : null,
+      read_only     : licData.readOnly ? 1 : 0,
     },
     cfg,
     0
   );
+}
+
+async function forceCloudLicenseSync(manualTrigger) {
+  const cfg = loadNetworkConfig();
+  if (cfg && cfg.role === 'network_client') {
+    return { ok: false, message: 'Network clients sync from server automatically.' };
+  }
+  const lic = loadLicense();
+  if (!lic || lic.mode !== 'activated' || !lic.key) {
+    return { ok: false, message: 'No activated license found on this PC.' };
+  }
+  const deviceId = generateDeviceId();
+  const now = Date.now();
+  const resp = await tcRequest('/verify', { license_key: lic.key, device_id: deviceId });
+  if (resp.status !== 'OK') {
+    if (resp.status === 'EXPIRED') return { ok: false, message: 'License expired on cloud. Please renew.' };
+    if (resp.status === 'INVALID') return { ok: false, message: 'License invalid on cloud. Please reactivate.' };
+    return { ok: false, message: resp.message || 'License sync failed.' };
+  }
+  applyVerifyPayloadToLicense(lic, resp, now);
+  saveLicense(lic);
+  saveLastVerifiedTime();
+  syncLicenseToMySQL(
+    { status: 'activated', shopName: lic.shopName, key: lic.key, plan: lic.plan, expires: lic.expires, maxClients: lic.max_clients, readOnly: false },
+    cfg
+  );
+  writeLogFile('info', '[LicenseSync] Cloud sync OK' + (manualTrigger ? ' (manual)' : ' (background)'));
+  return { ok: true, plan: lic.plan || null, expires: lic.expires || null, max_clients: lic.max_clients || null, syncedAt: now };
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -877,6 +958,12 @@ ipcMain.handle('tc-license-status', async () => {
      ══════════════════════════════════════════════════════════════ */
   const _clockNow      = Date.now();
   const _lastVerified  = loadLastVerifiedTime();
+  const _lastKnownTime = loadLastKnownTime();
+  const _clockBackwards = _lastKnownTime && _clockNow < (_lastKnownTime - 60000);
+  const _debugLic = app && app.isPackaged === false;
+  if (_clockBackwards && _debugLic) {
+    writeLogFile('info', '[LicenseDebug] Clock rollback detected: now=' + _clockNow + ' lastKnown=' + _lastKnownTime);
+  }
   if (_lastVerified && _clockNow < _lastVerified - 90000) {
     /* > 90 s backward jump — clock was tampered or rollback tool used */
     writeLogFile('warn',
@@ -887,11 +974,23 @@ ipcMain.handle('tc-license-status', async () => {
     return {
       status       : 'locked',
       clockTampered: true,
+      isReadOnly   : true,
+      readOnlyReason: 'clock_tamper',
       reason       : 'System time has changed.\nPlease correct your computer clock and restart the app.\n\nContact Techon Computers support if this keeps happening.',
+    };
+  }
+  if (_clockBackwards) {
+    return {
+      status: 'activated',
+      isReadOnly: true,
+      readOnlyReason: 'clock_tamper',
+      message: 'System clock moved backwards. Connect internet to verify license.',
+      clockTampered: true,
     };
   }
   /* Record the current time as "last verified" (before any early returns) */
   saveLastVerifiedTime();
+  saveLastKnownTime(_clockNow);
 
   /* ── NETWORK CLIENT: read license from the LAN server ───────────
      Clients never check the external license server directly.
@@ -901,12 +1000,18 @@ ipcMain.handle('tc-license-status', async () => {
   if (_netCfg && _netCfg.role === 'network_client' && _netCfg.apiUrl) {
     const checkedAt = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
     try {
-      const data = await lanGet(_netCfg.apiUrl + 'check_license.php', _netCfg.apiKey);
+      const qs = '?deviceId=' + encodeURIComponent(generateDeviceId()) + '&deviceName=' + encodeURIComponent(getClientDeviceName());
+      const data = await lanGet(_netCfg.apiUrl + 'check_license.php' + qs, _netCfg.apiKey);
       const d    = data.data || {};
 
       /* Determine mapped status, applying grace period for expired */
       let mappedStatus = 'locked';
       if (data.success) {
+        if (data.status === 'blocked') {
+          mappedStatus = 'blocked';
+        } else if (data.status === 'read_only') {
+          mappedStatus = 'activated';
+        } else
         if (data.valid) {
           mappedStatus = data.status || 'activated';
         } else {
@@ -924,6 +1029,7 @@ ipcMain.handle('tc-license-status', async () => {
         writeLogFile('warn', '[LicenseClient] check_license returned failure: ' + (data.message || '?'));
       }
 
+      const _devId = generateDeviceId();
       const result = {
         status         : mappedStatus,
         shopName       : d.shop_name || '',
@@ -934,6 +1040,10 @@ ipcMain.handle('tc-license-status', async () => {
         fromServer     : true,
         checkedAt      : checkedAt,
         message        : data.message || '',
+        isReadOnly     : data.status === 'read_only' || d.read_only === 1 || d.read_only === true,
+        maxClients     : d.max_clients != null ? parseInt(d.max_clients, 10) || 0 : null,
+        connectedClients: d.connected_clients != null ? parseInt(d.connected_clients, 10) || 0 : null,
+        readOnlyReason : d.read_only_reason || (mappedStatus === 'blocked' ? 'blocked' : ''),
         /* Server-provided counts — clients use these instead of local arrays.
            Only present when server is in trial mode.                          */
         serverCounts   : d.serverCounts    || null,
@@ -942,6 +1052,10 @@ ipcMain.handle('tc-license-status', async () => {
         /* supportsCounts=true means this server version CAN supply module counts.
            If false/absent, the server is an older version that needs updating.  */
         supportsCounts : data.supportsCounts === true,
+        /* Terminal identity (display + sale tagging) — does not affect license decisions */
+        clientLabel    : d.client_label ? String(d.client_label) : '',
+        terminalDeviceId: _devId,
+        deviceId       : _devId,
       };
 
       /* ── Cache mismatch protection ─────────────────────────────
@@ -968,6 +1082,12 @@ ipcMain.handle('tc-license-status', async () => {
         saveClientLicCache(result);
       }
 
+      if (_debugLic) {
+        writeLogFile('info', '[LicenseDebug] client status=' + String(result.status) + ' readonly=' + (result.isReadOnly ? '1' : '0'));
+        if (result.maxClients != null || result.connectedClients != null) {
+          writeLogFile('info', '[LicenseDebug] clients count=' + String(result.connectedClients || 0) + ' max=' + String(result.maxClients || 0) + ' decision=' + String(result.status || 'unknown'));
+        }
+      }
       return result;
 
     } catch (e) {
@@ -1120,26 +1240,27 @@ ipcMain.handle('tc-license-status', async () => {
         }
 
         // VALID — update local cache with latest server data
-        lic.lastVerify = now;
-        if (resp.plan)                  lic.plan    = resp.plan;
-        if (resp.expires !== undefined) lic.expires = resp.expires;
+        applyVerifyPayloadToLicense(lic, resp, now);
         saveLicense(lic);
+        saveLastKnownTime(now);
         /* Sync refreshed data to MySQL (network_server only) */
-        syncLicenseToMySQL({ status: 'activated', shopName: lic.shopName, key: lic.key, plan: lic.plan, expires: lic.expires }, _netCfg);
+        syncLicenseToMySQL({ status: 'activated', shopName: lic.shopName, key: lic.key, plan: lic.plan, expires: lic.expires, maxClients: lic.max_clients, readOnly: false }, _netCfg);
+        if (_debugLic) writeLogFile('info', '[LicenseDebug] verify success, synced to mysql');
 
       } catch (e) {
-        // ── Offline / server unreachable ─────────────────────────
-        const graceDays   = getGraceDays(lic.plan);
-        const daysPastDue = daysSinceVerify - verifyInterval;
-
-        if (daysPastDue > graceDays) {
-          return {
-            status : 'locked',
-            reason : graceDays === 0
-              ? 'License verification required.\nPlease connect to the internet to continue.'
-              : 'Cannot reach the license server.\nPlease connect to the internet to verify your license.\n' +
-                '(Verification was due ' + Math.floor(daysPastDue) + ' day(s) ago.)'
-          };
+        // ── Offline / server unreachable: extended 15-day policy ───────────
+        const baseSync = lic.lastSuccessfulSyncTime || lic.lastVerify || lic.activatedAt || now;
+        const daysOffline = Math.max(0, (now - baseSync) / (24 * 3600 * 1000));
+        const shouldWarn = daysOffline > OFFLINE_FULL_ACCESS_DAYS && daysOffline < OFFLINE_READONLY_DAYS;
+        const shouldReadOnly = daysOffline >= OFFLINE_READONLY_DAYS;
+        if (shouldReadOnly && _netCfg && _netCfg.role === 'network_server') {
+          syncLicenseToMySQL(
+            { status: 'activated', shopName: lic.shopName, key: lic.key, plan: lic.plan, expires: lic.expires, maxClients: lic.max_clients, readOnly: true },
+            _netCfg
+          );
+        }
+        if (_debugLic) {
+          writeLogFile('info', '[LicenseDebug] offline days=' + Math.floor(daysOffline) + ' readonly=' + (shouldReadOnly ? '1' : '0'));
         }
 
         // Within grace — double-check local expiry
@@ -1154,7 +1275,17 @@ ipcMain.handle('tc-license-status', async () => {
             };
           }
         }
-        // Still within grace — let them in
+        // Offline allowed by policy — attach warning / readonly flags in response
+        if (shouldWarn) {
+          writeLogFile('warn', '[LicenseStatus] Offline sync overdue ' + Math.floor(daysOffline) + ' day(s) — warning only.');
+        }
+        if (shouldReadOnly) {
+          writeLogFile('warn', '[LicenseStatus] Offline > ' + OFFLINE_READONLY_DAYS + ' days — read-only mode.');
+          if (_debugLic) writeLogFile('info', '[LicenseDebug] read-only reason=offline_timeout');
+        }
+        lic._offlineWarning = shouldWarn;
+        lic._offlineReadOnly = shouldReadOnly;
+        lic._offlineDays = daysOffline;
       }
     }
 
@@ -1192,6 +1323,13 @@ ipcMain.handle('tc-license-status', async () => {
       daysLeft       : daysLeft3d,
       daysUntilExpiry: daysUntilExpiry,
       deviceMismatch : actDeviceMismatch || false,
+      maxClients     : lic.max_clients != null ? parseInt(lic.max_clients, 10) || 0 : null,
+      isReadOnly     : !!lic._offlineReadOnly,
+      offlineWarning : !!lic._offlineWarning,
+      offlineDays    : lic._offlineDays != null ? Math.floor(lic._offlineDays) : 0,
+      lastSuccessfulSyncTime: lic.lastSuccessfulSyncTime || lic.lastVerify || null,
+      readOnlyReason : lic._offlineReadOnly ? 'offline_timeout' : '',
+      readOnlyReasonText : lic._offlineReadOnly ? 'No successful cloud sync for more than 15 days.' : '',
     };
   }
 
@@ -1221,6 +1359,7 @@ ipcMain.handle('tc-license-status', async () => {
     daysLeft          : daysLeft,
     deviceId          : deviceId,
     deviceMismatch    : (trialDeviceMismatch || pdMismatch) || false,
+    maxClients        : TRIAL_MAX_CLIENTS,
     isNewTrial        : !licFileExisted,        /* true only when file was just created */
     trialMaxRecords   : TRIAL_MAX_RECORDS,      /* unified limit for all modules */
     trialMaxSales     : TRIAL_MAX_SALES,
@@ -1253,6 +1392,7 @@ ipcMain.handle('tc-activate', async (_event, { licenseKey, shopName }) => {
     const resp = await tcRequest('/activate', {
       license_key : key,
       device_id   : deviceId,
+      device_name : getClientDeviceName(),
       shop_name   : shopName.trim()
     });
 
@@ -1264,20 +1404,26 @@ ipcMain.handle('tc-activate', async (_event, { licenseKey, shopName }) => {
         deviceId      : deviceId,
         plan          : resp.plan    || null,
         expires       : resp.expires || null,
+        max_clients   : resp.max_clients != null ? parseInt(resp.max_clients, 10) || null : null,
         activatedAt   : Date.now(),
         lastVerify    : Date.now(),
+        lastSuccessfulSyncTime: Date.now(),
         lastClockCheck: Date.now()
       };
       saveLicense(lic);
       /* Align universal clock anchor so post-activation license check is not blocked */
       saveLastVerifiedTime();
       /* Sync new activation to MySQL immediately (network_server only) */
-      syncLicenseToMySQL({ status: 'activated', shopName: lic.shopName, key: lic.key, plan: lic.plan, expires: lic.expires }, _activateCfg);
-      return { ok: true, shopName: lic.shopName, plan: lic.plan, expires: lic.expires };
+      syncLicenseToMySQL({ status: 'activated', shopName: lic.shopName, key: lic.key, plan: lic.plan, expires: lic.expires, maxClients: lic.max_clients, readOnly: false }, _activateCfg);
+      return { ok: true, shopName: lic.shopName, plan: lic.plan, expires: lic.expires, max_clients: lic.max_clients || null };
     }
 
-    if (resp.status === 'DEVICE_MISMATCH') {
-      return { ok: false, message: 'This license key is already activated on another device.' };
+    if (resp.status === 'blocked' || resp.status === 'DEVICE_MISMATCH') {
+      return {
+        ok: false,
+        status: 'blocked',
+        message: 'This license key is already activated on another device.'
+      };
     }
 
     if (resp.status === 'INVALID') {
@@ -1389,10 +1535,8 @@ ipcMain.handle('tc-sync-clock-via-license', async () => {
       return { ok: false, message: 'License is no longer valid on the server. Reactivate with a valid key.' };
     }
     const now = Date.now();
-    lic.lastVerify = now;
+    applyVerifyPayloadToLicense(lic, resp, now);
     lic.lastClockCheck = now;
-    if (resp.plan) lic.plan = resp.plan;
-    if (resp.expires !== undefined) lic.expires = resp.expires;
     saveLicense(lic);
     saveLastVerifiedTime();
     writeLogFile('info', '[ClockRecover] Online verify OK — clock anchor and license timestamps reset.');
@@ -2048,6 +2192,7 @@ function createWindow() {
    ═══════════════════════════════════════════════════════════════════ */
 app.whenReady().then(() => {
   ipcMain.on('save-backup', (_event, payload) => {
+    if (isNetworkClientRole()) return;
     if (payload && payload.filename && payload.content) {
       lastBackupPayload = { content: payload.content, customPath: payload.customPath || null };
       writeBackup(payload.filename, payload.content, payload.customPath);
@@ -2055,6 +2200,7 @@ app.whenReady().then(() => {
   });
 
   ipcMain.handle('tc-select-folder', async () => {
+    if (isNetworkClientRole()) return clientModeBlockedIpc();
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory']
     });
@@ -2064,6 +2210,17 @@ app.whenReady().then(() => {
 
   getBackupDir();
   createWindow();
+  /* Dynamic cloud sync (server/standalone only): startup + periodic background */
+  setTimeout(function () {
+    forceCloudLicenseSync(false).catch(function (e) {
+      writeLogFile('warn', '[LicenseSync] Startup sync skipped: ' + (e && e.message ? e.message : String(e)));
+    });
+  }, 20000);
+  setInterval(function () {
+    forceCloudLicenseSync(false).catch(function (e) {
+      writeLogFile('warn', '[LicenseSync] Periodic sync skipped: ' + (e && e.message ? e.message : String(e)));
+    });
+  }, CLOUD_SYNC_INTERVAL_MS);
 
   app.on('activate', function() {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -2101,8 +2258,32 @@ function saveNetworkConfig(cfg) {
   } catch (e) { return false; }
 }
 
+function isNetworkClientRole() {
+  try {
+    const cfg = loadNetworkConfig();
+    return !!(cfg && cfg.role === 'network_client');
+  } catch (e) {
+    return false;
+  }
+}
+
+function clientModeBlockedIpc() {
+  return { status: 'blocked', message: 'Restricted in client mode' };
+}
+
 ipcMain.handle('tc-network-config-load', () => {
   return loadNetworkConfig();
+});
+
+/** Display-only: hostname + short device id for POS client header (not licensing). */
+ipcMain.handle('tc-client-machine-label', () => {
+  try {
+    const deviceId = generateDeviceId();
+    const short = deviceId.length > 10 ? deviceId.slice(0, 8) : deviceId.slice(0, Math.min(8, deviceId.length));
+    return { hostname: getClientDeviceName(), deviceIdShort: short, deviceId: deviceId };
+  } catch (_e) {
+    return { hostname: '', deviceIdShort: '', deviceId: '' };
+  }
 });
 
 function sanitizeNetworkConfig(cfg) {
@@ -2155,7 +2336,12 @@ function sanitizeNetworkConfig(cfg) {
 }
 
 ipcMain.handle('tc-network-config-save', (_event, cfg) => {
-  const sanitized = sanitizeNetworkConfig(cfg);
+  const existing = loadNetworkConfig();
+  var merged = cfg;
+  if (existing && existing.role === 'network_client') {
+    merged = Object.assign({}, existing, cfg || {}, { role: 'network_client' });
+  }
+  const sanitized = sanitizeNetworkConfig(merged);
   const ok = saveNetworkConfig(sanitized);
   return { ok, config: sanitized };
 });
@@ -2165,6 +2351,68 @@ ipcMain.handle('tc-network-config-reset', () => {
     if (fs.existsSync(NET_CONFIG_FILE)) fs.unlinkSync(NET_CONFIG_FILE);
     return { ok: true };
   } catch (e) { return { ok: false, message: e.message }; }
+});
+
+/* ── License utilities for Settings -> Network tab ───────────────────────── */
+ipcMain.handle('tc-license-sync-now', async () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
+  try {
+    return await forceCloudLicenseSync(true);
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : 'Cloud sync failed.' };
+  }
+});
+
+ipcMain.handle('tc-connected-clients-list', async () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
+  try {
+    const cfg = loadNetworkConfig();
+    if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl) return { ok: false, message: 'Not in network server mode.' };
+    const data = await lanGet(cfg.apiUrl + 'check_license.php?listClients=1', cfg.apiKey);
+    const d = data && data.data ? data.data : {};
+    return {
+      ok: true,
+      max_clients: d.max_clients != null ? (parseInt(d.max_clients, 10) || 0) : 0,
+      connected: d.connected_clients != null ? (parseInt(d.connected_clients, 10) || 0) : 0,
+      clients: Array.isArray(d.clients) ? d.clients : [],
+    };
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : 'Could not load connected clients.' };
+  }
+});
+
+ipcMain.handle('tc-connected-client-remove', async (_event, payload) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
+  try {
+    const cfg = loadNetworkConfig();
+    if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl) return { ok: false, message: 'Not in network server mode.' };
+    const deviceId = payload && payload.deviceId ? String(payload.deviceId) : '';
+    if (!deviceId) return { ok: false, message: 'Missing deviceId.' };
+    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'remove_client', deviceId: deviceId }, { 'X-TC-KEY': cfg.apiKey || '' });
+    return { ok: !!(res && res.success), message: (res && res.message) ? res.message : (res && res.success ? 'Removed' : 'Remove failed') };
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : 'Could not remove client.' };
+  }
+});
+
+ipcMain.handle('tc-connected-client-set-label', async (_event, payload) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
+  try {
+    const cfg = loadNetworkConfig();
+    if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl) return { ok: false, message: 'Not in network server mode.' };
+    const deviceId = payload && payload.deviceId ? String(payload.deviceId) : '';
+    const clientLabel = payload && payload.clientLabel != null ? String(payload.clientLabel) : '';
+    if (!deviceId) return { ok: false, message: 'Missing deviceId.' };
+    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'set_client_label', deviceId, clientLabel: clientLabel.trim() }, { 'X-TC-KEY': cfg.apiKey || '' });
+    return {
+      ok: !!(res && res.success),
+      message: (res && res.message) ? res.message : (res && res.success ? 'OK' : 'Update failed'),
+      clientLabel: res && res.client_label != null ? String(res.client_label) : '',
+      labelAdjusted: !!(res && res.label_adjusted),
+    };
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : 'Could not update label.' };
+  }
 });
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2185,6 +2433,7 @@ function detectXamppPath() {
 }
 
 ipcMain.handle('tc-check-xampp', () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   const found = detectXamppPath();
   return found ? { found: true, path: found } : { found: false };
 });
@@ -2239,6 +2488,7 @@ function tryStartService(name) {
 }
 
 ipcMain.handle('tc-start-xampp-services', async (_event, { xamppPath }) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   const base = xamppPath || detectXamppPath();
   if (!base) return { ok: false, message: 'XAMPP not found.' };
 
@@ -2279,6 +2529,7 @@ ipcMain.handle('tc-start-xampp-services', async (_event, { xamppPath }) => {
 });
 
 ipcMain.handle('tc-stop-xampp-services', async (_event, { xamppPath }) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   const base = xamppPath || detectXamppPath();
   if (!base) return { ok: false, message: 'XAMPP not found.' };
 
@@ -2294,6 +2545,7 @@ ipcMain.handle('tc-stop-xampp-services', async (_event, { xamppPath }) => {
    OPEN XAMPP INSTALLER
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-open-xampp-installer', async () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   /* Search for bundled installer in several locations (handles .exe and .exe.exe) */
   const candidates = [
     path.join(__dirname, 'build', 'setup-bundles', 'xampp-installer.exe.exe'),
@@ -2334,6 +2586,7 @@ function testPort(port) {
 }
 
 ipcMain.handle('tc-test-http-port', async () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   for (const port of [80, 8080, 8000, 3000, 8888]) {
     const ok = await testPort(port);
     if (ok) return { ok: true, port };
@@ -2345,6 +2598,7 @@ ipcMain.handle('tc-test-http-port', async () => {
    LAN IP DETECTION
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-get-lan-ip', () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   const ifaces = os.networkInterfaces();
   for (const [name, addrs] of Object.entries(ifaces)) {
     for (const addr of (addrs || [])) {
@@ -2389,6 +2643,7 @@ function copyDirRecursive(src, dest) {
 }
 
 ipcMain.handle('tc-copy-api-files', (_event, { xamppPath }) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   try {
     const base = xamppPath || detectXamppPath();
     if (!base) return { ok: false, message: 'XAMPP path not found.' };
@@ -2414,6 +2669,7 @@ ipcMain.handle('tc-copy-api-files', (_event, { xamppPath }) => {
    DATABASE SETUP  (create DB + import schema.sql via mysql CLI)
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-setup-database', async (_event, { xamppPath }) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   try {
     const base     = xamppPath || detectXamppPath();
     if (!base) return { ok: false, message: 'XAMPP not found.' };
@@ -2440,10 +2696,12 @@ ipcMain.handle('tc-setup-database', async (_event, { xamppPath }) => {
    API KEY GENERATION + WRITE TO XAMPP
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-generate-api-key', () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   return { key: crypto.randomBytes(32).toString('hex') };
 });
 
 ipcMain.handle('tc-write-api-key', (_event, { xamppPath, key }) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   try {
     const base = xamppPath || detectXamppPath();
     if (!base) return { ok: false, message: 'XAMPP not found.' };
@@ -2466,6 +2724,7 @@ ipcMain.handle('tc-write-api-key', (_event, { xamppPath, key }) => {
    DATABASE BACKUP  (mysqldump → Documents/TechonERP/backups/)
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-backup-database', async (_event, payload) => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   try {
     const cfg       = loadNetworkConfig();
     const xamppBase = (payload && payload.xamppPath) || (cfg && cfg.xamppPath) || detectXamppPath();
@@ -2506,6 +2765,7 @@ ipcMain.handle('tc-backup-database', async (_event, payload) => {
    OPEN BACKUP FOLDER
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-open-backup-folder', async () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   const dir = path.join(app.getPath('documents'), 'TechonERP', 'backups');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   await shell.openPath(dir);
@@ -2522,6 +2782,7 @@ ipcMain.handle('tc-write-log', (_event, { level, message }) => {
 });
 
 ipcMain.handle('tc-open-log-folder', async () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   const dir = getLogDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   await shell.openPath(dir);
@@ -2532,6 +2793,7 @@ ipcMain.handle('tc-open-log-folder', async () => {
    LAST BACKUP DATE  (for daily reminder)
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-last-db-backup-date', () => {
+  if (isNetworkClientRole()) return clientModeBlockedIpc();
   try {
     const backupDir = path.join(app.getPath('documents'), 'TechonERP', 'backups');
     if (!fs.existsSync(backupDir)) return { date: null };

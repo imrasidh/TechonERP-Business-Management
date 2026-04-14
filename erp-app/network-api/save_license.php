@@ -18,7 +18,9 @@
  *     license_key   : "TCERP-XXXX-XXXX",
  *     plan          : "monthly"|"yearly"|"lifetime"|...,
  *     expires_at    : "2026-01-01" | null,
- *     trial_ends_at : "2026-01-05" | null
+ *     trial_ends_at : "2026-01-05" | null,
+ *     max_clients   : 3 | null,
+ *     read_only     : 0|1
  *   }
  *
  * Returns: { success, message, data: null }
@@ -51,6 +53,9 @@ $licenseKey  = isset($input['license_key'])    ? (string)$input['license_key']  
 $plan        = isset($input['plan'])           ? (string)$input['plan']          : null;
 $expiresAt   = isset($input['expires_at'])     ? (string)$input['expires_at']    : null;
 $trialEndsAt = isset($input['trial_ends_at'])  ? (string)$input['trial_ends_at'] : null;
+$maxClients  = isset($input['max_clients'])    ? (int)$input['max_clients']       : 0;
+$readOnly    = !empty($input['read_only']) ? 1 : 0;
+$maxClients  = $maxClients > 0 ? $maxClients : 0;
 
 /* ── Ensure table exists (auto-migrate old installs) ────────────── */
 $pdo = db();
@@ -63,24 +68,31 @@ $pdo->exec("
         `plan`          VARCHAR(50)   DEFAULT NULL,
         `expires_at`    VARCHAR(50)   DEFAULT NULL,
         `trial_ends_at` VARCHAR(50)   DEFAULT NULL,
+        `max_clients`   INT           NOT NULL DEFAULT 0,
+        `read_only`     TINYINT(1)    NOT NULL DEFAULT 0,
         `synced_at`     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (`id`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
 ");
+/* Auto-migrate old installs that already had shop_license */
+try { $pdo->exec("ALTER TABLE shop_license ADD COLUMN max_clients INT NOT NULL DEFAULT 0"); } catch (Exception $e) {}
+try { $pdo->exec("ALTER TABLE shop_license ADD COLUMN read_only TINYINT(1) NOT NULL DEFAULT 0"); } catch (Exception $e) {}
 
 /* ── UPSERT (always id = 1) ─────────────────────────────────────── */
 $stmt = $pdo->prepare("
     INSERT INTO shop_license
-        (`id`, `status`, `shop_name`, `license_key`, `plan`, `expires_at`, `trial_ends_at`)
+        (`id`, `status`, `shop_name`, `license_key`, `plan`, `expires_at`, `trial_ends_at`, `max_clients`, `read_only`)
     VALUES
-        (1, :status, :shop_name, :license_key, :plan, :expires_at, :trial_ends_at)
+        (1, :status, :shop_name, :license_key, :plan, :expires_at, :trial_ends_at, :max_clients, :read_only)
     ON DUPLICATE KEY UPDATE
         `status`        = VALUES(`status`),
         `shop_name`     = VALUES(`shop_name`),
         `license_key`   = VALUES(`license_key`),
         `plan`          = VALUES(`plan`),
         `expires_at`    = VALUES(`expires_at`),
-        `trial_ends_at` = VALUES(`trial_ends_at`)
+        `trial_ends_at` = VALUES(`trial_ends_at`),
+        `max_clients`   = VALUES(`max_clients`),
+        `read_only`     = VALUES(`read_only`)
 ");
 
 $stmt->execute([
@@ -90,6 +102,8 @@ $stmt->execute([
     ':plan'          => $plan,
     ':expires_at'    => $expiresAt,
     ':trial_ends_at' => $trialEndsAt,
+    ':max_clients'   => $maxClients,
+    ':read_only'     => $readOnly,
 ]);
 
 serverLog('info', '[save_license] Synced status=' . $status . ' shop=' . ($shopName ?? 'none'));

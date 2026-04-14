@@ -67,6 +67,7 @@ if (!$body || !is_array($body)) {
 $license_key = !empty($body['license_key']) ? strtoupper(trim((string)$body['license_key'])) : '';
 $device_id   = !empty($body['device_id'])   ? trim((string)$body['device_id'])               : '';
 $shop_name   = !empty($body['shop_name'])   ? trim((string)$body['shop_name'])                : '';
+$device_name = !empty($body['device_name']) ? trim((string)$body['device_name'])              : '';
 
 if (!$license_key || !$device_id || !$shop_name) {
     ob_end_clean();
@@ -128,13 +129,17 @@ if ($index === -1) {
 }
 
 $entry = $licenses[$index];
+$stored_device_id = trim((string)($entry['device_id'] ?? ($entry['device'] ?? '')));
 
-/* ── Device lock check (unchanged) ── */
-if (!empty($entry['device']) && $entry['device'] !== $device_id) {
+/* ── Strict one-device binding ── */
+if ($stored_device_id !== '' && $stored_device_id !== $device_id) {
     flock($fp, LOCK_UN);
     fclose($fp);
     ob_end_clean();
-    echo json_encode(['status' => 'DEVICE_MISMATCH', 'message' => 'License already activated on another device']);
+    echo json_encode([
+        'status' => 'blocked',
+        'message' => 'This license is already activated on another device. Please contact admin to reset.'
+    ]);
     exit;
 }
 
@@ -147,8 +152,24 @@ if (!empty($entry['blocked'])) {
     exit;
 }
 
-/* ── Compute expiry based on plan ── */
-$plan         = !empty($entry['plan']) ? strtolower($entry['plan']) : 'monthly';
+/* ── Same-device re-activation safety: allow silently, keep current binding ── */
+$plan = !empty($entry['plan']) ? strtolower($entry['plan']) : 'monthly';
+if ($stored_device_id !== '' && $stored_device_id === $device_id) {
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    ob_end_clean();
+    echo json_encode([
+        'status'      => 'OK',
+        'shop_name'   => $entry['shop'] ?? ($entry['shop_name'] ?? $shop_name),
+        'plan'        => $plan,
+        'expires'     => $entry['expires'] ?? null,
+        'max_clients' => intval($entry['max_clients'] ?? 0),
+        'message'     => 'Activation successful'
+    ]);
+    exit;
+}
+
+/* ── First activation after fresh key / admin reset ── */
 $activated_at = date('Y-m-d');
 $expires      = null;
 
@@ -174,8 +195,11 @@ switch ($plan) {
 }
 
 /* ── Write updated entry ── */
-$licenses[$index]['device']       = $device_id;
-$licenses[$index]['shop']         = $shop_name;
+$licenses[$index]['device']       = $device_id;   // backward compatibility
+$licenses[$index]['device_id']    = $device_id;
+$licenses[$index]['device_name']  = $device_name !== '' ? substr($device_name, 0, 100) : ($entry['device_name'] ?? null);
+$licenses[$index]['shop']         = $shop_name;   // backward compatibility
+$licenses[$index]['shop_name']    = $shop_name;
 $licenses[$index]['activated_at'] = $activated_at;
 $licenses[$index]['expires']      = $expires;
 
@@ -194,6 +218,7 @@ echo json_encode([
     'shop_name' => $shop_name,
     'plan'      => $plan,
     'expires'   => $expires,
+    'max_clients' => intval($entry['max_clients'] ?? 0),
     'message'   => 'Activation successful'
 ]);
 exit;

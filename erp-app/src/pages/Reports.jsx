@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 
 var Reports = React.memo(function (props) {
   var state = props.state;
@@ -74,6 +74,24 @@ var Reports = React.memo(function (props) {
   var [assetFilterCat, setAssetFilterCat] = useState("All");
   var [assetFilterFrom, setAssetFilterFrom] = useState("");
   var [assetFilterTo, setAssetFilterTo] = useState("");
+
+  var systemConfigRpt = props.systemConfig || {};
+  var isNetworkServerRpt = systemConfigRpt.role === "network_server";
+  var [terminalNameMap, setTerminalNameMap] = useState({});
+  useEffect(function () {
+    if (!isNetworkServerRpt) return;
+    var api = window.electronAPI;
+    if (!api || !api.getConnectedClients) return;
+    api.getConnectedClients().then(function (r) {
+      if (!r || !r.ok || !r.clients) return;
+      var m = {};
+      (r.clients || []).forEach(function (c) {
+        var disp = (c.client_label && String(c.client_label).trim()) || c.device_name || c.device_id;
+        m[c.device_id] = disp;
+      });
+      setTerminalNameMap(m);
+    }).catch(function () {});
+  }, [isNetworkServerRpt, tab]);
 
   /* BUG1 FIX: Use getCashBalances() as authoritative cash figure (replaces stale manual formula) */
   var _rptBalances = getCashBalances(state);
@@ -891,6 +909,46 @@ var Reports = React.memo(function (props) {
               <div style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", fontSize: 13, fontWeight: 900, background: "#f0f4ff", borderTop: "2px solid " + C.border }}><span>Active Repairs</span><span style={{ color: activeRepairs > 0 ? C.orange : C.green }}>{activeRepairs} jobs</span></div>
             </Card>
           </div>
+          {isNetworkServerRpt && (function () {
+            var by = {};
+            state.sales.forEach(function (s) {
+              var k = s.originDeviceId ? String(s.originDeviceId) : "__local__";
+              if (!by[k]) by[k] = { count: 0, revenue: 0, label: s.originTerminalLabel || "" };
+              by[k].count += 1;
+              by[k].revenue += Number(s.total) || 0;
+              if (!by[k].label && s.originTerminalLabel) by[k].label = s.originTerminalLabel;
+            });
+            var keys = Object.keys(by).sort(function (a, b) { return by[b].revenue - by[a].revenue; });
+            return (
+              <Card>
+                <CardTitle sub="Invoices tagged with origin device (client POS)">Sales by terminal</CardTitle>
+                <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
+                  Compares revenue per terminal. Invoices created on this server PC appear as &quot;Server / main PC&quot;. Older invoices may be untagged until clients update.
+                </div>
+                <div style={{ border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                    <thead><tr style={{ background: "#f8faff" }}><th style={{ textAlign: "left", padding: "8px 10px" }}>Terminal</th><th style={{ textAlign: "right", padding: "8px 10px" }}>Invoices</th><th style={{ textAlign: "right", padding: "8px 10px" }}>Revenue</th></tr></thead>
+                    <tbody>
+                      {keys.map(function (k, idx) {
+                        var b = by[k];
+                        var name = b.label || terminalNameMap[k] || (k === "__local__" ? "Server / main PC" : (k.length > 14 ? k.slice(0, 10) + "…" : k));
+                        return (
+                          <tr key={k + "-" + idx} style={{ borderTop: "1px solid " + C.borderLight }}>
+                            <td style={{ padding: "8px 10px", fontWeight: 700 }}>{name}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{b.count}</td>
+                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 800, color: C.blue }}>{getCurrencySymbol()} {fmtNum(b.revenue)}</td>
+                          </tr>
+                        );
+                      })}
+                      {keys.length === 0 && (
+                        <tr><td colSpan={3} style={{ padding: 14, color: C.muted, textAlign: "center" }}>No sales invoices yet.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            );
+          })()}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
             <MetricChip label="Gross Profit" value={totalProfit} sub={grossMarginPct + "% margin"} />
             <MetricChip label="Net Profit" value={totalProfit + totalRepairRevenue - totalExpenses} />

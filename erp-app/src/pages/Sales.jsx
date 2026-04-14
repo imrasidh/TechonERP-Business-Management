@@ -118,6 +118,18 @@ var POS = React.memo(function (props) {
   var [posCustDropIdx, setPosCustDropIdx] = useState(-1);
   var searchRef = useRef(null);
   var waPendingRef = useRef(false); /* true when Save+WhatsApp was clicked */
+  var isNetworkClientPos = props.isNetworkClient === true;
+  var focusPosSearch = useCallback(function () {
+    setTimeout(function () {
+      try {
+        var el = searchRef.current;
+        if (el) {
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        }
+      } catch (e) { /* ignore */ }
+    }, 0);
+  }, []);
   var [posInvoiceLang, setPosInvoiceLang] = useState(function () { return (state.settings && state.settings.defaultInvoiceLang) || "en"; });
   useEffect(function () {
     var allowed = getAllowedInvoiceLangCodes(state.settings);
@@ -177,6 +189,25 @@ var POS = React.memo(function (props) {
     setHeldInvoices(S.get("tc3_held_invoices", []));
     return function () { window._techon_pos_snapshot = null; };
   }, []);
+
+  /* Auto-focus product / barcode field for fast scanning */
+  useEffect(function () {
+    focusPosSearch();
+  }, [focusPosSearch]);
+
+  /* Client POS: warn before closing / refresh with a non-empty cart */
+  useEffect(function () {
+    if (!isNetworkClientPos) return;
+    var onBeforeUnload = function (e) {
+      if (cart.length > 0) {
+        e.preventDefault();
+        e.returnValue = "Items are in the cart. Are you sure you want to leave?";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return function () { window.removeEventListener("beforeunload", onBeforeUnload); };
+  }, [cart.length, isNetworkClientPos]);
 
 
 
@@ -290,11 +321,7 @@ var POS = React.memo(function (props) {
       }]);
     });
     setSearch("");
-    setTimeout(function () {
-      var newRow = document.querySelector("[data-cartrow='" + (cart.length) + "'][data-cartcol='0']");
-      if (!newRow) newRow = document.querySelector("[data-cartrow='" + (cart.length - 1) + "'][data-cartcol='0']");
-      if (newRow) { newRow.focus(); newRow.select && newRow.select(); }
-    }, 30);
+    focusPosSearch();
   };
 
   /* Simple qty update — one unit, decimals handle g/ml etc. */
@@ -479,6 +506,15 @@ var POS = React.memo(function (props) {
       });
     }
     var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: today(), customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromQuotationId: fromQuotationId || undefined };
+    if (isNetworkClientPos) {
+      var li = props.licenseInfo || (typeof window !== "undefined" ? window._tcLicInfo : null) || {};
+      var oid = li.terminalDeviceId || li.deviceId || "";
+      if (oid) {
+        saleObj.originDeviceId = oid;
+        var otl = String(li.clientLabel || "").trim();
+        if (otl) saleObj.originTerminalLabel = otl;
+      }
+    }
     if (state.settings && state.settings.taxEnabled && (posTotalTax > 0 || (posTaxLines && posTaxLines.length > 0))) {
       saleObj.taxMode = posTaxCalc.taxMode || "exclusive";
       saleObj.totalTax = posTotalTax;
@@ -583,6 +619,7 @@ var POS = React.memo(function (props) {
       setPendingPrint({ sale: finalSaleForPrint, mode: mode || "thermal", settings: Object.assign({}, state.settings), warranty: includeWarranty, invoiceLang: posInvoiceLang });
       setCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId("");
       try { sessionStorage.removeItem("tc3_dirty"); } catch (e2) { }
+      focusPosSearch();
     } else {
       resetForm();
     }
@@ -618,6 +655,7 @@ var POS = React.memo(function (props) {
   var resetForm = function () {
     setCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId("");
     setEditingSaleId("");
+    focusPosSearch();
   };
 
   /* ─── Recent Bills: reprint a completed sale ─────────────────────────────── */
@@ -805,7 +843,27 @@ var POS = React.memo(function (props) {
 
   var posCheckoutHintId = "pos-checkout-block-hint";
   var posCheckoutAriaDesc = posSetupBlocked || isCheckingOut ? posCheckoutHintId : undefined;
+  var clientPosOfflineBar = props.clientPosOfflineBar === true;
   return (
+    <React.Fragment>
+    {clientPosOfflineBar ? (
+      <div
+        role="status"
+        style={{
+          marginBottom: 12,
+          padding: "8px 14px",
+          borderRadius: 8,
+          border: "1px solid #fcd34d",
+          background: "linear-gradient(90deg,#fffbeb,#fef3c7)",
+          color: "#92400e",
+          fontSize: 12,
+          fontWeight: 700,
+          textAlign: "center",
+        }}
+      >
+        Offline — sales may sync when connection restores
+      </div>
+    ) : null}
     <form
       className="erp-page erp-pos"
       style={{ display: "flex", gap: 16, minHeight: "100%", boxSizing: "border-box", alignItems: "stretch", margin: 0 }}
@@ -1699,6 +1757,7 @@ var POS = React.memo(function (props) {
         );
       })()}
     </form>
+    </React.Fragment>
   );
 });
 var Sales = POS;

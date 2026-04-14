@@ -340,6 +340,14 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
 .badge.blocked::before { background: var(--red); }
 .badge.expired { background: rgba(245,158,11,.12); color: #fcd34d; }
 .badge.expired::before { background: var(--amber); }
+.badge.bound { background: rgba(16,185,129,.12); color: #6ee7b7; }
+.badge.bound::before { background: #10b981; box-shadow: 0 0 4px #10b981; }
+.badge.unbound { background: rgba(148,163,184,.16); color: #cbd5e1; }
+.badge.unbound::before { background: #94a3b8; }
+.device-status-cell { min-width: 130px; }
+.device-status-lines { margin-top: 6px; line-height: 1.25; }
+.device-status-name { font-size: 12px; color: var(--text); font-weight: 600; }
+.device-status-id { font-size: 11px; color: var(--muted2); margin-top: 3px; }
 
 /* Plan badges */
 .plan-badge {
@@ -615,8 +623,10 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
           <th>#</th>
           <th>License Key</th>
           <th>Plan</th>
+          <th>Max PCs</th>
           <th>Shop Name</th>
           <th>Device ID</th>
+          <th>Device Status</th>
           <th>Activated Date</th>
           <th>Expiry Date</th>
           <th>Status</th>
@@ -627,7 +637,7 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
       <tbody>
         <?php if (!$display): ?>
         <tr class="empty-row">
-          <td colspan="10">No licenses match your search.</td>
+          <td colspan="12">No licenses match your search.</td>
         </tr>
         <?php endif; ?>
 
@@ -635,8 +645,16 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
           $st       = licStatus($lic);
           $key      = $lic['key']          ?? '';
           $plan     = !empty($lic['plan']) ? strtolower($lic['plan']) : 'monthly';
+          $maxPcs   = intval($lic['max_clients'] ?? 0);
           $shop     = $lic['shop']         ?? '';
           $dev      = $lic['device']       ?? '';
+          $deviceId = trim((string)($lic['device_id'] ?? $dev));
+          $deviceName = trim((string)($lic['device_name'] ?? ''));
+          $isBound  = $deviceId !== '';
+          $deviceStatusClass = $isBound ? 'bound' : 'unbound';
+          $deviceStatusLabel = $isBound ? '🟢 Bound' : '⚪ Unbound';
+          $deviceRef = $deviceId !== '' ? $deviceId : $dev;
+          $shortDeviceId = $deviceId ? substr($deviceId, 0, 6) . (strlen($deviceId) > 6 ? '...' : '') : '';
           $devTip   = h($dev);
           $devShort = $dev ? substr($dev, 0, 12).'…' : '';
           $actRaw   = $lic['activated_at'] ?? '';
@@ -683,9 +701,33 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
           <td class="td-num"><?= $i + 1 ?></td>
           <td class="td-key"><?= h($key) ?></td>
           <td><span class="plan-badge <?= planClass($plan) ?>"><?= planLabel($plan) ?></span></td>
+          <td style="white-space:nowrap">
+            <form method="POST" action="update_max_clients.php" style="display:flex;align-items:center;gap:6px;flex-wrap:nowrap" onsubmit="return confirm('Update max client PCs for:\n<?= addslashes(h($key)) ?> ?')">
+              <input type="hidden" name="csrf" value="<?= h($csrf) ?>"/>
+              <input type="hidden" name="key" value="<?= h($key) ?>"/>
+              <input type="number" name="max_clients" min="0" step="1" value="<?= $maxPcs ?>" style="width:72px;padding:5px 8px;background:var(--panel);border:1px solid var(--edge2);border-radius:6px;color:var(--text);font-size:12px;font-weight:700" />
+              <button type="submit" class="abt" style="background:rgba(37,99,235,.15);color:#93c5fd;border:1px solid rgba(37,99,235,.3)">Save</button>
+            </form>
+            <div style="margin-top:4px;font-size:11px;color:var(--muted2)"><?= $maxPcs === 0 ? 'No clients' : (string)$maxPcs ?></div>
+          </td>
           <td class="td-shop"><?= $shop ? h($shop) : '<span class="dash">—</span>' ?></td>
           <td class="td-dev" title="<?= $devTip ?>">
             <?= $dev ? h($devShort) : '<span class="dash">—</span>' ?>
+          </td>
+          <td class="device-status-cell">
+            <span class="badge <?= $deviceStatusClass ?>"><?= h($deviceStatusLabel) ?></span>
+            <div class="device-status-lines">
+              <?php if ($isBound): ?>
+                <?php if ($deviceName !== ''): ?>
+                  <div class="device-status-name"><?= h($deviceName) ?></div>
+                  <div class="device-status-id"><?= h('(ID: ' . $shortDeviceId . ')') ?></div>
+                <?php else: ?>
+                  <div class="device-status-id"><?= h('(ID: ' . $shortDeviceId . ')') ?></div>
+                <?php endif; ?>
+              <?php else: ?>
+                <div class="device-status-id"><span class="dash">—</span></div>
+              <?php endif; ?>
+            </div>
           </td>
           <td class="td-date"><?= $actDate ?: '<span class="dash">—</span>' ?></td>
           <td class="td-exp" style="<?= $expStyle ?>">
@@ -738,7 +780,7 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
           <td>
             <div class="actions">
 
-              <?php if ($dev || $st === 'active' || $st === 'expired'): ?>
+              <?php if ($deviceRef || $st === 'active' || $st === 'expired'): ?>
               <form method="POST" action="reset.php" style="display:inline"
                 onsubmit="return confirm('Reset license binding for:\n<?= addslashes(h($key)) ?>\n\nThis clears the device, shop and expiry so it can be activated on a new device.')">
                 <input type="hidden" name="csrf" value="<?= h($csrf) ?>"/>
@@ -809,6 +851,10 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
         <span id="planHintLabel">Monthly plan</span>
         <span class="plan-hint-price" id="planHintPrice">LKR 1,000</span>
       </div>
+
+      <label class="plan-select-label">Max Client PCs (0 = no client PCs allowed)</label>
+      <input type="number" name="max_clients" min="0" step="1" value="0" class="plan-select" style="background-image:none;margin-bottom:8px" />
+      <div style="font-size:11px;color:var(--muted2);margin-bottom:18px">Set a value above 0 to allow network client PCs.</div>
 
       <div class="modal-actions">
         <button type="button" class="mbtn mbtn-cancel" onclick="closeModals()">Cancel</button>

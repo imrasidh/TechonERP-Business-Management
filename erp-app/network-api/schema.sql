@@ -61,12 +61,26 @@ CREATE TABLE IF NOT EXISTS shop_license (
   `plan`         VARCHAR(50)   DEFAULT NULL,
   `expires_at`   VARCHAR(50)   DEFAULT NULL,
   `trial_ends_at`VARCHAR(50)   DEFAULT NULL,
+  `max_clients`  INT           NOT NULL DEFAULT 0,
+  `read_only`    TINYINT(1)    NOT NULL DEFAULT 0,
   `synced_at`    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Ensure the single license row always exists
 INSERT IGNORE INTO shop_license (`id`, `status`) VALUES (1, 'none');
+
+-- ─── Licensed client devices (for max client limit) ─────────────────────
+CREATE TABLE IF NOT EXISTS connected_clients (
+  `id`            INT            NOT NULL AUTO_INCREMENT,
+  `device_id`     VARCHAR(120)   NOT NULL,
+  `device_name`   VARCHAR(255)   DEFAULT NULL,
+  `client_label`  VARCHAR(255)   DEFAULT NULL,
+  `last_seen`     DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY uq_device_id (`device_id`),
+  INDEX idx_last_seen (`last_seen`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ─── Seed default keys so first load is safe ─────────────────────────
 INSERT IGNORE INTO kv_store (store_key, value) VALUES
