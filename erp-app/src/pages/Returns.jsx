@@ -251,7 +251,7 @@ var SalesReturnTab = function (props) {
         });
       });
 
-      /* Reduce sale total/balance — paid stays at origPaid, balance = max(0, newTotal - origPaid) */
+      /* Reduce sale total/balance; align paymentHistory sum with paid (refund row when paid drops) */
       var ns = state.sales.map(function (s) {
         if (s.id !== selInv.id) return s;
         var newPaid = Math.min(origPaid, newTotal); /* can't have paid more than new total */
@@ -262,7 +262,27 @@ var SalesReturnTab = function (props) {
           totalTax: tcRet.totalTax || 0,
           selectedTaxes: (tcRet.selectedTaxes || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; }),
         };
-        return Object.assign({}, s, taxPatch, { subTotal: newLineSub, total: newTotal, balance: newBal, paid: newPaid, payStatus: newStat });
+        var refundFromPaid = origPaid - newPaid;
+        var ph = (s.paymentHistory || []).slice();
+        if (refundFromPaid > 0.005) {
+          ph.push({
+            id: uid(),
+            date: today(),
+            amount: -refundFromPaid,
+            type: "refund",
+            note: "Sales return adjustment",
+            createdAt: new Date().toISOString(),
+            cashMethod: "Adjustment",
+          });
+        }
+        return Object.assign({}, s, taxPatch, {
+          subTotal: newLineSub,
+          total: newTotal,
+          balance: newBal,
+          paid: newPaid,
+          payStatus: newStat,
+          paymentHistory: ph,
+        });
       });
 
       /* Adjust customer credit and totalSpent — no early exit for needsRefund (Ghost Debt fix) */

@@ -520,6 +520,139 @@ tbody td { padding: 11px 14px; vertical-align: middle; }
   display: flex; justify-content: space-between; align-items: center;
 }
 .plan-hint-price { font-weight: 700; color: var(--green); font-size: 14px; }
+
+/* ══════════ Mobile / tablet (desktop rules above are unchanged) ══════════ */
+@media (max-width: 900px) {
+  .main { padding: 22px 18px 40px; }
+  .topbar { padding: 0 18px; }
+}
+
+@media (max-width: 768px) {
+  .topbar {
+    height: auto;
+    min-height: 52px;
+    padding: 12px 16px;
+    padding-left: max(16px, env(safe-area-inset-left));
+    padding-right: max(16px, env(safe-area-inset-right));
+    padding-top: max(12px, env(safe-area-inset-top));
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  .topbar-spacer { display: none; }
+  .topbar-brand {
+    flex: 1 1 100%;
+    min-width: 0;
+    white-space: normal;
+    font-size: 14px;
+    line-height: 1.35;
+  }
+  .topbar-user { font-size: 11px; flex: 1 1 auto; min-width: 0; }
+  .topbar-logout {
+    padding: 8px 14px;
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .main {
+    padding: 16px 14px 36px;
+    padding-left: max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+    padding-bottom: max(36px, env(safe-area-inset-bottom));
+  }
+
+  .flash { font-size: 12px; padding: 10px 14px; }
+
+  .table-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+    padding: 14px 16px;
+  }
+  .table-title { white-space: normal; font-size: 14px; }
+  .shown-count { align-self: flex-start; }
+  .table-controls {
+    margin-left: 0;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .search-wrap { width: 100%; }
+  .search-wrap input {
+    width: 100%;
+    max-width: none;
+    min-height: 42px;
+    font-size: 16px; /* avoids iOS zoom-on-focus */
+  }
+  .filters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .filter-btn {
+    text-align: center;
+    justify-content: center;
+    padding: 9px 10px;
+    min-height: 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .btn-gen,
+  .table-controls .btn {
+    width: 100%;
+    justify-content: center;
+    min-height: 44px;
+    padding: 10px 16px;
+    font-size: 14px;
+  }
+
+  .tbl-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
+  }
+  table { font-size: 12px; }
+  thead th { padding: 8px 10px; font-size: 9px; }
+  tbody td { padding: 10px 10px; }
+  .abt {
+    min-height: 36px;
+    padding: 6px 10px;
+  }
+
+  .modal {
+    padding: 24px 20px;
+    width: calc(100% - 24px);
+    max-height: min(92vh, calc(100dvh - 24px));
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: auto;
+  }
+  .modal-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .mbtn { flex: 1 1 auto; min-width: 120px; min-height: 44px; }
+  .support-pin-out { font-size: 26px; padding: 18px 12px; }
+  .support-challenge-input { font-size: 18px; min-height: 48px; }
+  .plan-hint { flex-direction: column; align-items: flex-start; gap: 6px; }
+}
+
+@media (max-width: 480px) {
+  .stats {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .stat-card { padding: 16px; }
+  .stat-value { font-size: 30px; }
+  .filters {
+    grid-template-columns: 1fr;
+  }
+}
 </style>
 </head>
 <body>

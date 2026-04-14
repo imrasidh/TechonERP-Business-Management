@@ -82,8 +82,9 @@ function log(level, message) {
     if (window.electronAPI && window.electronAPI.writeLog) {
       window.electronAPI.writeLog({ level, message: '[SyncEngine] ' + message });
     }
+    if (IS_PRODUCTION) return;
     if (level === 'error') console.error('[TC_SYNC]', message);
-    else if (!IS_PRODUCTION) console.log('[TC_SYNC]', message);
+    else console.log('[TC_SYNC]', message);
   } catch (_) {}
 }
 

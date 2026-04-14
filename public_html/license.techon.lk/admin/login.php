@@ -154,6 +154,29 @@ input:focus { border-color: var(--blue); }
   color: #fca5a5;
   margin-bottom: 16px;
 }
+
+/* Mobile: comfortable tap targets + safe areas (desktop unchanged) */
+@media (max-width: 520px) {
+  body {
+    align-items: flex-start;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  .card {
+    padding: 32px 22px 36px;
+    border-radius: 16px;
+    max-width: 100%;
+  }
+  .logo-row { margin-bottom: 24px; }
+  input[type=text], input[type=password] {
+    font-size: 16px; /* reduces iOS zoom on focus */
+    min-height: 48px;
+    margin-bottom: 14px;
+  }
+  .btn {
+    min-height: 48px;
+    font-size: 15px;
+  }
+}
 </style>
 </head>
 <body>

@@ -1742,17 +1742,34 @@ var Reports = React.memo(function (props) {
           passed.push("No invoices have paid amount exceeding total ✓");
         }
 
-        /* ── CHECK 4: Payment history sum vs paid field ── */
-        var phMismatches = [];
+        /* ── CHECK 4: Payment history sum vs paid field ──
+           Real data issues → error. Legacy mismatch when sales returns exist but history was never
+           backfilled (pre–refund rows) → warning only. */
+        var phMismatchesErr = [];
+        var phMismatchesLegacy = [];
         (state.sales || []).forEach(function (s) {
           var phSum = (s.paymentHistory || []).reduce(function (a, ph) { return a + (ph.amount || 0); }, 0);
-          if (Math.abs(phSum - (s.paid || 0)) > 1) {
-            phMismatches.push({ ref: s.invoiceNo || s.id.slice(0, 8), phSum: phSum, paid: s.paid || 0 });
-          }
+          if (Math.abs(phSum - (s.paid || 0)) <= 1) return;
+          var row = { ref: s.invoiceNo || s.id.slice(0, 8), phSum: phSum, paid: s.paid || 0 };
+          var hasSalesReturns = (state.salesReturns || []).some(function (r) { return r.invoiceId === s.id; });
+          if (hasSalesReturns) phMismatchesLegacy.push(row);
+          else phMismatchesErr.push(row);
         });
-        if (phMismatches.length > 0) {
-          issues.push({ label: "Payment History Sum ≠ Paid Amount", count: phMismatches.length, detail: phMismatches.map(function (m) { return m.ref + ": history=" + cur + " " + fmtNum(m.phSum) + ", paid=" + cur + " " + fmtNum(m.paid); }).join(" | "), severity: "error" });
-        } else {
+        if (phMismatchesErr.length > 0) {
+          issues.push({ label: "Payment History Sum ≠ Paid Amount", count: phMismatchesErr.length, detail: phMismatchesErr.map(function (m) { return m.ref + ": history=" + cur + " " + fmtNum(m.phSum) + ", paid=" + cur + " " + fmtNum(m.paid); }).join(" | "), severity: "error" });
+        }
+        if (phMismatchesLegacy.length > 0) {
+          warnings.push({
+            label: "Payment History Sum ≠ Paid Amount (legacy)",
+            count: phMismatchesLegacy.length,
+            detail: phMismatchesLegacy.map(function (m) {
+              return m.ref + ": history=" + cur + " " + fmtNum(m.phSum) + ", paid=" + cur + " " + fmtNum(m.paid) + " — Return exists but payment history not adjusted (legacy data)";
+            }).join(" | "),
+            severity: "warn",
+            legacyPhMismatch: true,
+          });
+        }
+        if (phMismatchesErr.length === 0 && phMismatchesLegacy.length === 0) {
           passed.push("All payment history sums match invoice paid amounts ✓");
         }
 
@@ -1902,8 +1919,14 @@ var Reports = React.memo(function (props) {
           passed.push("Cash (" + cur + " " + fmtNum(balances.cash) + ") and Bank (" + cur + " " + fmtNum(balances.bank) + ") balances are positive ✓");
         }
 
+        /* Part 4 Option B: set true to hide only legacy ph/paid mismatch warnings from this tab (full list still in memory for audits if needed elsewhere) */
+        var INTEGRITY_UI_HIDE_LEGACY_PH = false;
+        var warningsForUi = INTEGRITY_UI_HIDE_LEGACY_PH
+          ? warnings.filter(function (w) { return !w.legacyPhMismatch; })
+          : warnings;
+
         var totalIssues = issues.length;
-        var totalWarnings = warnings.length;
+        var totalWarnings = warningsForUi.length;
         var isClean = totalIssues === 0 && totalWarnings === 0;
 
         var printReport = function () {
@@ -1919,9 +1942,9 @@ var Reports = React.memo(function (props) {
             issues.forEach(function (item) { html += "<div class='issue'><div class='label'>" + escapeHtml(item.label) + " (" + item.count + ")</div><div class='detail'>" + escapeHtml(item.detail) + "</div></div>"; });
             html += "</div>";
           }
-          if (warnings.length > 0) {
-            html += "<div class='section'><div style='font-weight:800;color:#d97706;font-size:14px;margin-bottom:8px;'>⚠️ Warnings (" + warnings.length + ")</div>";
-            warnings.forEach(function (item) { html += "<div class='warn'><div class='label'>" + escapeHtml(item.label) + " (" + item.count + ")</div><div class='detail'>" + escapeHtml(item.detail) + "</div></div>"; });
+          if (warningsForUi.length > 0) {
+            html += "<div class='section'><div style='font-weight:800;color:#d97706;font-size:14px;margin-bottom:8px;'>⚠️ Warnings (" + warningsForUi.length + ")</div>";
+            warningsForUi.forEach(function (item) { html += "<div class='warn'><div class='label'>" + escapeHtml(item.label) + " (" + item.count + ")</div><div class='detail'>" + escapeHtml(item.detail) + "</div></div>"; });
             html += "</div>";
           }
           html += "<div class='section'><div style='font-weight:800;color:#065f46;font-size:14px;margin-bottom:8px;'>✅ Passed (" + passed.length + ")</div>";
@@ -1979,11 +2002,11 @@ var Reports = React.memo(function (props) {
             )}
 
             {/* Warnings */}
-            {warnings.length > 0 && (
+            {warningsForUi.length > 0 && (
               <Card>
-                <div style={{ fontSize: 14, fontWeight: 800, color: "#d97706", marginBottom: 12 }}>⚠️ Warnings — Review These ({warnings.length})</div>
+                <div style={{ fontSize: 14, fontWeight: 800, color: "#d97706", marginBottom: 12 }}>⚠️ Warnings — Review These ({warningsForUi.length})</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {warnings.map(function (item, i) {
+                  {warningsForUi.map(function (item, i) {
                     return <div key={i} style={{ background: "#fef9c3", border: "1px solid #fde68a", borderLeft: "4px solid #d97706", borderRadius: "0 8px 8px 0", padding: "12px 14px" }}>
                       <div style={{ fontWeight: 800, fontSize: 13, color: "#92400e" }}>{item.label} <span style={{ background: "#d97706", color: "#fff", borderRadius: 10, fontSize: 11, padding: "1px 7px", marginLeft: 4 }}>{item.count}</span></div>
                       <div style={{ fontSize: 11, color: "#78350f", marginTop: 4, lineHeight: 1.5 }}>{item.detail}</div>
