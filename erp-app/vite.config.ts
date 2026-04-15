@@ -9,6 +9,12 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   base: "./",
   plugins: [react()],
+  define: {
+    // Build metadata only (boolean), avoids exposing actual secret in renderer bundles.
+    __TC_BUILD_HAS_LICENSE_SECRET__: JSON.stringify(
+      Boolean((process.env.LICENSE_SECRET || process.env.TC_LIC_SERVER_SECRET || "").trim())
+    ),
+  },
   build: {
     target: 'es2022',
     reportCompressedSize: false,

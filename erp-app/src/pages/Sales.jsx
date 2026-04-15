@@ -56,6 +56,12 @@ var POS = React.memo(function (props) {
   var validateCoreStartupIdentity = props.validateCoreStartupIdentity;
   var getCoreStartupIdentityAlertMessage = props.getCoreStartupIdentityAlertMessage;
   var TC_SETUP_DISABLE_TITLE = props.TC_SETUP_DISABLE_TITLE;
+  var canEditInvoices = props.canEditInvoices === true;
+  var canOverrideDiscount = props.canOverrideDiscount === true;
+  var currentUserRole = String(props.currentUserRole || "cashier");
+  var showPermissionDenied = typeof props.showPermissionDenied === "function"
+    ? props.showPermissionDenied
+    : function () { showAlert("You do not have permission for this action."); };
   var TH = props.TH;
   var Card = props.Card;
   var CardTitle = props.CardTitle;
@@ -98,6 +104,16 @@ var POS = React.memo(function (props) {
   });
   var [newCust, setNewCust] = useState({ name: "", phone: "", address: "" });
   var [discount, setDiscount] = useState("");
+  var normalizeDiscountNumber = function (raw) {
+    if (raw === null || raw === undefined) return 0;
+    var txt = String(raw).trim();
+    if (!txt) return 0;
+    var num = Number(txt);
+    if (!isFinite(num) || isNaN(num)) return 0;
+    if (num > 1000000000) num = 1000000000;
+    if (num < -1000000000) num = -1000000000;
+    return num;
+  };
   var [payMode, setPayMode] = useState("full");
   var [paidAmt, setPaidAmt] = useState("");
   var [posSplitModal, setPosSplitModal] = useState(false);
@@ -248,7 +264,8 @@ var POS = React.memo(function (props) {
     return Number(raw.toFixed(2));
   };
   var subTotal = Number(cart.reduce(function (a, it) { return a + posLineAmount(it); }, 0).toFixed(2));
-  var discAmt = Math.min(parseFloat(discount) || 0, subTotal);
+  var safeDiscountInput = normalizeDiscountNumber(discount);
+  var discAmt = Math.min(safeDiscountInput, subTotal);
   var taxableNet = Math.max(0, subTotal - discAmt);
   var taxApplyBase = (state.settings && state.settings.taxApplyBase) || "after_discount";
   var useTaxBeforeDisc = taxApplyBase === "before_discount" && state.settings && state.settings.taxEnabled && state.settings.taxMode === "exclusive";
@@ -667,6 +684,14 @@ var POS = React.memo(function (props) {
 
   /* ─── Recent Bills: load a past sale into POS for editing ────────────────── */
   var loadSaleForEdit = function (sale) {
+    if (!canEditInvoices) {
+      showPermissionDenied("edit completed sales");
+      return;
+    }
+    if ((sale && sale.payStatus === "Paid") && currentUserRole !== "admin") {
+      showPermissionDenied("edit a fully paid sale");
+      return;
+    }
     var restoredCart = (sale.items || []).map(function (it) {
       return Object.assign({}, it, {
         cartLineId: it.cartLineId || uid(),
@@ -697,6 +722,10 @@ var POS = React.memo(function (props) {
 
   /* ─── Recent Bills: soft-cancel (mark status = "Cancelled") ─────────────── */
   var cancelRecentSale = function (saleId, reason) {
+    if (!canEditInvoices) {
+      showPermissionDenied("cancel invoices");
+      return;
+    }
     var updatedSales = state.sales.map(function (s) {
       return s.id === saleId
         ? Object.assign({}, s, { status: "Cancelled", cancelledAt: new Date().toISOString(), cancelReason: reason || "" })
@@ -713,6 +742,10 @@ var POS = React.memo(function (props) {
 
   /* ─── Recent Bills: restore a cancelled sale back to active ─────────────── */
   var restoreRecentSale = function (saleId) {
+    if (!canEditInvoices) {
+      showPermissionDenied("restore invoices");
+      return;
+    }
     /* Capture the cancelled snapshot before wiping it — needed for undo */
     var target = state.sales.find(function (s) { return s.id === saleId; });
     var undoSnapshot = target ? {
@@ -746,6 +779,10 @@ var POS = React.memo(function (props) {
 
   /* ─── Recent Bills: undo a restore — re-applies the cancelled state ──────── */
   var undoRestoreSale = function () {
+    if (!canEditInvoices) {
+      showPermissionDenied("undo invoice restore");
+      return;
+    }
     if (!restoreUndoTarget || isRestoringBill) return;
     var snap = restoreUndoTarget;
     var updatedSales = state.sales.map(function (s) {
@@ -1238,7 +1275,26 @@ var POS = React.memo(function (props) {
       {/* Right panel */}
       <div style={{ width: 310, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto" }}>
         <Card>
-          <Input label="Discount (Rs)" type="number" value={discount} onChange={function (e) { setDiscount(e.target.value); }} placeholder="0" />
+          <Input
+            label="Discount (Rs)"
+            type="number"
+            value={discount}
+            onChange={function (e) {
+              var nextVal = e.target.value;
+              var nextNum = normalizeDiscountNumber(nextVal);
+              if (!canOverrideDiscount && nextNum > 0) {
+                showPermissionDenied("apply discount overrides");
+                return;
+              }
+              setDiscount(nextVal);
+            }}
+            onBlur={function () {
+              if (discount === "" || discount === null || discount === undefined) { setDiscount(""); return; }
+              var cleaned = normalizeDiscountNumber(discount);
+              setDiscount(String(cleaned));
+            }}
+            placeholder="0"
+          />
           <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px", margin: "12px 0", display: "flex", flexDirection: "column", gap: 5 }}>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}><span>Sub Total</span><span>{getCurrencySymbol()} {fmtNum(subTotal)}</span></div>
             {discAmt > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.red }}><span>Discount</span><span>- {getCurrencySymbol()} {fmtNum(discAmt)}</span></div>}

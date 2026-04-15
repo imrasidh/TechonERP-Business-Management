@@ -67,6 +67,8 @@ import Dashboard from "./pages/Dashboard.jsx";
 import Reports from "./pages/Reports.jsx";
 import Settings from "./pages/Settings.jsx";
 import Accounts from "./pages/Accounts.jsx";
+import { ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, canAccessPageByRole, hasPermission, normalizeRole } from "./security/rbac.js";
+import { showPermissionDenied as showPermissionDeniedUi } from "./utils/permissionUi.js";
 
 /* ─── FONTS ───────────────────────────────────────── */
 if (!document.getElementById("erp-fonts")) {
@@ -81,13 +83,16 @@ if (!document.getElementById("erp-fonts")) {
 /* Writes an audit entry to IndexedDB via S. Keeps the 500 most recent entries. */
 var addAudit = function (action, reference, details) {
   try {
+    var actor = (typeof window !== "undefined" && window._tcAuditActor) ? window._tcAuditActor : null;
     var entry = {
       id: uid(),
       date: new Date().toISOString().slice(0, 10),
       timestamp: new Date().toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }),
       action: action,
       reference: reference || "",
-      user: "Admin",
+      user: actor && actor.name ? actor.name : "Admin",
+      role: actor && actor.role ? actor.role : "admin",
+      terminal: actor && actor.terminal ? actor.terminal : "local",
       details: details || null
     };
     var log = S.get("tc3_auditLog", []);
@@ -4819,6 +4824,13 @@ var LoginScreen = function (props) {
   var [err, setErr] = useState("");
   var hasPass = !!S.get("tc3_apppass", "");
   var hasAdmin = !!S.get("tc3_admin_name", "");
+  var [username, setUsername] = useState("admin");
+  var [newUsername, setNewUsername] = useState("admin");
+  var getUsers = function () {
+    var users = S.get("tc3_users", []);
+    return Array.isArray(users) ? users : [];
+  };
+  var normalizeUserName = function (v) { return String(v || "").trim().toLowerCase(); };
   /* isFirst = no password set yet; needName = has password but no admin name yet */
   var [isFirst, setIsFirst] = useState(!hasPass);
   var [needName, setNeedName] = useState(hasPass && !hasAdmin);
@@ -4876,11 +4888,35 @@ var LoginScreen = function (props) {
   };
 
   var handleLogin = function () {
+    var users = getUsers();
+    if (users.length > 0) {
+      var uname = normalizeUserName(username);
+      var user = users.find(function (u) { return normalizeUserName(u && u.username) === uname; });
+      if (!user || !user.passwordHash) {
+        setErr("Incorrect username or password.");
+        setPw("");
+        return;
+      }
+      pwMatchesAsync(pw, user.passwordHash).then(function (ok2) {
+        if (!ok2) {
+          setErr("Incorrect username or password.");
+          setPw("");
+          return;
+        }
+        props.onLogin(user);
+      });
+      return;
+    }
     var stored = S.get("tc3_apppass", "");
     pwMatchesAsync(pw, stored).then(function (ok) {
       if (ok) {
         if (!S.get("tc3_admin_name", "")) { setNeedName(true); setPw(""); return; }
-        props.onLogin();
+        props.onLogin({
+          id: "legacy-admin",
+          username: "admin",
+          name: S.get("tc3_admin_name", "Admin"),
+          role: ROLE_ADMIN,
+        });
       } else {
         setErr("Incorrect password. Try again.");
         setPw("");
@@ -4890,19 +4926,35 @@ var LoginScreen = function (props) {
 
   var handleCreate = function () {
     if (!adminName || adminName.trim().length < 2) { setErr("Please enter your name (at least 2 characters)."); return; }
+    if (!newUsername || normalizeUserName(newUsername).length < 3) { setErr("Username must be at least 3 characters."); return; }
     if (!newPw || newPw.length < 4) { setErr("Password must be at least 4 characters."); return; }
     if (newPw !== newPw2) { setErr("Passwords do not match."); return; }
     hashPw(newPw).then(function (hashed) {
       S.set("tc3_apppass", hashed);
       S.set("tc3_admin_name", adminName.trim());
-      props.onLogin();
+      var firstUser = {
+        id: "u_" + uid(),
+        username: normalizeUserName(newUsername),
+        name: adminName.trim(),
+        role: ROLE_ADMIN,
+        passwordHash: hashed,
+        active: true,
+        createdAt: new Date().toISOString(),
+      };
+      S.set("tc3_users", [firstUser]);
+      props.onLogin(firstUser);
     });
   };
 
   var handleSaveName = function () {
     if (!adminName || adminName.trim().length < 2) { setErr("Please enter your name."); return; }
     S.set("tc3_admin_name", adminName.trim());
-    props.onLogin();
+    props.onLogin({
+      id: "legacy-admin",
+      username: "admin",
+      name: adminName.trim(),
+      role: ROLE_ADMIN,
+    });
   };
 
   var handleKeyDown = function (e) {
@@ -4922,7 +4974,7 @@ var LoginScreen = function (props) {
             <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
           </div>
           <div style={{ fontSize: 22, fontWeight: 900, color: "#0d1b3e", letterSpacing: "-0.03em" }}>Techon ERP</div>
-          <div style={{ fontSize: 12, color: "#8fa3c8", fontWeight: 600, marginTop: 4 }}>{isFirst ? "Set up your administrator account to get started" : needName ? "Almost there! Just one more step" : "Enter your password to continue"}</div>
+          <div style={{ fontSize: 12, color: "#8fa3c8", fontWeight: 600, marginTop: 4 }}>{isFirst ? "Set up your administrator account to get started" : needName ? "Almost there! Just one more step" : "Sign in to continue"}</div>
         </div>
 
         {err && <div style={{ background: "#fde8ed", color: "#e03151", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontWeight: 600, marginBottom: 14, textAlign: "center" }}>{err}</div>}
@@ -4934,6 +4986,7 @@ var LoginScreen = function (props) {
               Welcome! Enter your name and create a password to protect your ERP.
             </div>
             <Input label="Your Name (Administrator)" value={adminName} onChange={function (e) { setAdminName(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="e.g. Rashid" />
+            <Input label="Username" value={newUsername} onChange={function (e) { setNewUsername(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="e.g. admin" />
             <Input label="Create Password (min 4 chars)" type="password" value={newPw} onChange={function (e) { setNewPw(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="Enter new password..." />
             <Input label="Confirm Password" type="password" value={newPw2} onChange={function (e) { setNewPw2(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="Repeat password..." />
             <Btn col="cyan" full onClick={handleCreate} disabled={!adminName || !newPw || !newPw2}>Create Account & Enter</Btn>
@@ -4950,8 +5003,9 @@ var LoginScreen = function (props) {
         ) : (
           /* ── Normal login ── */
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <Input label="Username" value={username} onChange={function (e) { setUsername(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="e.g. admin" />
             <Input label="Password" type="password" value={pw} onChange={function (e) { setPw(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="Enter password..." />
-            <Btn col="cyan" full onClick={handleLogin} disabled={!pw}>Login</Btn>
+            <Btn col="cyan" full onClick={handleLogin} disabled={!pw || !username}>Login</Btn>
             <div style={{ textAlign: "center", marginTop: 6 }}>
               <button type="button" onClick={function () { if (loginForgotOpen) { setLoginForgotOpen(false); setErr(""); } else openLoginForgotSupport(); }} style={{ background: "none", border: "none", color: "#8fa3c8", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>{loginForgotOpen ? "← Back to login" : "Forgot password?"}</button>
             </div>
@@ -5212,6 +5266,7 @@ function App(props) {
   var [idbReady, setIdbReady] = useState(true);
   var [active, _setActive] = useState("pos");   /* Sales Mode default = POS */
   var [loggedIn, setLoggedIn] = useState(false);
+  var [currentUser, setCurrentUser] = useState(null);
   /* Sync status for UI indicator (network modes only) */
   var [syncStatus, setSyncStatus] = useState(SYNC_STATUS.IDLE);
   /* Full-screen error for client mode when server is unreachable */
@@ -5223,6 +5278,7 @@ function App(props) {
   var [lastSyncTime, setLastSyncTime] = useState(null); /* HH:MM AM/PM of last successful sync */
   /* Pending-sync close warning */
   var [showCloseWarn, setShowCloseWarn] = useState(false);
+  var [sessionTimeoutWarning, setSessionTimeoutWarning] = useState(false);
   /* Database health error (server mode startup check) */
   var [dbHealthError, setDbHealthError] = useState(null);
   var [businessType, setBusinessType] = useState(resolveInitialBusinessType);
@@ -5247,6 +5303,35 @@ function App(props) {
   useEffect(function () { supportUnlockInputRef.current = supportUnlockInput; }, [supportUnlockInput]);
   /* Avoid setState after unmount / modal close on async PIN verification */
   var appMountedRef = useRef(true);
+  useEffect(function () {
+    try {
+      var users = S.get("tc3_users", []);
+      if (!Array.isArray(users) || users.length === 0) {
+        var legacyHash = S.get("tc3_apppass", "");
+        if (legacyHash) {
+          var legacyUser = {
+            id: "legacy-admin",
+            username: "admin",
+            name: (S.get("tc3_admin_name", "Admin") || "Admin"),
+            role: ROLE_ADMIN,
+            passwordHash: legacyHash,
+            active: true,
+            createdAt: new Date().toISOString(),
+          };
+          S.set("tc3_users", [legacyUser]);
+        }
+      }
+    } catch (e) { /* never block startup */ }
+  }, []);
+  useEffect(function () {
+    try {
+      var raw = sessionStorage.getItem("tc3_current_user");
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.username) setCurrentUser(parsed);
+      }
+    } catch (e) {}
+  }, []);
   useEffect(function () {
     appMountedRef.current = true;
     return function () { appMountedRef.current = false; };
@@ -5756,8 +5841,31 @@ function App(props) {
       });
   }, [loggedIn, isNetworkServer]);
 
-  var handleLogin = function () {
+  var handleLogin = function (user) {
+    var actor = user || {
+      id: "legacy-admin",
+      username: "admin",
+      name: S.get("tc3_admin_name", "Admin"),
+      role: ROLE_ADMIN,
+    };
+    setCurrentUser(actor);
+    try {
+      sessionStorage.setItem("tc3_current_user", JSON.stringify(actor));
+    } catch (e) {}
+    addAudit("User Login", actor.username || actor.name || "unknown", { role: actor.role || ROLE_ADMIN });
     setLoggedIn(true);
+  };
+  var switchUser = function (reason) {
+    var why = reason || "switch_user";
+    addAudit("User Logout", (normalizedCurrentUser && (normalizedCurrentUser.username || normalizedCurrentUser.name)) || "unknown", { reason: why });
+    try {
+      sessionStorage.removeItem("tc3_current_user");
+      sessionStorage.setItem("tc3_force_login_once", "1");
+    } catch (e) {}
+    setPinModal(false);
+    setIsAdminMode(false);
+    setCurrentUser(null);
+    setLoggedIn(false);
   };
 
   /* After login-screen support unlock: grant Admin Mode so Settings opens, then go to Settings + prompt for new password */
@@ -5788,6 +5896,34 @@ function App(props) {
   var SALES_MODE_PAGES = ["pos", "invoices", "purchases", "returns", "customers"].concat(
     _activeProfile.modules.repairs ? ["repairs"] : []
   );
+  var normalizedCurrentUser = currentUser || {
+    id: "legacy-admin",
+    username: "admin",
+    name: S.get("tc3_admin_name", "Admin"),
+    role: uiAdminMode ? ROLE_ADMIN : ROLE_CASHIER,
+  };
+  var canViewReports = hasPermission(normalizedCurrentUser, "reports.view");
+  var canViewSettings = hasPermission(normalizedCurrentUser, "settings.view");
+  var canEditInvoices = hasPermission(normalizedCurrentUser, "invoices.edit");
+  var canDeleteInvoices = hasPermission(normalizedCurrentUser, "invoices.delete");
+  var canOverrideDiscount = normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role) !== ROLE_CASHIER;
+  var showPermissionDenied = function (actionName) {
+    showPermissionDeniedUi(actionName, {
+      showAlert: showAlert,
+      addAudit: addAudit,
+      actor: normalizedCurrentUser,
+    });
+  };
+
+  useEffect(function () {
+    try {
+      window._tcAuditActor = {
+        name: normalizedCurrentUser.name || normalizedCurrentUser.username || "Admin",
+        role: normalizedCurrentUser.role || ROLE_ADMIN,
+        terminal: isNetworkClient ? "client" : (isNetworkServer ? "server" : "standalone"),
+      };
+    } catch (e) {}
+  }, [normalizedCurrentUser, isNetworkClient, isNetworkServer]);
 
   /* POS terminal (network_client): fixed page allow-list — repairs only for selected business types */
   var CLIENT_POS_REPAIR_BT = { tech: true, jewelry: true, automotive: true, general: true };
@@ -5826,6 +5962,13 @@ function App(props) {
         _setActive("pos");
         return;
       }
+    }
+    if (!canAccessPageByRole(normalizedCurrentUser, id)) {
+      if (id === "reports" || id === "accounts" || id === "auditlog") showPermissionDenied("open reports");
+      else if (id === "settings") showPermissionDenied("open settings");
+      else showPermissionDenied("open this page");
+      _setActive("pos");
+      return;
     }
     _setActive(id);
   };
@@ -5943,6 +6086,10 @@ function App(props) {
       setActive(id);
       return;
     }
+    if (!canAccessPageByRole(normalizedCurrentUser, id)) {
+      showPermissionDenied("open this page");
+      return;
+    }
     /* Network server: full navigation — no sales/admin mode gate */
     if (!isNetworkServer) {
       if (isNetworkMode && !isAdminMode && id !== "pos") return;
@@ -5971,6 +6118,45 @@ function App(props) {
     sanitizeFinancialSnapshots(S, { addAudit: addAudit });
     verifyFinancialSnapshotsHmac(S, { addAudit: addAudit }).catch(function () {});
   }, [loggedIn, idbReady]);
+
+  useEffect(function () {
+    if (!loggedIn) return;
+    var settings = state && state.settings ? state.settings : {};
+    var mins = parseInt(settings.sessionTimeoutMinutes, 10);
+    if (!mins || isNaN(mins) || mins < 1) mins = 15;
+    var warnTimer = null;
+    var logoutTimer = null;
+    var timeoutMs = mins * 60 * 1000;
+    var warnLeadMs = timeoutMs > 65000 ? 60000 : Math.max(5000, Math.floor(timeoutMs * 0.2));
+    var warnAtMs = Math.max(0, timeoutMs - warnLeadMs);
+    var resetTimer = function () {
+      if (warnTimer) clearTimeout(warnTimer);
+      if (logoutTimer) clearTimeout(logoutTimer);
+      setSessionTimeoutWarning(false);
+      warnTimer = setTimeout(function () {
+        setSessionTimeoutWarning(true);
+      }, warnAtMs);
+      logoutTimer = setTimeout(function () {
+        switchUser("session_timeout");
+        showAlert("Session timed out due to inactivity. Please sign in again.");
+      }, timeoutMs);
+    };
+    var events = ["mousedown", "mousemove", "keydown", "keypress", "input", "touchstart", "scroll", "focusin"];
+    events.forEach(function (e) { window.addEventListener(e, resetTimer, true); });
+    resetTimer();
+    return function () {
+      if (warnTimer) clearTimeout(warnTimer);
+      if (logoutTimer) clearTimeout(logoutTimer);
+      setSessionTimeoutWarning(false);
+      events.forEach(function (e) { window.removeEventListener(e, resetTimer, true); });
+    };
+  }, [loggedIn, state && state.settings ? state.settings.sessionTimeoutMinutes : undefined]);
+
+  useEffect(function () {
+    if (!loggedIn) return;
+    if (canAccessPageByRole(normalizedCurrentUser, active)) return;
+    setActive("pos");
+  }, [loggedIn, active, normalizedCurrentUser && normalizedCurrentUser.role]);
 
   var [showBakReminder, setShowBakReminder] = useState(false);
 
@@ -6169,8 +6355,19 @@ function App(props) {
     var _hasPass = !!S.get("tc3_apppass", "");
     var _hasAdmin = !!S.get("tc3_admin_name", "");
     var _requirePw = (state && state.settings && state.settings.requirePasswordOnLogin !== undefined) ? state.settings.requirePasswordOnLogin : true;
-    if (_hasPass && _hasAdmin && _requirePw === false) {
-      setTimeout(function () { setLoggedIn(true); }, 0);
+    var _forceLogin = false;
+    try {
+      _forceLogin = sessionStorage.getItem("tc3_force_login_once") === "1";
+      if (_forceLogin) sessionStorage.removeItem("tc3_force_login_once");
+    } catch (e) {}
+    if (_hasPass && _hasAdmin && _requirePw === false && !_forceLogin) {
+      setTimeout(function () {
+        var users2 = S.get("tc3_users", []);
+        var fallbackUser = Array.isArray(users2) && users2.length
+          ? users2[0]
+          : { id: "legacy-admin", username: "admin", name: S.get("tc3_admin_name", "Admin"), role: ROLE_ADMIN };
+        handleLogin(fallbackUser);
+      }, 0);
       return null;
     }
     return <LoginScreen onLogin={handleLogin} />;
@@ -6286,6 +6483,7 @@ function App(props) {
                 /* Business profile — hide modules not relevant to this business type */
                 if (n.id === "repairs" && !activeProfile.modules.repairs) return false;
                 if (n.id === "barcodeprint" && !activeProfile.modules.barcode) return false;
+                if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
                 return true;
               });
               if (groupItems.length === 0) return null;
@@ -6329,7 +6527,9 @@ function App(props) {
 
           {/* User footer — reads admin name from localStorage */}
           {(function () {
-            var adminN = S.get("tc3_admin_name", "Admin");
+            var adminN = normalizedCurrentUser && (normalizedCurrentUser.name || normalizedCurrentUser.username)
+              ? (normalizedCurrentUser.name || normalizedCurrentUser.username)
+              : S.get("tc3_admin_name", "Admin");
             var initial = adminN ? adminN.charAt(0).toUpperCase() : "A";
             return (
               <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 11 }}>
@@ -6338,7 +6538,7 @@ function App(props) {
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#e8f1ff", letterSpacing: "-0.01em", fontFamily: "'Plus Jakarta Sans',sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{adminN}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
                     <div style={{ width: 6, height: 6, borderRadius: "50%", background: isNetworkClient ? "#5ca8ff" : (uiAdminMode ? "#f59e0b" : "#22d88f"), boxShadow: "0 0 6px " + (isNetworkClient ? "#5ca8ff" : (uiAdminMode ? "#f59e0b" : "#22d88f")) }}></div>
-                    <span style={{ fontSize: 10, color: isNetworkClient ? "#5ca8ff" : (uiAdminMode ? "#f59e0b" : "#22d88f"), fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em" }}>{isNetworkClient ? "Client Mode" : (uiAdminMode ? "Admin Mode" : "Sales Mode")}</span>
+                    <span style={{ fontSize: 10, color: isNetworkClient ? "#5ca8ff" : (uiAdminMode ? "#f59e0b" : "#22d88f"), fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em" }}>{ROLE_LABELS[normalizedCurrentUser.role] || (isNetworkClient ? "Client" : (uiAdminMode ? "Admin" : "Sales"))}</span>
                   </div>
                 </div>
                 {!isNetworkClient && !isNetworkServer ? (
@@ -6438,6 +6638,17 @@ function App(props) {
                 <span style={{ fontSize: 11, color: isAdminMode ? "#b45309" : "#047857" }}>{isAdminMode ? "🔓" : "🔒"}</span>
               </div>
               )}
+              <button
+                onClick={function () {
+                  showConfirm("Switch user now?\n\nAny saved data remains safe. You will return to the login screen.", function () {
+                    switchUser("manual_switch");
+                  });
+                }}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, border: "1px solid " + C.border, background: "#f8fafc", color: C.textMd, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+                title="Switch User"
+              >
+                👤 Switch User
+              </button>
               <div style={{ fontSize: 12, color: C.muted, fontWeight: 500, background: "#f0f4ff", padding: "5px 12px", borderRadius: 8, border: "1px solid " + C.border }}>{fmtDateFull(today())}</div>
               {/* System role — hidden on POS client (CLIENT MODE badge is enough) */}
               {!isNetworkClient && (function () {
@@ -6553,11 +6764,25 @@ function App(props) {
               })()}
             </div>
           )}
+          {sessionTimeoutWarning && (
+            <div style={{ padding: "6px 14px", background: "linear-gradient(90deg,#fff7ed,#fffbeb)", borderBottom: "1px solid #fcd34d", color: "#9a3412", fontSize: 11.5, fontWeight: 700 }}>
+              ⏳ You will be signed out soon due to inactivity.
+            </div>
+          )}
           {/* key=active on the component directly — React unmounts+remounts on every navigation */}
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 20px", minWidth: 0, position: "relative" }}>
             <ActivePage
               key={active}
               cloudSyncBump={cloudSyncBump}
+              currentUser={normalizedCurrentUser}
+              canViewReports={canViewReports}
+              canViewSettings={canViewSettings}
+              canEditInvoices={canEditInvoices}
+              canDeleteInvoices={canDeleteInvoices}
+              canOverrideDiscount={canOverrideDiscount}
+              currentUserRole={normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role)}
+              showPermissionDenied={showPermissionDenied}
+              canManageUsers={normalizedCurrentUser && normalizedCurrentUser.role === ROLE_ADMIN}
               state={state}
               setState={setState}
               setActive={safeSetActive}

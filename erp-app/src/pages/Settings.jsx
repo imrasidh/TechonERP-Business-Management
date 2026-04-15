@@ -16,6 +16,7 @@ import { mergeTaxesOnCountryChange, normalizeTaxList } from "../tax/countryTaxMe
 import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
 import { SnapshotIntegrityBadge } from "../ui/SnapshotIntegrityBadge.jsx";
 import { tcIsDevEnv } from "../utils/clientElectronGuard.js";
+import { ROLE_ADMIN, ROLE_LABELS, normalizeRole } from "../security/rbac.js";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
 
@@ -50,6 +51,8 @@ var Settings = function (props) {
   var getBusinessProfile = props.getBusinessProfile;
   var buildCloudSyncPayload = props.buildCloudSyncPayload;
   var cloudSyncBump = props.cloudSyncBump || 0;
+  var currentUser = props.currentUser || null;
+  var canManageUsers = props.canManageUsers === true;
   var _idbCache = props._idbCache;
   var _idbWrite = props._idbWrite;
   var AboutTab = props.AboutTab;
@@ -123,6 +126,7 @@ var Settings = function (props) {
     preventNegativeStock: state.settings.preventNegativeStock !== false,
     allowCostFallback: state.settings.allowCostFallback === true,
     glVatPostingEnabled: state.settings.glVatPostingEnabled !== false,
+    sessionTimeoutMinutes: state.settings.sessionTimeoutMinutes || 15,
   }));
   var [newAsset, setNewAsset] = useState(null);
   var [editAsset, setEditAsset] = useState(null);
@@ -163,6 +167,66 @@ var Settings = function (props) {
   var [clientNetKey, setClientNetKey] = useState("");
   var [clientNetBusy, setClientNetBusy] = useState(false);
   var [clientNetErr, setClientNetErr] = useState(null);
+  var [users, setUsers] = useState(function () {
+    var list = S.get("tc3_users", []);
+    return Array.isArray(list) ? list : [];
+  });
+  var [newUserName, setNewUserName] = useState("");
+  var [newUserUsername, setNewUserUsername] = useState("");
+  var [newUserRole, setNewUserRole] = useState("cashier");
+  var [newUserPassword, setNewUserPassword] = useState("");
+  var [userMsg, setUserMsg] = useState(null);
+
+  var normalizeUsername = function (v) { return String(v || "").trim().toLowerCase(); };
+  var saveUsers = function (nextUsers, msg) {
+    S.set("tc3_users", nextUsers);
+    setUsers(nextUsers);
+    if (msg) setUserMsg(msg);
+  };
+
+  var createUser = function () {
+    if (!canManageUsers) { setUserMsg({ type: "error", text: "Only admin can manage users." }); return; }
+    var name = String(newUserName || "").trim();
+    var uname = normalizeUsername(newUserUsername);
+    var role = normalizeRole(newUserRole);
+    if (!name || name.length < 2) { setUserMsg({ type: "error", text: "Enter full name (min 2 chars)." }); return; }
+    if (!uname || uname.length < 3) { setUserMsg({ type: "error", text: "Username must be at least 3 chars." }); return; }
+    if (!newUserPassword || newUserPassword.length < 4) { setUserMsg({ type: "error", text: "Password must be at least 4 chars." }); return; }
+    if (users.some(function (u) { return normalizeUsername(u.username) === uname; })) { setUserMsg({ type: "error", text: "Username already exists." }); return; }
+    hashPw(newUserPassword).then(function (hashed) {
+      var next = users.concat([{
+        id: uid(),
+        name: name,
+        username: uname,
+        role: role,
+        passwordHash: hashed,
+        active: true,
+        createdAt: new Date().toISOString(),
+      }]);
+      saveUsers(next, { type: "success", text: "User created." });
+      setNewUserName(""); setNewUserUsername(""); setNewUserPassword(""); setNewUserRole("cashier");
+    });
+  };
+
+  var resetUserPassword = function (u) {
+    if (!canManageUsers) { setUserMsg({ type: "error", text: "Only admin can reset passwords." }); return; }
+    var p = window.prompt("Enter a new password for " + (u.username || u.name) + " (min 4 chars):", "");
+    if (p == null) return;
+    if (String(p).length < 4) { setUserMsg({ type: "error", text: "Password too short." }); return; }
+    hashPw(String(p)).then(function (hashed) {
+      var next = users.map(function (x) { return x.id === u.id ? Object.assign({}, x, { passwordHash: hashed }) : x; });
+      saveUsers(next, { type: "success", text: "Password reset for " + (u.username || u.name) + "." });
+    });
+  };
+
+  var removeUser = function (u) {
+    if (!canManageUsers) { setUserMsg({ type: "error", text: "Only admin can remove users." }); return; }
+    if (normalizeUsername(u.username) === "admin") { setUserMsg({ type: "error", text: "Primary admin cannot be removed." }); return; }
+    showConfirm("Remove user " + (u.username || u.name) + "?", function () {
+      var next = users.filter(function (x) { return x.id !== u.id; });
+      saveUsers(next, { type: "success", text: "User removed." });
+    });
+  };
 
   useEffect(function () {
     if (!isNetworkClient) return;
@@ -564,6 +628,8 @@ var Settings = function (props) {
   };
 
   var TABS = [["shop", "Shop Info"], ["langcurrency", "Language & Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["security", "Security"]];
+  if (canManageUsers) TABS.push(["users", "Users"]);
+  TABS.push(["activity", "Activity Log"]);
   if (isNetworkMode) TABS.push(["network", "Network"]);
   TABS.push(["about", "About"]);
   if (isNetworkClient) {
@@ -781,7 +847,7 @@ var Settings = function (props) {
       {!hideWizardTabs && (
       <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border, marginBottom: 16, flexWrap: "wrap" }}>
         {TABS.map(function (t) {
-          var icons = { shop: "🏪", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", security: "🔐", network: "🌐", about: "ℹ" };
+          var icons = { shop: "🏪", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", security: "🔐", users: "👤", activity: "📋", network: "🌐", about: "ℹ" };
           return <button key={t[0]} onClick={function () { setStab(t[0]); }} style={{ padding: "10px 20px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (stab === t[0] ? C.border : "transparent"), borderBottom: stab === t[0] ? "2px solid #fff" : "none", background: stab === t[0] ? "#fff" : "transparent", color: stab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: stab === t[0] ? -2 : 0 }}>{icons[t[0]]} {t[1]}</button>;
         })}
       </div>
@@ -2431,6 +2497,12 @@ var Settings = function (props) {
                     <span style={{ fontSize: 13, color: C.muted, fontWeight: 600 }}>minutes of inactivity (1 – 120)</span>
                   </div>
                 )}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+                  <input type="number" min="1" max="240" value={f.sessionTimeoutMinutes || 15}
+                    onChange={function (e) { var v2 = Math.max(1, Math.min(240, parseInt(e.target.value, 10) || 15)); setF(function (x) { return Object.assign({}, x, { sessionTimeoutMinutes: v2 }); }); }}
+                    style={{ width: 90, border: "1.5px solid " + C.border, borderRadius: 9, padding: "9px 14px", fontSize: 16, fontWeight: 700, outline: "none", fontFamily: "inherit", color: C.text, textAlign: "center" }} />
+                  <span style={{ fontSize: 13, color: C.muted, fontWeight: 600 }}>session timeout (auto sign-out, default 15)</span>
+                </div>
               </div>
 
               <div style={{ borderTop: "1px solid " + C.border }} />
@@ -2499,6 +2571,7 @@ var Settings = function (props) {
                     adminPin: pinToSave,
                     autoLockEnabled: f.autoLockEnabled !== false,
                     autoLockMinutes: f.autoLockMinutes || 10,
+                    sessionTimeoutMinutes: f.sessionTimeoutMinutes || 15,
                     requirePasswordOnLogin: f.requirePasswordOnLogin !== false
                   });
                   S.set("tc3_settings", ns);
@@ -2873,6 +2946,83 @@ var Settings = function (props) {
           </Card>
 
         </div>
+      )}
+
+      {stab === "users" && canManageUsers && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <CardTitle sub="Create staff accounts with role-based access">User Management</CardTitle>
+            {userMsg && (
+              <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: userMsg.type === "error" ? "#fde8ed" : "#e6f7f2", color: userMsg.type === "error" ? "#b91c1c" : "#0a7a53", border: "1px solid " + (userMsg.type === "error" ? "#fca5a5" : "#9ee8ce") }}>
+                {userMsg.text}
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
+              <Input label="Full Name" value={newUserName} onChange={function (e) { setNewUserName(e.target.value); setUserMsg(null); }} placeholder="e.g. Nimal" />
+              <Input label="Username" value={newUserUsername} onChange={function (e) { setNewUserUsername(e.target.value); setUserMsg(null); }} placeholder="e.g. cashier1" />
+              <Sel label="Role" value={newUserRole} onChange={function (e) { setNewUserRole(e.target.value); }}>
+                <option value="manager">Manager</option>
+                <option value="cashier">Cashier</option>
+              </Sel>
+              <Input label="Password" type="password" value={newUserPassword} onChange={function (e) { setNewUserPassword(e.target.value); setUserMsg(null); }} placeholder="Min 4 chars" />
+              <Btn col="blue" onClick={createUser}>+ Add User</Btn>
+            </div>
+          </Card>
+          <Card>
+            <CardTitle sub={users.length + " user account(s)"}>Current Users</CardTitle>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead><tr><th style={{ textAlign: "left", padding: "8px 6px" }}>Name</th><th style={{ textAlign: "left", padding: "8px 6px" }}>Username</th><th style={{ textAlign: "left", padding: "8px 6px" }}>Role</th><th style={{ textAlign: "left", padding: "8px 6px" }}>Created</th><th style={{ textAlign: "right", padding: "8px 6px" }}>Actions</th></tr></thead>
+                <tbody>
+                  {users.map(function (u) {
+                    return (
+                      <tr key={u.id} style={{ borderTop: "1px solid " + C.border }}>
+                        <td style={{ padding: "8px 6px", fontWeight: 700 }}>{u.name || "—"}</td>
+                        <td style={{ padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace" }}>{u.username || "—"}</td>
+                        <td style={{ padding: "8px 6px" }}>{ROLE_LABELS[normalizeRole(u.role)] || "Cashier"}</td>
+                        <td style={{ padding: "8px 6px", color: C.muted }}>{u.createdAt ? new Date(u.createdAt).toLocaleString() : "—"}</td>
+                        <td style={{ padding: "8px 6px", textAlign: "right" }}>
+                          <div style={{ display: "inline-flex", gap: 6 }}>
+                            <Btn sm col="gray" onClick={function () { resetUserPassword(u); }}>Reset Password</Btn>
+                            <Btn sm col="red" onClick={function () { removeUser(u); }} disabled={normalizeUsername(u.username) === "admin"}>Remove</Btn>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {stab === "activity" && (
+        <Card>
+          <CardTitle sub="Login, sales, returns, edits and settings actions">Activity Log</CardTitle>
+          {(function () {
+            var rows = (S.get("tc3_auditLog", []) || []).slice(0, 120);
+            if (!rows.length) {
+              return <div style={{ padding: "18px 4px", color: C.muted, fontSize: 13 }}>No activity yet. User actions will appear here.</div>;
+            }
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {rows.map(function (r) {
+                  return (
+                    <div key={r.id} style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", display: "grid", gridTemplateColumns: "170px 140px 1fr", gap: 10, alignItems: "start" }}>
+                      <div style={{ fontSize: 11.5, color: C.muted }}>{r.timestamp || r.date || "—"}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{(r.user || "Unknown") + " · " + (ROLE_LABELS[normalizeRole(r.role)] || "User")}</div>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.action || "Action"}</div>
+                        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{r.reference || "—"}{r.terminal ? " · " + r.terminal : ""}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </Card>
       )}
 
       {stab === "about" && (

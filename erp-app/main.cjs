@@ -213,7 +213,8 @@ function readFirstSecretLineFromTxt(fp) {
 
 /** License API HMAC secret for X-TC-Token (same algorithm as PHP).
  *  1) process.env.LICENSE_SECRET (preferred) or process.env.TC_LIC_SERVER_SECRET
- *  2) tc_license_secret.txt — paths below (UTF-8, first non-empty non-# line), same value as server LICENSE_SECRET
+ *  2) tc_license_secret.txt — fallback only; production dist injects this file at build time from env
+ *     (UTF-8, first non-empty non-# line), same value as server LICENSE_SECRET
  */
 function getLicenseServerSecret() {
   const env = process.env.LICENSE_SECRET || process.env.TC_LIC_SERVER_SECRET;

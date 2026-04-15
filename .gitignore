@@ -10,6 +10,7 @@ node_modules/
 erp-app/dist/
 erp-app/build/
 erp-app/release/
+erp-app/tc_license_secret.txt
 
 # =========================
 # PUBLIC HTML

@@ -241,6 +241,11 @@ var Quotations = function (props) {
   var TD = props.TD;
   var WABtn = props.WABtn;
   var C = props.C;
+  var canEditInvoices = props.canEditInvoices === true;
+  var canDeleteInvoices = props.canDeleteInvoices === true;
+  var showPermissionDenied = typeof props.showPermissionDenied === "function"
+    ? props.showPermissionDenied
+    : function () { showAlert("You do not have permission for this action."); };
   /* setSiTab switches the SalesInvoices tab from "quotations" → "invoices" */
   /* eslint-disable-next-line no-unused-vars */
 
@@ -316,6 +321,7 @@ var Quotations = function (props) {
   };
 
   var saveEdit = function () {
+    if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; }
     if (!editQ || !editQ.items.length) { showAlert("Add at least one product."); return; }
     var sub = formTotal(editQ.items);
     var qtc = computeSaleTax(state.settings, sub);
@@ -334,6 +340,7 @@ var Quotations = function (props) {
   };
 
   var deleteQ = function (id) {
+    if (!canDeleteInvoices) { showPermissionDenied("delete quotations"); return; }
     var q = quotations.find(function (q) { return q.id === id; });
     if (!q) return;
     showConfirm("Delete quotation " + (q.quotationNo || "") + "? This cannot be undone.", function () {
@@ -439,9 +446,9 @@ var Quotations = function (props) {
                     <td style={{ padding: "6px 10px" }} onClick={function (e) { e.stopPropagation(); }}>
                       <div style={{ display: "flex", gap: 4 }}>
                         <Btn sm col="gray" onClick={function () { setViewQ(q); }}>View</Btn>
-                        {q.status !== "Converted" && <Btn sm col="blue" onClick={function () { setEditQ(q); }}>Edit</Btn>}
+                        {q.status !== "Converted" && <Btn sm col="blue" onClick={function () { if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; } setEditQ(q); }}>Edit</Btn>}
                         {q.status !== "Converted" && <Btn sm col="green" onClick={function () { convertToSale(q); }}>→ Invoice</Btn>}
-                        <Btn sm col="red" onClick={function () { deleteQ(q.id); }}>✕</Btn>
+                        <Btn sm col="red" onClick={function () { deleteQ(q.id); }} disabled={!canDeleteInvoices}>✕</Btn>
                       </div>
                     </td>
                   </TR>
@@ -502,11 +509,11 @@ var Quotations = function (props) {
                 {["Draft","Sent","Expired"].filter(function (s) { return s !== viewQ.status; }).map(function (s) {
                   return <Btn key={s} sm col="gray" onClick={function () { updateStatus(viewQ.id, s); }}>Mark {s}</Btn>;
                 })}
-                <Btn col="blue" onClick={function () { setViewQ(null); setEditQ(viewQ); }}>✏ Edit</Btn>
+                <Btn col="blue" onClick={function () { if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; } setViewQ(null); setEditQ(viewQ); }} disabled={!canEditInvoices}>✏ Edit</Btn>
                 <Btn col="green" onClick={function () { convertToSale(viewQ); }}>→ Convert to Invoice</Btn>
               </React.Fragment>
             )}
-            <Btn col="red" onClick={function () { deleteQ(viewQ.id); setViewQ(null); }}>🗑 Delete</Btn>
+            <Btn col="red" onClick={function () { deleteQ(viewQ.id); setViewQ(null); }} disabled={!canDeleteInvoices}>🗑 Delete</Btn>
           </div>
         </Modal>
       )}
@@ -563,6 +570,11 @@ var SalesInvoices = React.memo(function (props) {
   var genInvNo = props.genInvNo;
   var fmtSumQty = props.fmtSumQty;
   var getInvoicePrintLabels = props.getInvoicePrintLabels;
+  var canEditInvoices = props.canEditInvoices === true;
+  var canDeleteInvoices = props.canDeleteInvoices === true;
+  var showPermissionDenied = typeof props.showPermissionDenied === "function"
+    ? props.showPermissionDenied
+    : function () { showAlert("You do not have permission for this action."); };
   var [siTab, setSiTab] = useState("invoices");
   var [search, setSearch] = useState("");
   var [dateFrom, setDateFrom] = useState("");
@@ -622,6 +634,10 @@ var SalesInvoices = React.memo(function (props) {
 
   /* Invoice edit: metadata only — no line items, totals, or stock (use Sales Return for quantity/amount corrections). */
   var saveEdit = function () {
+    if (!canEditInvoices) {
+      showPermissionDenied("edit invoices");
+      return;
+    }
     if (!editSale) return;
     var sd0 = (editSale.date || "").slice(0, 10);
     if (sd0 !== today()) {
@@ -793,7 +809,7 @@ var SalesInvoices = React.memo(function (props) {
           return <button key={t[0]} onClick={function () { setSiTab(t[0]); }} style={{ background: isA ? "linear-gradient(135deg,#2979ff,#2255d4)" : "transparent", color: isA ? "#fff" : C.textMd, border: "none", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", transition: "all .15s", fontFamily: "inherit", boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.28)" : "none" }}>{t[1]}</button>;
         })}
       </div>
-      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} getAllowedInvoiceLangCodes={getAllowedInvoiceLangCodes} INVOICE_LANG_NAMES={INVOICE_LANG_NAMES} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} C={C} />}
+      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} getAllowedInvoiceLangCodes={getAllowedInvoiceLangCodes} INVOICE_LANG_NAMES={INVOICE_LANG_NAMES} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} C={C} canEditInvoices={canEditInvoices} canDeleteInvoices={canDeleteInvoices} showPermissionDenied={showPermissionDenied} />}
       {siTab === "invoices" && <React.Fragment>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
         <StatCard money={false} label="Invoices" value={filtered.length} accent={C.cyan} icon="🧾" sub="shown" />
@@ -1191,10 +1207,11 @@ var SalesInvoices = React.memo(function (props) {
             )}
             <Btn
               col="blue"
-              disabled={!saleInvoiceEditAllowed(viewSale)}
+              disabled={!saleInvoiceEditAllowed(viewSale) || !canEditInvoices}
               title={!saleInvoiceEditAllowed(viewSale) ? "Only same-day invoices can be edited (for accounting safety)" : undefined}
               onClick={function () {
                 if (!saleInvoiceEditAllowed(viewSale)) return;
+                if (!canEditInvoices) { showPermissionDenied("edit invoices"); return; }
                 setEditSale(Object.assign({}, viewSale));
                 setViewSale(null);
               }}
@@ -1256,7 +1273,7 @@ var SalesInvoices = React.memo(function (props) {
             <div style={{ fontWeight: 900, fontSize: 16, color: C.blue }}>Total: {getCurrencySymbol()} {fmtNum(editSale.total || 0)}</div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Btn col="cyan" onClick={saveEdit}>Save Changes</Btn>
+            <Btn col="cyan" onClick={saveEdit} disabled={!canEditInvoices}>Save Changes</Btn>
             <Btn col="orange" onClick={goSalesReturn}>Open Sales Return</Btn>
             <Btn col="gray" onClick={function () { setEditSale(null); }}>Cancel</Btn>
           </div>

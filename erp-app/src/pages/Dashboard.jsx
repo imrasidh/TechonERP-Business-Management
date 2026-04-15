@@ -25,6 +25,7 @@ var Dashboard = function (props) {
   var fmtStockDual = props.fmtStockDual;
   var fmtStock = props.fmtStock;
   var getBusinessProfile = props.getBusinessProfile;
+  var currentUser = props.currentUser || null;
   var t = today();
   var todaySales = state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.total; }, 0);
   var todayCost = state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); }, 0);
@@ -64,6 +65,40 @@ var Dashboard = function (props) {
   var recentRepairs = state.repairs.slice().reverse().slice(0, 5);
   var lowStock = activeProducts.filter(function (p) { return p.stock > 0 && p.stock <= 5; });
   var outOfStockProducts = activeProducts.filter(function (p) { return (p.stock || 0) === 0; });
+  var reorderSuggestions = lowStock.slice(0, 8).map(function (p) {
+    return {
+      id: p.id,
+      name: p.name,
+      current: p.stock || 0,
+      suggested: Math.max(6, 12 - (p.stock || 0)),
+      unit: p.unit,
+    };
+  });
+  var weeklyTrend = (function () {
+    var out = [];
+    for (var i = 6; i >= 0; i--) {
+      var dt = new Date();
+      dt.setDate(dt.getDate() - i);
+      var key = dt.toISOString().slice(0, 10);
+      var label = dt.toLocaleDateString("en-US", { weekday: "short" });
+      var total = state.sales.filter(function (s) { return s.date === key; }).reduce(function (a, s) { return a + (s.total || 0); }, 0);
+      out.push({ key: key, label: label, total: total });
+    }
+    return out;
+  })();
+  var weeklyMax = weeklyTrend.reduce(function (m, x) { return Math.max(m, x.total || 0); }, 1);
+  var topProducts = (function () {
+    var map = {};
+    (state.sales || []).forEach(function (s) {
+      (s.items || []).forEach(function (it) {
+        var k = it.id || it.name || "unknown";
+        if (!map[k]) map[k] = { name: it.name || "Unknown", qty: 0, revenue: 0 };
+        map[k].qty += Number(it.qty || 0);
+        map[k].revenue += Number((it.price || 0) * (it.qty || 0));
+      });
+    });
+    return Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return b.qty - a.qty; }).slice(0, 5);
+  })();
 
   /* ── Cheque alerts ── */
   var allCheques = state.cheques || [];
@@ -113,6 +148,20 @@ var Dashboard = function (props) {
   var WARN_COLORS = { inventory: C.red, invoice: C.orange, receivable: C.cyan, payable: C.purple };
   return (
     <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {(function () {
+        var welcomeDismissed = !!S.get("tc3_dashboard_welcome_dismissed", false);
+        if (welcomeDismissed) return null;
+        var name = currentUser && (currentUser.name || currentUser.username) ? (currentUser.name || currentUser.username) : "there";
+        return (
+          <div style={{ background: "linear-gradient(135deg,#eff6ff,#f8fafc)", border: "1.5px solid #bfdbfe", borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: "#1e3a8a" }}>Welcome, {name}</div>
+              <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>Quick shortcuts and business insights appear here as your data grows.</div>
+            </div>
+            <button onClick={function () { S.set("tc3_dashboard_welcome_dismissed", true); props.setState(function (s) { return Object.assign({}, s); }); }} style={{ border: "1px solid #93c5fd", background: "#fff", color: "#1d4ed8", borderRadius: 8, fontWeight: 700, fontSize: 12, padding: "6px 10px", cursor: "pointer" }}>Dismiss</button>
+          </div>
+        );
+      })()}
       {props.setupIncomplete && props.onRequestSetupWizard && (
         <div
           role="button"
@@ -363,6 +412,44 @@ var Dashboard = function (props) {
         </Card>
       </div>
 
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14 }}>
+        <Card>
+          <CardTitle sub="Past 7 days sales trend">Sales Trend (Weekly)</CardTitle>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,minmax(0,1fr))", gap: 8, alignItems: "end", minHeight: 150 }}>
+            {weeklyTrend.map(function (w) {
+              var h = Math.max(6, Math.round((w.total / weeklyMax) * 110));
+              return (
+                <div key={w.key} style={{ textAlign: "center" }}>
+                  <div title={w.label + ": " + getCurrencySymbol() + " " + fmtNum(w.total)} style={{ margin: "0 auto", width: 22, height: h, borderRadius: 6, background: "linear-gradient(180deg,#60a5fa,#2563eb)" }} />
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>{w.label}</div>
+                  <div style={{ fontSize: 10.5, color: C.textMd, fontWeight: 700 }}>{fmtNum(w.total)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+        <Card>
+          <CardTitle sub="By sold quantity">Top Selling Products</CardTitle>
+          {topProducts.length === 0 ? (
+            <div style={{ color: C.muted, fontSize: 13 }}>No sales data yet.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {topProducts.map(function (tp, idx) {
+                return (
+                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 8, padding: "8px 10px" }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 13 }}>{idx + 1}. {tp.name}</div>
+                      <div style={{ fontSize: 11, color: C.muted }}>{tp.qty} sold</div>
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: C.blue }}>{getCurrencySymbol()} {fmtNum(tp.revenue)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      </div>
+
       <Card>
         <CardTitle sub={outOfStockProducts.length + " product" + (outOfStockProducts.length !== 1 ? "s" : "") + " with zero stock"} action={outOfStockProducts.length > 0 ? <Btn sm col="red" onClick={function () { setActive("inventory"); }}>View in Inventory →</Btn> : null}>
           🚫 Out of Stock Products
@@ -388,6 +475,24 @@ var Dashboard = function (props) {
           </div>
         )}
       </Card>
+      {reorderSuggestions.length > 0 && (
+        <Card>
+          <CardTitle sub="Suggested quantities to avoid stockouts">Reorder Suggestions</CardTitle>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 8 }}>
+            {reorderSuggestions.map(function (r) {
+              return (
+                <div key={r.id} onClick={function () { setActive("inventory"); }} style={{ cursor: "pointer", border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "9px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13 }}>{r.name}</div>
+                    <div style={{ fontSize: 11, color: "#92400e" }}>On hand: {r.current}</div>
+                  </div>
+                  <div style={{ fontWeight: 800, fontSize: 12, color: "#b45309" }}>Order +{r.suggested} {r.unit || "pcs"}</div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
     </div>
   );
 };
