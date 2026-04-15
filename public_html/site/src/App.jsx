@@ -1,4 +1,19 @@
 import { useState, useEffect } from "react";
+import {
+  BASE_CLIENT_PRICING_LKR,
+  BASE_PRICING_LKR,
+  DEFAULT_COUNTRY,
+  PLAN_PERIODS,
+  PRICING_STORAGE_KEY,
+  REGION_MULTIPLIERS,
+} from "./config/pricingConfig";
+import { getRegionByCountry } from "./config/regionMapping";
+import {
+  convertLkrNominalToDisplay,
+  getCurrencyByCountry,
+  isDebugPricing,
+  SUPPORTED_FORCE_COUNTRY_CODES,
+} from "./config/currencyMapping";
 
 const goto = (id) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
 
@@ -539,7 +554,7 @@ const Hero = () => (
 
       {/* Stats strip */}
       <div className="flex flex-wrap justify-center gap-x-8 gap-y-4 sm:gap-x-12 mb-10 sm:mb-14 px-4 sm:px-0">
-        {[["20+","Modules"],["32+","Currencies"],["Offline","+ Sync"],["7 Days","Free Trial"],["Win 10/11","Support"]].map(([v,l])=>(
+        {[["20+","Modules"],["26+","Currencies"],["Offline","+ Sync"],["7 Days","Free Trial"],["Win 10/11","Support"]].map(([v,l])=>(
           <div key={l} className="text-center" style={{minWidth:60}}>
             <p className="text-lg sm:text-xl font-black text-white leading-none">{v}</p>
             <p className="text-white/40 mt-0.5 tracking-wide" style={{fontSize:"0.65rem"}}>{l}</p>
@@ -771,7 +786,7 @@ const featureGroups = [
     light:"bg-sky-50 text-sky-700 border-sky-100",
     badge:"New",
     items:[
-      {icon:"📱", title:"Access from Any Device", desc:"Open app.techon.lk on your phone, tablet or any browser — no installation needed."},
+      {icon:"📱", title:"Access from Any Device", desc:"Open your secure web dashboard on your phone, tablet, or any browser — no installation needed."},
       {icon:"👁️", title:"Read-Only Live View", desc:"View all your shop data in real time. Sales, inventory, accounts, reports — everything visible, nothing editable."},
       {icon:"📊", title:"Live Dashboard", desc:"See today's sales, profit, stock value and receivables remotely — exactly as shown in the desktop app."},
       {icon:"🧾", title:"Invoice & Sales History", desc:"Browse past invoices and sales records from anywhere without being at your shop."},
@@ -785,7 +800,7 @@ const Features = () => {
   const [active, setActive] = useState("dashboard");
   const group = featureGroups.find(g => g.id === active);
   return (
-    <section id="features" className="py-16 sm:py-24 bg-white overflow-hidden">
+    <section id="features" className="py-16 sm:py-24 bg-white">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Header */}
@@ -801,7 +816,7 @@ const Features = () => {
           </p>
           {/* Quick stats row */}
           <div className="flex flex-wrap justify-center gap-4">
-            {[["🖥️","Desktop App"],["📴","Offline-First"],["🌐","Online Sync"],["🌍","32+ Currencies"]].map(([ic,lb])=>(
+            {[["🖥️","Desktop App"],["📴","Offline-First"],["🌐","Online Sync"],["🌍","26+ Currencies"]].map(([ic,lb])=>(
               <span key={lb} className="flex items-center gap-1.5 bg-gray-50 border border-gray-100 text-gray-600 text-xs font-semibold px-3 py-1.5 rounded-full">
                 <span>{ic}</span>{lb}
               </span>
@@ -809,45 +824,60 @@ const Features = () => {
           </div>
         </div>
 
-        {/* Tab bar — horizontal scroll on mobile */}
-        <div className="sm:hidden rounded-2xl mb-6 overflow-hidden" style={{background:"linear-gradient(135deg,#0d0b24 0%,#1a1150 50%,#0f1040 100%)",border:"1px solid rgba(139,92,246,0.2)"}}>
-          {/* Header */}
-          <div className="px-4 pt-4 pb-3 border-b" style={{borderColor:"rgba(139,92,246,0.15)"}}>
-            <div className="flex items-center justify-between">
-              <div>
-                <p style={{fontSize:"0.6rem",color:"#a78bfa",fontWeight:800,letterSpacing:"0.12em",textTransform:"uppercase"}}>Module Browser</p>
-                <p style={{fontSize:"0.75rem",color:"rgba(255,255,255,0.5)",marginTop:2}}>Tap a module to explore its features</p>
-              </div>
-              <div className="flex items-center gap-1" style={{background:"rgba(167,139,250,0.15)",borderRadius:20,padding:"4px 10px",border:"1px solid rgba(167,139,250,0.2)"}}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
-                <span style={{fontSize:"0.6rem",color:"#a78bfa",fontWeight:700,letterSpacing:"0.06em"}}>SWIPE</span>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
-              </div>
-            </div>
+      </div>
+
+        {/* Tab bar — horizontal scroll on mobile (full-width strip; spacious, snap) */}
+        <div className="sm:hidden w-full border-y border-white/10 bg-gradient-to-b from-[#0c0a18] via-[#12102a] to-[#0e0c1a] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] mb-8">
+          <div className="border-b border-white/10 px-4 pb-3 pt-4">
+            <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-violet-300/95">Module browser</p>
+            <p className="mt-1.5 text-[0.8125rem] font-medium leading-snug text-slate-300">Pick a module — details load below.</p>
+            <p className="mt-2 flex items-center gap-1.5 text-[0.7rem] text-slate-500">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-500" stroke="currentColor" strokeWidth="2" aria-hidden>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01" />
+              </svg>
+              Swipe sideways for more modules
+            </p>
           </div>
-          {/* Scrollable icon+label tabs */}
-          <div className="relative px-2 py-3">
-            <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-6 z-10" style={{background:"linear-gradient(to right,#0d0b24,transparent)"}}/>
-            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 z-10" style={{background:"linear-gradient(to left,#0d0b24,transparent)"}}/>
-            <div className="flex gap-2 overflow-x-auto pb-1" style={{scrollbarWidth:"none"}}>
-              {featureGroups.map(g => (
-                <button key={g.id} onClick={()=>setActive(g.id)}
-                  className="flex flex-col items-center gap-1 px-3 py-2.5 rounded-xl flex-shrink-0 transition-all duration-200"
-                  style={active===g.id ? {
-                    background:"linear-gradient(135deg,#6d28d9,#4f46e5)",
-                    boxShadow:"0 4px 20px rgba(99,51,255,0.50)",
-                    border:"1px solid rgba(167,139,250,0.4)"
-                  } : {
-                    background:"rgba(255,255,255,0.05)",
-                    border:"1px solid rgba(255,255,255,0.08)"
-                  }}>
-                  <span style={{fontSize:"1.4rem",lineHeight:1}}>{g.icon}</span>
-                  <span style={{fontSize:"0.6rem",fontWeight:700,color: active===g.id ? "#fff" : "rgba(255,255,255,0.55)",whiteSpace:"nowrap",letterSpacing:"0.02em"}}>{g.label}</span>
+          <div className="relative">
+            <div className="pointer-events-none absolute left-0 top-0 z-[1] h-full w-8 bg-gradient-to-r from-[#0e0c1a] to-transparent" aria-hidden />
+            <div className="pointer-events-none absolute right-0 top-0 z-[1] h-full w-8 bg-gradient-to-l from-[#0e0c1a] to-transparent" aria-hidden />
+            <div
+              className="module-browser-scroll flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth px-4 py-4 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              style={{ WebkitOverflowScrolling: "touch" }}
+            >
+              {featureGroups.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => setActive(g.id)}
+                  className={`flex min-h-[5.25rem] w-[6.25rem] shrink-0 snap-start flex-col items-center justify-center gap-1.5 rounded-2xl px-2 py-3 text-center transition-all duration-200 active:scale-[0.98] ${
+                    active === g.id
+                      ? "bg-gradient-to-br from-violet-600 to-indigo-600 shadow-lg shadow-indigo-900/40 ring-1 ring-white/25"
+                      : "bg-white/[0.06] ring-1 ring-white/[0.08] hover:bg-white/[0.1]"
+                  }`}
+                >
+                  <span className="text-[1.35rem] leading-none" aria-hidden>
+                    {g.icon}
+                  </span>
+                  <span
+                    className={`line-clamp-2 max-h-10 text-[10px] font-semibold leading-tight ${
+                      active === g.id ? "text-white" : "text-slate-300"
+                    }`}
+                  >
+                    {g.label}
+                  </span>
+                  {g.badge ? (
+                    <span className="rounded-full bg-amber-500/90 px-1.5 py-0.5 text-[0.55rem] font-bold uppercase tracking-wide text-amber-950">
+                      {g.badge}
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div>
           </div>
         </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Desktop tab bar */}
         <div className="hidden sm:flex flex-wrap justify-center gap-2 mb-8">
@@ -956,48 +986,52 @@ const Screenshots = () => {
           <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">See the Real TechonERP</h2>
           <p className="text-gray-500 text-lg">Every screen shown is a faithful recreation of the actual app UI — exactly what you get after installation.</p>
         </div>
-        {/* Mobile dark tab bar */}
-        <div className="sm:hidden rounded-2xl mb-5 overflow-hidden" style={{background:"linear-gradient(135deg,#0d0b24 0%,#1a1150 50%,#0f1040 100%)",border:"1px solid rgba(139,92,246,0.2)"}}>
-          <div className="px-4 pt-4 pb-3 border-b" style={{borderColor:"rgba(139,92,246,0.15)"}}>
-            <div className="flex items-center justify-between">
-              <div>
-                <p style={{fontSize:"0.6rem",color:"#a78bfa",fontWeight:800,letterSpacing:"0.12em",textTransform:"uppercase"}}>App Screenshots</p>
-                <p style={{fontSize:"0.75rem",color:"rgba(255,255,255,0.5)",marginTop:2}}>Tap a screen to preview</p>
-              </div>
-              <div className="flex items-center gap-1" style={{background:"rgba(167,139,250,0.15)",borderRadius:20,padding:"4px 10px",border:"1px solid rgba(167,139,250,0.2)"}}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
-                <span style={{fontSize:"0.6rem",color:"#a78bfa",fontWeight:700,letterSpacing:"0.06em"}}>SWIPE</span>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
-              </div>
-            </div>
-          </div>
-          <div className="relative px-2 py-3">
-            <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-6 z-10" style={{background:"linear-gradient(to right,#0d0b24,transparent)"}}/>
-            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-6 z-10" style={{background:"linear-gradient(to left,#0d0b24,transparent)"}}/>
-            <div className="flex gap-2 overflow-x-auto pb-1" style={{scrollbarWidth:"none"}}>
-              {screens.map((s,i)=>(
-                <button key={i} onClick={()=>setActive(i)}
-                  className="flex-shrink-0 px-4 py-2.5 rounded-xl font-semibold transition-all duration-200"
-                  style={active===i ? {
-                    background:"linear-gradient(135deg,#6d28d9,#4f46e5)",
-                    color:"#ffffff",
-                    fontSize:"0.8rem",
-                    fontWeight:700,
-                    boxShadow:"0 4px 20px rgba(99,51,255,0.50)",
-                    border:"1px solid rgba(167,139,250,0.4)"
-                  } : {
-                    background:"rgba(255,255,255,0.05)",
-                    color:"rgba(255,255,255,0.6)",
-                    fontSize:"0.8rem",
-                    fontWeight:600,
-                    border:"1px solid rgba(255,255,255,0.08)"
-                  }}>
+      </div>
+
+      {/* Screenshot picker — horizontal scroll on mobile (full-width strip; same pattern as Module Browser) */}
+      <div className="sm:hidden w-full border-y border-white/10 bg-gradient-to-b from-[#0c0a18] via-[#12102a] to-[#0e0c1a] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] mb-8">
+        <div className="border-b border-white/10 px-4 pb-3 pt-4">
+          <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-violet-300/95">App screenshots</p>
+          <p className="mt-1.5 text-[0.8125rem] font-medium leading-snug text-slate-300">Tap a screen to preview.</p>
+          <p className="mt-2 flex items-center gap-1.5 text-[0.7rem] text-slate-500">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-500" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01" />
+            </svg>
+            Swipe sideways for more screens
+          </p>
+        </div>
+        <div className="relative">
+          <div className="pointer-events-none absolute left-0 top-0 z-[1] h-full w-8 bg-gradient-to-r from-[#0e0c1a] to-transparent" aria-hidden />
+          <div className="pointer-events-none absolute right-0 top-0 z-[1] h-full w-8 bg-gradient-to-l from-[#0e0c1a] to-transparent" aria-hidden />
+          <div
+            className="screenshots-picker-scroll flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth px-4 py-4 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            style={{ WebkitOverflowScrolling: "touch" }}
+          >
+            {screens.map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setActive(i)}
+                className={`flex min-h-[5.25rem] w-[6.75rem] shrink-0 snap-start flex-col items-center justify-center rounded-2xl px-2 py-3 text-center transition-all duration-200 active:scale-[0.98] ${
+                  active === i
+                    ? "bg-gradient-to-br from-violet-600 to-indigo-600 shadow-lg shadow-indigo-900/40 ring-1 ring-white/25"
+                    : "bg-white/[0.06] ring-1 ring-white/[0.08] hover:bg-white/[0.1]"
+                }`}
+              >
+                <span
+                  className={`line-clamp-3 max-h-[3.6rem] text-[11px] font-semibold leading-tight ${
+                    active === i ? "text-white" : "text-slate-300"
+                  }`}
+                >
                   {s.label}
-                </button>
-              ))}
-            </div>
+                </span>
+              </button>
+            ))}
           </div>
         </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         {/* Desktop tab bar */}
         <div className="hidden sm:flex flex-wrap justify-center gap-2 mb-6">
           {screens.map((s,i)=>(
@@ -1015,7 +1049,7 @@ const Screenshots = () => {
           </div>
           <div className="h-64 sm:h-96 lg:h-[500px] bg-gray-50 overflow-hidden">{screens[active].comp}</div>
         </div>
-        <p className="text-center text-sm text-gray-400 mt-4"><span className="sm:hidden">Tap the module tabs above to switch screens</span><span className="hidden sm:inline">Click tabs above to explore different modules →</span></p>
+        <p className="text-center text-sm text-gray-400 mt-4"><span className="sm:hidden">Tap the screen tabs above to switch previews</span><span className="hidden sm:inline">Click tabs above to explore different screens →</span></p>
       </div>
     </section>
   );
@@ -1074,14 +1108,22 @@ const ProductHighlights = () => {
             </div>
           ))}
         </div>
-        <div className="bg-gradient-to-br from-slate-900 to-indigo-950 rounded-2xl sm:rounded-3xl p-6 sm:p-8 text-white mb-8 sm:mb-10 border border-white/10">
+      </div>
+
+      {/* Reliable & Safe — full-width strip (matches module browser treatment) */}
+      <div className="w-full border-y border-white/10 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] mb-8 sm:mb-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-7 sm:py-9 text-white">
+          <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-violet-300/95 mb-1">Trust &amp; security</p>
           <h3 className="text-xl sm:text-2xl font-black mb-4">Reliable &amp; Safe</h3>
           <ul className="space-y-2.5 text-white/85 text-sm sm:text-base leading-relaxed max-w-2xl">
-            <li className="flex items-start gap-2"><span className="text-emerald-400 flex-shrink-0 mt-0.5">✓</span>Your data is सुरक्षित (safe)</li>
+            <li className="flex items-start gap-2"><span className="text-emerald-400 flex-shrink-0 mt-0.5">✓</span>Your data stays secure on your own PC</li>
             <li className="flex items-start gap-2"><span className="text-emerald-400 flex-shrink-0 mt-0.5">✓</span>Works offline and online</li>
             <li className="flex items-start gap-2"><span className="text-emerald-400 flex-shrink-0 mt-0.5">✓</span>No data loss risk</li>
           </ul>
         </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="rounded-2xl sm:rounded-3xl border border-indigo-100 bg-indigo-50/50 p-6 sm:p-10">
           <h3 className="text-2xl sm:text-3xl font-black text-gray-900 mb-2 text-center">Why Techon ERP</h3>
           <p className="text-center text-gray-500 text-sm sm:text-base mb-8 max-w-xl mx-auto">Everything we build is aimed at clarity, speed and trust — not clutter.</p>
@@ -1100,116 +1142,487 @@ const ProductHighlights = () => {
 };
 
 /* ─── HOW IT WORKS ──────────────────────────────────────────────── */
+const setupSteps = [
+  {
+    n: "01",
+    time: "~1 min",
+    svg: (
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+    ),
+    title: "Download EXE",
+    desc: "Download the installer from our website or request it on WhatsApp. No signup, no cloud account.",
+    bullets: ["Direct .exe download", "Same build for trial & paid"],
+  },
+  {
+    n: "02",
+    time: "~2 min",
+    svg: (
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <rect x="2" y="3" width="20" height="14" rx="2" />
+        <path d="M8 21h8m-4-4v4" />
+      </svg>
+    ),
+    title: "Install on Windows",
+    desc: "Run the installer on Windows 10 or 11. Core setup finishes quickly — works without internet after files are on disk.",
+    bullets: ["Guided installer", "Offline-friendly install"],
+  },
+  {
+    n: "03",
+    time: "One-time",
+    svg: (
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <rect x="3" y="11" width="18" height="11" rx="2" />
+        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+      </svg>
+    ),
+    title: "Activate with key",
+    desc: "A 7-day full trial starts immediately — every module unlocked. When you buy, we send your license key by WhatsApp or email.",
+    bullets: ["Full trial — no card", "Key delivery same day"],
+  },
+  {
+    n: "04",
+    time: "Daily use",
+    svg: (
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <circle cx="12" cy="12" r="10" />
+        <polyline points="12 6 12 12 16 14" />
+      </svg>
+    ),
+    title: "Run offline · sync optional",
+    desc: "Work 100% on your PC after activation. Add Online Sync later to view live data in your browser from any device.",
+    bullets: ["Local data on your disk", "Read-only cloud view optional"],
+  },
+];
+
 const HowItWorks = () => (
-  <section id="howitworks" className="py-16 sm:py-24 bg-white">
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="text-center max-w-xl mx-auto mb-16">
-        <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
-          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Simple Setup
-        </span>
-        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">Up & Running in 4 Steps</h2>
-        <p className="text-gray-500 text-lg">From download to a fully working ERP in under 5 minutes.</p>
-      </div>
-      <div className="relative">
-        <div className="hidden lg:block absolute top-12 left-[12.5%] right-[12.5%] h-0.5 bg-gradient-to-r from-indigo-200 via-violet-300 to-indigo-200"/>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 sm:gap-8">
+  <section id="howitworks" className="relative overflow-hidden">
+    {/* Top: light intro + stats */}
+    <div className="relative bg-gradient-to-b from-white via-slate-50/90 to-indigo-50/70 pt-16 pb-8 sm:pt-20 sm:pb-10">
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.45]"
+        style={{ backgroundImage: "radial-gradient(circle at 1px 1px, rgb(99 102 241 / 0.11) 1px, transparent 0)", backgroundSize: "24px 24px" }}
+        aria-hidden
+      />
+      <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto mb-10 max-w-3xl text-center sm:mb-12">
+          <span className="mb-4 inline-flex items-center gap-2 rounded-full border border-indigo-100/90 bg-white/80 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-indigo-700 shadow-sm backdrop-blur-sm">
+            <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 shadow-[0_0_0_3px_rgba(99,102,241,0.25)]" />
+            Simple Setup
+          </span>
+          <h2 className="mb-3 text-3xl font-black leading-[1.1] text-gray-900 sm:text-4xl lg:text-5xl">
+            Go live fast —{" "}
+            <span className="bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-600 bg-clip-text text-transparent">download to daily use</span>
+          </h2>
+          <p className="text-base text-gray-600 sm:text-lg">
+            One installer, one activation, then your data stays on your PC. Online Sync is optional when you need remote visibility.
+          </p>
+        </div>
+
+        <div className="mx-auto grid max-w-4xl grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
           {[
-            {n:"01",
-              svg:<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
-              title:"Download EXE",desc:"Download the installer directly from techon.lk/downloads or contact us via WhatsApp. No account needed."},
-            {n:"02",
-              svg:<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>,
-              title:"Install on Windows",desc:"Run the .exe installer on Windows 10 or 11. Setup completes in under 2 minutes. No internet required."},
-            {n:"03",
-              svg:<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
-              title:"Activate with Key",desc:"7-day free trial starts immediately — full access, no restrictions, no risk. Buy a plan and receive your unique license key via WhatsApp or email."},
-            {n:"04",
-              svg:<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
-              title:"Run Offline + Sync Optionally",desc:"TechonERP works 100% offline after activation. Optionally add Online Sync to view your data live from app.techon.lk on any device."},
-          ].map((s,i)=>(
-            <div key={i} className="flex flex-col items-center text-center">
-              <div className="relative z-10 w-20 h-20 sm:w-24 sm:h-24 rounded-3xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center shadow-xl shadow-indigo-300/40 mb-4 sm:mb-5">
-                <div>{s.svg}</div>
-              </div>
-              <span className="text-xs font-black text-indigo-400 mb-2">{s.n}</span>
-              <h3 className="font-black text-gray-900 text-base sm:text-lg mb-2">{s.title}</h3>
-              <p className="text-gray-500 text-sm leading-relaxed">{s.desc}</p>
+            ["4", "Guided steps"],
+            ["~5 min", "To first launch"],
+            ["1×", "Windows installer"],
+            ["0", "Cloud account needed"],
+          ].map(([val, lab]) => (
+            <div
+              key={lab}
+              className="rounded-2xl border border-indigo-100/80 bg-white/90 px-4 py-4 text-center shadow-md shadow-indigo-100/40 backdrop-blur-sm transition-transform hover:-translate-y-0.5"
+            >
+              <p className="text-2xl font-black tabular-nums text-indigo-700 sm:text-3xl">{val}</p>
+              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">{lab}</p>
             </div>
           ))}
         </div>
       </div>
-      <div className="mt-10 sm:mt-14 bg-gradient-to-r from-indigo-50 to-violet-50 border border-indigo-100 rounded-2xl p-5 sm:p-7 flex flex-col sm:flex-row flex-wrap items-start sm:items-center gap-5 sm:gap-6 justify-between">
-        <div className="flex items-start gap-4">
-          <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center flex-shrink-0"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
-          <div>
-            <h4 className="font-black text-gray-900 mb-1">How License Activation Works</h4>
-            <p className="text-gray-500 text-sm leading-relaxed max-w-lg">After the <strong>7-day free trial</strong> — full access, no restrictions, no risk — (extra demo time available on request), the app prompts you for your license key. Purchase any plan and we send your key via <strong>WhatsApp</strong> or <strong>email</strong>. Enter it once — you're permanently activated. Internet is only needed for this single step.</p>
+
+      <div className="relative mt-10 h-14 w-full sm:mt-12 sm:h-16" aria-hidden>
+        <svg className="absolute inset-0 h-full w-full text-[#0a1024]" preserveAspectRatio="none" viewBox="0 0 1440 80">
+          <path fill="currentColor" d="M0,40 C240,80 480,0 720,35 C960,70 1200,0 1440,40 L1440,80 L0,80 Z" />
+        </svg>
+      </div>
+    </div>
+
+    {/* Bottom: ERP navy — steps + license */}
+    <div className="relative bg-gradient-to-b from-[#0a1024] via-[#0d1b3e] to-[#050810] pb-16 pt-2 sm:pb-20 sm:pt-0">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(99,102,241,0.18),transparent)]" aria-hidden />
+      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-t from-black/25 to-transparent" aria-hidden />
+
+      <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="mb-8 flex flex-col items-center text-center sm:mb-10">
+          <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300/90">The journey</p>
+          <p className="mt-1 max-w-xl text-sm text-slate-400">Four checkpoints from installer to everyday use — the same flow for every shop.</p>
+        </div>
+
+        <div className="relative mb-12 pl-2 sm:hidden">
+          <div className="absolute bottom-2 left-[21px] top-2 w-0.5 rounded-full bg-gradient-to-b from-indigo-400/80 via-violet-400/70 to-indigo-500/80 shadow-[0_0_12px_rgba(129,140,248,0.35)]" aria-hidden />
+          <div className="space-y-5">
+            {setupSteps.map((s, i) => (
+              <div key={i} className="relative flex gap-4">
+                <div className="relative z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-400 to-violet-600 text-white shadow-lg shadow-indigo-950/60 ring-4 ring-[#0d1b3e]">
+                  <span className="scale-90">{s.svg}</span>
+                </div>
+                <div className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-white/[0.07] p-4 shadow-xl shadow-black/20 backdrop-blur-md">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-indigo-300">{s.n}</span>
+                    <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-indigo-100">{s.time}</span>
+                  </div>
+                  <h3 className="mb-1.5 text-base font-black text-white">{s.title}</h3>
+                  <p className="mb-3 text-sm leading-relaxed text-slate-300">{s.desc}</p>
+                  <ul className="space-y-1.5">
+                    {s.bullets.map((b) => (
+                      <li key={b} className="flex items-start gap-2 text-xs text-slate-400">
+                        <span className="mt-0.5 font-bold text-emerald-400">✓</span>
+                        {b}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
-        <a href="https://wa.me/94701234678?text=I+need+a+TechonERP+license+key" target="_blank" rel="noreferrer"
-          className="flex-shrink-0 px-6 py-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-xl shadow-lg hover:scale-105 transition-all flex items-center gap-2 text-sm">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-          Get License Key
-        </a>
+
+        <div className="mb-12 hidden grid-cols-2 gap-4 sm:grid lg:hidden">
+          {setupSteps.map((s, i) => (
+            <div
+              key={i}
+              className="group rounded-2xl border border-white/10 bg-white/[0.06] p-5 shadow-xl shadow-black/25 backdrop-blur-md transition-all hover:border-indigo-400/30 hover:bg-white/[0.09]"
+            >
+              <div className="mb-3 flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-400 to-violet-600 text-white shadow-lg transition-transform group-hover:scale-105">
+                  {s.svg}
+                </div>
+                <div>
+                  <span className="text-[11px] font-black uppercase tracking-wider text-indigo-300">{s.n}</span>
+                  <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-indigo-100">{s.time}</span>
+                </div>
+              </div>
+              <h3 className="mb-1.5 text-sm font-black text-white">{s.title}</h3>
+              <p className="mb-3 text-xs leading-relaxed text-slate-400">{s.desc}</p>
+              <ul className="space-y-1">
+                {s.bullets.map((b) => (
+                  <li key={b} className="flex gap-1.5 text-[11px] text-slate-400">
+                    <span className="font-bold text-emerald-400">✓</span>
+                    {b}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+
+        <div className="relative mb-14 hidden lg:block">
+          <div className="absolute left-[8%] right-[8%] top-[46px] h-[3px] rounded-full bg-gradient-to-r from-indigo-500/20 via-indigo-400/50 to-indigo-500/20 shadow-[0_0_20px_rgba(129,140,248,0.25)]" aria-hidden />
+          <div className="grid grid-cols-4 gap-4">
+            {setupSteps.map((s, i) => (
+              <div key={i} className="group relative flex flex-col items-center">
+                <div className="relative z-10 mb-4 flex h-[76px] w-[76px] items-center justify-center rounded-[1.25rem] bg-gradient-to-br from-indigo-400 to-violet-600 text-white shadow-xl shadow-indigo-950/50 ring-4 ring-[#0d1b3e] transition-transform duration-300 group-hover:scale-105 group-hover:shadow-indigo-500/30">
+                  {s.svg}
+                </div>
+                <div className="flex min-h-[12rem] w-full flex-col rounded-2xl border border-white/10 bg-white/[0.07] p-5 text-left shadow-xl shadow-black/20 backdrop-blur-md transition-all hover:border-indigo-400/25 hover:bg-white/[0.1]">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-indigo-300">{s.n}</span>
+                    <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-indigo-100">{s.time}</span>
+                  </div>
+                  <h3 className="mb-2 text-[15px] font-black leading-snug text-white">{s.title}</h3>
+                  <p className="mb-3 flex-1 text-xs leading-relaxed text-slate-400">{s.desc}</p>
+                  <ul className="space-y-1.5 border-t border-white/10 pt-3">
+                    {s.bullets.map((b) => (
+                      <li key={b} className="flex items-start gap-1.5 text-[11px] text-slate-300">
+                        <span className="font-bold text-emerald-400">✓</span>
+                        {b}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-indigo-600/90 via-violet-700 to-[#1e1b4b] p-6 text-white shadow-2xl shadow-indigo-950/50 sm:rounded-3xl sm:p-8">
+          <div className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-white/15 blur-3xl" aria-hidden />
+          <div className="pointer-events-none absolute -bottom-20 -left-20 h-56 w-56 rounded-full bg-fuchsia-500/20 blur-3xl" aria-hidden />
+          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(105deg,transparent_40%,rgba(255,255,255,0.06)_50%,transparent_60%)]" aria-hidden />
+          <div className="relative grid gap-8 lg:grid-cols-[1fr_auto] lg:items-center lg:gap-10">
+            <div className="flex flex-col gap-5 sm:flex-row sm:gap-6">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/30">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <rect x="3" y="11" width="18" height="11" rx="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+              </div>
+              <div>
+                <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.2em] text-violet-200/95">License activation</p>
+                <h4 className="mb-2 text-xl font-black leading-tight sm:text-2xl">Trial first. One key. Permanent unlock.</h4>
+                <p className="max-w-2xl text-sm leading-relaxed text-white/88 sm:text-base">
+                  After the <strong className="text-white">7-day free trial</strong> (full access, no restrictions — extra demo time on request), enter the license key we send by{" "}
+                  <strong className="text-white">WhatsApp</strong> or <strong className="text-white">email</strong>. Internet is only needed for that activation step — then your shop runs fully offline.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {["No credit card for trial", "Same installer for all plans", "Human support on WhatsApp"].map((t) => (
+                    <span key={t} className="rounded-full bg-black/20 px-3 py-1 text-[11px] font-semibold ring-1 ring-white/20 backdrop-blur-sm">
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
+              <a
+                href="https://wa.me/94701234678?text=I+need+a+TechonERP+license+key"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-3.5 text-sm font-bold text-indigo-900 shadow-lg transition-transform hover:scale-[1.02]"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z" />
+                </svg>
+                Get license key
+              </a>
+              <a
+                href="https://techon.lk/downloads/latest.zip"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-white/40 bg-white/10 px-6 py-3.5 text-sm font-bold text-white backdrop-blur-sm transition-colors hover:bg-white/20"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                Download installer
+              </a>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
 );
 
-/* ─── PRICING ───────────────────────────────────────────────────── */
-const plans = [
-  {name:"Free Trial",price:"Free",period:"7 Days",desc:"Full access · No restrictions · No risk",badge:null,highlight:false,
-    features:["All 20 modules unlocked — full access","No restrictions during the trial","No risk — try everything before you buy","Internet for activation only","App locks after trial expires","Request extra demo time on request","WhatsApp / email support"]},
-  {name:"Monthly",price:"1,000",period:"/ month",desc:"Flexible, cancel anytime",badge:null,highlight:false,
-    features:["All 20 modules unlocked","Unlimited transactions","100% offline operation","License key via WhatsApp/email","Priority support"]},
-  {name:"Yearly",price:"7,500",period:"/ year",desc:"Save 37% vs monthly",badge:"Most Popular",highlight:true,
-    features:["All 20 modules unlocked","Unlimited transactions","100% offline operation","License key via WhatsApp/email","Priority support","Free onboarding help"]},
-  {name:"2 Years",price:"15,000",period:"/ 2 years",desc:"Best for growing businesses",badge:null,highlight:false,
-    features:["All 20 modules unlocked","Unlimited transactions","100% offline operation","License key via WhatsApp/email","Dedicated support","Free updates included"]},
-  {name:"Lifetime",price:"30,000",period:"one-time",desc:"Pay once, use forever",badge:"Best Value",highlight:false,
-    features:["All 20 modules unlocked","Unlimited transactions","All future updates free","License key via WhatsApp/email","Dedicated account support","Free onboarding & setup"]},
+/* ─── PRICING / ONLINE SYNC (copy aligned with erp-app cloud sync + Features sync module) ─ */
+const onlineSyncFeatures = [
+  { icon: "📱", title: "Access from Any Device", desc: "Use your phone, tablet or laptop in the browser — no extra app to install." },
+  { icon: "👁️", title: "Read-Only Live View", desc: "View all your shop data in real time. Sales, inventory, accounts, reports — everything visible, nothing editable." },
+  { icon: "📊", title: "Live Dashboard", desc: "See today's sales, profit, stock value and receivables remotely — aligned with the desktop app." },
+  { icon: "🧾", title: "Invoice & Sales History", desc: "Browse past invoices and sales records from anywhere without being at your shop." },
+  { icon: "📦", title: "Inventory Monitoring", desc: "Check stock levels, low-stock alerts and category breakdowns remotely at any time." },
+  { icon: "🔐", title: "Secure & Private", desc: "Your data stays on your shop PC. The web view is read-only — nothing can be changed remotely." },
 ];
 
-const Pricing = () => (
+/* ─── PRICING ───────────────────────────────────────────────────── */
+const planTemplates = [
+  { id: "free", name: "Free Trial", period: PLAN_PERIODS.free, desc: "Full access · No restrictions · No risk", badge: null, highlight: false,
+    features: ["All 20 modules unlocked — full access", "No restrictions during the trial", "No risk — try everything before you buy", "Internet for activation only", "App locks after trial expires", "Request extra demo time on request", "WhatsApp / email support"] },
+  { id: "monthly", name: "Monthly", period: PLAN_PERIODS.monthly, desc: "Flexible, cancel anytime", badge: null, highlight: false,
+    features: ["All 20 modules unlocked", "Unlimited transactions", "100% offline operation", "License key via WhatsApp/email", "Priority support"] },
+  { id: "yearly", name: "Yearly", period: PLAN_PERIODS.yearly, desc: "Save more vs monthly", badge: "Most Popular", highlight: true,
+    features: ["All 20 modules unlocked", "Unlimited transactions", "100% offline operation", "License key via WhatsApp/email", "Priority support", "Free onboarding help"] },
+  { id: "twoYears", name: "2 Years", period: PLAN_PERIODS.twoYears, desc: "Best for growing businesses", badge: null, highlight: false,
+    features: ["All 20 modules unlocked", "Unlimited transactions", "100% offline operation", "License key via WhatsApp/email", "Dedicated support", "Free updates included"] },
+  { id: "lifetime", name: "Lifetime", period: PLAN_PERIODS.lifetime, desc: "Pay once, use forever", badge: "Best Value", highlight: false,
+    features: ["All 20 modules unlocked", "Unlimited transactions", "All future updates free", "License key via WhatsApp/email", "Dedicated account support", "Free onboarding & setup"] },
+];
+
+const formatAmount = (value) => Math.round(value).toLocaleString("en-US");
+
+const Pricing = () => {
+  const [selectedCountry, setSelectedCountry] = useState(DEFAULT_COUNTRY);
+  /** Bumped when `forceCountry` changes (same-tab event or cross-tab `storage`) — triggers re-read of localStorage only. */
+  const [refreshKey, setRefreshKey] = useState(0);
+  void refreshKey;
+
+  useEffect(() => {
+    // Manual override (no UI): localStorage `techonerp_selected_country` = ISO country code (e.g. "LK").
+    const savedCountry = localStorage.getItem(PRICING_STORAGE_KEY);
+    if (savedCountry) {
+      setSelectedCountry(savedCountry);
+      return;
+    }
+
+    let isMounted = true;
+    const detectCountry = async () => {
+      try {
+        const response = await fetch("https://ipapi.co/json/");
+        if (!response.ok) return;
+        const payload = await response.json();
+        const detected = String(payload?.country_code || "").toUpperCase();
+        if (!detected || !isMounted) return;
+        setSelectedCountry(detected);
+        localStorage.setItem(PRICING_STORAGE_KEY, detected);
+      } catch (error) {
+        // Fallback stays on default pricing (USD / WEST).
+      }
+    };
+    detectCountry();
+    return () => { isMounted = false; };
+  }, []);
+
+  /** Cross-tab: `storage` fires when another document updates `forceCountry`. */
+  useEffect(() => {
+    function handleStorageChange(e) {
+      if (e.key === "forceCountry") {
+        setRefreshKey((prev) => prev + 1);
+      }
+    }
+
+    window.addEventListener("storage", handleStorageChange);
+
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+    };
+  }, []);
+
+  /** Same-tab: dispatch `forceCountryChange` after setItem/removeItem so pricing re-renders without reload. */
+  useEffect(() => {
+    function handleForceCountryChange() {
+      setRefreshKey((prev) => prev + 1);
+    }
+
+    window.addEventListener("forceCountryChange", handleForceCountryChange);
+
+    return () => {
+      window.removeEventListener("forceCountryChange", handleForceCountryChange);
+    };
+  }, []);
+
+  /** Dev only: `setCountry("AE")` / `setCountry("US")` in console — same as manual setItem + dispatch. */
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    window.setCountry = (code) => {
+      if (!code || typeof code !== "string") return;
+
+      const clean = code.trim().toUpperCase();
+
+      if (!SUPPORTED_FORCE_COUNTRY_CODES.includes(clean)) {
+        console.warn("Invalid country code:", clean);
+        return;
+      }
+
+      localStorage.setItem("forceCountry", clean);
+      window.dispatchEvent(new Event("forceCountryChange"));
+    };
+    return () => {
+      delete window.setCountry;
+    };
+  }, []);
+
+  /** Internal admin preview only (no UI): `localStorage.setItem("forceCountry", "AE")` — remove with `removeItem`. */
+  const forcedCountry =
+    typeof window !== "undefined" ? localStorage.getItem("forceCountry") : null;
+  const countryCode =
+    (forcedCountry && String(forcedCountry).trim().toUpperCase()) || selectedCountry;
+
+  if (isDebugPricing() && forcedCountry) {
+    console.log("[pricing override]", { forcedCountry });
+  }
+
+  const region = getRegionByCountry(countryCode);
+  const multiplier = REGION_MULTIPLIERS[region] || REGION_MULTIPLIERS.WEST;
+  const currency = getCurrencyByCountry(countryCode);
+
+  /** Pipeline: lkrValue = baseLKR × multiplier → FX → roundToNearest10 → MIN/MAX → comma format */
+  const formatDisplayFromLkr = (amountLkr, meta) =>
+    formatAmount(convertLkrNominalToDisplay(amountLkr, currency.code, meta));
+
+  const plans = planTemplates.map((plan) => {
+    if (plan.id === "free") {
+      return { ...plan, amount: null, isFree: true };
+    }
+
+    const baseValue = BASE_PRICING_LKR.plans[plan.id];
+    const lkrNominal = baseValue * multiplier;
+    const finalValue = formatDisplayFromLkr(lkrNominal, { baseLKR: baseValue, multiplier });
+    return { ...plan, amount: finalValue, isFree: false };
+  });
+
+  const onlineSyncPrice = formatDisplayFromLkr(BASE_PRICING_LKR.cloudAddonYearly * multiplier, {
+    baseLKR: BASE_PRICING_LKR.cloudAddonYearly,
+    multiplier,
+  });
+
+  const clientPricing = {
+    monthly: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.monthly * multiplier, {
+      baseLKR: BASE_CLIENT_PRICING_LKR.monthly,
+      multiplier,
+    }),
+    yearly: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.yearly * multiplier, {
+      baseLKR: BASE_CLIENT_PRICING_LKR.yearly,
+      multiplier,
+    }),
+    twoYears: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.twoYears * multiplier, {
+      baseLKR: BASE_CLIENT_PRICING_LKR.twoYears,
+      multiplier,
+    }),
+    lifetime: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.lifetime * multiplier, {
+      baseLKR: BASE_CLIENT_PRICING_LKR.lifetime,
+      multiplier,
+    }),
+  };
+
+  const lanPricingTiers = [
+    { label: "Monthly", planId: "monthly", clientKey: "monthly" },
+    { label: "Yearly", planId: "yearly", clientKey: "yearly" },
+    { label: "2 Years", planId: "twoYears", clientKey: "twoYears" },
+    { label: "Lifetime", planId: "lifetime", clientKey: "lifetime" },
+  ];
+
+  return (
   <section id="pricing" className="py-16 sm:py-24 bg-gradient-to-b from-slate-50 to-white">
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="text-center max-w-2xl mx-auto mb-8 sm:mb-16">
+      <div className="text-center max-w-2xl mx-auto mb-8 sm:mb-12">
         <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
           <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Pricing Plans
         </span>
-        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">Simple Plans.<br/>No Hidden Fees.</h2>
+        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-2 leading-tight">Simple Plans.<br/>No Hidden Fees.</h2>
+        <p className="text-[11px] text-gray-400/80 mb-3">Pricing may vary by region.</p>
         <p className="text-gray-500 text-lg">Start free for 7 days — full access, no credit card, no account needed. Buy a plan and get your license key instantly.</p>
-        <p className="text-sm text-gray-400 mt-2">All prices in LKR (Sri Lankan Rupees) · License delivered via WhatsApp or email</p>
+        <p className="text-sm text-gray-400 mt-2">
+          Prices in {currency.code} (converted from LKR base using reference rates) · License delivered via WhatsApp or email
+        </p>
       </div>
-      {/* Mobile swipe hint */}
-      <div className="sm:hidden rounded-2xl mb-4 px-4 py-3 overflow-hidden" style={{background:"linear-gradient(135deg,#0d0b24,#1a1150)",border:"1px solid rgba(139,92,246,0.2)"}}>
-        <div className="flex items-center justify-between">
-          <div>
-            <p style={{fontSize:"0.6rem",color:"#a78bfa",fontWeight:800,letterSpacing:"0.12em",textTransform:"uppercase"}}>Pricing Plans</p>
-            <p style={{fontSize:"0.75rem",color:"rgba(255,255,255,0.5)",marginTop:2}}>5 plans + Online Sync add-on · Swipe to browse</p>
-          </div>
-          <div className="flex items-center gap-1" style={{background:"rgba(167,139,250,0.15)",borderRadius:20,padding:"5px 12px",border:"1px solid rgba(167,139,250,0.2)"}}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
-            <span style={{fontSize:"0.6rem",color:"#a78bfa",fontWeight:700,letterSpacing:"0.06em"}}>SWIPE</span>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#a78bfa" strokeWidth="2.5" strokeLinecap="round"><path d="M9 18l6-6-6-6"/></svg>
-          </div>
-        </div>
-      </div>
-      {/* Mobile: horizontal scroll with fade edges. Desktop: grid */}
-      <div className="relative">
+    </div>
 
-      <div className="pricing-scroll flex gap-4 overflow-x-auto pb-4 sm:grid sm:grid-cols-2 sm:overflow-visible lg:grid-cols-5 sm:pb-0 items-stretch" style={{paddingTop:16}}>
+    {/* Mobile: full-width strip — scroll down (not sideways) */}
+    <div className="sm:hidden w-full border-y border-white/10 bg-gradient-to-b from-[#0c0a18] via-[#12102a] to-[#0e0c1a] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] mb-6">
+      <div className="px-4 pb-3 pt-4">
+        <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-violet-300/95">Pricing plans</p>
+        <p className="mt-1.5 text-[0.8125rem] font-medium leading-snug text-slate-300">Five license options plus Online Sync below — scroll down to compare.</p>
+        <p className="mt-2 flex items-center gap-1.5 text-[0.7rem] text-slate-500">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-500" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+          Scroll down to browse each plan
+        </p>
+      </div>
+    </div>
+
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      {/* Mobile: vertical scroll + snap · Desktop: grid */}
+      <div className="relative">
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-[1] h-12 bg-gradient-to-b from-slate-50 to-transparent sm:hidden" aria-hidden />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-12 bg-gradient-to-t from-white to-transparent sm:hidden" aria-hidden />
+        <div
+          className="pricing-scroll flex flex-col gap-4 overflow-y-auto overflow-x-hidden max-h-[min(78vh,920px)] snap-y snap-mandatory scroll-smooth pb-1 sm:max-h-none sm:overflow-visible sm:grid sm:grid-cols-2 sm:snap-none lg:grid-cols-5 sm:pb-0 items-stretch [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          style={{ WebkitOverflowScrolling: "touch" }}
+        >
         {plans.map((p,i)=>(
           <div key={i}
-            className={`pricing-card relative rounded-2xl p-6 flex flex-col transition-all duration-300 hover:-translate-y-1 mt-3 sm:mt-0 ${p.highlight?"bg-gradient-to-br from-indigo-600 to-violet-700 text-white shadow-2xl shadow-indigo-400/50 scale-[1.03] ring-2 ring-indigo-400/30":"bg-white border border-gray-100 hover:shadow-xl hover:shadow-indigo-100 hover:border-indigo-200"}`}>
+            className={`pricing-card relative w-full shrink-0 rounded-2xl p-6 flex flex-col transition-all duration-300 hover:-translate-y-1 ${p.highlight?"bg-gradient-to-br from-indigo-600 to-violet-700 text-white shadow-2xl shadow-indigo-400/50 sm:scale-[1.03] ring-2 ring-indigo-400/30":"bg-white border border-gray-100 hover:shadow-xl hover:shadow-indigo-100 hover:border-indigo-200"}`}>
             {p.badge && (
               <div className={`absolute -top-3.5 left-1/2 -translate-x-1/2 text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap ${p.highlight?"bg-amber-400 text-amber-900":"bg-indigo-600 text-white"}`}>{p.badge}</div>
             )}
             <div className="mb-5">
               <h3 className={`font-black text-lg mb-1 ${p.highlight?"text-white":"text-gray-900"}`}>{p.name}</h3>
               <div className="flex items-end gap-1 mb-1">
-                {p.price!=="Free"&&<span className={`text-sm font-semibold mb-1 ${p.highlight?"text-violet-200":"text-gray-400"}`}>LKR</span>}
-                <span className={`text-3xl font-black ${p.highlight?"text-white":"text-gray-900"}`}>{p.price}</span>
+                {!p.isFree && <span className={`text-sm font-semibold mb-1 ${p.highlight?"text-violet-200":"text-gray-400"}`}>{currency.symbol}</span>}
+                <span className={`text-3xl font-black ${p.highlight?"text-white":"text-gray-900"}`}>{p.isFree ? "Free" : p.amount}</span>
               </div>
               <p className={`text-xs font-bold ${p.highlight?"text-violet-200":"text-indigo-600"}`}>{p.period}</p>
               <p className={`text-xs mt-1 ${p.highlight?"text-violet-200":"text-gray-400"}`}>{p.desc}</p>
@@ -1222,81 +1635,199 @@ const Pricing = () => (
                 </li>
               ))}
             </ul>
-            <a href={p.price==="Free"?"https://techon.lk/downloads/latest.zip":"https://wa.me/94701234678?text=I+want+to+purchase+TechonERP"} target="_blank" rel="noreferrer"
+            <a href={p.isFree?"https://techon.lk/downloads/latest.zip":"https://wa.me/94701234678?text=I+want+to+purchase+TechonERP"} target="_blank" rel="noreferrer"
               className={`w-full py-3 rounded-xl text-sm font-bold text-center transition-all hover:scale-105 flex items-center justify-center gap-2 ${p.highlight?"bg-white text-indigo-700 shadow-lg":"bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-md shadow-indigo-200"}`}>
-              {p.price==="Free" ? (<><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Free</>) : "Get License Key"}
+              {p.isFree ? (<><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download Free</>) : "Get License Key"}
             </a>
           </div>
         ))}
       </div>
       </div>
+      <div className="mt-8 sm:mt-10 mx-auto max-w-4xl overflow-hidden rounded-2xl border border-indigo-100/90 bg-white shadow-[0_24px_70px_-20px_rgba(79,70,229,0.22)] ring-1 ring-indigo-50">
+        <div className="relative overflow-hidden bg-gradient-to-br from-indigo-600 via-violet-600 to-indigo-700 px-5 py-7 text-center sm:px-8 sm:py-8">
+          <div className="pointer-events-none absolute -right-20 -top-16 h-40 w-40 rounded-full bg-white/15 blur-3xl" aria-hidden />
+          <div className="pointer-events-none absolute -bottom-16 -left-10 h-36 w-36 rounded-full bg-violet-400/20 blur-3xl" aria-hidden />
+          <div className="relative">
+            <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-100 shadow-sm backdrop-blur-sm sm:text-xs sm:tracking-[0.16em]">
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-300 shadow-[0_0_12px_rgba(252,211,77,0.8)]" />
+              LAN · Multi-PC
+            </span>
+            <h3 className="text-2xl font-black leading-tight text-white sm:text-3xl">LAN / Multi-PC Setup</h3>
+            <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-indigo-100 sm:text-base">
+              Use TechonERP across multiple computers in your shop or business.
+            </p>
+          </div>
+        </div>
+        <div className="border-t border-indigo-100/80 bg-gradient-to-b from-slate-50/90 to-white px-4 py-5 sm:px-6 sm:py-6">
+          <div className="mb-3 hidden grid-cols-[minmax(0,6rem)_1fr_1fr] gap-3 border-b border-gray-200/90 pb-3 text-[10px] font-bold uppercase tracking-wider text-gray-500 sm:grid">
+            <span>Period</span>
+            <span className="text-center sm:text-left">Main system</span>
+            <span className="text-center sm:text-left">Client (POS)</span>
+          </div>
+          <div className="space-y-3">
+            {lanPricingTiers.map(({ label, planId, clientKey }) => {
+              const mainAmount = plans.find((p) => p.id === planId)?.amount;
+              const clientAmt = clientPricing[clientKey];
+              return (
+                <div
+                  key={planId}
+                  className="group rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-all duration-300 hover:border-indigo-200 hover:shadow-md hover:shadow-indigo-100/80 sm:grid sm:grid-cols-[minmax(0,6rem)_1fr_1fr] sm:items-stretch sm:gap-3 sm:p-4"
+                >
+                  <div className="mb-3 flex items-center gap-2.5 sm:mb-0 sm:flex-col sm:items-start sm:justify-center sm:gap-1.5">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-black text-white shadow-sm shadow-indigo-300/40">
+                      {label === "2 Years" ? "2Y" : label === "Lifetime" ? "∞" : label.slice(0, 1)}
+                    </span>
+                    <span className="text-sm font-bold text-gray-900 sm:text-[15px]">{label}</span>
+                  </div>
+                  <div className="mb-2 flex flex-col justify-center rounded-xl border border-indigo-100/90 bg-gradient-to-br from-indigo-50/90 to-white px-3 py-3 sm:mb-0">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600/90 sm:hidden">Main system</span>
+                    <div className="mt-0.5 flex items-end gap-1">
+                      <span className="text-sm font-semibold text-indigo-400">{currency.symbol}</span>
+                      <span className="text-xl font-black tabular-nums leading-none text-gray-900 sm:text-2xl">{mainAmount}</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col justify-center rounded-xl border border-violet-100 bg-gradient-to-br from-violet-50/90 to-white px-3 py-3">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-violet-700/90 sm:hidden">Client (POS)</span>
+                    <div className="mt-0.5 flex flex-wrap items-end gap-x-1 gap-y-0">
+                      <span className="text-sm font-semibold text-violet-400">{currency.symbol}</span>
+                      <span className="text-xl font-black tabular-nums leading-none text-gray-900 sm:text-2xl">{clientAmt}</span>
+                      <span className="mb-0.5 text-xs font-bold text-violet-700/90">/ PC</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-5 border-t border-gray-200/90 pt-4 text-center text-[11px] leading-relaxed text-gray-500 sm:text-xs">
+            Each additional computer requires a client (POS) license.
+          </p>
+        </div>
+      </div>
 
       {/* Online Sync Add-on */}
-      <div className="mt-12 sm:mt-16">
-        <div className="text-center mb-8">
-          <span className="inline-flex items-center gap-2 bg-sky-50 text-sky-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-3">
-            <span className="w-1.5 h-1.5 bg-sky-500 rounded-full animate-pulse"/>New Feature
+      <div className="mt-14 sm:mt-20">
+        <div className="mx-auto mb-10 max-w-3xl text-center">
+          <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-sky-100 bg-sky-50 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-sky-800">
+            <span className="h-1.5 w-1.5 rounded-full bg-sky-500 shadow-[0_0_10px_rgba(14,165,233,0.6)]" />
+            Optional add-on
           </span>
-          <h3 className="text-2xl sm:text-3xl font-black text-gray-900 mb-2">Optional Add-on: Online Sync</h3>
-          <p className="text-gray-500 max-w-xl mx-auto">Your ERP stays 100% offline. Add Online Sync to view your shop data from anywhere — phone, tablet or any browser.</p>
+          <h3 className="text-3xl font-black text-gray-900 sm:text-4xl">Online Sync</h3>
+          <p className="mt-3 text-base text-gray-600 sm:text-lg">
+            Your shop PC stays the <strong className="text-gray-800">only place data is edited</strong>. Turn on Online Sync in Settings — TechonERP keeps everything in sync in the background, and you get a{" "}
+            <strong className="text-gray-800">read-only live view</strong> in your web browser from any device.
+          </p>
         </div>
-        <div className="max-w-3xl mx-auto rounded-3xl overflow-hidden border border-sky-100" style={{boxShadow:"0 8px 40px rgba(14,165,233,0.12)"}}>
-          {/* Top banner */}
-          <div className="px-6 sm:px-10 py-8 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6" style={{background:"linear-gradient(135deg,#0ea5e9,#0284c7)"}}>
-            <div className="flex items-center gap-5">
-              <div className="w-16 h-16 rounded-2xl flex items-center justify-center flex-shrink-0 text-4xl" style={{background:"rgba(255,255,255,0.15)"}}>🌐</div>
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <h4 className="text-2xl font-black text-white">Online Sync</h4>
-                  <span className="bg-amber-400 text-amber-900 text-xs font-bold px-2.5 py-0.5 rounded-full">NEW</span>
+
+        <div className="mx-auto max-w-5xl overflow-hidden rounded-3xl border border-sky-100/80 bg-white shadow-[0_24px_80px_-20px_rgba(14,165,233,0.35)]">
+          {/* Hero strip */}
+          <div className="relative overflow-hidden bg-gradient-to-br from-sky-500 via-cyan-600 to-sky-800 px-6 py-8 sm:px-10 sm:py-10">
+            <div className="pointer-events-none absolute -right-16 -top-24 h-56 w-56 rounded-full bg-white/20 blur-3xl" aria-hidden />
+            <div className="pointer-events-none absolute -bottom-20 -left-10 h-48 w-48 rounded-full bg-cyan-300/25 blur-3xl" aria-hidden />
+            <div className="relative flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex max-w-xl flex-col gap-4 sm:flex-row sm:items-start sm:gap-5">
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white/20 text-4xl ring-2 ring-white/30 backdrop-blur-sm">🌐</div>
+                <div>
+                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-100">Live remote visibility</p>
+                  <h4 className="mt-1 text-2xl font-black leading-tight text-white sm:text-3xl">Watch the business from anywhere</h4>
+                  <p className="mt-2 text-sm leading-relaxed text-sky-50">
+                    The same <strong className="text-white">Online Sync</strong> option you see inside TechonERP: your Windows app stays in charge, numbers update in the background while you work, and you can check sales, stock and reports from your phone or laptop — <strong className="text-white">view only</strong>, no remote editing.
+                  </p>
                 </div>
-                <p className="text-sky-100 text-sm">View your offline ERP data live from <strong className="text-white">app.techon.lk</strong> — any device, anywhere</p>
+              </div>
+              <div className="flex shrink-0 flex-col items-stretch rounded-2xl bg-white/15 px-6 py-5 text-center ring-1 ring-white/25 backdrop-blur-md sm:min-w-[200px]">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-sky-100">Add-on ({currency.code})</p>
+                <p className="mt-1 font-black leading-none text-white">
+                  <span className="text-lg font-bold text-sky-100">{currency.symbol}</span> <span className="text-4xl sm:text-5xl">{onlineSyncPrice}</span>
+                </p>
+                <p className="mt-1 text-xs font-semibold text-sky-100">{PLAN_PERIODS.cloudAddon}</p>
               </div>
             </div>
-            <div className="flex-shrink-0 text-center sm:text-right">
-              <p className="text-sky-200 text-xs font-semibold uppercase tracking-wide mb-1">Add-on Price</p>
-              <p className="text-white font-black leading-none"><span className="text-sky-200 text-sm font-semibold">LKR </span><span className="text-4xl">10,000</span></p>
-              <p className="text-sky-200 text-xs mt-1">per year · billed annually</p>
+
+            {/* Simple reassurance row — no technical URLs */}
+            <div className="relative mt-8 grid gap-3 sm:grid-cols-3">
+              {[
+                { t: "Shop PC = master", d: "All changes and entries happen in your Windows ERP." },
+                { t: "Background sync", d: "Figures stay up to date while you use the app as normal." },
+                { t: "Safe web view", d: "Look up numbers anywhere — nothing can be changed from the browser." },
+              ].map((row) => (
+                <div key={row.t} className="rounded-xl border border-white/20 bg-black/15 px-4 py-3 text-left backdrop-blur-sm">
+                  <p className="text-sm font-bold text-white">{row.t}</p>
+                  <p className="mt-1 text-[11px] leading-snug text-sky-100/95">{row.d}</p>
+                </div>
+              ))}
             </div>
           </div>
-          {/* Features grid */}
-          <div className="bg-white px-6 sm:px-10 py-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[
-              {icon:"📱",title:"Any Device, Any Browser",desc:"Access from your phone, tablet or laptop at app.techon.lk. No app to install."},
-              {icon:"👁️",title:"Read-Only Access",desc:"View everything — sales, inventory, accounts, reports. Nothing can be edited or deleted remotely."},
-              {icon:"📊",title:"Live Dashboard",desc:"See today's sales, profit, stock value and receivables in real time from anywhere."},
-              {icon:"🧾",title:"Invoice & Sales History",desc:"Browse all past invoices and transaction records without being at your shop."},
-              {icon:"📦",title:"Inventory Monitoring",desc:"Check stock levels and low-stock alerts remotely. Know what needs reordering before you arrive."},
-              {icon:"🔐",title:"Secure & Encrypted",desc:"Data stays on your PC. Sync is encrypted end-to-end. Nothing can be changed remotely."},
-            ].map((item,i)=>(
-              <div key={i} className="flex items-start gap-3 p-3 rounded-xl" style={{background:"#f0f9ff",border:"1px solid #e0f2fe"}}>
-                <span className="text-xl flex-shrink-0 mt-0.5">{item.icon}</span>
+
+          {/* How it works — 3 steps */}
+          <div className="border-b border-sky-100 bg-gradient-to-b from-slate-50 to-white px-6 py-8 sm:px-10">
+            <p className="mb-4 text-center text-[11px] font-black uppercase tracking-[0.2em] text-sky-700">How it works</p>
+            <div className="grid gap-4 md:grid-cols-3">
+              {[
+                { n: "1", t: "Get the add-on", d: "Purchase Online Sync and we enable it on your licence. We send what you need by WhatsApp or email." },
+                { n: "2", t: "Turn it on in Settings", d: "Open TechonERP on your shop PC, switch on Online Sync, and enter the code we send you — once saved, it stays on that computer." },
+                { n: "3", t: "Use TechonERP as usual", d: "Work on the counter as normal. When you’re logged in, the app keeps the cloud view updated. The website is for viewing only." },
+              ].map((step) => (
+                <div key={step.n} className="rounded-2xl border border-sky-100 bg-white p-5 shadow-sm">
+                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-sky-100 text-sm font-black text-sky-800">{step.n}</span>
+                  <p className="mt-3 font-black text-gray-900">{step.t}</p>
+                  <p className="mt-1.5 text-xs leading-relaxed text-gray-600">{step.d}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Feature grid */}
+          <div className="grid gap-4 bg-white px-6 py-8 sm:grid-cols-2 sm:px-10 lg:grid-cols-3 lg:gap-5">
+            {onlineSyncFeatures.map((item) => (
+              <div key={item.title} className="group flex gap-3 rounded-2xl border border-sky-100/90 bg-gradient-to-br from-sky-50/80 to-white p-4 transition-all hover:border-sky-200 hover:shadow-md">
+                <span className="text-2xl" aria-hidden>
+                  {item.icon}
+                </span>
                 <div>
-                  <p className="font-bold text-gray-900 text-sm mb-0.5">{item.title}</p>
-                  <p className="text-gray-500 text-xs leading-relaxed">{item.desc}</p>
+                  <p className="font-bold text-gray-900">{item.title}</p>
+                  <p className="mt-1 text-xs leading-relaxed text-gray-600">{item.desc}</p>
                 </div>
               </div>
             ))}
           </div>
-          {/* Bottom CTA */}
-          <div className="bg-sky-50 border-t border-sky-100 px-6 sm:px-10 py-5 flex flex-col sm:flex-row items-center justify-between gap-4">
+
+          {/* CTA */}
+          <div className="flex flex-col items-stretch justify-between gap-4 border-t border-sky-100 bg-sky-50/80 px-6 py-6 sm:flex-row sm:items-center sm:px-10">
             <div>
-              <p className="font-bold text-gray-900 text-sm">Already have TechonERP?</p>
-              <p className="text-gray-500 text-xs mt-0.5">Add Online Sync to your existing plan. Contact us via WhatsApp to activate.</p>
+              <p className="font-bold text-gray-900">Ready to add Online Sync?</p>
+              <p className="text-xs text-gray-600">We activate the add-on on your licence and send your setup details. You can keep using TechonERP fully offline on Windows — this only adds remote viewing.</p>
             </div>
-            <a href="https://wa.me/94701234678?text=I+want+to+add+Online+Sync+to+my+TechonERP" target="_blank" rel="noreferrer"
-              className="flex-shrink-0 flex items-center gap-2 px-6 py-3 rounded-xl font-bold text-white text-sm hover:scale-105 transition-transform"
-              style={{background:"linear-gradient(135deg,#0ea5e9,#0284c7)",boxShadow:"0 4px 20px rgba(14,165,233,0.35)"}}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-              Add Online Sync — LKR 10,000/yr
-            </a>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <a
+                href="https://wa.me/94701234678?text=Hi%2C+I%27d+like+to+add+Online+Sync+to+my+TechonERP."
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-500 to-cyan-600 px-6 py-3.5 text-sm font-bold text-white shadow-lg shadow-sky-500/30 transition-transform hover:scale-[1.02]"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z" />
+                </svg>
+                Chat on WhatsApp
+              </a>
+              <a
+                href="https://app.techon.lk"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center justify-center rounded-xl border-2 border-sky-200 bg-white px-5 py-3.5 text-sm font-bold text-sky-800 hover:bg-sky-50"
+              >
+                Open web dashboard
+              </a>
+            </div>
           </div>
         </div>
-        <p className="text-center text-xs text-gray-400 mt-4">Online Sync is an optional yearly add-on. The core TechonERP app always works 100% offline without it.</p>
+        <p className="mx-auto mt-4 max-w-2xl text-center text-[11px] leading-relaxed text-gray-500">
+          Online Sync is optional. Your Windows ERP stays the source of truth; the web view is read-only — nothing can be changed from the browser.
+        </p>
       </div>
     </div>
   </section>
 );
+};
 
 /* ─── TESTIMONIALS ──────────────────────────────────────────────── */
 const testimonialList = [
@@ -1398,7 +1929,7 @@ const WhyUs = () => (
           {
             svg:<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
             bg:"rgba(59,130,246,0.25)",
-            title:"32+ Currencies",desc:"LKR, INR, USD, AED, SAR, EUR, GBP, SGD, JPY, CNY and 22+ more. Each business picks their own currency."},
+            title:"26+ Currencies",desc:"Every supported country maps to a real ISO 4217 code (same as the desktop app). Choose one currency for invoices, reports, and dashboard."},
           {
             svg:<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>,
             bg:"rgba(139,92,246,0.25)",
@@ -1446,26 +1977,336 @@ const SysReq = () => (
 );
 
 /* ─── CURRENCIES ────────────────────────────────────────────────── */
-const currencies = ["LKR — Sri Lankan Rupee","₹ — Indian Rupee","$ — US Dollar","€ — Euro","£ — British Pound","AED — UAE Dirham","SAR — Saudi Riyal","QAR — Qatari Riyal","KWD — Kuwaiti Dinar","BHD — Bahraini Dinar","OMR — Omani Rial","AUD — Australian Dollar","CAD — Canadian Dollar","SGD — Singapore Dollar","MYR — Malaysian Ringgit","IDR — Indonesian Rupiah","¥ — Japanese Yen","₩ — South Korean Won","฿ — Thai Baht","PKR — Pakistani Rupee","BDT — Bangladeshi Taka","NPR — Nepali Rupee","MVR — Maldivian Rufiyaa","CHF — Swiss Franc","NZD — New Zealand Dollar","ZAR — South African Rand","NGN — Nigerian Naira","KES — Kenyan Shilling","₱ — Philippine Peso","HKD — Hong Kong Dollar","CNY — Chinese Yuan"];
+const deploymentModes = [
+  {
+    id: "standalone",
+    icon: "🖥️",
+    title: "Single Computer",
+    subtitle: "Standalone Mode",
+    description: "All data stays on one PC. Best for a single-counter business without local network sharing.",
+    badges: ["Full ERP", "No network needed", "Simple setup"],
+    accent: "from-indigo-600 to-blue-600",
+    panel: "bg-indigo-50 border-indigo-100",
+  },
+  {
+    id: "network_server",
+    icon: "🗄️",
+    title: "Main Computer",
+    subtitle: "Network Server",
+    description: "This computer stores business data and serves other counters on LAN. Built for multi-PC shops.",
+    badges: ["Full ERP", "Shares data to clients", "Auto server setup"],
+    accent: "from-emerald-600 to-green-600",
+    panel: "bg-emerald-50 border-emerald-100",
+  },
+  {
+    id: "network_client",
+    icon: "🧾",
+    title: "Counter Computer",
+    subtitle: "Network Client",
+    description: "POS-focused terminal connected to the main server PC. Ideal for billing counters and front desks.",
+    badges: ["POS-focused", "Needs server connection", "Lightweight counter terminal"],
+    accent: "from-orange-500 to-amber-500",
+    panel: "bg-orange-50 border-orange-100",
+  },
+];
 
-const Currencies = () => (
-  <section className="py-12 sm:py-20 bg-gradient-to-b from-slate-50 to-white">
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="text-center max-w-xl mx-auto mb-12">
+const SystemModes = () => (
+  <section className="py-12 sm:py-20 bg-white">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center max-w-3xl mx-auto mb-10 sm:mb-12">
         <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
-          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Global Ready
+          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Real ERP Architecture
         </span>
-        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">Global currencies &amp; regions</h2>
-        <p className="text-gray-500">Carefully selected global countries for real business use. Each business picks one currency — invoices, reports and dashboards stay consistent.</p>
+        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">System Deployment Modes</h2>
+        <p className="text-gray-500 text-base sm:text-lg">Directly based on TechonERP setup wizard logic: choose the right mode for your shop layout, counters, and network setup.</p>
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-        {currencies.map((c,i)=>(
-          <div key={i} className={`px-3 py-2 rounded-xl text-xs font-medium border ${i===0?"bg-indigo-600 text-white border-indigo-600":"bg-white border-gray-100 text-gray-600 hover:border-indigo-200 hover:text-indigo-700 transition-colors"}`}>{c}</div>
+
+      <div className="grid lg:grid-cols-3 gap-4 sm:gap-5 mb-8">
+        {deploymentModes.map((mode) => (
+          <div key={mode.id} className={`rounded-2xl border p-5 sm:p-6 ${mode.panel}`}>
+            <div className={`w-11 h-11 rounded-xl bg-gradient-to-br ${mode.accent} text-white flex items-center justify-center text-xl mb-4 shadow-lg`}>
+              <span aria-hidden>{mode.icon}</span>
+            </div>
+            <p className="text-xs font-black uppercase tracking-wider text-gray-500 mb-1">{mode.subtitle}</p>
+            <h3 className="text-xl font-black text-gray-900 mb-2">{mode.title}</h3>
+            <p className="text-sm text-gray-600 leading-relaxed mb-4">{mode.description}</p>
+            <div className="flex flex-wrap gap-2">
+              {mode.badges.map((b) => (
+                <span key={b} className="px-2.5 py-1 rounded-full bg-white/80 border border-white text-[11px] font-semibold text-gray-700">
+                  {b}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-2xl sm:rounded-3xl border border-slate-200 bg-slate-50 p-5 sm:p-7">
+        <h3 className="text-xl sm:text-2xl font-black text-gray-900 mb-4">Operational Notes from Live ERP Behavior</h3>
+        <div className="grid md:grid-cols-2 gap-4 sm:gap-5">
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-wider text-indigo-600 mb-2">Mode lock</p>
+            <p className="text-sm text-gray-600 leading-relaxed">After setup is completed, mode is locked. Changes require explicit <strong>Reset Setup</strong> from Settings to avoid accidental architecture changes.</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-wider text-indigo-600 mb-2">Client restrictions</p>
+            <p className="text-sm text-gray-600 leading-relaxed">Network Client mode is intentionally restricted from server/admin operations (server setup, backup management, service control) for safer counter usage.</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-wider text-indigo-600 mb-2">Sync visibility</p>
+            <p className="text-sm text-gray-600 leading-relaxed">Network modes include real-time connection and sync status indicators (connected, reconnecting, disconnected, synced, saving, failed).</p>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-black uppercase tracking-wider text-indigo-600 mb-2">Server behavior</p>
+            <p className="text-sm text-gray-600 leading-relaxed">Network Server mode keeps full ERP/admin access while handling shared data flow for connected client terminals on the LAN.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+);
+
+const supportedIndustries = [
+  {
+    key: "tech",
+    name: "Tech & Electronics",
+    icon: "🖥️",
+    covers: "Computer Shops, Mobile Phone Shops, CCTV & Security, Electronics Retail, IT Service Centers, Repair Shops",
+    modules: { repairs: true, barcode: true, serial: true, expiry: false },
+  },
+  {
+    key: "grocery",
+    name: "Grocery & Supermarket",
+    icon: "🛒",
+    covers: "Grocery Stores, Supermarkets, Mini Markets, Convenience Stores, Wholesale Food",
+    modules: { repairs: false, barcode: true, serial: false, expiry: true },
+  },
+  {
+    key: "fashion",
+    name: "Fashion & Apparel",
+    icon: "👗",
+    covers: "Clothing Stores, Footwear Shops, Bag & Accessory Stores, Boutiques, Textile Shops",
+    modules: { repairs: false, barcode: true, serial: false, expiry: false },
+  },
+  {
+    key: "hardware",
+    name: "Hardware & Construction",
+    icon: "🔧",
+    covers: "Hardware Stores, Building Material Suppliers, Plumbing Shops, Electrical Supply, Paint & Tool Shops",
+    modules: { repairs: false, barcode: true, serial: false, expiry: false },
+  },
+  {
+    key: "pharmacy",
+    name: "Health & Pharmacy",
+    icon: "💊",
+    covers: "Pharmacies, Medical Supply Stores, Herbal Shops, Optical Stores, Health & Wellness Stores",
+    modules: { repairs: false, barcode: true, serial: false, expiry: true },
+  },
+  {
+    key: "jewelry",
+    name: "Jewelry & Watches",
+    icon: "💍",
+    covers: "Gold & Silver Jewelry, Watch Retailers, Gem Dealers, Pawn Shops, Custom Jewelry Makers",
+    modules: { repairs: true, barcode: true, serial: false, expiry: false },
+  },
+  {
+    key: "automotive",
+    name: "Automotive",
+    icon: "🚗",
+    covers: "Auto Spare Parts, Tyre & Wheel Shops, Battery Dealers, Car Accessories, Service Centers",
+    modules: { repairs: true, barcode: true, serial: false, expiry: false },
+  },
+  {
+    key: "agriculture",
+    name: "Agriculture & Livestock",
+    icon: "🌾",
+    covers: "Seed & Fertilizer Dealers, Pesticide Shops, Animal Feed, Veterinary Supplies, Irrigation Stores",
+    modules: { repairs: false, barcode: true, serial: false, expiry: true },
+  },
+  {
+    key: "general",
+    name: "General Retail & Services",
+    icon: "🏪",
+    covers: "Stationery, Gift Stores, Sports & Fitness, Toy Stores, Book Shops, Salons, Service Businesses",
+    modules: { repairs: true, barcode: true, serial: false, expiry: false },
+  },
+];
+
+const SupportedIndustries = () => (
+  <section className="py-12 sm:py-20 bg-gradient-to-b from-white to-slate-50">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center max-w-3xl mx-auto mb-10 sm:mb-12">
+        <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
+          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Original ERP Profiles
+        </span>
+        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">Supported Business Industries</h2>
+        <p className="text-gray-500 text-base sm:text-lg">Real industry profiles from TechonERP onboarding. Each profile enables the right module behavior such as Repairs, Serial/IMEI handling, and Expiry tracking.</p>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-7">
+        <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Profiles</p>
+          <p className="text-2xl font-black text-gray-900 mt-1">{supportedIndustries.length}</p>
+        </div>
+        <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Repairs-enabled</p>
+          <p className="text-2xl font-black text-gray-900 mt-1">{supportedIndustries.filter((x) => x.modules.repairs).length}</p>
+        </div>
+        <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Expiry-enabled</p>
+          <p className="text-2xl font-black text-gray-900 mt-1">{supportedIndustries.filter((x) => x.modules.expiry).length}</p>
+        </div>
+        <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Serial/IMEI</p>
+          <p className="text-2xl font-black text-gray-900 mt-1">{supportedIndustries.filter((x) => x.modules.serial).length}</p>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {supportedIndustries.map((industry) => (
+          <div key={industry.key} className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm hover:shadow-md hover:border-indigo-200 transition-all">
+            <div className="flex items-center gap-2.5 mb-3">
+              <span className="text-2xl" aria-hidden>{industry.icon}</span>
+              <h3 className="text-lg font-black text-gray-900">{industry.name}</h3>
+            </div>
+            <p className="text-sm text-gray-600 leading-relaxed mb-4">{industry.covers}</p>
+            <div className="flex flex-wrap gap-2">
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border ${industry.modules.repairs ? "bg-rose-50 text-rose-700 border-rose-200" : "bg-slate-50 text-slate-500 border-slate-200"}`}>Repairs {industry.modules.repairs ? "On" : "Off"}</span>
+              <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold border bg-indigo-50 text-indigo-700 border-indigo-200">Barcode On</span>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border ${industry.modules.serial ? "bg-violet-50 text-violet-700 border-violet-200" : "bg-slate-50 text-slate-500 border-slate-200"}`}>Serial/IMEI {industry.modules.serial ? "On" : "Off"}</span>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-semibold border ${industry.modules.expiry ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-50 text-slate-500 border-slate-200"}`}>Expiry {industry.modules.expiry ? "On" : "Off"}</span>
+            </div>
+          </div>
         ))}
       </div>
     </div>
   </section>
 );
+
+const regionSupport = [
+  {
+    region: "South Asia",
+    icon: "🌏",
+    countries: [
+      { flag: "🇱🇰", name: "Sri Lanka", currencyCode: "LKR", currencyName: "Sri Lankan Rupee", symbol: "Rs" },
+      { flag: "🇮🇳", name: "India", currencyCode: "INR", currencyName: "Indian Rupee", symbol: "₹" },
+      { flag: "🇵🇰", name: "Pakistan", currencyCode: "PKR", currencyName: "Pakistani Rupee", symbol: "PKR" },
+      { flag: "🇧🇩", name: "Bangladesh", currencyCode: "BDT", currencyName: "Bangladeshi Taka", symbol: "BDT" },
+      { flag: "🇲🇻", name: "Maldives", currencyCode: "MVR", currencyName: "Maldivian Rufiyaa", symbol: "MVR" },
+      { flag: "🇳🇵", name: "Nepal", currencyCode: "NPR", currencyName: "Nepali Rupee", symbol: "NPR" },
+    ],
+  },
+  {
+    region: "GCC / Middle East",
+    icon: "🏜️",
+    countries: [
+      { flag: "🇦🇪", name: "United Arab Emirates", currencyCode: "AED", currencyName: "UAE Dirham", symbol: "AED" },
+      { flag: "🇸🇦", name: "Saudi Arabia", currencyCode: "SAR", currencyName: "Saudi Riyal", symbol: "SAR" },
+      { flag: "🇶🇦", name: "Qatar", currencyCode: "QAR", currencyName: "Qatari Riyal", symbol: "QAR" },
+      { flag: "🇰🇼", name: "Kuwait", currencyCode: "KWD", currencyName: "Kuwaiti Dinar", symbol: "KWD" },
+      { flag: "🇧🇭", name: "Bahrain", currencyCode: "BHD", currencyName: "Bahraini Dinar", symbol: "BHD" },
+      { flag: "🇴🇲", name: "Oman", currencyCode: "OMR", currencyName: "Omani Rial", symbol: "OMR" },
+    ],
+  },
+  {
+    region: "Southeast & East Asia",
+    icon: "🧭",
+    countries: [
+      { flag: "🇲🇾", name: "Malaysia", currencyCode: "MYR", currencyName: "Malaysian Ringgit", symbol: "MYR" },
+      { flag: "🇸🇬", name: "Singapore", currencyCode: "SGD", currencyName: "Singapore Dollar", symbol: "SGD" },
+      { flag: "🇮🇩", name: "Indonesia", currencyCode: "IDR", currencyName: "Indonesian Rupiah", symbol: "IDR" },
+      { flag: "🇹🇭", name: "Thailand", currencyCode: "THB", currencyName: "Thai Baht", symbol: "฿" },
+      { flag: "🇵🇭", name: "Philippines", currencyCode: "PHP", currencyName: "Philippine Peso", symbol: "₱" },
+      { flag: "🇻🇳", name: "Vietnam", currencyCode: "VND", currencyName: "Vietnamese Dong", symbol: "VND" },
+      { flag: "🇨🇳", name: "China", currencyCode: "CNY", currencyName: "Chinese Yuan", symbol: "CNY" },
+      { flag: "🇯🇵", name: "Japan", currencyCode: "JPY", currencyName: "Japanese Yen", symbol: "¥" },
+      { flag: "🇰🇷", name: "South Korea", currencyCode: "KRW", currencyName: "South Korean Won", symbol: "₩" },
+    ],
+  },
+  {
+    region: "Western Markets",
+    icon: "🌍",
+    countries: [
+      { flag: "🇺🇸", name: "United States", currencyCode: "USD", currencyName: "US Dollar", symbol: "$" },
+      { flag: "🇬🇧", name: "United Kingdom", currencyCode: "GBP", currencyName: "British Pound", symbol: "£" },
+      { flag: "🇨🇦", name: "Canada", currencyCode: "CAD", currencyName: "Canadian Dollar", symbol: "CAD" },
+      { flag: "🇦🇺", name: "Australia", currencyCode: "AUD", currencyName: "Australian Dollar", symbol: "AUD" },
+      { flag: "🇩🇪", name: "Germany", currencyCode: "EUR", currencyName: "Euro", symbol: "€" },
+      { flag: "🇫🇷", name: "France", currencyCode: "EUR", currencyName: "Euro", symbol: "€" },
+      { flag: "🇮🇹", name: "Italy", currencyCode: "EUR", currencyName: "Euro", symbol: "€" },
+    ],
+  },
+];
+
+const Currencies = () => {
+  const allCountries = regionSupport.flatMap((group) => group.countries);
+  const uniqueCurrencies = Array.from(new Set(allCountries.map((c) => c.currencyCode)));
+  return (
+    <section className="py-12 sm:py-20 bg-gradient-to-b from-slate-50 to-white">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-3xl mx-auto mb-10 sm:mb-12">
+          <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
+            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Global Ready
+          </span>
+          <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">Global Currencies &amp; Regions</h2>
+          <p className="text-gray-500 text-base sm:text-lg">Real support data from TechonERP country settings. Pick your country once and your invoices, reports, totals and dashboard use the correct currency format.</p>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8 sm:mb-10">
+          <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Countries</p>
+            <p className="text-2xl font-black text-gray-900 mt-1">{allCountries.length}</p>
+          </div>
+          <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Currencies</p>
+            <p className="text-2xl font-black text-gray-900 mt-1">{uniqueCurrencies.length}</p>
+          </div>
+          <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Regions</p>
+            <p className="text-2xl font-black text-gray-900 mt-1">{regionSupport.length}</p>
+          </div>
+          <div className="rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-center shadow-sm">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">Setup Model</p>
+            <p className="text-xs sm:text-sm font-bold text-gray-700 mt-1">Country-first mapping</p>
+          </div>
+        </div>
+
+        <div className="space-y-4 sm:space-y-5">
+          {regionSupport.map((group) => (
+            <div key={group.region} className="rounded-2xl sm:rounded-3xl border border-gray-100 bg-white shadow-sm overflow-hidden">
+              <div className="px-5 sm:px-7 py-4 border-b border-gray-100 bg-gradient-to-r from-indigo-50 via-violet-50 to-white">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm sm:text-base font-black text-gray-900 flex items-center gap-2">
+                    <span className="text-lg" aria-hidden>{group.icon}</span>
+                    {group.region}
+                  </p>
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-indigo-600">{group.countries.length} Countries</span>
+                </div>
+              </div>
+              <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {group.countries.map((country) => (
+                  <div key={country.name} className="rounded-xl border border-gray-100 bg-slate-50/80 px-3.5 py-3 hover:border-indigo-200 hover:bg-white transition-colors">
+                    <p className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                      <span className="text-base" aria-hidden>{country.flag}</span>
+                      {country.name}
+                    </p>
+                    <p className="text-xs text-gray-600 mt-1">
+                      <span className="font-semibold text-indigo-700">{country.currencyCode}</span>
+                      {" · "}
+                      {country.currencyName}
+                      {" · "}
+                      <span className="font-semibold text-gray-700">{country.symbol}</span>
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
 
 /* ─── CTA ───────────────────────────────────────────────────────── */
 const CTA = () => (
@@ -1548,7 +2389,7 @@ const Footer = () => (
       </div>
       <div className="border-t border-gray-800 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">
         <p className="text-sm text-gray-600">© 2026 <span className="text-indigo-400">TechonERP</span> · Developed by <span className="text-gray-400 font-semibold">Techon Computers</span> · All rights reserved.</p>
-        <p className="text-xs text-gray-700">Electron · IndexedDB · Windows 10/11 · Online Sync at app.techon.lk</p>
+        <p className="text-xs text-gray-700">Electron · IndexedDB · Windows 10/11 · Online Sync optional</p>
       </div>
     </div>
   </footer>
@@ -1582,9 +2423,9 @@ const FaviconSetter = () => {
 export default function App() {
   return (
     <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap'); html{scroll-behavior:smooth} *{box-sizing:border-box} .pricing-scroll::-webkit-scrollbar{display:none} @media(max-width:639px){.pricing-card{min-width:82vw;flex-shrink:0;scroll-snap-align:start}.pricing-scroll{scroll-snap-type:x mandatory;overflow-y:visible;padding-left:12px;padding-right:12px}.tab-scroll{scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}.tab-scroll::-webkit-scrollbar{display:none}}`}</style>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap'); html{scroll-behavior:smooth} *{box-sizing:border-box} .pricing-scroll::-webkit-scrollbar{display:none} @media(max-width:639px){.pricing-card{flex-shrink:0;scroll-snap-align:start;width:100%}.pricing-scroll{scroll-snap-type:y mandatory;-webkit-overflow-scrolling:touch}.tab-scroll{scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}.tab-scroll::-webkit-scrollbar{display:none}}`}</style>
       <FaviconSetter/>
-      <Navbar/><Hero/><Features/><Screenshots/><ProductHighlights/><HowItWorks/><Pricing/><Testimonials/><WhyUs/><Currencies/><SysReq/><CTA/><Footer/><WAButton/>
+      <Navbar/><Hero/><Features/><Screenshots/><ProductHighlights/><HowItWorks/><SystemModes/><SupportedIndustries/><Currencies/><Pricing/><WhyUs/><SysReq/><CTA/><Testimonials/><Footer/><WAButton/>
     </div>
   );
 }
