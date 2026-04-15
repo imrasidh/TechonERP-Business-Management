@@ -69,6 +69,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
+   * LICENSE_SECRET (or file/env) for financial snapshot HMAC v2. Empty string if unset.
+   */
+  getSnapshotHmacSecret: function() {
+    return ipcRenderer.invoke('tc-snapshot-hmac-secret');
+  },
+
+  getSnapshotHmacSecretPrevious: function() {
+    return ipcRenderer.invoke('tc-snapshot-hmac-secret-previous');
+  },
+
+  /** { isPackaged, licenseSecretConfigured, blockWritesOnCritical } */
+  getProductionGuard: function() {
+    return ipcRenderer.invoke('tc-runtime-production-guard');
+  },
+
+  /**
    * Open a URL in the user's default browser using shell.openExternal()
    * @param {string} url - Must start with https:// or http://
    */

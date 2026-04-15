@@ -25,17 +25,17 @@ const http = require('http');
 const { execFile, exec } = require('child_process');
 const { pathToFileURL } = require('url');
 
-/* Dev / unpackaged only: erp-app/.env → process.env.TC_LIC_SERVER_SECRET.
- * Packaged .exe: do not load .env from app.asar path — use tc_license_secret.txt next to the executable. */
+/* Dev / unpackaged only: erp-app/.env → LICENSE_SECRET / TC_LIC_SERVER_SECRET.
+ * Packaged .exe: set OS env LICENSE_SECRET (preferred) or TC_LIC_SERVER_SECRET, or tc_license_secret.txt beside .exe. */
 try {
   if (app.isPackaged === false) {
     require('dotenv').config({ path: path.join(__dirname, '.env') });
   }
 } catch (_e) { /* dotenv optional if missing */ }
 
-if (process.env.TC_LIC_DEBUG === '1') {
-  const s = process.env.TC_LIC_SERVER_SECRET;
-  console.log('[TC_LIC_DEBUG] TC_LIC_SERVER_SECRET: ' + (s ? 'SET (length ' + String(s.length) + ')' : 'NOT SET'));
+if (process.env.TC_LIC_DEBUG === '1' && app && app.isPackaged !== true) {
+  const s = process.env.LICENSE_SECRET || process.env.TC_LIC_SERVER_SECRET;
+  console.log('[TC_LIC_DEBUG] LICENSE_SECRET/TC_LIC_SERVER_SECRET: ' + (s ? 'SET (length ' + String(s.length) + ')' : 'NOT SET'));
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -192,11 +192,7 @@ function scheduleSplashThenMain() {
    ═══════════════════════════════════════════════════════════════════ */
 const SERVER_URL = 'https://license.techon.lk';
 
-/** Shipped in older main.cjs as `SERVER_SECRET` (always available in .exe). Used only when
- *  packaged and no TC_LIC_SERVER_SECRET env / tc_license_secret.txt — must match license.techon.lk
- *  TC_LIC_SERVER_SECRET (or override via env / file). */
-const LEGACY_DEFAULT_LIC_SECRET = 'tcerp-server-2025-x9k';
-let _tcLicLegacyFallbackLogged = false;
+let _tcLicMissingSecretLogged = false;
 
 /**
  * Read first non-empty, non-comment line from tc_license_secret.txt (handles BOM, multiple lines).
@@ -216,12 +212,11 @@ function readFirstSecretLineFromTxt(fp) {
 }
 
 /** License API HMAC secret for X-TC-Token (same algorithm as PHP).
- *  1) process.env.TC_LIC_SERVER_SECRET (dev: erp-app/.env when unpackaged)
- *  2) tc_license_secret.txt — paths below (UTF-8, first non-empty non-# line)
- *  3) Packaged .exe only: LEGACY_DEFAULT_LIC_SECRET — restores behaviour of old main.cjs before external files
+ *  1) process.env.LICENSE_SECRET (preferred) or process.env.TC_LIC_SERVER_SECRET
+ *  2) tc_license_secret.txt — paths below (UTF-8, first non-empty non-# line), same value as server LICENSE_SECRET
  */
 function getLicenseServerSecret() {
-  const env = process.env.TC_LIC_SERVER_SECRET;
+  const env = process.env.LICENSE_SECRET || process.env.TC_LIC_SERVER_SECRET;
   if (env && String(env).trim()) return String(env).trim();
 
   const fileCandidates = [];
@@ -262,18 +257,14 @@ function getLicenseServerSecret() {
     const line = readFirstSecretLineFromTxt(fileCandidates[i]);
     if (line) return line;
   }
-  if (app.isPackaged === true) {
-    if (!_tcLicLegacyFallbackLogged) {
-      _tcLicLegacyFallbackLogged = true;
-      try {
-        writeLogFile(
-          'info',
-          '[TC_LIC] Using legacy default HMAC secret (old shipped .exe behaviour). ' +
-            'Override with tc_license_secret.txt or TC_LIC_SERVER_SECRET if your server uses a different secret.'
-        );
-      } catch (_) {}
-    }
-    return LEGACY_DEFAULT_LIC_SECRET;
+  if (app.isPackaged === true && !_tcLicMissingSecretLogged) {
+    _tcLicMissingSecretLogged = true;
+    try {
+      writeLogFile(
+        'warn',
+        '[TC_LIC] LICENSE_SECRET not configured (set LICENSE_SECRET or TC_LIC_SERVER_SECRET, or tc_license_secret.txt beside the app).'
+      );
+    } catch (_) {}
   }
   return '';
 }
@@ -557,7 +548,7 @@ function tcRequest(endpoint, payload) {
 
       const secret = getLicenseServerSecret();
       if (!secret) {
-        reject(new Error('License API secret missing: set TC_LIC_SERVER_SECRET or tc_license_secret.txt (must match server TC_LIC_SERVER_SECRET).'));
+        reject(new Error('License API secret missing: set LICENSE_SECRET or TC_LIC_SERVER_SECRET (or tc_license_secret.txt beside the app) — must match server LICENSE_SECRET.'));
         return;
       }
 
@@ -1440,9 +1431,9 @@ ipcMain.handle('tc-activate', async (_event, { licenseKey, shopName }) => {
         ok     : false,
         message:
           'Missing license API secret on this PC.\n\n' +
-          'Use the same TC_LIC_SERVER_SECRET as on license.techon.lk.\n' +
-          '• Dev: erp-app/.env with TC_LIC_SERVER_SECRET=...\n' +
-          '• Installed app: Put tc_license_secret.txt (one line, no quotes) in ONE of these places:\n' +
+          'Use the same LICENSE_SECRET (or TC_LIC_SERVER_SECRET) as on license.techon.lk.\n' +
+          '• Dev: erp-app/.env with LICENSE_SECRET=...\n' +
+          '• Installed app: Set OS env LICENSE_SECRET, or put tc_license_secret.txt (one line, no quotes) in ONE of these places:\n' +
           '  – Next to Techon ERP.exe or in the resources folder\n' +
           '  – Or in AppData (recommended if Program Files is read-only):\n' +
           '    %APPDATA%\\TechonERP\\tc_license_secret.txt\n\n' +
@@ -1487,7 +1478,7 @@ ipcMain.handle('tc-activate', async (_event, { licenseKey, shopName }) => {
       message:
         'Cannot complete activation.\n\n' +
         (detail ? detail + '\n\n' : '') +
-        'If the problem persists: confirm tc_license_secret.txt matches the server, or contact Techon support with the detail above.',
+        'If the problem persists: confirm LICENSE_SECRET / tc_license_secret.txt matches the server, or contact Techon support with the detail above.',
     };
   }
 });
@@ -1554,6 +1545,44 @@ ipcMain.handle('tc-sync-clock-via-license', async () => {
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-app-version', () => {
   return app.getVersion();
+});
+
+/** Same secret as license API — for snapshot HMAC-SHA256 v2 (renderer never stores it). */
+ipcMain.handle('tc-snapshot-hmac-secret', () => {
+  try {
+    const s = getLicenseServerSecret();
+    return typeof s === 'string' ? s : '';
+  } catch (e) {
+    return '';
+  }
+});
+
+/** Optional previous secret during LICENSE_SECRET rotation (verify-only). */
+ipcMain.handle('tc-snapshot-hmac-secret-previous', () => {
+  try {
+    const s = process.env.TC_SNAPSHOT_HMAC_SECRET_PREVIOUS;
+    return s && String(s).trim() ? String(s).trim() : '';
+  } catch (e) {
+    return '';
+  }
+});
+
+/** Packaged production runtime guard — LICENSE_SECRET required for accounting HMAC / API. */
+ipcMain.handle('tc-runtime-production-guard', () => {
+  try {
+    const secret = getLicenseServerSecret();
+    return {
+      isPackaged: app.isPackaged === true,
+      licenseSecretConfigured: !!(secret && String(secret).trim()),
+      blockWritesOnCritical: process.env.TC_BLOCK_WRITES_ON_CRITICAL === '1',
+    };
+  } catch (e) {
+    return {
+      isPackaged: false,
+      licenseSecretConfigured: true,
+      blockWritesOnCritical: false,
+    };
+  }
 });
 
 /* ═══════════════════════════════════════════════════════════════════

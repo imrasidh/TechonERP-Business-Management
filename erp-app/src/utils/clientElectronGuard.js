@@ -4,6 +4,7 @@
  */
 
 export function tcIsDevEnv() {
+  if (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD === true) return false;
   if (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) return true;
   if (typeof process !== "undefined" && process.env && process.env.NODE_ENV === "development") return true;
   return false;

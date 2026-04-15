@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { round2 } from "../accounting/generalLedger.js";
 import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
+import { buildReconciliationReport } from "../accounting/reconciliationReport.js";
+import { validateJournalBalanced, DEFAULT_GL_CHART } from "../accounting/generalLedger.js";
+import { deriveInventoryEconomics, reconcileInventoryToLedger } from "../accounting/inventoryEngine.js";
 import { SnapshotIntegrityBadge } from "../ui/SnapshotIntegrityBadge.jsx";
 import { validateExtraUnits, buildUnitsPersistFields } from "../units/productUnits.js";
 
@@ -412,7 +415,7 @@ var Accounts = function (props) {
     });
   };
 
-  var ATABS = [["overview", "📊 Overview"], ["capital", "💼 Capital"], ["opening", "🏁 Opening Balance"], ["ledger", "📒 Cash Ledger"], ["gledger", "⚖ GL / Trial Balance"], ["assets", "🏢 Assets"], ["profit", "💸 Profit Distribution"]];
+  var ATABS = [["overview", "📊 Overview"], ["capital", "💼 Capital"], ["opening", "🏁 Opening Balance"], ["ledger", "📒 Cash Ledger"], ["gledger", "⚖ GL / Trial Balance"], ["recon", "🔍 Reconciliation"], ["assets", "🏢 Assets"], ["profit", "💸 Profit Distribution"]];
 
   return (
     <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1048,13 +1051,16 @@ var Accounts = function (props) {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" }}>
                   {snapsRecent.map(function (s) {
-                    var sealed = !!(s && s.contentHash && validateSnapshotIntegrity(s));
+                    var tampered = !!(s && s.tampered);
+                    var sealed = !tampered && !!(s && s.contentHash && validateSnapshotIntegrity(s));
                     var legacy = s && !s.contentHash;
                     return (
                       <div key={s.id || s.createdAt} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid " + C.border, background: "#fafbff", fontSize: 12, minWidth: 0 }}>
                         <span style={{ fontWeight: 700, color: C.text }}>{fmtDateFull(s.createdAt || "").slice(0, 16) || "—"}</span>
                         <span style={{ color: C.muted, flex: "1 1 140px", minWidth: 0 }}>{s.label || s.id || ""}</span>
-                        {sealed ? (
+                        {tampered ? (
+                          <SnapshotIntegrityBadge variant="failed" liveStatus />
+                        ) : sealed ? (
                           <SnapshotIntegrityBadge variant="sealed" liveStatus />
                         ) : legacy ? (
                           <SnapshotIntegrityBadge variant="legacy" liveStatus />
@@ -1133,6 +1139,47 @@ var Accounts = function (props) {
                     <div key={row.id || i} style={{ borderBottom: "1px solid " + C.border, padding: "8px 0" }}>
                       <div style={{ fontWeight: 800, color: C.text }}>{row.action || "—"}</div>
                       <div style={{ color: C.muted, fontSize: 10 }}>{row.ts || ""}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          </div>
+        );
+      })()}
+
+      {atab === "recon" && (function () {
+        var lines = S.get("tc3_journal_lines", []);
+        var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+        var invDer = deriveInventoryEconomics(state, S);
+        invDer.reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
+        var rep = buildReconciliationReport({
+          lines: lines,
+          chart: chart,
+          invDer: invDer,
+          validateJournalBalanced: validateJournalBalanced,
+          settings: state.settings || {},
+        });
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <Card>
+              <CardTitle sub="GL vs inventory — AR/AP sanity — journal balance">Reconciliation report</CardTitle>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
+                {rep.summaryOk ? <span style={{ color: C.green, fontWeight: 700 }}>✔ OK</span> : <span style={{ color: C.red, fontWeight: 700 }}>❌ Mismatch or warning</span>}
+                <span style={{ marginLeft: 12 }}>· {fmtDateFull(rep.generatedAt || "")}</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {rep.rows.map(function (row) {
+                  var bg = row.ok === false ? "#fef2f2" : row.ok === null ? "#f8fafc" : "#f0fdf4";
+                  return (
+                    <div key={row.id} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "10px 12px", borderRadius: 8, border: "1px solid " + C.border, background: bg }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
+                        <span style={{ fontWeight: 700, color: C.text }}>{row.label}</span>
+                        <span style={{ fontSize: 12 }}>{row.detail}</span>
+                      </div>
+                      {row.amounts ? (
+                        <div style={{ fontSize: 10, color: C.muted, fontFamily: "ui-monospace,monospace", wordBreak: "break-all" }}>{JSON.stringify(row.amounts)}</div>
+                      ) : null}
                     </div>
                   );
                 })}

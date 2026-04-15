@@ -1,0 +1,16 @@
+# Copy to .htaccess if your host allows mod_env (cPanel often does via “Environment Variables”).
+# Values must match your MySQL database created in hosting panel.
+
+# Some Apache setups strip Authorization; uncomment if Bearer tokens are never seen by PHP:
+# RewriteEngine On
+# RewriteCond %{HTTP:Authorization} .
+# RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# SetEnv DB_HOST localhost
+# SetEnv DB_NAME your_database_name
+# SetEnv DB_USER your_database_user
+# SetEnv DB_PASS your_database_password
+
+# Optional CORS (see cors_utils.php)
+# SetEnv TECHON_ALLOWED_ORIGINS "https://app.techon.lk,https://erp.techon.lk"
+# SetEnv TECHON_CORS_ALLOW_NULL_ORIGIN 1

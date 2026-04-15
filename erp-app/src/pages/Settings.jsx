@@ -118,6 +118,7 @@ var Settings = function (props) {
     taxApplyBase: state.settings.taxApplyBase === "before_discount" ? "before_discount" : "after_discount",
     selectedTaxes: normalizeTaxList(state.settings.selectedTaxes || []),
     lockedUntilDate: state.settings.lockedUntilDate || "",
+    strictPeriodLock: state.settings.strictPeriodLock === true,
     inventoryCostingMethod: state.settings.inventoryCostingMethod === "fifo" ? "fifo" : "wac",
     preventNegativeStock: state.settings.preventNegativeStock !== false,
     allowCostFallback: state.settings.allowCostFallback === true,
@@ -372,6 +373,7 @@ var Settings = function (props) {
     ns.taxEnabled = ns.taxEnabled === true;
     ns.allowCostFallback = ns.allowCostFallback === true;
     ns.glVatPostingEnabled = ns.glVatPostingEnabled !== false;
+    ns.strictPeriodLock = ns.strictPeriodLock === true;
     ns.taxApplyBase = ns.taxApplyBase === "before_discount" ? "before_discount" : "after_discount";
     var sl = sanitizePersistedInvoiceLangs(ns.defaultInvoiceLang || "en", ns.optionalInvoiceLangs, ns.customInvoiceLangs);
     ns.optionalInvoiceLangs = sl.optionalInvoiceLangs;
@@ -989,6 +991,20 @@ var Settings = function (props) {
                       Transactions dated before <strong>{fmtDate(f.lockedUntilDate)}</strong> are blocked unless Admin (PIN) is unlocked.
                     </div>
                   )}
+
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.45 }}>
+                      <input
+                        type="checkbox"
+                        checked={f.strictPeriodLock === true}
+                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { strictPeriodLock: e.target.checked }); }); }}
+                        style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent, marginTop: 2 }}
+                      />
+                      <span>
+                        <strong>Strict period lock</strong> (recommended for audit): transactions dated before the lock date cannot be edited, deleted, or have line items changed — only when this is on and a lock date is set. Admin (PIN) unlock still bypasses.
+                      </span>
+                    </label>
+                  </div>
 
                   <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
@@ -2860,7 +2876,21 @@ var Settings = function (props) {
       )}
 
       {stab === "about" && (
-        <AboutTab licenseInfo={licenseInfo} onActivate={onActivate} C={C} />
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            width: "100%",
+            boxSizing: "border-box",
+            /* Fill space below the tab row so the card sits in the visual center of the About view (header + tabs ≈ 200px) */
+            minHeight: "calc(100vh - 200px)",
+            padding: "16px 0 24px",
+          }}
+        >
+          <AboutTab licenseInfo={licenseInfo} onActivate={onActivate} C={C} />
+        </div>
       )}
 
       {previewInv && (

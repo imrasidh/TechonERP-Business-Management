@@ -1,14 +1,42 @@
 <?php
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'techonlk_techon_dashboard');
-define('DB_USER', 'techonlk_techonlk');
-define('DB_PASS', 'Fitriyah0408@');
+@ini_set('display_errors', '0');
+require_once __DIR__ . '/env_load.php';
+techon_load_dotenv(__DIR__);
+techon_force_https_if_production();
+techon_register_safe_api_log(__DIR__);
+
+require_once __DIR__ . '/cors_utils.php';
+
+$dbHost = techon_env('DB_HOST', '');
+if ($dbHost === false || $dbHost === '') {
+    $dbHost = 'localhost';
+}
+$dbName = techon_env('DB_NAME', '');
+if ($dbName === false || $dbName === '') {
+    header('Content-Type: application/json');
+    http_response_code(500);
+    echo json_encode(['success' => false, 'error' => 'An error occurred']);
+    exit();
+}
+$dbUser = techon_env('DB_USER', '');
+if ($dbUser === false || $dbUser === '') {
+    header('Content-Type: application/json');
+    http_response_code(500);
+    echo json_encode(['success' => false, 'error' => 'An error occurred']);
+    exit();
+}
+$dbPass = techon_env('DB_PASS', null);
+if ($dbPass === false || $dbPass === null) {
+    $dbPass = '';
+}
+
+define('DB_HOST', $dbHost);
+define('DB_NAME', $dbName);
+define('DB_USER', $dbUser);
+define('DB_PASS', $dbPass);
 define('APP_NAME', 'TechonERP Dashboard');
 
-header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-API-Key');
+techon_apply_api_cors_headers('Content-Type, Authorization, X-API-Key');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(200); exit(); }
 
@@ -24,8 +52,9 @@ function db() {
                  PDO::ATTR_EMULATE_PREPARES => false]
             );
         } catch (PDOException $e) {
+            error_log('[Techon Dashboard] DB connection failed');
             http_response_code(500);
-            echo json_encode(['success' => false, 'error' => 'Database connection failed']);
+            echo json_encode(['success' => false, 'error' => 'An error occurred']);
             exit();
         }
     }
@@ -40,8 +69,18 @@ function respond($data, $code = 200) {
 
 function getInput() {
     $raw = file_get_contents('php://input');
-    $data = json_decode($raw, true);
-    return $data ?: [];
+    if (strlen($raw) > 2097152) {
+        respond(['success' => false, 'error' => 'Invalid request'], 413);
+    }
+    $data = techon_parse_json_body($raw, 2097152, 20);
+    if ($data === null) {
+        $t = ltrim((string) $raw);
+        if ($t !== '') {
+            respond(['success' => false, 'error' => 'Invalid request'], 400);
+        }
+        return [];
+    }
+    return $data;
 }
 
 function generateToken($length = 64) {
@@ -70,9 +109,7 @@ function getBearerToken() {
             }
         }
     }
-    if (!empty($_GET['token'])) {
-        return trim($_GET['token']);
-    }
+    /* Token must be sent via Authorization: Bearer only (not query string). */
     return '';
 }
 

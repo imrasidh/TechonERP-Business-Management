@@ -1,22 +1,23 @@
 <?php
 /* Sync diagnostic — shows what's in the DB for your shop
-   Use your dashboard login token: ?token=YOUR_TOKEN
-   Or api_key: ?api_key=YOUR_API_KEY
+   Auth: Authorization: Bearer <tc_token> OR header X-API-Key: <shop api key>
    Delete this file after diagnosing. */
 require_once 'config.php';
 
 $pdo = db();
 
-/* Accept token (from app.techon.lk localStorage) or api_key */
-$token  = $_GET['token']   ?? '';
-$apiKey = $_GET['api_key'] ?? '';
+$token  = getBearerToken();
+$apiKey = getApiKey();
 
 if ($token) {
     $user = validateToken($token);
 } elseif ($apiKey) {
     $user = validateApiKey($apiKey);
 } else {
-    respond(['error' => 'Pass ?token=YOUR_TOKEN or ?api_key=YOUR_KEY', 'how_to_get_token' => 'Open app.techon.lk in Chrome, press F12, go to Application tab, Local Storage, find tc_token value'], 400);
+    respond([
+        'error' => 'Send Authorization: Bearer <token> from dashboard localStorage (tc_token), or X-API-Key: <erp sync key>',
+        'how_to_get_token' => 'Open app.techon.lk → F12 → Application → Local Storage → tc_token; use in Authorization header (not URL).',
+    ], 400);
 }
 
 if (!$user) {

@@ -1,0 +1,12 @@
+{
+  "trialBalance": { "totalDebit": 190, "totalCredit": 190, "balanced": true },
+  "profitAndLoss": { "income": 80, "expenses": 10, "net": 70 },
+  "balanceSheet": {
+    "assets": 70,
+    "liabilities": 0,
+    "equity": 0,
+    "balanced": false,
+    "difference": 70,
+    "rhsTotal": 0
+  }
+}

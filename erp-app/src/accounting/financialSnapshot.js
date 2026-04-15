@@ -1,9 +1,17 @@
 /**
  * Period-close style financial snapshots for audit and faster reference.
- * Snapshots are sealed with a content hash; tampered entries are dropped on validation.
+ * Snapshots are sealed with legacy content hash + HMAC-SHA256 for tamper detection.
  */
 
 import { trialBalance, balanceSheetFromLedger } from "./generalLedger.js";
+import { isSnapshotDeviceHmacAllowed } from "../productionConfig.js";
+import { isProductionLicenseSecretMissingBlock } from "../ops/accountingGuards.js";
+import {
+  computeSnapshotHmacHex,
+  computeSnapshotHmacHexV2,
+  resolveSnapshotSecretForRenderer,
+  verifySnapshotHmacFlexible,
+} from "./snapshotIntegrityHmac.js";
 
 function stableStringify(obj) {
   if (obj === null || typeof obj !== "object") return JSON.stringify(obj);
@@ -14,7 +22,7 @@ function stableStringify(obj) {
   var parts = [];
   for (var i = 0; i < keys.length; i++) {
     var k = keys[i];
-    if (k === "contentHash" || k === "integritySealed") continue;
+    if (k === "contentHash" || k === "integritySealed" || k === "integrityHmac" || k === "tampered" || k === "algorithm") continue;
     parts.push(JSON.stringify(k) + ":" + stableStringify(obj[k]));
   }
   return "{" + parts.join(",") + "}";
@@ -38,7 +46,6 @@ export function hashSnapshotContent(snapshot) {
 export function validateSnapshotIntegrity(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
   if (!snapshot.contentHash) {
-    /* Legacy snapshots (before sealing) — keep if minimally well-formed */
     return !!snapshot.id;
   }
   var expected = snapshot.contentHash;
@@ -46,7 +53,34 @@ export function validateSnapshotIntegrity(snapshot) {
   var clone = JSON.parse(JSON.stringify(snapshot));
   delete clone.contentHash;
   delete clone.integritySealed;
+  delete clone.integrityHmac;
+  delete clone.tampered;
+  delete clone.algorithm;
   return hashSnapshotContent(clone) === expected;
+}
+
+/**
+ * Full check including HMAC (async).
+ */
+export async function validateSnapshotIntegrityFull(snapshot) {
+  if (!validateSnapshotIntegrity(snapshot)) {
+    return { ok: false, tampered: true, reason: "legacy_hash_mismatch" };
+  }
+  if (!snapshot.integrityHmac || typeof snapshot.integrityHmac !== "string") {
+    return { ok: true, tampered: false, legacy: true, reason: "legacy_only" };
+  }
+  var clone = JSON.parse(JSON.stringify(snapshot));
+  delete clone.contentHash;
+  delete clone.integritySealed;
+  delete clone.integrityHmac;
+  delete clone.tampered;
+  delete clone.algorithm;
+  var canon = stableStringify(clone);
+  var flex = await verifySnapshotHmacFlexible(snapshot, canon);
+  if (!flex.ok) {
+    return { ok: true, tampered: true, reason: flex.reason || "hmac_mismatch" };
+  }
+  return { ok: true, tampered: false, reason: "hmac_ok", matched: flex.matched };
 }
 
 export function buildFinancialSnapshot(S, lines, chart, invDer, opts) {
@@ -74,28 +108,61 @@ export function buildFinancialSnapshot(S, lines, chart, invDer, opts) {
 }
 
 /**
- * Append a snapshot with hash seal. Pass opts.addAudit(action, ref, detail) to log creation.
+ * Append a snapshot with legacy hash + HMAC seal.
  */
-export function appendSnapshot(S, snapshot, opts) {
+export async function appendSnapshot(S, snapshot, opts) {
   opts = opts || {};
-  var body = JSON.parse(JSON.stringify(snapshot || {}));
-  delete body.contentHash;
-  delete body.integritySealed;
-  body.contentHash = hashSnapshotContent(body);
-  body.integritySealed = true;
+  var prevEarly = S.get("tc3_financial_snapshots", []);
+  if (!Array.isArray(prevEarly)) prevEarly = [];
+  if (isProductionLicenseSecretMissingBlock()) {
+    try {
+      if (typeof console !== "undefined" && console.error) {
+        console.error("[TechonERP] Financial snapshot blocked: LICENSE_SECRET not configured.");
+      }
+    } catch (e0) { /* ignore */ }
+    return prevEarly;
+  }
+  var raw = JSON.parse(JSON.stringify(snapshot || {}));
+  delete raw.contentHash;
+  delete raw.integritySealed;
+  delete raw.integrityHmac;
+  delete raw.tampered;
+  delete raw.algorithm;
+  raw.contentHash = hashSnapshotContent(raw);
+  var canon = stableStringify(raw);
+  var licSecret = await resolveSnapshotSecretForRenderer();
+  if (licSecret) {
+    raw.integrityHmac = await computeSnapshotHmacHexV2(canon, licSecret);
+    raw.algorithm = "hmac-sha256-v2";
+    raw.integritySealed = true;
+  } else if (isSnapshotDeviceHmacAllowed()) {
+    raw.integrityHmac = await computeSnapshotHmacHex(canon);
+    raw.algorithm = "hmac-sha256-v1";
+    raw.integritySealed = true;
+  } else {
+    raw.integrityHmac = "";
+    raw.algorithm = "hmac-sha256-v2-required";
+    raw.integritySealed = false;
+    try {
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[TechonERP] Financial snapshot: LICENSE_SECRET not set — snapshot not cryptographically sealed (production build).");
+      }
+    } catch (e) { /* ignore */ }
+  }
+  var body = raw;
   var prev = S.get("tc3_financial_snapshots", []);
   if (!Array.isArray(prev)) prev = [];
   var next = prev.concat([body]).slice(-120);
   S.set("tc3_financial_snapshots", next);
   if (typeof opts.addAudit === "function") {
     try {
-      opts.addAudit("Financial snapshot created", body.id || "", { contentHash: body.contentHash, label: body.label || "" });
+      opts.addAudit("Financial snapshot created", body.id || "", { contentHash: body.contentHash, algorithm: body.algorithm || "", integrityHmac: !!(body.integrityHmac && body.integrityHmac.length), label: body.label || "" });
     } catch (e) { /* ignore */ }
   }
   return next;
 }
 
-/** Remove invalid / tampered snapshots; optional addAudit for drops. */
+/** Sync sanitize: legacy hash only; drops clearly invalid. */
 export function sanitizeFinancialSnapshots(S, opts) {
   opts = opts || {};
   var prev = S.get("tc3_financial_snapshots", []);
@@ -115,4 +182,45 @@ export function sanitizeFinancialSnapshots(S, opts) {
     }
   }
   return { kept: good.length, dropped: droppedIds.length };
+}
+
+/** Async: verify HMAC; mark tampered in-place, log warnings. */
+export async function verifyFinancialSnapshotsHmac(S, opts) {
+  opts = opts || {};
+  var prev = S.get("tc3_financial_snapshots", []);
+  if (!Array.isArray(prev) || !prev.length) return { checked: 0, tampered: 0 };
+  var changed = false;
+  var tampered = 0;
+  var i;
+  for (i = 0; i < prev.length; i++) {
+    var s = prev[i];
+    if (!s || !s.integrityHmac) continue;
+    var vr = await validateSnapshotIntegrityFull(s);
+    if (vr.tampered || vr.ok === false) {
+      s.tampered = true;
+      s.integrityWarning = vr.reason || "tampered";
+      tampered++;
+      changed = true;
+      try {
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[TechonERP] Snapshot integrity:", s.id, vr.reason);
+        }
+      } catch (e) { /* ignore */ }
+    } else {
+      if (s.tampered) {
+        delete s.tampered;
+        delete s.integrityWarning;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    S.set("tc3_financial_snapshots", prev);
+    if (typeof opts.addAudit === "function" && tampered) {
+      try {
+        opts.addAudit("Financial snapshot HMAC", tampered + " snapshot(s) marked tampered", {});
+      } catch (e) { /* ignore */ }
+    }
+  }
+  return { checked: prev.length, tampered: tampered };
 }

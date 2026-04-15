@@ -1,5 +1,6 @@
 ﻿import React, { useState, useEffect, useRef } from "react";
-import { IS_PRODUCTION, validateJsonBackupPayload } from "./productionConfig.js";
+import { IS_PRODUCTION, validateJsonBackupPayload, enforceProductionStrictPeriodLock } from "./productionConfig.js";
+import { defaultStrictPeriodLock } from "./productionDefaults.js";
 import { initSyncEngine, destroySyncEngine, loadStateFromServer, TC_SYNC, SYNC_STATUS } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
 import {
@@ -32,7 +33,13 @@ import {
   validateJournalBalanced,
 } from "./accounting/generalLedger.js";
 import { deriveInventoryEconomics, reconcileInventoryToLedger } from "./accounting/inventoryEngine.js";
-import { buildFinancialSnapshot, appendSnapshot, sanitizeFinancialSnapshots } from "./accounting/financialSnapshot.js";
+import { buildFinancialSnapshot, appendSnapshot, sanitizeFinancialSnapshots, verifyFinancialSnapshotsHmac } from "./accounting/financialSnapshot.js";
+import { validateAccountingCommitInvariants } from "./accounting/commitInvariants.js";
+import { collectStrictPeriodLockOverrideIds } from "./accounting/periodLockOverride.js";
+import { buildOperationalHealthSnapshot } from "./ops/operationalHealth.js";
+import { isProductionLicenseSecretMissingBlock } from "./ops/accountingGuards.js";
+import { handleOperationalGuardAudit } from "./ops/operationalGuard.js";
+import { appendFinancialMutationLog, MUTATION_ENTITY_BY_STORAGE_KEY } from "./accounting/mutationAudit.js";
 import { mergeRebuildWithImmutableHistory, mergeJournalLinesByTransactionId } from "./accounting/journalMerge.js";
 import { getOrCreateDeviceId } from "./accounting/ids.js";
 import {
@@ -1033,8 +1040,8 @@ var S = {
     return v !== undefined ? v : def;
   },
   set: function (k, v) {
+    var oldV = _idbCache[k];
     if (_glSilentDepth === 0) {
-      var oldV = _idbCache[k];
       var vr = validateAccountingMutation(k, v, oldV);
       if (!vr.ok) {
         try {
@@ -1044,6 +1051,34 @@ var S = {
       }
     }
     _coreStorageSet(k, v);
+    if (_glSilentDepth === 0) {
+      try {
+        if (MUTATION_ENTITY_BY_STORAGE_KEY[k]) {
+          var _prevStr;
+          var _nextStr;
+          try {
+            _prevStr = JSON.stringify(oldV === undefined ? null : oldV);
+            _nextStr = JSON.stringify(v === undefined ? null : v);
+          } catch (e) {
+            _prevStr = "";
+            _nextStr = "unserializable";
+          }
+          if (_prevStr !== _nextStr) {
+            appendFinancialMutationLog({
+              coreStorageSet: _coreStorageSet,
+              storageGet: function (key, def) {
+                return S.get(key, def);
+              },
+              storageKey: k,
+              before: oldV === undefined ? null : oldV,
+              after: v,
+              getDeviceId: getOrCreateDeviceId,
+              source: "manual",
+            });
+          }
+        }
+      } catch (e) { /* ignore */ }
+    }
     if (_glSilentDepth > 0) return;
     if (GL_TRIGGER_KEYS[k] && S.get("tc3_gl_mode", "live") === "live") {
       scheduleGlLiveRebuild();
@@ -1073,7 +1108,7 @@ var S = {
 /* Expose S globally so SyncEngine can patch S.set for network sync */
 window._tcS = S;
 
-var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
 
 /** JSON backup download before GL/inventory repair — same key set as auto-backup. */
 var downloadPreRepairJsonBackup = function () {
@@ -1627,7 +1662,7 @@ var getCashBalances = function (state) {
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
 
 var SEED = {
-  settings: { shopName: "My Shop", address: "", phone: "", phone2: "", whatsapp: "", email: "", website: "", brn: "", footer: "Thank you for your purchase!", capitalInvested: 0, warrantyEnabled: true, warrantyText: WARRANTY_TEXT, invoiceAccentColor: "#0d47a1", invoiceDefaultSize: "a4", invoiceThermalSize: "thermal80", invoiceLogo: "", invoiceLogoSize: 80, barcodeWidth: 60, barcodeHeight: 30, barcodeFontSize: 9, barcodeShowCost: true, barcodeShowPrice: true, barcodeShowShopName: true, labelWidth: "60mm", labelHeight: "auto", barcodeWidthMm: "100%", labelCopies: 1, costCodeWord: "STARLIGHKZ", adminPin: "", autoLockEnabled: true, autoLockMinutes: 10, currency: "Rs", requirePasswordOnLogin: true, booksClosedDate: "", lockedUntilDate: "", inventoryCostingMethod: "wac", preventNegativeStock: true, allowCostFallback: false, glVatPostingEnabled: true, taxApplyBase: "after_discount", invoicePdfFolder: "", shopCountry: "", defaultInvoiceLang: "en", optionalInvoiceLangs: ["ta", "si"], customInvoiceLangs: [], taxEnabled: false, taxMode: "exclusive", selectedTaxes: [] },
+  settings: { shopName: "My Shop", address: "", phone: "", phone2: "", whatsapp: "", email: "", website: "", brn: "", footer: "Thank you for your purchase!", capitalInvested: 0, warrantyEnabled: true, warrantyText: WARRANTY_TEXT, invoiceAccentColor: "#0d47a1", invoiceDefaultSize: "a4", invoiceThermalSize: "thermal80", invoiceLogo: "", invoiceLogoSize: 80, barcodeWidth: 60, barcodeHeight: 30, barcodeFontSize: 9, barcodeShowCost: true, barcodeShowPrice: true, barcodeShowShopName: true, labelWidth: "60mm", labelHeight: "auto", barcodeWidthMm: "100%", labelCopies: 1, costCodeWord: "STARLIGHKZ", adminPin: "", autoLockEnabled: true, autoLockMinutes: 10, currency: "Rs", requirePasswordOnLogin: true, booksClosedDate: "", lockedUntilDate: "", strictPeriodLock: defaultStrictPeriodLock(), glArApNegativeTolerance: 50, glArApHardBlockAt: 1000000, inventoryCostingMethod: "wac", preventNegativeStock: true, allowCostFallback: false, glVatPostingEnabled: true, taxApplyBase: "after_discount", invoicePdfFolder: "", shopCountry: "", defaultInvoiceLang: "en", optionalInvoiceLangs: ["ta", "si"], customInvoiceLangs: [], taxEnabled: false, taxMode: "exclusive", selectedTaxes: [] },
   products: [],
   customers: [],
   suppliers: [],
@@ -1742,8 +1777,9 @@ var getBusinessProfile = function () {
 };
 
 var loadState = function () {
+  var persisted = S.get("tc3_settings", {}) || {};
   var st = {
-    settings: Object.assign({}, SEED.settings, S.get("tc3_settings", {})),
+    settings: Object.assign({}, SEED.settings, persisted),
     products: S.get("tc3_products", SEED.products),
     customers: S.get("tc3_customers", SEED.customers),
     suppliers: S.get("tc3_suppliers", SEED.suppliers),
@@ -1760,6 +1796,18 @@ var loadState = function () {
     quotations: S.get("tc3_quotations", []),
     cheques: S.get("tc3_cheques", [])
   };
+  if (st.settings && st.settings.strictPeriodLock === undefined) {
+    st.settings.strictPeriodLock = defaultStrictPeriodLock();
+  }
+  if (st.settings && enforceProductionStrictPeriodLock()) {
+    st.settings.strictPeriodLock = true;
+  }
+  if (st.settings && st.settings.glArApNegativeTolerance === undefined) {
+    st.settings.glArApNegativeTolerance = 50;
+  }
+  if (st.settings && st.settings.glArApHardBlockAt === undefined) {
+    st.settings.glArApHardBlockAt = 1000000;
+  }
   /* Initialize currency symbol from saved settings */
   updateCurrencySymbol(st.settings.currency || "Rs");
   return st;
@@ -1825,15 +1873,156 @@ validateAccountingMutation = function (k, v, oldV) {
     }
   }
   var lock = settings.lockedUntilDate;
+  var lockMsg = "Transaction date is within a locked period. Unlock Admin (PIN) or change the lock in Settings → Period & GL.";
+  var strictLockMsg = "Transaction belongs to a locked period and cannot be modified";
+  var strictLock = settings.strictPeriodLock === true;
   if (lock && !window._tcAccountingPeriodAdmin) {
-    var invKeys = { tc3_sales: 1, tc3_purchases: 1, tc3_expenses: 1, tc3_salesReturns: 1, tc3_purchaseReturns: 1 };
-    if (invKeys[k] && Array.isArray(v) && v.length) {
-      var sample = v[0];
-      if (sample && sample.date && String(sample.date) < String(lock)) {
-        return { ok: false, message: "That transaction date is before the accounting lock date. Unlock Admin (PIN) or change the lock in Settings." };
+    var dateBeforeLock = function (d) {
+      return !!(d && String(d) < String(lock));
+    };
+    var newRowViolatesPeriodLock = function (row) {
+      if (!row) return false;
+      if (dateBeforeLock(row.date)) return true;
+      var ph = row.paymentHistory;
+      if (!Array.isArray(ph)) return false;
+      for (var pi = 0; pi < ph.length; pi++) {
+        var p = ph[pi];
+        if (p && dateBeforeLock(p.date)) return true;
+      }
+      return false;
+    };
+    var paymentHistoryDeltaViolatesLock = function (prevRow, row) {
+      var oPh = (prevRow && prevRow.paymentHistory) || [];
+      var nPh = (row && row.paymentHistory) || [];
+      var oldPhById = {};
+      for (var pi = 0; pi < oPh.length; pi++) {
+        var op = oPh[pi];
+        if (op && op.id != null) oldPhById[String(op.id)] = op;
+      }
+      for (var pj = 0; pj < nPh.length; pj++) {
+        var np = nPh[pj];
+        if (!np || !np.date) continue;
+        var oldP = null;
+        if (np.id != null && oldPhById[String(np.id)]) {
+          oldP = oldPhById[String(np.id)];
+        } else if (np.id == null && pj < oPh.length) {
+          oldP = oPh[pj];
+        }
+        if (oldP) {
+          if (String(np.date || "") !== String(oldP.date || "")) {
+            if (dateBeforeLock(np.date)) return true;
+          }
+        } else if (dateBeforeLock(np.date)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    var rowTouchesLockedPeriodWhenChanged = function (prevRow, row) {
+      if (!row) return false;
+      if (!prevRow) return newRowViolatesPeriodLock(row);
+      try {
+        if (JSON.stringify(prevRow) === JSON.stringify(row)) return false;
+      } catch (e) {
+        return newRowViolatesPeriodLock(row);
+      }
+      if (String(row.date || "") !== String(prevRow.date || "")) {
+        if (dateBeforeLock(row.date)) return true;
+      }
+      return paymentHistoryDeltaViolatesLock(prevRow, row);
+    };
+    var periodLockArrayKeys = {
+      tc3_sales: 1,
+      tc3_purchases: 1,
+      tc3_expenses: 1,
+      tc3_salesReturns: 1,
+      tc3_purchaseReturns: 1,
+      tc3_manualReceivables: 1,
+      tc3_manualPayables: 1,
+      tc3_capLedger: 1,
+      tc3_assets: 1,
+      tc3_profitDist: 1,
+    };
+    if (periodLockArrayKeys[k] && Array.isArray(v)) {
+      var oldArr = Array.isArray(oldV) ? oldV : [];
+      var oldById = {};
+      for (var oi = 0; oi < oldArr.length; oi++) {
+        var oRow = oldArr[oi];
+        if (oRow && oRow.id != null) oldById[String(oRow.id)] = oRow;
+      }
+      if (strictLock) {
+        var newIds = {};
+        for (var ni = 0; ni < v.length; ni++) {
+          var nv = v[ni];
+          if (nv && nv.id != null) newIds[String(nv.id)] = true;
+        }
+        for (var od = 0; od < oldArr.length; od++) {
+          var oDel = oldArr[od];
+          if (!oDel || oDel.id == null) continue;
+          if (!newIds[String(oDel.id)] && dateBeforeLock(oDel.date)) {
+            return { ok: false, message: strictLockMsg };
+          }
+        }
+      }
+      for (var li = 0; li < v.length; li++) {
+        var nrow = v[li];
+        if (!nrow) continue;
+        var prevN = null;
+        if (nrow.id != null) {
+          prevN = oldById[String(nrow.id)] || null;
+        } else if (li < oldArr.length && oldArr[li] && !nrow.id && !oldArr[li].id) {
+          prevN = oldArr[li];
+        }
+        if (strictLock && prevN && dateBeforeLock(prevN.date)) {
+          try {
+            if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
+              return { ok: false, message: strictLockMsg };
+            }
+          } catch (e) {
+            return { ok: false, message: strictLockMsg };
+          }
+          continue;
+        }
+        if (rowTouchesLockedPeriodWhenChanged(prevN, nrow)) {
+          return { ok: false, message: lockMsg };
+        }
+      }
+    }
+    if (k === "tc3_openBal" && v && typeof v === "object") {
+      var obOld = oldV && typeof oldV === "object" ? oldV : null;
+      if (strictLock && obOld && obOld.completed && obOld.date && dateBeforeLock(obOld.date)) {
+        try {
+          if (JSON.stringify(obOld) !== JSON.stringify(v)) {
+            return { ok: false, message: strictLockMsg };
+          }
+        } catch (e) {
+          return { ok: false, message: strictLockMsg };
+        }
+      } else if (v.completed && v.date) {
+        var obNeedDateCheck = !obOld || !obOld.completed;
+        if (!obNeedDateCheck && obOld && String(v.date || "") !== String(obOld.date || "")) obNeedDateCheck = true;
+        if (obNeedDateCheck && dateBeforeLock(v.date)) {
+          return { ok: false, message: lockMsg };
+        }
       }
     }
   }
+  try {
+    var stOv = Object.assign({}, SEED.settings, S.get("tc3_settings", {}));
+    var lockOv = stOv.lockedUntilDate;
+    if (lockOv && window._tcAccountingPeriodAdmin && stOv.strictPeriodLock === true) {
+      var ovIds = collectStrictPeriodLockOverrideIds(k, v, oldV, stOv);
+      for (var ovi = 0; ovi < ovIds.length; ovi++) {
+        appendGlAuditRow("period_lock_override", {
+          type: "period_lock_override",
+          affected_transaction_id: ovIds[ovi],
+          timestamp: new Date().toISOString(),
+          deviceId: getOrCreateDeviceId(),
+          storageKey: k,
+        });
+      }
+    }
+  } catch (e) { /* ignore */ }
   return { ok: true };
 };
 
@@ -1853,18 +2042,55 @@ var appendGlAuditRow = function (action, detail) {
       deviceId: getOrCreateDeviceId(),
     };
     _coreStorageSet("tc3_gl_audit", prev.concat([row]).slice(-500));
+    try {
+      var _opBlock = false;
+      try {
+        _opBlock = typeof window !== "undefined" && window.__TC_OP_GUARD_BLOCK__ === true;
+      } catch (e3) { /* ignore */ }
+      handleOperationalGuardAudit(action, detail, S, _coreStorageSet, _opBlock);
+    } catch (e4) { /* ignore */ }
   } catch (e) {
     if (tcIsDevEnv()) try { console.warn("[TechonERP GL audit]", e); } catch (e2) {}
   }
 };
 
 var commitGlJournalPersist = function (mergedLines, r, source, invDer) {
+  if (isProductionLicenseSecretMissingBlock()) {
+    appendGlAuditRow("journal_blocked_missing_license_secret", { source: source });
+    return { ok: false, error: "Accounting disabled: LICENSE_SECRET is not configured for this installation." };
+  }
+  var _og = S.get("tc3_operational_guard");
+  if (_og && _og.blockWrites === true) {
+    appendGlAuditRow("journal_blocked_operational_guard", { source: source });
+    return { ok: false, error: "Operational safety guard blocked writes after a critical accounting event. Contact support or set TC_BLOCK_WRITES_ON_CRITICAL=0 after review." };
+  }
   var vf = validateJournalBalanced(mergedLines);
   if (!vf.ok) {
     appendGlAuditRow("journal_merge_imbalance", { source: source, imbalances: vf.imbalances });
     if (tcIsDevEnv()) try { console.error("[TechonERP GL] Merged journal imbalanced", vf.imbalances); } catch (e) {}
-    return { ok: false, validate: vf };
+    return { ok: false, validate: vf, error: "Journal not balanced" };
   }
+  var invCheck = validateAccountingCommitInvariants({
+    lines: mergedLines,
+    chart: r.chart || DEFAULT_GL_CHART,
+    invDer: invDer,
+    source: source || "commit",
+    settings: Object.assign({}, SEED.settings, S.get("tc3_settings", {})),
+  });
+  if (!invCheck.ok) {
+    appendGlAuditRow("journal_commit_invariant_fail", { source: source, errors: invCheck.errors });
+    if (tcIsDevEnv()) try { console.error("[TechonERP GL] Pre-commit invariant failed", invCheck.errors); } catch (e) {}
+    return { ok: false, error: "Journal failed control checks", invariantErrors: invCheck.errors };
+  }
+  var bak = {
+    tc3_gl_accounts: S.get("tc3_gl_accounts"),
+    tc3_journal_lines: S.get("tc3_journal_lines"),
+    tc3_journal_hash: S.get("tc3_journal_hash"),
+    tc3_gl_last_error: S.get("tc3_gl_last_error"),
+    tc3_stock_movements: S.get("tc3_stock_movements"),
+    tc3_inv_reconciliation: S.get("tc3_inv_reconciliation"),
+    tc3_inventory_layers: S.get("tc3_inventory_layers"),
+  };
   _glSilentDepth++;
   try {
     _coreStorageSet("tc3_gl_accounts", r.chart || DEFAULT_GL_CHART);
@@ -1888,16 +2114,42 @@ var commitGlJournalPersist = function (mergedLines, r, source, invDer) {
         deviceId: getOrCreateDeviceId(),
       });
     }
+    return { ok: true };
   } catch (e) {
     if (tcIsDevEnv()) try { console.error("[TechonERP GL] commit failed", e); } catch (e2) {}
+    try {
+      _coreStorageSet("tc3_gl_accounts", bak.tc3_gl_accounts);
+      _coreStorageSet("tc3_journal_lines", bak.tc3_journal_lines);
+      _coreStorageSet("tc3_journal_hash", bak.tc3_journal_hash);
+      _coreStorageSet("tc3_gl_last_error", bak.tc3_gl_last_error);
+      _coreStorageSet("tc3_stock_movements", bak.tc3_stock_movements);
+      _coreStorageSet("tc3_inv_reconciliation", bak.tc3_inv_reconciliation);
+      _coreStorageSet("tc3_inventory_layers", bak.tc3_inventory_layers);
+    } catch (revertErr) {
+      if (tcIsDevEnv()) try { console.error("[TechonERP GL] revert after failed commit", revertErr); } catch (e3) {}
+    }
     _coreStorageSet("tc3_gl_last_error", { ts: new Date().toISOString(), message: String(e.message || e) });
+    return { ok: false, error: String(e.message || e) };
   } finally {
     _glSilentDepth--;
   }
-  return { ok: true };
 };
 
 var persistTechonGLJournal = function (source) {
+  if (isProductionLicenseSecretMissingBlock()) {
+    appendGlAuditRow("journal_persist_blocked_missing_license_secret", { source: source });
+    try {
+      _coreStorageSet("tc3_gl_last_error", { ts: new Date().toISOString(), type: "missing_license_secret" });
+    } catch (e0) { /* ignore */ }
+    var _prevL = S.get("tc3_journal_lines", []);
+    return {
+      lines: Array.isArray(_prevL) ? _prevL : [],
+      chart: DEFAULT_GL_CHART,
+      warnings: ["LICENSE_SECRET not configured"],
+      valid: false,
+      validate: { ok: true },
+    };
+  }
   var prevLines = S.get("tc3_journal_lines", []);
   try {
     var invDer = deriveInventoryEconomics(loadState(), S);
@@ -1924,7 +2176,13 @@ var persistTechonGLJournal = function (source) {
       if (tcIsDevEnv()) try { console.error("[TechonERP GL] Merge produced imbalance — kept previous journal", vf.imbalances); } catch (e) {}
       return r;
     }
-    commitGlJournalPersist(merged, r, source || "journal_persist", invDer);
+    var cr = commitGlJournalPersist(merged, r, source || "journal_persist", invDer);
+    if (!cr || !cr.ok) {
+      _coreStorageSet("tc3_journal_lines", prevLines);
+      appendGlAuditRow("journal_commit_storage_failed", { source: source, error: cr && (cr.error || (cr.validate && "imbalance")) });
+      if (tcIsDevEnv()) try { console.error("[TechonERP GL] Persist commit failed", cr && (cr.error || cr.validate)); } catch (e) {}
+      return Object.assign({}, r, { valid: false, commitFailed: true, commitError: cr && cr.error });
+    }
     return r;
   } catch (e) {
     _coreStorageSet("tc3_journal_lines", prevLines);
@@ -3354,7 +3612,7 @@ var AboutTab = function (props) {
   };
 
   return (
-    <div style={{ display: "flex", justifyContent: "center", padding: "32px 0" }}>
+    <div style={{ width: "100%", maxWidth: 1040, margin: "0 auto", padding: "8px 12px 28px", boxSizing: "border-box" }}>
       {showUpdateModal && updateInfo && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.6)", zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center" }}
           onClick={function (e) { if (e.target === e.currentTarget) setShowUpdateModal(false); }}>
@@ -3399,159 +3657,161 @@ var AboutTab = function (props) {
         </div>
       )}
 
-      {/* ── Enhanced About Card ── */}
-      <div style={{ background: "#fff", borderRadius: 24, border: "1.5px solid " + C.border, maxWidth: 500, width: "100%", boxShadow: "0 8px 40px rgba(13,27,62,0.13)", overflow: "hidden" }}>
+      {/* ── About: wide, compact two-column layout ── */}
+      <div style={{ background: "#fff", borderRadius: 20, border: "1.5px solid " + C.border, width: "100%", boxShadow: "0 10px 44px rgba(13,27,62,0.11)", overflow: "hidden" }}>
 
-        {/* Header gradient banner */}
-        <div style={{ background: "linear-gradient(135deg, #0d1b3e 0%, #1a3580 60%, #2979ff 100%)", padding: "36px 40px 32px", textAlign: "center", position: "relative" }}>
-          <div style={{ position: "absolute", top: -20, right: -20, width: 120, height: 120, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
-          <div style={{ position: "absolute", bottom: -30, left: -30, width: 100, height: 100, borderRadius: "50%", background: "rgba(41,121,255,0.15)" }} />
-          {/* Logo — no hard border, just a smooth purple glow that fades outward */}
-          <div style={{ width: 96, height: 96, borderRadius: 26, margin: "0 auto 20px", position: "relative", filter: "drop-shadow(0 0 14px rgba(180,100,255,0.85)) drop-shadow(0 0 36px rgba(120,100,255,0.5))" }}>
-            <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
-          </div>
-          <div style={{ fontSize: 24, fontWeight: 900, color: "#fff", letterSpacing: "-0.03em", marginBottom: 10 }}>Techon ERP System</div>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.12)", border: "1.5px solid rgba(255,255,255,0.22)", borderRadius: 24, padding: "6px 18px" }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 8px #4ade80" }} />
-            <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 14, fontWeight: 700, color: "#fff", letterSpacing: "0.04em" }}>v{appVersion}</span>
-          </div>
-          <div style={{ fontSize: 12, color: "rgba(180,200,240,0.8)", marginTop: 10, fontWeight: 500 }}>
-            {licenseInfo && licenseInfo.shopName
-              ? <span>Licensed to <strong style={{ color: "#fff" }}>{licenseInfo.shopName}</strong></span>
-              : <span>Techon Computers · Negombo, Sri Lanka</span>}
-            {licenseInfo && licenseInfo.deviceId && (
-              <div style={{ fontSize: 10, color: "rgba(140,170,220,0.7)", marginTop: 4, fontFamily: "'JetBrains Mono',monospace", letterSpacing: "0.04em" }}>
-                Device: {licenseInfo.deviceId.slice(0, 20)}…
+        {/* Header — horizontal on wide view */}
+        <div style={{ background: "linear-gradient(135deg, #0d1b3e 0%, #1a3580 55%, #2979ff 100%)", padding: "18px 22px 20px", position: "relative" }}>
+          <div style={{ position: "absolute", top: -16, right: -16, width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, position: "relative", zIndex: 1 }}>
+            <div style={{ width: 72, height: 72, borderRadius: 20, flexShrink: 0, filter: "drop-shadow(0 0 12px rgba(180,100,255,0.75))" }}>
+              <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+            </div>
+            <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+              <div style={{ fontSize: 21, fontWeight: 900, color: "#fff", letterSpacing: "-0.03em", lineHeight: 1.2 }}>Techon ERP System</div>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 8 }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.14)", border: "1.5px solid rgba(255,255,255,0.2)", borderRadius: 20, padding: "4px 14px" }}>
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 6px #4ade80" }} />
+                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, fontWeight: 700, color: "#fff" }}>v{appVersion}</span>
+                </span>
               </div>
-            )}
+              <div style={{ fontSize: 11.5, color: "rgba(200,218,255,0.88)", marginTop: 6, fontWeight: 500, lineHeight: 1.4 }}>
+                {licenseInfo && licenseInfo.shopName
+                  ? <span>Licensed to <strong style={{ color: "#fff" }}>{licenseInfo.shopName}</strong></span>
+                  : <span>Techon Computers · Negombo, Sri Lanka</span>}
+                {licenseInfo && licenseInfo.deviceId && (
+                  <span style={{ display: "block", fontSize: 10, color: "rgba(160,190,235,0.75)", marginTop: 4, fontFamily: "'JetBrains Mono',monospace" }}>
+                    Device: {licenseInfo.deviceId.slice(0, 24)}…
+                  </span>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Body */}
-        <div style={{ padding: "28px 36px" }}>
+        {/* Body — two columns: left = updates + meta + support | right = license */}
+        <div style={{ padding: "18px 20px 16px" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 18, alignItems: "stretch" }}>
+            <div style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
 
-          {/* Check for Updates */}
-          <div style={{ marginBottom: 24, textAlign: "center" }}>
-            <button onClick={checkForUpdates} disabled={updateState === "checking"}
-              style={{ padding: "11px 32px", background: updateState === "checking" ? "#e2e8f0" : "linear-gradient(135deg,#0d47a1,#2979ff)", color: updateState === "checking" ? "#5a78a5" : "#fff", border: "none", borderRadius: 10, fontSize: 13, fontWeight: 800, cursor: updateState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: updateState === "checking" ? "none" : "0 4px 14px rgba(41,121,255,0.3)", transition: "all .15s" }}>
-              {updateState === "checking" ? "⏳ Checking..." : "🔄 Check for Updates"}
-            </button>
-            {updateState === "uptodate" && (
-              <div style={{ marginTop: 10, fontSize: 12.5, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 8, padding: "7px 16px", display: "inline-block" }}>✅ You are using the latest version.</div>
-            )}
-            {updateState === "error" && (
-              <div style={{ marginTop: 10, fontSize: 12.5, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 8, padding: "7px 16px", display: "inline-block" }}>⚠ Could not reach update server.</div>
-            )}
-            {updateState === "available" && !showUpdateModal && (
-              <div onClick={function () { setShowUpdateModal(true); }} style={{ marginTop: 10, fontSize: 12.5, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 8, padding: "7px 16px", display: "inline-block", cursor: "pointer" }}>🚀 Update available — click to view</div>
-            )}
-          </div>
+              <div>
+                <button onClick={checkForUpdates} disabled={updateState === "checking"}
+                  style={{ padding: "9px 22px", background: updateState === "checking" ? "#e2e8f0" : "linear-gradient(135deg,#0d47a1,#2979ff)", color: updateState === "checking" ? "#5a78a5" : "#fff", border: "none", borderRadius: 9, fontSize: 12.5, fontWeight: 800, cursor: updateState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: updateState === "checking" ? "none" : "0 3px 12px rgba(41,121,255,0.28)" }}>
+                  {updateState === "checking" ? "⏳ Checking..." : "🔄 Check for Updates"}
+                </button>
+                {updateState === "uptodate" && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>✅ Latest version.</div>
+                )}
+                {updateState === "error" && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>⚠ Update server unreachable.</div>
+                )}
+                {updateState === "available" && !showUpdateModal && (
+                  <div onClick={function () { setShowUpdateModal(true); }} style={{ marginTop: 8, fontSize: 12, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 7, padding: "6px 12px", display: "inline-block", cursor: "pointer" }}>🚀 Update available — click to view</div>
+                )}
+              </div>
 
-          {/* Version info grid + contact info */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 22 }}>
-            {/* Version */}
-            <div style={{ background: "#f7f9ff", borderRadius: 10, padding: "10px 14px", border: "1.5px solid " + C.border }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>📦 Version</div>
-              <div style={{ fontSize: 13, fontWeight: 800, color: C.text, fontFamily: "'JetBrains Mono',monospace" }}>{"v" + appVersion}</div>
-            </div>
-            {/* Validity */}
-            <div style={{ background: "#f7f9ff", borderRadius: 10, padding: "10px 14px", border: "1.5px solid " + C.border }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>🗓 Validity</div>
-              <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>
-                {(function () {
-                  if (!licenseInfo) return "—";
-                  var plan = (licenseInfo.plan || "").toLowerCase();
-                  var status = licenseInfo.status;
-                  if (plan === "lifetime") return "♾ Lifetime";
-                  if (plan === "2year" || plan === "2years") return "730 days";
-                  if (plan === "yearly" || plan === "year" || plan === "1year") return "365 days";
-                  if (plan === "monthly" || plan === "month" || plan === "1month") return "30 days";
-                  if (status === "trial") return "3 days (Trial)";
-                  if (licenseInfo.daysLeft !== undefined) return licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s left" : " left");
-                  return "—";
-                })()}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div style={{ background: "#f7f9ff", borderRadius: 9, padding: "8px 12px", border: "1.5px solid " + C.border }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>📦 Version</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 800, color: C.text, fontFamily: "'JetBrains Mono',monospace" }}>{"v" + appVersion}</div>
+                </div>
+                <div style={{ background: "#f7f9ff", borderRadius: 9, padding: "8px 12px", border: "1.5px solid " + C.border }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>🗓 Validity</div>
+                  <div style={{ fontSize: 12.5, fontWeight: 800, color: C.text, lineHeight: 1.25 }}>
+                    {(function () {
+                      if (!licenseInfo) return "—";
+                      var plan = (licenseInfo.plan || "").toLowerCase();
+                      var status = licenseInfo.status;
+                      if (plan === "lifetime") return "♾ Lifetime";
+                      if (plan === "2year" || plan === "2years") return "730 days";
+                      if (plan === "yearly" || plan === "year" || plan === "1year") return "365 days";
+                      if (plan === "monthly" || plan === "month" || plan === "1month") return "30 days";
+                      if (status === "trial") return "3 days (Trial)";
+                      if (licenseInfo.daysLeft !== undefined) return licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s left" : " left");
+                      return "—";
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ background: "#f0f4ff", borderRadius: 11, padding: "10px 12px", border: "1.5px solid " + C.border }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>🛠 Developer &amp; Support</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  {[
+                    ["🌐", "Site", "www.erp.techon.lk", "https://www.erp.techon.lk"],
+                    ["✉️", "Email", "info@techon.lk", "mailto:info@techon.lk"],
+                    ["📞", "+94", "701234678", "tel:+94701234678"],
+                    ["📞", "+94", "701234178", "tel:+94701234178"]
+                  ].map(function (row, i) {
+                    return (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, minWidth: 0 }}>
+                        <span style={{ flexShrink: 0 }}>{row[0]}</span>
+                        <a href={row[3]} title={row[2]} onClick={function (e) { e.preventDefault(); if (window.electronAPI && window.electronAPI.openExternal) window.electronAPI.openExternal(row[3]); else window.open(row[3]); }}
+                          style={{ color: C.accent, fontWeight: 600, textDecoration: "none", fontFamily: i <= 1 ? "'JetBrains Mono',monospace" : "inherit", fontSize: i <= 1 ? 11 : 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {i >= 2 ? row[1] + " " + row[2] : row[2]}
+                        </a>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Contact / Developer info */}
-          <div style={{ background: "#f0f4ff", borderRadius: 12, padding: "14px 18px", marginBottom: 22, border: "1.5px solid " + C.border }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>🛠 Developer &amp; Support</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-              {[
-                ["🌐", "Website", "www.erp.techon.lk", "https://www.erp.techon.lk"],
-                ["✉️", "Email", "info@techon.lk", "mailto:info@techon.lk"],
-                ["📞", "Contact", "+94-701234678", "tel:+94701234678"],
-                ["📞", "Contact", "+94-701234178", "tel:+94701234178"]
-              ].map(function (row, i) {
+            <div style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column" }}>
+              {(function () {
+                var isActivated = licenseInfo && licenseInfo.status === "activated";
+                if (isActivated) {
+                  return (
+                    <div style={{ background: "linear-gradient(135deg,#e6f7f2,#f0fdf8)", border: "1.5px solid #9ee8ce", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#0f9e6e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>✅</div>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 13.5, color: "#0a7a53" }}>Software Activated</div>
+                          <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 600 }}>Full version — all features unlocked</div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5 }}>
+                        {[["Licensed To", licenseInfo.shopName || "—", "#0a7a53"], ["License Key", licenseInfo.key || "—", "#047857"], ["Device ID", (licenseInfo.deviceId || "—").slice(0, 18) + "…", C.muted]].map(function (row) {
+                          return (
+                            <div key={row[0]} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, background: "rgba(255,255,255,0.65)", borderRadius: 7, padding: "6px 10px" }}>
+                              <span style={{ fontWeight: 700, color: "#065f46", flexShrink: 0 }}>{row[0]}</span>
+                              <span style={{ fontFamily: row[0] !== "Licensed To" ? "'JetBrains Mono',monospace" : "inherit", fontSize: row[0] === "Device ID" ? 10.5 : 12, color: row[2], fontWeight: row[0] === "Licensed To" ? 800 : 600, textAlign: "right", wordBreak: "break-all" }}>{row[1]}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                }
                 return (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
-                    <span style={{ width: 22, textAlign: "center", flexShrink: 0 }}>{row[0]}</span>
-                    <span style={{ fontWeight: 700, color: C.textMd, minWidth: 56 }}>{row[1]}</span>
-                    <a href={row[3]} onClick={function (e) { e.preventDefault(); if (window.electronAPI && window.electronAPI.openExternal) window.electronAPI.openExternal(row[3]); else window.open(row[3]); }}
-                      style={{ color: C.accent, fontWeight: 600, textDecoration: "none", fontFamily: i === 0 || i === 1 ? "'JetBrains Mono',monospace" : "inherit", fontSize: i === 0 || i === 1 ? 12 : 13 }}>
-                      {row[2]}
-                    </a>
+                  <div style={{ background: "linear-gradient(135deg,#fef3e2,#fff8ed)", border: "1.5px solid #fcd34d", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                      <div style={{ width: 30, height: 30, borderRadius: 8, background: "#f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>🕒</div>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 13.5, color: "#92400e" }}>Trial Version</div>
+                        <div style={{ fontSize: 10.5, color: "#b45309", fontWeight: 600 }}>Limited period active</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12.5, color: "#92400e", marginBottom: 12, lineHeight: 1.55 }}>
+                      {licenseInfo && licenseInfo.daysLeft !== undefined
+                        ? licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s" : "") + " remaining in your free trial."
+                        : "Free trial period active."}
+                      {" "}Activate a license key to unlock the full version permanently.
+                    </div>
+                    <button onClick={function () { if (onActivate) onActivate(); }}
+                      style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(245,158,11,0.32)" }}>
+                      🔑 Activate Now
+                    </button>
                   </div>
                 );
-              })}
+              })()}
             </div>
           </div>
 
-          {/* License block */}
-          {(function () {
-            var isActivated = licenseInfo && licenseInfo.status === "activated";
-            if (isActivated) {
-              return (
-                <div style={{ background: "linear-gradient(135deg,#e6f7f2,#f0fdf8)", border: "1.5px solid #9ee8ce", borderRadius: 14, padding: "18px 20px", marginBottom: 22 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
-                    <div style={{ width: 32, height: 32, borderRadius: 9, background: "#0f9e6e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>✅</div>
-                    <div>
-                      <div style={{ fontWeight: 800, fontSize: 14, color: "#0a7a53" }}>Software Activated</div>
-                      <div style={{ fontSize: 11, color: "#10b981", fontWeight: 600 }}>Full version — all features unlocked</div>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
-                    {[["Licensed To", licenseInfo.shopName || "—", "#0a7a53"], ["License Key", licenseInfo.key || "—", "#047857"], ["Device ID", (licenseInfo.deviceId || "—").slice(0, 16) + "…", C.muted]].map(function (row) {
-                      return (
-                        <div key={row[0]} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.6)", borderRadius: 8, padding: "8px 12px" }}>
-                          <span style={{ fontWeight: 700, color: "#065f46" }}>{row[0]}</span>
-                          <span style={{ fontFamily: row[0] !== "Licensed To" ? "'JetBrains Mono',monospace" : "inherit", fontSize: row[0] === "Device ID" ? 11 : 13, color: row[2], fontWeight: row[0] === "Licensed To" ? 800 : 600 }}>{row[1]}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            }
-            return (
-              <div style={{ background: "linear-gradient(135deg,#fef3e2,#fff8ed)", border: "1.5px solid #fcd34d", borderRadius: 14, padding: "18px 20px", marginBottom: 22 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: 9, background: "#f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>🕒</div>
-                  <div>
-                    <div style={{ fontWeight: 800, fontSize: 14, color: "#92400e" }}>Trial Version</div>
-                    <div style={{ fontSize: 11, color: "#b45309", fontWeight: 600 }}>Limited period active</div>
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, color: "#92400e", marginBottom: 14, lineHeight: 1.6 }}>
-                  {licenseInfo && licenseInfo.daysLeft !== undefined
-                    ? licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s" : "") + " remaining in your free trial."
-                    : "Free trial period active."}
-                  {" "}Activate a license key to unlock the full version permanently.
-                </div>
-                <button onClick={function () { if (onActivate) onActivate(); }}
-                  style={{ width: "100%", padding: "11px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 4px 14px rgba(245,158,11,0.35)" }}>
-                  🔑 Activate Now
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* Footer */}
-          <div style={{ borderTop: "1.5px solid " + C.border, paddingTop: 18, textAlign: "center" }}>
-            <div style={{ fontSize: 12, color: C.muted, fontWeight: 500, lineHeight: 1.7 }}>
-              Designed &amp; developed by <span style={{ fontWeight: 700, color: C.accent }}>Techon Computers</span><br />
-              © {new Date().getFullYear()} All rights reserved.
+          <div style={{ borderTop: "1.5px solid " + C.border, paddingTop: 12, marginTop: 14, textAlign: "center" }}>
+            <div style={{ fontSize: 11.5, color: C.muted, fontWeight: 500, lineHeight: 1.65 }}>
+              Designed &amp; developed by <span style={{ fontWeight: 700, color: C.accent }}>Techon Computers</span>
+              {" · "}© {new Date().getFullYear()} All rights reserved.
             </div>
           </div>
         </div>
@@ -3977,9 +4237,12 @@ var StartupOnboardingWizard = function (props) {
       var invDer = deriveInventoryEconomics(loadState(), S);
       invDer.reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
       var snap = buildFinancialSnapshot(S, lines, chart, invDer, opts || {});
-      appendSnapshot(S, snap, { addAudit: addAudit });
-      setState(loadState());
-      showAlert("Financial snapshot saved and sealed (" + (snap.id || "ok") + ").");
+      appendSnapshot(S, snap, { addAudit: addAudit }).then(function () {
+        setState(loadState());
+        showAlert("Financial snapshot saved and sealed (" + (snap.id || "ok") + ").");
+      }).catch(function () {
+        showAlert("Could not save or seal the financial snapshot. Try again.");
+      });
     },
     repairInventoryLayersFromReplay: function () {
       showConfirm(
@@ -3993,12 +4256,12 @@ var StartupOnboardingWizard = function (props) {
           addAudit("Repair started", "inventory_layers", { source: "repair_layers" });
           var r = persistTechonGLJournal("repair_layers");
           var ok = r && r.validate && r.validate.ok && r.valid;
-          addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
+          addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, commitFailed: !!(r && r.commitFailed), warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
           if (ok) {
             setState(loadState());
             showAlert("Inventory layers updated from full transaction replay.");
           } else {
-            showAlert("Repair did not apply — resolve journal warnings or check the console.");
+            showAlert(r && r.commitFailed ? "Repair did not apply — the journal could not be saved." : "Repair did not apply — resolve journal warnings or check the console.");
           }
         }
       );
@@ -5049,19 +5312,42 @@ function App(props) {
           var mer = mergeJournalLinesByTransactionId(loc, srv, function (d) {
             appendGlAuditRow("journal_sync_conflict", Object.assign({ deviceId: getOrCreateDeviceId() }, d));
           });
+          var vfSync = validateJournalBalanced(mer.lines);
+          if (!vfSync.ok) {
+            appendGlAuditRow("journal_sync_merge_imbalance", {
+              imbalances: vfSync.imbalances,
+              appendedIds: mer.appendedIds,
+              deviceId: getOrCreateDeviceId(),
+              serverHash: hs,
+              localHash: hl,
+            });
+            if (tcIsDevEnv()) try { console.error("[TechonERP GL] Sync merge journal not balanced — not saved", vfSync.imbalances); } catch (e) {}
+            _coreStorageSet("tc3_gl_last_error", {
+              ts: new Date().toISOString(),
+              type: "sync_merge_imbalance",
+              imbalances: vfSync.imbalances,
+            });
+            return;
+          }
+          var invDerSync = deriveInventoryEconomics(loadState(), S);
+          var rSync = rebuildJournalFromState(loadState(), S, uid, invDerSync);
+          var crSync = commitGlJournalPersist(mer.lines, rSync, "journal_sync_merge", invDerSync);
+          if (!crSync || !crSync.ok) {
+            appendGlAuditRow("journal_sync_merge_commit_failed", {
+              error: crSync && (crSync.error || (crSync.validate && "imbalance")),
+              deviceId: getOrCreateDeviceId(),
+              serverHash: hs,
+              localHash: hl,
+            });
+            if (tcIsDevEnv()) try { console.error("[TechonERP GL] Sync merge could not persist journal", crSync && crSync.error); } catch (e) {}
+            return;
+          }
           appendGlAuditRow("journal_sync_merged", {
             appendedIds: mer.appendedIds,
             deviceId: getOrCreateDeviceId(),
             serverHash: hs,
             localHash: hl,
           });
-          _glSilentDepth++;
-          try {
-            _coreStorageSet("tc3_journal_lines", mer.lines);
-            _coreStorageSet("tc3_journal_hash", hashJournalLines(mer.lines));
-          } finally {
-            _glSilentDepth--;
-          }
           setState(loadState());
         }
       }).catch(function () {});
@@ -5252,6 +5538,19 @@ function App(props) {
         console.log("[TechonERP] Has Data:", hasMeaningfulStartupData(), "legacy:", hasLegacyBusinessRecords());
       } catch (e) { /* ignore */ }
     });
+  }, []);
+
+  /* Operational health snapshot for support / monitoring (read-only). */
+  useEffect(function () {
+    if (typeof window === "undefined") return;
+    window.TechonOperationalHealth = function () {
+      return buildOperationalHealthSnapshot(S, TC_SYNC);
+    };
+    return function () {
+      try {
+        delete window.TechonOperationalHealth;
+      } catch (e) { /* ignore */ }
+    };
   }, []);
 
   /* ── Sync Engine init (network modes only) ─────────────────── */
@@ -5670,13 +5969,14 @@ function App(props) {
   useEffect(function () {
     if (!loggedIn || !idbReady) return;
     sanitizeFinancialSnapshots(S, { addAudit: addAudit });
+    verifyFinancialSnapshotsHmac(S, { addAudit: addAudit }).catch(function () {});
   }, [loggedIn, idbReady]);
 
   var [showBakReminder, setShowBakReminder] = useState(false);
 
   useEffect(function () {
     if (!loggedIn) return;
-    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
     var buildBackup = function () {
       var st = S.get("tc3_settings", null);
       var sn = st ? (st.shopName || "Techon") : "Techon";
@@ -5770,7 +6070,7 @@ function App(props) {
       clearTimeout(window._bakDebounce);
       window._bakDebounce = setTimeout(function () {
         try {
-          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
           var st = _idbCache["tc3_settings"] || {};
           var sn = st.shopName || "Techon";
           var bk = { version: 2, timestamp: new Date().toISOString(), shopName: sn, data: {} };
@@ -6391,7 +6691,13 @@ function App(props) {
                       addAudit("Journal rebuild aborted", "manual_rebuild", { reason: "merge_imbalance" });
                       return r;
                     }
-                    commitGlJournalPersist(merged, r, "manual_rebuild", invDer);
+                    var crRebuild = commitGlJournalPersist(merged, r, "manual_rebuild", invDer);
+                    if (!crRebuild || !crRebuild.ok) {
+                      addAudit("Journal rebuild failed", "manual_rebuild", { reason: "commit_failed", error: crRebuild && crRebuild.error });
+                      if (tcIsDevEnv() && crRebuild && crRebuild.error) try { console.error("[TechonERP GL] manual_rebuild commit", crRebuild.error); } catch (e) {}
+                      showAlert("Could not save the journal.");
+                      return r;
+                    }
                     addAudit("Journal rebuild completed", "manual_rebuild", { lineCount: (merged || []).length });
                     setState(loadState());
                     showAlert("Journal rebuilt successfully.");
@@ -6405,9 +6711,12 @@ function App(props) {
                 var invDer = deriveInventoryEconomics(loadState(), S);
                 invDer.reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
                 var snap = buildFinancialSnapshot(S, lines, chart, invDer, opts || {});
-                appendSnapshot(S, snap, { addAudit: addAudit });
-                setState(loadState());
-                showAlert("Financial snapshot saved and sealed (" + (snap.id || "ok") + ").");
+                appendSnapshot(S, snap, { addAudit: addAudit }).then(function () {
+                  setState(loadState());
+                  showAlert("Financial snapshot saved and sealed (" + (snap.id || "ok") + ").");
+                }).catch(function () {
+                  showAlert("Could not save or seal the financial snapshot. Try again.");
+                });
               }}
               repairInventoryLayersFromReplay={function () {
                 showConfirm(
@@ -6421,12 +6730,12 @@ function App(props) {
                     addAudit("Repair started", "inventory_layers", { source: "repair_layers" });
                     var r = persistTechonGLJournal("repair_layers");
                     var ok = r && r.validate && r.validate.ok && r.valid;
-                    addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
+                    addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, commitFailed: !!(r && r.commitFailed), warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
                     if (ok) {
                       setState(loadState());
                       showAlert("Inventory layers updated from full transaction replay.");
                     } else {
-                      showAlert("Repair did not apply — resolve journal warnings or check the console.");
+                      showAlert(r && r.commitFailed ? "Repair did not apply — the journal could not be saved." : "Repair did not apply — resolve journal warnings or check the console.");
                     }
                   }
                 );

@@ -1,6 +1,11 @@
 Options -Indexes
 Header always set X-Content-Type-Options "nosniff"
 
+# Block direct web access to .env (use server env or unlisted path for secrets)
+<Files ".env">
+    Require all denied
+</Files>
+
 # Block direct access to config
 <Files "config.php">
     Require all denied

@@ -9,7 +9,10 @@ try {
     db()->query('SELECT 1');
     $dbOk = true;
 } catch (Exception $e) {
-    error_log('[ping] ' . $e->getMessage());
+    error_log('[ping] DB error');
+    if (function_exists('techon_should_log_internal_details') && techon_should_log_internal_details()) {
+        error_log('[ping] ' . $e->getMessage());
+    }
     $dbOk = false;
 }
 

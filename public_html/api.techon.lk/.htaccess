@@ -1,3 +1,7 @@
+# Block web access to .env (use cPanel “Environment Variables” or SetEnv instead)
+<Files ".env">
+  Require all denied
+</Files>
 
 # php -- BEGIN cPanel-generated handler, do not edit
 # Set the “ea-php84” package as the default “PHP” programming language.

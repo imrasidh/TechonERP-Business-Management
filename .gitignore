@@ -34,6 +34,10 @@ public_html/site/node_modules/
 .env
 .env.*
 
+# License admin auth DB (local SQLite — contains bcrypt hash)
+public_html/license.techon.lk/data/*.sqlite
+public_html/license.techon.lk/data/*.db
+
 # =========================
 # LOGS
 # =========================

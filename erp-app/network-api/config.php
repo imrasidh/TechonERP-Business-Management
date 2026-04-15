@@ -1,27 +1,42 @@
 <?php
 /**
  * Techon ERP — Local Network API Config v2
- * Database: techon_erp_network (local XAMPP MySQL)
+ * Database: getenv() → .env (same directory, then erp-app/) → local dev defaults below.
  * Security: X-TC-KEY token auth generated per-server during setup
  */
+@ini_set('display_errors', '0');
+require_once __DIR__ . '/env_load.php';
+techon_load_dotenv(__DIR__);
+techon_load_dotenv(dirname(__DIR__));
+techon_force_https_if_production();
+techon_register_safe_api_log(__DIR__);
 
-define('DB_HOST', 'localhost');
-define('DB_NAME', 'techon_erp_network');
-define('DB_USER', 'root');
-define('DB_PASS', '');   // Default XAMPP has no root password
+require_once __DIR__ . '/cors_utils.php';
 
-// ── CORS (reflect Origin when present; fallback * for non-browser clients) ──
+$dbHost = techon_env('DB_HOST', '');
+if ($dbHost === '' || $dbHost === false) {
+    $dbHost = 'localhost';
+}
+$dbName = techon_env('DB_NAME', '');
+if ($dbName === '' || $dbName === false) {
+    $dbName = 'techon_erp_network';
+}
+$dbUser = techon_env('DB_USER', '');
+if ($dbUser === '' || $dbUser === false) {
+    $dbUser = 'root';
+}
+$dbPass = techon_env('DB_PASS', null);
+if ($dbPass === null || $dbPass === false) {
+    $dbPass = ''; /* empty password valid for local XAMPP */
+}
+
+define('DB_HOST', $dbHost);
+define('DB_NAME', $dbName);
+define('DB_USER', $dbUser);
+define('DB_PASS', $dbPass);
+
 function techon_apply_cors_headers() {
-    header('Content-Type: application/json; charset=utf-8');
-    $origin = isset($_SERVER['HTTP_ORIGIN']) ? trim((string)$_SERVER['HTTP_ORIGIN']) : '';
-    if ($origin !== '' && preg_match('#^https?://#i', $origin)) {
-        header('Access-Control-Allow-Origin: ' . $origin);
-        header('Vary: Origin');
-    } else {
-        header('Access-Control-Allow-Origin: *');
-    }
-    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-    header('Access-Control-Allow-Headers: Content-Type, X-TC-KEY, X-TC-Client-ID, X-TC-License-Sync');
+    techon_apply_json_cors_headers('Content-Type, X-TC-KEY, X-TC-Client-ID, X-TC-License-Sync, Authorization');
 }
 
 techon_apply_cors_headers();
@@ -87,9 +102,9 @@ function db() {
             ]
         );
     } catch (PDOException $e) {
-        error_log('[TechonERP] DB connection failed: ' . $e->getMessage());
+        error_log('[TechonERP] DB connection failed');
         http_response_code(503);
-        echo json_encode(['success' => false, 'message' => 'Database unavailable']);
+        echo json_encode(['success' => false, 'message' => 'An error occurred']);
         exit();
     }
     return $pdo;
@@ -107,9 +122,18 @@ function respond($data, $code = 200) {
 }
 
 function getInput() {
-    $raw  = file_get_contents('php://input');
-    $data = json_decode($raw, true);
-    if (!is_array($data)) return [];
+    $raw = file_get_contents('php://input');
+    if (strlen($raw) > 2097152) {
+        respond(['success' => false, 'message' => 'Invalid request'], 413);
+    }
+    $data = techon_parse_json_body($raw, 2097152, 20);
+    if ($data === null) {
+        $t = ltrim((string) $raw);
+        if ($t !== '') {
+            respond(['success' => false, 'message' => 'Invalid request'], 400);
+        }
+        return [];
+    }
     return $data;
 }
 

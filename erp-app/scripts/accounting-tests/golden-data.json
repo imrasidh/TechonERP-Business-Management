@@ -1,0 +1,39 @@
+{
+  "settings": {
+    "inventoryCostingMethod": "wac",
+    "taxEnabled": false,
+    "glVatPostingEnabled": false,
+    "strictPeriodLock": true,
+    "glArApNegativeTolerance": 50,
+    "glArApHardBlockAt": 1000000
+  },
+  "products": [{ "id": "gp1", "productId": "1", "name": "Golden", "stock": 0, "cost": 5, "sellPrice": 20 }],
+  "purchases": [
+    {
+      "id": "gpur",
+      "date": "2026-01-01",
+      "purchaseNo": "GP1",
+      "total": 50,
+      "totalTax": 0,
+      "items": [{ "id": "gp1", "productId": "gp1", "inputQty": 10, "qty": 10, "cost": 5 }],
+      "paymentHistory": [{ "id": "p1", "date": "2026-01-01", "amount": 50, "cashMethod": "Cash" }]
+    }
+  ],
+  "sales": [
+    {
+      "id": "gsale",
+      "date": "2026-01-02",
+      "invoiceNo": "GINV",
+      "total": 80,
+      "paid": 80,
+      "totalTax": 0,
+      "items": [{ "id": "gp1", "productId": "gp1", "qty": 2, "cost": 5, "lineTotal": 80 }],
+      "paymentHistory": [{ "id": "s1", "date": "2026-01-02", "amount": 80, "cashMethod": "Cash" }]
+    }
+  ],
+  "salesReturns": [],
+  "purchaseReturns": [],
+  "customers": [],
+  "suppliers": [],
+  "expenses": []
+}

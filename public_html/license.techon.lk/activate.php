@@ -3,10 +3,13 @@ error_reporting(0);
 @ini_set('display_errors', 0);
 ob_start();
 
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-TC-Token');
-header('Content-Type: application/json; charset=utf-8');
+require_once __DIR__ . '/env_load.php';
+techon_load_dotenv(__DIR__);
+techon_force_https_if_production();
+techon_register_safe_api_log(__DIR__);
+
+require_once __DIR__ . '/cors_utils.php';
+techon_license_apply_cors_headers('Content-Type, X-TC-Token, Authorization');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     ob_end_clean();
@@ -24,7 +27,7 @@ require_once __DIR__ . '/license_bootstrap.php';
 $SERVER_SECRET = tc_license_server_secret();
 /* TEMP: set TC_LIC_ACTIVATE_DEBUG=1 in server env to log secret length (remove after verification). */
 if (getenv('TC_LIC_ACTIVATE_DEBUG') === '1') {
-    error_log('[activate.php] TC_LIC_SERVER_SECRET length=' . strlen($SERVER_SECRET));
+    error_log('[activate.php] LICENSE_SECRET/TC length=' . strlen($SERVER_SECRET));
 }
 if ($SERVER_SECRET === '') {
     ob_end_clean();

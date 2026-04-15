@@ -523,3 +523,6 @@ export function appendStorageRecord(key, record, opts) {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+/** Exposed for automated tests (chunking / validation invariants only). */
+export { chunkPatches, validate as validateSyncStorageValue };

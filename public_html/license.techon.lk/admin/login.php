@@ -13,15 +13,40 @@ if (!empty($_SESSION['tc_admin_auth'])) {
 
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $u = trim($_POST['username'] ?? '');
-    $p = trim($_POST['password'] ?? '');
-    if ($u === ADMIN_USER && $p === ADMIN_PASS) {
-        session_regenerate_id(true);
-        $_SESSION['tc_admin_auth'] = true;
-        $_SESSION['csrf']          = bin2hex(random_bytes(20));
-        header('Location: index.php'); exit;
+    $tok = trim($_POST['csrf'] ?? '');
+    $storedCsrf = $_SESSION['csrf'] ?? '';
+    if (!$storedCsrf || !hash_equals($storedCsrf, $tok)) {
+        $error = 'Invalid session. Please refresh the page and try again.';
+    } else {
+        $u = trim((string) ($_POST['username'] ?? ''));
+        $p = (string) ($_POST['password'] ?? '');
+        if (strlen($u) > 128) {
+            $u = substr($u, 0, 128);
+        }
+        if (strlen($p) > 2048) {
+            $p = substr($p, 0, 2048);
+        }
+        $clientIp = tc_admin_client_ip();
+        $rl = tc_admin_rate_guard_check($clientIp);
+        if (!$rl['ok']) {
+            $error = isset($rl['message']) ? $rl['message'] : 'Too many attempts. Try again later.';
+        } else {
+            $cred = tc_admin_resolve_credentials();
+            if (!$cred) {
+                $error = 'Admin login is not configured. Set ADMIN_PASSWORD_HASH (bcrypt) and ADMIN_USERNAME on the server, or run: php bootstrap_admin.php admin "password"';
+            } elseif ($u === $cred['username'] && password_verify($p, $cred['password_hash'])) {
+                tc_admin_rate_guard_success($clientIp);
+                session_regenerate_id(true);
+                $_SESSION['tc_admin_auth'] = true;
+                /* New session ID + fresh CSRF to limit fixation / token reuse */
+                $_SESSION['csrf'] = bin2hex(random_bytes(20));
+                header('Location: index.php'); exit;
+            } else {
+                tc_admin_rate_guard_failure($clientIp);
+                $error = 'Incorrect username or password.';
+            }
+        }
     }
-    $error = 'Incorrect username or password.';
 }
 ?>
 <!DOCTYPE html>
@@ -194,10 +219,11 @@ input:focus { border-color: var(--blue); }
   <div class="error-box">⚠ <?= h($error) ?></div>
   <?php endif; ?>
   <form method="POST" autocomplete="off">
+    <input type="hidden" name="csrf" value="<?= h(csrfToken()) ?>"/>
     <label>Username</label>
-    <input type="text" name="username" placeholder="admin" required autofocus/>
+    <input type="text" name="username" placeholder="admin" maxlength="128" required autofocus/>
     <label>Password</label>
-    <input type="password" name="password" placeholder="••••••••" required/>
+    <input type="password" name="password" placeholder="••••••••" maxlength="2048" required/>
     <button class="btn" type="submit">Sign In →</button>
   </form>
 </div>

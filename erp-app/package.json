@@ -7,9 +7,17 @@
     "dev": "vite",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_VITE=1 electron .\"",
     "electron": "electron .",
-    "build": "vite build",
+    "build": "cross-env NODE_OPTIONS=--max-old-space-size=8192 vite build",
     "dist": "electron-builder",
-    "lint": "eslint \"src/**/*.{ts,tsx}\""
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "audit:high": "npm audit --audit-level=high",
+    "test:accounting": "node scripts/accounting-tests/run.mjs",
+    "test:erp": "node scripts/erp-tests/run.mjs",
+    "ci:scan-secrets": "node scripts/ci-scan-secrets.mjs",
+    "release:check": "npm run ci",
+    "release:gate": "npm run ci && node scripts/release-gate.mjs",
+    "ci": "npm run typecheck && npm run audit:high && npm run ci:scan-secrets && npm run test:accounting && npm run test:erp && npm run build"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

@@ -1,0 +1,5 @@
+# Block direct HTTP access to SQLite / local DB files
+<FilesMatch "\.(sqlite|sqlite3|db)$">
+    Require all denied
+    Deny from all
+</FilesMatch>

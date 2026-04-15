@@ -4,6 +4,28 @@
  */
 export var IS_PRODUCTION = true;
 
+/** Vite production bundle (npm run build). */
+export function isProductionViteBuild() {
+  try {
+    return typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD === true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** Enforce strict period lock in production builds (settings UX may still show toggle; loadState forces on). */
+export function enforceProductionStrictPeriodLock() {
+  return isProductionViteBuild();
+}
+
+/**
+ * Device-pepper snapshot HMAC (v1) allowed only in non-production bundles.
+ * Production must seal with LICENSE_SECRET (v2) or leave integrity unsealed.
+ */
+export function isSnapshotDeviceHmacAllowed() {
+  return !isProductionViteBuild();
+}
+
 /** Safe backup shape before writing to disk / IDB mirror */
 export function validateJsonBackupPayload(bk) {
   try {

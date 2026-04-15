@@ -15,6 +15,7 @@
 import React, { useState, useEffect } from 'react';
 import App from '../App';
 import SetupWizard from '../SetupWizard';
+import { setPackagedMissingLicenseSecretBlock } from '../ops/accountingGuards.js';
 
 /* ── Colours matching ERP design tokens ───────────────────────── */
 const C = {
@@ -1301,6 +1302,12 @@ const ERP_APP_SHELL_STYLE = {
 export default function LicenseGate() {
   const [licStatus,      setLicStatus]      = useState(null);
   const [showActivation, setShowActivation] = useState(false);
+  const [prodSecretGate, setProdSecretGate] = useState(function () {
+    if (typeof window === 'undefined' || !window.electronAPI || !window.electronAPI.getProductionGuard) {
+      return { ok: true, blocked: false };
+    }
+    return null;
+  });
 
   /* -- Clock-drift recovery state -------------------------------------------- */
   const [clockCountdown, setClockCountdown] = useState(15);
@@ -1343,6 +1350,28 @@ export default function LicenseGate() {
     }
     loadConfig();
   }, []);
+
+  /* Packaged app: require LICENSE_SECRET (or tc_license_secret.txt) before loading ERP */
+  useEffect(function () {
+    if (!licStatus || networkConfig === null) return;
+    var api = window.electronAPI;
+    if (!api || !api.getProductionGuard) {
+      setProdSecretGate({ ok: true, blocked: false });
+      setPackagedMissingLicenseSecretBlock(false);
+      return;
+    }
+    api.getProductionGuard().then(function (g) {
+      try {
+        window.__TC_OP_GUARD_BLOCK__ = !!(g && g.blockWritesOnCritical);
+      } catch (e) { /* ignore */ }
+      var blocked = !!(g && g.isPackaged && !g.licenseSecretConfigured);
+      setProdSecretGate({ ok: true, blocked: blocked });
+      setPackagedMissingLicenseSecretBlock(blocked);
+    }).catch(function () {
+      setProdSecretGate({ ok: true, blocked: false });
+      setPackagedMissingLicenseSecretBlock(false);
+    });
+  }, [licStatus, networkConfig]);
 
   /* Check license on mount */
   useEffect(() => {
@@ -1528,6 +1557,37 @@ export default function LicenseGate() {
             </div>
           </>
         )}
+      </div>
+    );
+  }
+
+  if (prodSecretGate === null && window.electronAPI && window.electronAPI.getProductionGuard) {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, background: '#0f172a', zIndex: 99999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8',
+        fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif", fontSize: 14,
+      }}>
+        Verifying security configuration…
+      </div>
+    );
+  }
+  if (prodSecretGate && prodSecretGate.blocked) {
+    return (
+      <div style={{
+        position: 'fixed', inset: 0, background: '#0f172a', zIndex: 99999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+        fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
+      }}>
+        <div style={{ maxWidth: 540, textAlign: 'center', color: '#e2e8f0' }}>
+          <div style={{ fontSize: 44, marginBottom: 16 }}>🔐</div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>License API secret required</div>
+          <div style={{ fontSize: 15, lineHeight: 1.65, color: '#94a3b8' }}>
+            Set <strong style={{ color: '#cbd5e1' }}>LICENSE_SECRET</strong> or <strong style={{ color: '#cbd5e1' }}>TC_LIC_SERVER_SECRET</strong> as an environment variable,
+            or place <strong style={{ color: '#cbd5e1' }}>tc_license_secret.txt</strong> beside the application (UTF-8, one line, same value as license.techon.lk).
+            Accounting and financial snapshots cannot run until this is configured.
+          </div>
+        </div>
       </div>
     );
   }

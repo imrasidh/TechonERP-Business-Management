@@ -1,0 +1,7 @@
+# Block direct HTTP access to access logs (Option B — Apache)
+<FilesMatch "\.log(\.[0-9]+)?$">
+    Require all denied
+</FilesMatch>
+<FilesMatch "\.log(\.[0-9]+)?$">
+    Deny from all
+</FilesMatch>

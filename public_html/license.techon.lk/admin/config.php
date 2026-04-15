@@ -4,12 +4,20 @@
  * File: admin/config.php
  * Shared configuration, session helpers, and file I/O functions.
  */
+require_once dirname(__DIR__) . '/env_load.php';
+techon_load_dotenv(dirname(__DIR__));
+techon_force_https_if_production();
 
 /* ════════════════════════════════════════════════════════════
-   CREDENTIALS  — change password here before uploading
+   ADMIN LOGIN — bcrypt only (never plaintext in repo).
+   Set server environment:
+     ADMIN_USERNAME (default: admin)
+     ADMIN_PASSWORD_HASH (output of: php -r "echo password_hash('YourPass', PASSWORD_DEFAULT);")
+   Or run once: php admin/bootstrap_admin.php admin "YourPassword"
+   (stores hash in data/admin_auth.sqlite — add data/ to backup list)
    ════════════════════════════════════════════════════════════ */
-define('ADMIN_USER', 'admin');
-define('ADMIN_PASS', 'Fitriyah0408@');   /* ← CHANGE THIS */
+require_once __DIR__ . '/auth_store.php';
+require_once __DIR__ . '/rate_guard.php';
 
 /* ════════════════════════════════════════════════════════════
    PATHS
@@ -25,10 +33,14 @@ define('SESSION_NAME', 'tc_lic_admin');
 function startAdminSession() {
     session_name(SESSION_NAME);
     if (session_status() === PHP_SESSION_NONE) {
+        $secure = function_exists('techon_request_is_https') ? techon_request_is_https() : (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+        ini_set('session.cookie_httponly', '1');
+        ini_set('session.use_strict_mode', '1');
+        ini_set('session.cookie_secure', $secure ? '1' : '0');
         session_set_cookie_params([
             'lifetime' => 0,
             'path'     => '/',
-            'secure'   => isset($_SERVER['HTTPS']),
+            'secure'   => $secure,
             'httponly' => true,
             'samesite' => 'Lax',
         ]);
@@ -61,7 +73,7 @@ function verifyCsrf() {
     $stored = $_SESSION['csrf'] ?? '';
     if (!$stored || !hash_equals($stored, $post)) {
         http_response_code(403);
-        die('Invalid CSRF token.');
+        die('Forbidden');
     }
 }
 
