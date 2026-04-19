@@ -11,8 +11,18 @@ import {
   mergeJournalLinesByTransactionId,
   collectStrictPeriodLockOverrideIds,
   evaluateArApPolicy,
+  reconcileInventoryToLedger,
+  deriveInventoryEconomics,
   GL,
+  round2,
 } from "./lib/harness.mjs";
+import { explainInventoryDifference } from "../../src/accounting/inventoryReconExplain.js";
+import { buildInventoryReplayWindow } from "../../src/utils/inventoryReplayDebug.js";
+import { isLockedThroughDate } from "../../src/accounting/periodLockDates.js";
+import { compareRoundSumMethods } from "../../src/accounting/roundingDrift.js";
+import { buildInventoryReconTimeSeries } from "../../src/accounting/inventoryReconTimeSeries.js";
+import { diffTrialBalanceSnapshotVsLive } from "../../src/accounting/snapshotTbDiff.js";
+import { sumRawMaterialKitchenCostInRange } from "../../src/utils/ingredientUsageCost.js";
 
 /**
  * @param {{ fail: (name: string, detail?: unknown) => void, pass: (name: string) => void }} ctx
@@ -236,5 +246,250 @@ export function runScenarioTests(ctx) {
       return fail("Minimal commit invariants");
     }
     pass("Minimal balanced journal + invariants");
+  })();
+
+  /* ── 8: Multi-line purchase rounding + inventory reconciliation ── */
+  (function () {
+    var st = baseState();
+    var pid = "prod_rnd_ml";
+    st.products = [{ id: pid, productId: "9001", name: "ML", stock: 0, cost: 0, sellPrice: 10 }];
+    st.purchases = [{
+      id: "pur_ml",
+      date: "2026-04-01",
+      total: 100,
+      totalTax: 0,
+      items: [
+        { id: pid, productId: pid, inputQty: 1, qty: 1, cost: 33.333 },
+        { id: pid, productId: pid, inputQty: 1, qty: 1, cost: 33.333 },
+        { id: pid, productId: pid, inputQty: 1, qty: 1, cost: 33.334 },
+      ],
+      paymentHistory: [],
+    }];
+    var x = rebuild(st, Smock);
+    if (!validateJournalBalanced(x.r.lines).ok) return fail("Multi-line purchase: journal balance");
+    var rec = reconcileInventoryToLedger(x.r.lines, x.invDer, DEFAULT_GL_CHART);
+    if (!rec.ok) return fail("Multi-line purchase: INV vs GL", rec);
+    pass("Multi-line purchase rounding (balanced + INV recon)");
+  })();
+
+  /* ── 9: Fractional WAC reconciliation ── */
+  (function () {
+    var st = baseState();
+    var pid = "prod_wac_frac";
+    st.products = [{ id: pid, productId: "9002", name: "WF", stock: 0, cost: 0, sellPrice: 10 }];
+    st.purchases = [
+      { id: "pWa", date: "2026-05-01", total: 20, totalTax: 0, items: [{ id: pid, productId: pid, inputQty: 3, qty: 3, cost: 6.6667 }], paymentHistory: [] },
+      { id: "pWb", date: "2026-05-02", total: 10, totalTax: 0, items: [{ id: pid, productId: pid, inputQty: 2, qty: 2, cost: 5.5555 }], paymentHistory: [] },
+    ];
+    var x = rebuild(st, Smock);
+    var rec = reconcileInventoryToLedger(x.r.lines, x.invDer, DEFAULT_GL_CHART);
+    if (!rec.ok && Math.abs(rec.difference) > 0.05) return fail("Fractional WAC: INV vs GL gap", rec);
+    pass("Fractional WAC inventory vs GL");
+  })();
+
+  /* ── 10: Reconciliation drill-down grouping ── */
+  (function () {
+    var lines = [
+      { id: "l1", accountId: GL.INV, debit: 50, credit: 0, date: "2026-01-01", referenceType: "purchase", referenceId: "p1", memo: "" },
+      { id: "l2", accountId: GL.INV, debit: 0, credit: 30, date: "2026-01-02", referenceType: "sale_cogs", referenceId: "s1", memo: "" },
+      { id: "l3", accountId: GL.INV, debit: 5, credit: 0, date: "2026-01-03", referenceType: "sales_return_cogs", referenceId: "r1", memo: "" },
+    ];
+    var x = explainInventoryDifference(lines, DEFAULT_GL_CHART, {});
+    if (!x.buckets.purchases.rows.length) return fail("Recon explain: purchases bucket");
+    if (!x.buckets.sales_cogs.rows.length) return fail("Recon explain: COGS bucket");
+    if (!x.topContributors.length) return fail("Recon explain: top contributors");
+    pass("Inventory recon explain (grouped buckets)");
+  })();
+
+  /* ── 11: Replay window integrity ── */
+  (function () {
+    var st = baseState();
+    var pid = "prod_replay_t";
+    st.products = [{ id: pid, productId: "r1", name: "R", stock: 0, cost: 0, sellPrice: 10 }];
+    st.purchases = [{ id: "pu1", date: "2026-06-01", total: 100, totalTax: 0, items: [{ id: pid, productId: pid, qty: 10, cost: 10 }], paymentHistory: [] }];
+    var Smock = makeSmock();
+    var invDer = deriveInventoryEconomics(st, Smock);
+    var w = buildInventoryReplayWindow(invDer, pid, "2026-06-01", "2026-06-30");
+    if (w.openingQty !== 0) return fail("Replay: opening qty");
+    if (!(w.rows && w.rows.length >= 1)) return fail("Replay: movement rows");
+    if (typeof w.closingQty !== "number") return fail("Replay: closing qty");
+    pass("Inventory replay window output");
+  })();
+
+  /* ── 12: Period lock date helper ── */
+  (function () {
+    if (!isLockedThroughDate("2026-01-15", "2026-01-20")) return fail("Period lock: should lock on or before end date");
+    if (isLockedThroughDate("2026-01-21", "2026-01-20")) return fail("Period lock: should not lock after end date");
+    pass("Period lock inclusive boundary");
+  })();
+
+  /* ── 13: Reports-style rounding consistency ── */
+  (function () {
+    var a = 10.004 + 10.004 + 10.005;
+    if (round2(a) !== 30.01) return fail("Rounding consistency: triple line sum");
+    pass("Rounding consistency (round2 aggregate)");
+  })();
+
+  /* ── 14: Aggregate A vs B rounding drift helper ── */
+  (function () {
+    var cmp = compareRoundSumMethods([1.004, 1.004, 1.004]);
+    if (Math.abs(cmp.drift) < 0.005) return fail("Rounding drift helper: expected non-zero drift", cmp);
+    pass("Aggregate rounding A vs B detection");
+  })();
+
+  /* ── 15: Inventory recon time travel (multi-day) ── */
+  (function () {
+    var st = baseState();
+    var pid = "prod_tt_s";
+    st.products = [{ id: pid, productId: "9001", name: "TT", stock: 0, cost: 10, sellPrice: 11 }];
+    st.purchases = [{ id: "pur_tt_s", date: "2026-02-01", total: 50, totalTax: 0, items: [{ id: pid, productId: pid, qty: 5, cost: 10 }], paymentHistory: [] }];
+    var Smock = makeSmock();
+    var x = rebuild(st, Smock);
+    var series = buildInventoryReconTimeSeries(st, Smock, x.r.lines, DEFAULT_GL_CHART, "2026-02-01", "2026-02-07");
+    if (series.length !== 7) return fail("Time travel: expected 7 days", series.length);
+    if (series[0].date !== "2026-02-01") return fail("Time travel: start date");
+    pass("Inventory recon time travel (7-day series)");
+  })();
+
+  /* ── 16: Snapshot TB diff detection ── */
+  (function () {
+    var leg = diffTrialBalanceSnapshotVsLive(DEFAULT_GL_CHART, {}, { rows: [] }, 10);
+    if (!leg.legacy) return fail("Snapshot diff: legacy snapshot expected");
+    var snap = { trialBalanceAccounts: { "1000": { debit: 10, credit: 0, code: "1000", name: "Cash" } } };
+    var live = { rows: [{ accountId: "1000", debit: 15, credit: 0, code: "1000", name: "Cash", type: "asset" }] };
+    var d = diffTrialBalanceSnapshotVsLive(DEFAULT_GL_CHART, snap, live, 10);
+    if (!d.rows || d.rows.length !== 1) return fail("Snapshot diff: one changed row", d);
+    pass("Snapshot trial balance diff (non-legacy)");
+  })();
+
+  /* ── 17: Large replay window timing sanity ── */
+  (function () {
+    var st = baseState();
+    var pid = "prod_big_r";
+    st.products = [{ id: pid, productId: "b1", name: "B", stock: 0, cost: 1, sellPrice: 2 }];
+    var i;
+    var sales = [];
+    for (i = 0; i < 120; i++) {
+      sales.push({ id: "s" + i, date: "2026-03-01", items: [{ id: pid, qty: 1, cost: 1, price: 2 }], total: 2, paid: 2, paymentHistory: [] });
+    }
+    st.sales = sales;
+    var Smock = makeSmock();
+    var invDer = deriveInventoryEconomics(st, Smock);
+    var t0 = Date.now();
+    var w = buildInventoryReplayWindow(invDer, pid, "2026-03-01", "2026-03-31", {});
+    var ms = Date.now() - t0;
+    if (!(w.rows && w.rows.length >= 100)) return fail("Large replay: expected many rows", w.rows && w.rows.length);
+    if (ms > 60000) return fail("Large replay: unreasonably slow", ms);
+    pass("Large dataset replay window (sanity)");
+  })();
+
+  /* ── 18: Raw material kitchen GL — balanced + inventory reconcile ── */
+  (function () {
+    var st = baseState();
+    var pid = "rm_kitch_1";
+    st.products = [{ id: pid, name: "Flour", type: "raw_material", stock: 100, cost: 2, sellPrice: 10 }];
+    st.purchases = [{ id: "pur_k", date: "2026-04-01", total: 200, totalTax: 0, items: [{ id: pid, productId: pid, qty: 100, cost: 2 }], paymentHistory: [] }];
+    st.rawMaterialUsages = [{ id: "u_k1", productId: pid, date: "2026-04-02", qty: 5, unit: "Kg", qtyBase: 5 }];
+    var Smock = makeSmock();
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Kitchen GL: rebuild validate", x.r.validate);
+    var invCheck = validateAccountingCommitInvariants({
+      lines: x.r.lines,
+      chart: DEFAULT_GL_CHART,
+      invDer: x.invDer,
+      settings: st.settings,
+    });
+    if (!invCheck.ok) return fail("Kitchen GL: commit invariants", invCheck.errors);
+    var kt = x.r.lines.filter(function (ln) {
+      return ln.referenceType === "raw_material_usage" && ln.referenceId === "raw_usage_2026-04-02";
+    });
+    if (kt.length !== 2) return fail("Kitchen GL: expected 2 lines for one day", kt.length);
+    var replay = sumRawMaterialKitchenCostInRange(st, "2026-04-02", "2026-04-02");
+    var dr = 0;
+    kt.forEach(function (ln) {
+      if (ln.accountId === GL.COGS_KITCHEN) dr += round2(ln.debit || 0);
+    });
+    if (round2(dr) !== replay) return fail("Kitchen GL: replay vs journal Dr", replay, dr);
+    pass("Kitchen raw material GL + inventory reconcile");
+  })();
+
+  /* ── 19: Same calendar day aggregates (one journal ref) — no double post ── */
+  (function () {
+    var st = baseState();
+    var pid = "rm_k2";
+    st.products = [{ id: pid, name: "Sugar", type: "raw_material", stock: 100, cost: 3, sellPrice: 10 }];
+    st.purchases = [{ id: "pur_k2", date: "2026-05-01", total: 300, totalTax: 0, items: [{ id: pid, productId: pid, qty: 100, cost: 3 }], paymentHistory: [] }];
+    st.rawMaterialUsages = [
+      { id: "ua", productId: pid, date: "2026-05-03", qty: 2, unit: "Kg", qtyBase: 2 },
+      { id: "ub", productId: pid, date: "2026-05-03", qty: 1, unit: "Kg", qtyBase: 1 },
+    ];
+    var x = rebuild(st, makeSmock());
+    if (!x.r.validate.ok) return fail("Kitchen aggregate: validate", x.r.validate);
+    var groups = {};
+    x.r.lines.forEach(function (ln) {
+      if (ln.referenceType !== "raw_material_usage") return;
+      var g = ln.transactionId || ln.entryGroupId || "";
+      groups[g] = (groups[g] || 0) + 1;
+    });
+    var txnIds = Object.keys(groups).filter(function (k) { return groups[k] === 2; });
+    if (txnIds.length !== 1) return fail("Kitchen aggregate: expected one txn group", groups);
+    pass("Kitchen same-day aggregate (single posting group)");
+  })();
+
+  /* ── 20: Edit usage qty — deterministic ref, amount tracks replay ── */
+  (function () {
+    var st = baseState();
+    var pid = "rm_k3";
+    st.products = [{ id: pid, name: "Oil", type: "raw_material", stock: 50, cost: 4, sellPrice: 12 }];
+    st.purchases = [{ id: "pur_k3", date: "2026-06-01", total: 200, totalTax: 0, items: [{ id: pid, productId: pid, qty: 50, cost: 4 }], paymentHistory: [] }];
+    st.rawMaterialUsages = [{ id: "ux", productId: pid, date: "2026-06-10", qty: 10, unit: "L", qtyBase: 10 }];
+    var x1 = rebuild(st, makeSmock());
+    st.rawMaterialUsages = [{ id: "ux", productId: pid, date: "2026-06-10", qty: 4, unit: "L", qtyBase: 4 }];
+    var x2 = rebuild(st, makeSmock());
+    var d1 = x1.r.lines.filter(function (ln) {
+      return ln.accountId === GL.COGS_KITCHEN && ln.date === "2026-06-10";
+    }).reduce(function (a, ln) { return a + round2(ln.debit || 0) - round2(ln.credit || 0); }, 0);
+    var d2 = x2.r.lines.filter(function (ln) {
+      return ln.accountId === GL.COGS_KITCHEN && ln.date === "2026-06-10";
+    }).reduce(function (a, ln) { return a + round2(ln.debit || 0) - round2(ln.credit || 0); }, 0);
+    if (d1 === d2) return fail("Kitchen edit: expected different COGS amounts", d1, d2);
+    var exp2 = sumRawMaterialKitchenCostInRange(st, "2026-06-10", "2026-06-10");
+    if (round2(d2) !== exp2) return fail("Kitchen edit: GL vs replay", exp2, d2);
+    pass("Kitchen usage edit updates journal amount");
+  })();
+
+  /* ── 21: Range replay total vs GL kitchen account ── */
+  (function () {
+    var st = baseState();
+    var pid = "rm_k4";
+    st.products = [{ id: pid, name: "Rice", type: "raw_material", stock: 200, cost: 1, sellPrice: 5 }];
+    st.purchases = [{ id: "pur_k4", date: "2026-07-01", total: 200, totalTax: 0, items: [{ id: pid, productId: pid, qty: 200, cost: 1 }], paymentHistory: [] }];
+    st.rawMaterialUsages = [
+      { id: "r1", productId: pid, date: "2026-07-05", qty: 10, unit: "Kg", qtyBase: 10 },
+      { id: "r2", productId: pid, date: "2026-07-08", qty: 5, unit: "Kg", qtyBase: 5 },
+    ];
+    var x = rebuild(st, makeSmock());
+    var replay = sumRawMaterialKitchenCostInRange(st, "2026-07-01", "2026-07-31");
+    var glK = 0;
+    x.r.lines.forEach(function (ln) {
+      if (ln.accountId !== GL.COGS_KITCHEN) return;
+      if (String(ln.date || "") < "2026-07-01" || String(ln.date || "") > "2026-07-31") return;
+      glK = round2(glK + round2(ln.debit || 0) - round2(ln.credit || 0));
+    });
+    if (replay !== glK) return fail("Kitchen P&L vs GL range", replay, glK);
+    pass("Kitchen replay equals GL in range");
+  })();
+
+  /* ── 22: Period lock override ids include raw material usage edits ── */
+  (function () {
+    var pid = "rm_u";
+    var oldU = [{ id: "ru1", date: "2026-01-05", productId: pid, qtyBase: 1 }];
+    var newU = [{ id: "ru1", date: "2026-01-05", productId: pid, qtyBase: 2 }];
+    var ids = collectStrictPeriodLockOverrideIds("tc3_raw_material_usage", newU, oldU, {
+      lockedUntilDate: "2026-01-31",
+      strictPeriodLock: true,
+    });
+    if (!ids.length) return fail("Period lock: expected override id for RM usage edit", ids);
+    pass("Period lock override detection (raw material usage)");
   })();
 }

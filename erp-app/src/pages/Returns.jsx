@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { computeSaleTaxFromSnapshot } from "../tax/taxCompute.js";
+import { round2 } from "../utils/moneyRound.js";
 
 /* ─── RETURNS PAGE ────────────────────────────────────────────────────────── */
 var Returns = function (props) {
@@ -612,6 +613,8 @@ var PurchaseReturnTab = function (props) {
     showConfirm(msg, function () {
       var newReturns = (state.purchaseReturns || []).slice();
       var np = state.products.slice();
+      var prModeOriginal = state.settings && state.settings.purchaseReturnCostMode === "original_cost";
+      var prPolicyWarnings = [];
       /* FIX: refundAmt is a single amount for the whole transaction.
          Only the FIRST returned item row carries it — the rest get 0.
          getCashBalances sums all rows, so storing it on every row multiplies it by item count. */
@@ -620,14 +623,34 @@ var PurchaseReturnTab = function (props) {
       (selPur.items || []).forEach(function (it) {
         var q = parseInt(returnQtys[it.id]) || 0;
         if (q <= 0) return;
-        var amt = q * (it.cost || 0);
+        var unitForGl = Number(it.cost);
+        if (isNaN(unitForGl)) unitForGl = 0;
+        var costFallbackWac = false;
+        if (prModeOriginal) {
+          var costMissing = it.cost == null || (typeof it.cost === "number" && isNaN(it.cost));
+          if (costMissing) {
+            var pRowFb = (state.products || []).find(function (p) { return p.id === it.id; });
+            unitForGl = pRowFb ? Number(pRowFb.cost) || 0 : 0;
+            costFallbackWac = true;
+            prPolicyWarnings.push("Original cost: purchase line missing unit cost — fell back to current WAC (" + (it.name || it.id) + ")");
+          } else {
+            unitForGl = Number(it.cost) || 0;
+            var prodSnap = (state.products || []).find(function (p) { return p.id === it.id; });
+            if (prodSnap && Math.abs((Number(prodSnap.cost) || 0) - unitForGl) > 0.02) {
+              prPolicyWarnings.push("Original cost policy: GL uses purchase line " + fmtNum(unitForGl) + " for \"" + (it.name || "") + "\" (live product cost differs)");
+            }
+          }
+        }
+        var amt = round2(q * unitForGl);
         var thisRefund = (needsRefund && !purRefundRecorded) ? refundAmt : 0;
         if (needsRefund && !purRefundRecorded) purRefundRecorded = true;
         newReturns.push({
           id: uid(), returnId: genInvNo("PR"), purchaseId: selPur.id, purchaseNo: selPur.invoiceNo,
+          purchaseLineId: it.id,
           productId: it.id, productName: it.name || "Unknown Product",
           qty: q, amount: amt, date: today(),
-          supplier: selPur.supplier || "", cost: it.cost || 0,
+          supplier: selPur.supplier || "", cost: unitForGl,
+          costSourceFallbackWac: costFallbackWac === true,
           reason: purReturnReason.trim(),
           isRefund: needsRefund && thisRefund > 0, refundMethod: (needsRefund && thisRefund > 0) ? purRefundMethod : null,
           refundAmount: thisRefund
@@ -660,6 +683,9 @@ var PurchaseReturnTab = function (props) {
       S.set("tc3_purchases", npur);
       addAudit("Purchase Return " + getCurrencySymbol() + " " + fmtNum(returnTotal) + " (" + purReturnReason.trim() + ")", selPur.invoiceNo || selPur.id.slice(0, 8));
       setState(function (st) { return Object.assign({}, st, { purchaseReturns: newReturns, products: np, purchases: npur }); });
+      if (prPolicyWarnings.length) {
+        showAlert(prPolicyWarnings.filter(function (x, i, a) { return a.indexOf(x) === i; }).join("\n"));
+      }
       closeModal();
     });
   };
@@ -688,8 +714,11 @@ var PurchaseReturnTab = function (props) {
           </div>
           <Btn col="orange" onClick={openModal}>🔄 New Purchase Return</Btn>
         </div>
-        <div style={{ marginTop: 12, padding: "10px 14px", background: "#f0f7ff", border: "1px solid #bfdbfe", borderRadius: 10, fontSize: 12, color: "#1e40af", lineHeight: 1.5 }}>
-          <strong>Note:</strong> Returning items deducts stock but does not recalculate the current Weighted Average Cost to prevent historical ledger distortion.
+        <div
+          style={{ marginTop: 12, padding: "10px 14px", background: "#f0f7ff", border: "1px solid #bfdbfe", borderRadius: 10, fontSize: 12, color: "#1e40af", lineHeight: 1.5 }}
+          title={"Purchase return cost policy: " + (state.settings.purchaseReturnCostMode === "original_cost" ? "original receipt (uses line cost; full layer match reserved)" : "current — uses unit cost on the purchase line (WAC snapshot) for GL; product WAC is not re-blended on return") + ". See Settings → Accounting."}
+        >
+          <strong>Note:</strong> Returning items deducts stock but does not recalculate the current Weighted Average Cost to prevent historical ledger distortion. GL uses the line unit cost from the purchase (see Settings → Purchase return cost).
         </div>
       </Card>
 
@@ -698,7 +727,7 @@ var PurchaseReturnTab = function (props) {
         <Input placeholder="Search supplier, purchase no, product, return ID..." value={histSearch} onChange={function (e) { setHistSearch(e.target.value); }} style={{ marginBottom: 10 }} />
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><TH>Date</TH><TH>Return ID</TH><TH>Purchase #</TH><TH>Supplier</TH><TH>Product</TH><TH>Qty</TH><TH>Amount</TH><TH>Reason</TH></tr></thead>
+            <thead><tr><TH>Date</TH><TH>Return ID</TH><TH>Purchase #</TH><TH>Supplier</TH><TH>Product</TH><TH>Qty</TH><TH>Amount</TH><TH>Cost basis</TH><TH>Reason</TH></tr></thead>
             <tbody>
               {filteredHistory.map(function (r, i) {
                 return (
@@ -710,11 +739,18 @@ var PurchaseReturnTab = function (props) {
                     <TD>{r.productName || "Unknown"}</TD>
                     <TD center>{r.qty}</TD>
                     <TD bold color={C.orange}>{getCurrencySymbol()} {fmtNum(r.amount)}</TD>
+                    <TD color={C.muted} style={{ fontSize: 11, maxWidth: 220 }}>
+                      {state.settings && state.settings.purchaseReturnCostMode === "original_cost"
+                        ? (r.costSourceFallbackWac
+                          ? <span style={{ color: "#b45309", fontWeight: 700 }}>Fallback to WAC (source not found)</span>
+                          : <span>Based on purchase #{r.purchaseNo || "?"} line {r.purchaseLineId ? String(r.purchaseLineId).slice(0, 10) : "—"}</span>)
+                        : <span>WAC snapshot (policy)</span>}
+                    </TD>
                     <TD color={C.muted}><span style={{ fontSize: 12 }}>{r.reason || "—"}</span></TD>
                   </TR>
                 );
               })}
-              {filteredHistory.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: 24, color: C.muted }}>No return history yet. Click &quot;New Purchase Return&quot; to get started.</td></tr>}
+              {filteredHistory.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 24, color: C.muted }}>No return history yet. Click &quot;New Purchase Return&quot; to get started.</td></tr>}
             </tbody>
           </table>
         </div>

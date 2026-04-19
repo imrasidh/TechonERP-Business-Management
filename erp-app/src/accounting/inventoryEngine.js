@@ -66,8 +66,11 @@ function blendWac(layers, addQty, addCost) {
 
 /**
  * Full replay of inventory events → movements, COGS per sale, layer valuation, INV $.
+ * opts.asOfDate — optional YYYY-MM-DD; only transactions on or before this date participate.
  */
-export function deriveInventoryEconomics(state, S) {
+export function deriveInventoryEconomics(state, S, opts) {
+  opts = opts || {};
+  var asOfDate = opts.asOfDate ? String(opts.asOfDate) : "";
   var settings = (state && state.settings) || {};
   var method = settings.inventoryCostingMethod === "fifo" ? "fifo" : "wac";
   var allowCostFallback = settings.allowCostFallback === true;
@@ -82,9 +85,10 @@ export function deriveInventoryEconomics(state, S) {
   var events = [];
 
   (state.purchases || []).forEach(function (p) {
+    if (asOfDate && String(p.date || "") > asOfDate) return;
     (p.items || []).forEach(function (it, j) {
-      var q = it.inputQty !== undefined ? it.inputQty : it.qty;
-      q = Number(q) || 0;
+      /* Stock and unit cost are always in base (storage) units on purchase lines */
+      var q = Number(it.qty) || 0;
       if (q <= 0) return;
       events.push({
         _seq: seq++,
@@ -101,6 +105,7 @@ export function deriveInventoryEconomics(state, S) {
   });
 
   (state.sales || []).forEach(function (s) {
+    if (asOfDate && String(s.date || "") > asOfDate) return;
     (s.items || []).forEach(function (it, j) {
       var q = Number(it.qty) || 0;
       if (q <= 0) return;
@@ -119,6 +124,7 @@ export function deriveInventoryEconomics(state, S) {
   });
 
   (state.salesReturns || []).forEach(function (r) {
+    if (asOfDate && String(r.date || "") > asOfDate) return;
     var q = Number(r.qty) || 0;
     if (q <= 0) return;
     events.push({
@@ -135,6 +141,7 @@ export function deriveInventoryEconomics(state, S) {
   });
 
   (state.purchaseReturns || []).forEach(function (r) {
+    if (asOfDate && String(r.date || "") > asOfDate) return;
     var q = Number(r.qty) || 0;
     if (q <= 0) return;
     events.push({
@@ -146,6 +153,31 @@ export function deriveInventoryEconomics(state, S) {
       unitCost: round2(r.cost || 0),
       referenceType: "purchase_return",
       referenceId: r.id,
+      lineIdx: 0,
+    });
+  });
+
+  var productsByIdRm = {};
+  (state.products || []).forEach(function (p) {
+    if (p && p.id != null) productsByIdRm[String(p.id)] = p;
+  });
+  /* After purchases/sales/returns so same-day ordering consumes layers in that sequence */
+  (state.rawMaterialUsages || []).forEach(function (u) {
+    if (!u || u.productId == null) return;
+    if (asOfDate && String(u.date || "") > asOfDate) return;
+    var pr = productsByIdRm[String(u.productId)];
+    if (!pr || String(pr.type || "").toLowerCase() !== "raw_material") return;
+    var qb = Number(u.qtyBase);
+    if (!isFinite(qb) || qb <= 0) return;
+    events.push({
+      _seq: seq++,
+      date: String(u.date || ""),
+      type: "rm_usage_out",
+      productId: u.productId,
+      qty: qb,
+      unitCost: round2(Number(pr.cost) || 0),
+      referenceType: "raw_material_usage",
+      referenceId: u.id,
       lineIdx: 0,
     });
   });
@@ -219,6 +251,46 @@ export function deriveInventoryEconomics(state, S) {
         referenceId: ev.referenceId,
         date: ev.date,
         journalTxnHint: stableJournalTransactionId("sale_cogs", ev.referenceId, "cogs"),
+      });
+      return;
+    }
+
+    if (ev.type === "rm_usage_out") {
+      var layersRm = layersByProduct[pid].slice();
+      var hadStockRm = layersRm.some(function (L) {
+        return (L.remainingQty != null ? L.remainingQty : L.qty || 0) > 0.0001;
+      });
+      var consRm = consumeFifo(layersRm, ev.qty, pid);
+      layersByProduct[pid] = consRm.layers;
+      var lineKeyRm = "rmu:" + String(ev.referenceId || "") + ":" + ev.lineIdx;
+      var lineCostRm = consRm.cost;
+      if (lineCostRm < 0.0001 && ev.qty > 0) {
+        if (method === "fifo") {
+          if (allowCostFallback) {
+            lineCostRm = round2(ev.qty * (ev.unitCost || 0));
+            warnings.push("FIFO cost fallback used for raw material usage " + lineKeyRm + " (allowCostFallback=true)");
+          } else {
+            blockingErrors.push("FIFO: no inventory layers for raw material usage " + lineKeyRm + ". Purchase stock first or enable allowCostFallback.");
+            lineCostRm = 0;
+          }
+        } else {
+          lineCostRm = round2(ev.qty * (ev.unitCost || 0));
+          if (!hadStockRm && lineCostRm > 0) {
+            warnings.push("WAC: no layers — used product cost for raw material usage " + lineKeyRm);
+          }
+        }
+      }
+      movements.push({
+        id: stableJournalTransactionId("stk", "rmu_" + String(ev.referenceId || ""), "out"),
+        productId: pid,
+        qtyIn: 0,
+        qtyOut: ev.qty,
+        unitCost: ev.qty > 0 ? round2(lineCostRm / ev.qty) : 0,
+        totalCost: lineCostRm,
+        referenceType: "raw_material_usage",
+        referenceId: ev.referenceId,
+        date: ev.date,
+        journalTxnHint: stableJournalTransactionId("raw_material_usage", ev.referenceId, "cogs"),
       });
       return;
     }
@@ -311,6 +383,7 @@ export function deriveInventoryEconomics(state, S) {
     allowCostFallback: allowCostFallback,
     method: method,
     serializedLayers: serializeInventoryLayers(layersByProduct),
+    asOfDate: asOfDate || null,
   };
 }
 
@@ -318,6 +391,25 @@ export function getCOGSForSaleFromDerive(saleId, invDer) {
   if (!invDer || !invDer.cogsBySaleId) return null;
   var v = invDer.cogsBySaleId[saleId];
   return v != null ? round2(v) : null;
+}
+
+/**
+ * GL balance for inventory (1200) using only lines on or before asOfDate (inclusive).
+ */
+export function inventoryAccountBalanceThroughDate(lines, chart, asOfDate) {
+  var cut = asOfDate ? String(asOfDate) : "9999-12-31";
+  var meta = {};
+  (chart || []).forEach(function (a) { meta[a.id] = a; });
+  var invRow = meta[GL.INV] || { normal: "debit" };
+  var d = 0;
+  var c = 0;
+  (lines || []).forEach(function (ln) {
+    if (ln.accountId !== GL.INV) return;
+    if (String(ln.date || "") > cut) return;
+    d += round2(ln.debit || 0);
+    c += round2(ln.credit || 0);
+  });
+  return invRow.normal === "credit" ? round2(c - d) : round2(d - c);
 }
 
 /**

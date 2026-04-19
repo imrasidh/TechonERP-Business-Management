@@ -177,7 +177,7 @@ var Expenses = function (props) {
         <Modal title="Add Expense" onClose={function () { setShow(false); }} wide>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label="Date" type="date" value={f.date} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
+              <Input label="Date" type="date" value={f.date} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} applyPeriodLockMin={!!props.periodLockTransactionMinDate} periodLockTransactionMinDate={props.periodLockTransactionMinDate} />
               <Sel label="Category" value={f.category} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>
                 {ECATS.map(function (c) { return <option key={c.name} value={c.name}>{c.icon} {c.name}</option>; })}
               </Sel>

@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import CustomerPicker from "../components/CustomerPicker.jsx";
 
 var Repairs = function (props) {
   var state = props.state;
@@ -29,7 +30,7 @@ var Repairs = function (props) {
   var Sel = props.Sel;
   var shareViaWhatsApp = props.shareViaWhatsApp;
   var WABtn = props.WABtn;
-  var BLANK = { customer: "", phone: "", deviceType: "Laptop", brand: "", modelNo: "", problem: "", description: "", estimatedCost: "", status: "Pending", dateIn: today(), dateOut: "", technician: "", accessories: "" };
+  var BLANK = { customer: "", customerId: "", phone: "", deviceType: "Laptop", brand: "", modelNo: "", problem: "", description: "", estimatedCost: "", status: "Pending", dateIn: today(), dateOut: "", technician: "", accessories: "" };
   var [show, setShow] = useState(false);
   var [f, setF] = useState(BLANK);
   var [editR, setEditR] = useState(null);
@@ -38,7 +39,6 @@ var Repairs = function (props) {
     var pf = S.get("tc3_repair_prefill", null);
     return pf ? (pf.customerName || "") : "";
   });
-  var [repCustDropIdx, setRepCustDropIdx] = useState(-1);
   var [deleteModal, setDeleteModal] = useState(null);
   var [deleteReason, setDeleteReason] = useState("");
   var [readyPrompt, setReadyPrompt] = useState(null);
@@ -56,15 +56,26 @@ var Repairs = function (props) {
   var STATUS_BG    = { Pending: "#e8f0fe", Repairing: "#fef3e2", Ready: "#e6f7f2", Delivered: "#f7f9ff", Cancelled: "#fde8ed" };
   var STATUS_ICONS = { Pending: "🕐", Repairing: "🔧", Ready: "✅", Delivered: "📦", Cancelled: "❌" };
 
-  var filteredCusts = state.customers.filter(function (c) {
-    return custSearch && (c.name.toLowerCase().includes(custSearch.toLowerCase()) || (c.phone || "").includes(custSearch));
-  });
+  var posDupNameKeys = props.getDuplicateNormalizedNameKeys ? props.getDuplicateNormalizedNameKeys(state.customers || []) : {};
+  var saveInlineCustomer = function (draft) {
+    var name = String(draft && draft.name || "").trim();
+    var phone = String(draft && draft.phone || "").trim();
+    if (!name) return null;
+    if (!tcTrialGuard(state.customers || [], "customers")) return null;
+    var created = { id: uid(), name: name, phone: phone, address: "", credit: 0, totalSpent: 0 };
+    var nextCustomers = (state.customers || []).concat([created]);
+    S.set("tc3_customers", nextCustomers);
+    setState(function (st) { return Object.assign({}, st, { customers: nextCustomers }); });
+    setCustSearch(created.name + (created.phone ? (" - " + created.phone) : ""));
+    setF(function (x) { return Object.assign({}, x, { customer: created.name, customerId: created.id, phone: created.phone || "" }); });
+    return created;
+  };
 
   var saveNew = function () {
     if (!f.customer || !f.deviceType) return;
     var r = {
       id: uid(), date: today(), dateIn: f.dateIn || today(), dateOut: f.dateOut || "",
-      customer: f.customer, phone: f.phone || "",
+      customer: f.customer, customerId: f.customerId || "", phone: f.phone || "",
       deviceType: f.deviceType, brand: f.brand || "", modelNo: f.modelNo || "",
       problem: f.problem || "", description: f.description || "",
       estimatedCost: parseFloat(f.estimatedCost) || 0,
@@ -116,7 +127,7 @@ var Repairs = function (props) {
   var doConvertToInvoice = function () {
     var r = convertModal;
     if (!r) return;
-    var custObj = state.customers.find(function (c) { return c.name === r.customer; });
+    var custObj = (r.customerId && state.customers.find(function (c) { return c.id === r.customerId; })) || state.customers.find(function (c) { return c.name === r.customer; });
     var svcPrice = parseFloat(servicePrice) || 0;
     var svcCost  = parseFloat(serviceCost) || 0;
     /* Build service line item — cost stored for profit calculation */
@@ -331,27 +342,25 @@ var Repairs = function (props) {
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div style={{ position: "relative" }}>
-                <Input label="Customer Name" value={custSearch}
-                  onChange={function (e) { setCustSearch(e.target.value); setF(function (x) { return Object.assign({}, x, { customer: e.target.value, phone: "" }); }); setRepCustDropIdx(-1); }}
-                  onKeyDown={function (e) {
-                    var list = filteredCusts;
-                    if (e.key === "ArrowDown") { e.preventDefault(); setRepCustDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
-                    if (e.key === "ArrowUp") { e.preventDefault(); setRepCustDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
-                    if (e.key === "Enter" && repCustDropIdx >= 0 && list[repCustDropIdx]) {
-                      var c = list[repCustDropIdx]; setCustSearch(c.name); setF(function (x) { return Object.assign({}, x, { customer: c.name, phone: c.phone || "" }); }); setRepCustDropIdx(-1); e.preventDefault(); return;
-                    }
-                    if (e.key === "Escape") { setRepCustDropIdx(-1); }
+                <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Customer Name</label>
+                <CustomerPicker
+                  customers={state.customers || []}
+                  value={custSearch}
+                  selectedCustomerId={f.customerId || ""}
+                  onValueChange={function (nextValue) {
+                    setCustSearch(nextValue);
+                    setF(function (x) { return Object.assign({}, x, { customer: nextValue, customerId: "", phone: "" }); });
                   }}
-                  onFocus={function () { setRepCustDropIdx(-1); }}
-                  onBlur={function () { setTimeout(function () { setRepCustDropIdx(-2); }, 180); }}
-                  placeholder="Type to search or enter new..." />
-                {custSearch && filteredCusts.length > 0 && repCustDropIdx !== -2 && (
-                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 50, maxHeight: 160, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.12)" }}>
-                    {filteredCusts.map(function (c, ridx) {
-                      return <div key={c.id} onMouseDown={function (e) { e.preventDefault(); setCustSearch(c.name); setF(function (x) { return Object.assign({}, x, { customer: c.name, phone: c.phone || "" }); }); setRepCustDropIdx(-2); }} onMouseEnter={function () { setRepCustDropIdx(ridx); }} onMouseLeave={function () { setRepCustDropIdx(-1); }} style={{ padding: "10px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f0f4ff", display: "flex", justifyContent: "space-between", background: repCustDropIdx === ridx ? C.accentSoft : "#fff" }}><span style={{ fontWeight: 600 }}>{c.name}</span><span style={{ color: C.muted }}>{c.phone}</span></div>;
-                    })}
-                  </div>
-                )}
+                  onSelectCustomer={function (c) {
+                    setCustSearch(c.name + (c.phone ? (" - " + c.phone) : ""));
+                    setF(function (x) { return Object.assign({}, x, { customer: c.name, customerId: c.id, phone: c.phone || "" }); });
+                  }}
+                  onCreateCustomer={saveInlineCustomer}
+                  duplicateNameKeys={posDupNameKeys}
+                  normalizeNameKey={props.normalizePaymentCustomerName}
+                  C={C}
+                  Input={Input}
+                />
               </div>
               <Input label="Phone" value={f.phone} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); }} placeholder="+94 7X XXX XXXX" />
             </div>

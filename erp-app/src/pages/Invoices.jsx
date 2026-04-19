@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { computeSaleTax } from "../tax/taxCompute.js";
 import { saleReturnUiStatus, displayStatusForSale } from "../utils/returnDisplay.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
+import CustomerPicker from "../components/CustomerPicker.jsx";
 
 /* ─── QUOTATION FORM (top-level to prevent cursor loss on re-render) ──────── */
 var QuotationForm = function (props) {
@@ -21,6 +22,12 @@ var QuotationForm = function (props) {
   var fmtNum = props.fmtNum;
   var fmtStock = props.fmtStock;
   var today = props.today;
+  var uid = props.uid;
+  var S = props.S;
+  var setState = props.setState;
+  var tcTrialGuard = props.tcTrialGuard;
+  var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
+  var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
 
   var [qProdSearch, setQProdSearch] = useState("");
   var [qProdDrop, setQProdDrop] = useState(false);
@@ -28,7 +35,9 @@ var QuotationForm = function (props) {
   var [qQty, setQQty] = useState("1");
   var [qPrice, setQPrice] = useState("");
   var [custSearch, setCustSearch] = useState(fq.customer || "");
-  var [custDrop, setCustDrop] = useState(false);
+  useEffect(function () {
+    setCustSearch(fq.customer || "");
+  }, [fq.customer]);
 
   var activeProds = (state.products || []).filter(function (p) { return p.status !== "inactive"; });
   var qMatchProds = activeProds.filter(function (p) {
@@ -36,10 +45,20 @@ var QuotationForm = function (props) {
     return s && (p.name.toLowerCase().includes(s) || (p.barcode || "").toLowerCase().includes(s));
   }).slice(0, 8);
 
-  var custMatches = (state.customers || []).filter(function (c) {
-    var s = custSearch.toLowerCase();
-    return s.length >= 1 && (c.name.toLowerCase().includes(s) || (c.phone || "").includes(s));
-  }).slice(0, 6);
+  var posDupNameKeys = getDuplicateNormalizedNameKeys(state.customers || []);
+  var saveInlineCustomer = function (draft) {
+    var name = String(draft && draft.name || "").trim();
+    var phone = String(draft && draft.phone || "").trim();
+    if (!name) return null;
+    if (!tcTrialGuard(state.customers || [], "customers")) return null;
+    var created = { id: uid(), name: name, phone: phone, address: "", credit: 0, totalSpent: 0 };
+    var nextCustomers = (state.customers || []).concat([created]);
+    S.set("tc3_customers", nextCustomers);
+    setState(function (st) { return Object.assign({}, st, { customers: nextCustomers }); });
+    setCustSearch(created.name);
+    setFq(Object.assign({}, fq, { customer: created.name, customerId: created.id, customerPhone: created.phone || "" }));
+    return created;
+  };
 
   var addItem = function () {
     var prod = qMatchProds[qProdIdx >= 0 ? qProdIdx : 0];
@@ -70,33 +89,27 @@ var QuotationForm = function (props) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
         <Input label="Quotation No" value={fq.quotationNo || ""} onChange={function (e) { setFq(Object.assign({}, fq, { quotationNo: e.target.value })); }} />
 
-        {/* Customer with dropdown */}
+        {/* Customer picker */}
         <div style={{ position: "relative" }}>
           <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Customer</label>
-          <input
+          <CustomerPicker
+            customers={state.customers || []}
             value={custSearch}
-            placeholder="Type customer name..."
-            onChange={function (e) { setCustSearch(e.target.value); setFq(Object.assign({}, fq, { customer: e.target.value, customerPhone: "" })); setCustDrop(true); }}
-            onFocus={function () { setCustDrop(true); }}
-            onBlur={function () { setTimeout(function () { setCustDrop(false); }, 150); }}
-            style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
+            selectedCustomerId={fq.customerId || ""}
+            onValueChange={function (nextValue) {
+              setCustSearch(nextValue);
+              setFq(Object.assign({}, fq, { customer: nextValue, customerId: "", customerPhone: "" }));
+            }}
+            onSelectCustomer={function (c) {
+              setCustSearch(c.name);
+              setFq(Object.assign({}, fq, { customer: c.name, customerId: c.id, customerPhone: c.phone || "" }));
+            }}
+            onCreateCustomer={saveInlineCustomer}
+            duplicateNameKeys={posDupNameKeys}
+            normalizeNameKey={normalizePaymentCustomerName}
+            C={C}
+            Input={Input}
           />
-          {custDrop && custMatches.length > 0 && (
-            <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 9, boxShadow: C.shadow, zIndex: 300, maxHeight: 200, overflowY: "auto", marginTop: 3 }}>
-              {custMatches.map(function (c) {
-                return (
-                  <div key={c.id} onMouseDown={function () {
-                    setCustSearch(c.name);
-                    setFq(Object.assign({}, fq, { customer: c.name, customerId: c.id, customerPhone: c.phone || "" }));
-                    setCustDrop(false);
-                  }} style={{ padding: "9px 14px", cursor: "pointer", borderBottom: "1px solid " + C.borderLight }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{c.name}</div>
-                    <div style={{ fontSize: 11, color: C.muted }}>{c.phone || "—"} &nbsp;·&nbsp; Credit: {getCurrencySymbol()} {fmtNum(c.credit || 0)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
 
         <Input label="Customer Phone" value={fq.customerPhone || ""} onChange={function (e) { setFq(Object.assign({}, fq, { customerPhone: e.target.value })); }} />
@@ -463,14 +476,14 @@ var Quotations = function (props) {
       {/* New Quotation Modal */}
       {show && (
         <Modal title="New Quotation" onClose={function () { setShow(false); }} wide>
-          <QuotationForm fq={f} setFq={setF} onSave={saveNew} title="💾 Save Quotation" state={state} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
+          <QuotationForm fq={f} setFq={setF} onSave={saveNew} title="💾 Save Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={props.getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={props.normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
         </Modal>
       )}
 
       {/* Edit Quotation Modal */}
       {editQ && (
         <Modal title={"Edit — " + (editQ.quotationNo || "")} onClose={function () { setEditQ(null); }} wide>
-          <QuotationForm fq={editQ} setFq={setEditQ} onSave={saveEdit} title="💾 Update Quotation" state={state} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
+          <QuotationForm fq={editQ} setFq={setEditQ} onSave={saveEdit} title="💾 Update Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={props.getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={props.normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
         </Modal>
       )}
 

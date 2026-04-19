@@ -13,9 +13,13 @@ import {
 } from "../config/countryLanguageData.js";
 import { getCountryMeta, getPrimaryCountryForCurrency, APP_CURRENCY_OPTIONS } from "../countryMeta";
 import { mergeTaxesOnCountryChange, normalizeTaxList } from "../tax/countryTaxMeta.js";
-import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
+import { validateSnapshotIntegrity, validateSnapshotIntegrityFull } from "../accounting/financialSnapshot.js";
 import { SnapshotIntegrityBadge } from "../ui/SnapshotIntegrityBadge.jsx";
 import { tcIsDevEnv } from "../utils/clientElectronGuard.js";
+import {
+  computeRawMaterialPricingBackfillPlan,
+  applyRawMaterialPricingPlanToProducts,
+} from "../utils/rawMaterialPricingBackfill.js";
 import { ROLE_ADMIN, ROLE_LABELS, normalizeRole } from "../security/rbac.js";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
@@ -36,7 +40,11 @@ var Settings = function (props) {
   var S = props.S;
   var C = props.C;
   var today = props.today;
+  var exportSupportBundle = typeof props.exportSupportBundle === "function" ? props.exportSupportBundle : null;
+  var downloadSupportBundleJson = typeof props.downloadSupportBundleJson === "function" ? props.downloadSupportBundleJson : null;
+  var glDeveloperToolsSettings = props.glDeveloperTools === true;
   var uid = props.uid;
+  var addAudit = typeof props.addAudit === "function" ? props.addAudit : function () {};
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var pwMatchesAsync = props.pwMatchesAsync;
@@ -69,7 +77,13 @@ var Settings = function (props) {
     var sc = props.systemConfig || {};
     return sc.role === "network_client" ? "network" : "shop";
   });
+  var [supBndFrom, setSupBndFrom] = useState(today().slice(0, 7) + "-01");
+  var [supBndTo, setSupBndTo] = useState(today());
+  var [supBndAnon, setSupBndAnon] = useState(true);
+  var [supBndReplay, setSupBndReplay] = useState(false);
+  var [supBndPid, setSupBndPid] = useState("");
   var [showSupportPinResetHint, setShowSupportPinResetHint] = useState(false);
+  var [rmBfPreview, setRmBfPreview] = useState(null);
   var [showAppPasswordResetHint, setShowAppPasswordResetHint] = useState(false);
   var [invFmt, setInvFmt] = useState("a4a5"); /* A4/A5 vs Thermal tab in Invoice Design */
   var [countrySearchOpen, setCountrySearchOpen] = useState(false);
@@ -123,6 +137,7 @@ var Settings = function (props) {
     lockedUntilDate: state.settings.lockedUntilDate || "",
     strictPeriodLock: state.settings.strictPeriodLock === true,
     inventoryCostingMethod: state.settings.inventoryCostingMethod === "fifo" ? "fifo" : "wac",
+    purchaseReturnCostMode: state.settings.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac",
     preventNegativeStock: state.settings.preventNegativeStock !== false,
     allowCostFallback: state.settings.allowCostFallback === true,
     glVatPostingEnabled: state.settings.glVatPostingEnabled !== false,
@@ -135,6 +150,9 @@ var Settings = function (props) {
   var [assetReason, setAssetReason] = useState("");
   var [assetPwMsg, setAssetPwMsg] = useState("");
   var [previewInv, setPreviewInv] = useState(null);
+  var [snapValIdx, setSnapValIdx] = useState(0);
+  var [snapValBusy, setSnapValBusy] = useState(false);
+  var [snapValResult, setSnapValResult] = useState(null);
   var [pwOld, setPwOld] = useState("");
   var [adminNameEdit, setAdminNameEdit] = useState(S.get("tc3_admin_name", ""));
   var [adminNameMsg, setAdminNameMsg] = useState(null);
@@ -176,6 +194,44 @@ var Settings = function (props) {
   var [newUserRole, setNewUserRole] = useState("cashier");
   var [newUserPassword, setNewUserPassword] = useState("");
   var [userMsg, setUserMsg] = useState(null);
+  var isRestaurantBusiness = S.get("tc3_businessType", "") === "restaurant";
+  var normalizeRestaurantTableName = function (name) {
+    return String(name || "").replace(/\s+/g, " ").trim();
+  };
+  var nextRestaurantStableId = function (used) {
+    var idx = 1;
+    while (used["tbl_" + idx]) idx += 1;
+    return "tbl_" + idx;
+  };
+  var createDefaultRestaurantTables = function () {
+    var list = [];
+    for (var i = 1; i <= 6; i += 1) list.push({ id: "tbl_" + i, name: "T" + i, status: "free" });
+    return list;
+  };
+  var normalizeRestaurantTableCollection = function (tables) {
+    var raw = Array.isArray(tables) ? tables.slice() : [];
+    if (!raw.length) return createDefaultRestaurantTables();
+    return raw.map(function (t, idx) {
+      if (!t) return { id: "tbl_" + (idx + 1), name: "T" + (idx + 1), status: "free" };
+      var fallbackName = typeof t === "string" ? t : (t.name || t.id || ("T" + (idx + 1)));
+      var fallbackId = typeof t === "string" ? t : (t.id || fallbackName || ("tbl_" + (idx + 1)));
+      var stableId = String(fallbackId).indexOf("tbl_") === 0 ? String(fallbackId) : ("tbl_" + (idx + 1));
+      return {
+        id: stableId,
+        name: normalizeRestaurantTableName(fallbackName) || ("T" + (idx + 1)),
+        status: t.status === "occupied" || t.status === "pending" ? t.status : "free",
+      };
+    });
+  };
+  var [restaurantDefaultOrderType, setRestaurantDefaultOrderType] = useState(function () {
+    var saved = S.get("tc3_restaurant_default_order_type", "takeaway");
+    return saved === "dine-in" || saved === "delivery" ? saved : "takeaway";
+  });
+  var [restaurantSetupTables, setRestaurantSetupTables] = useState(function () {
+    return normalizeRestaurantTableCollection(S.get("tc3_restaurant_tables", null));
+  });
+  var [newRestaurantTableName, setNewRestaurantTableName] = useState("");
+  var [restaurantSetupMsg, setRestaurantSetupMsg] = useState(null);
 
   var normalizeUsername = function (v) { return String(v || "").trim().toLowerCase(); };
   var saveUsers = function (nextUsers, msg) {
@@ -226,6 +282,54 @@ var Settings = function (props) {
       var next = users.filter(function (x) { return x.id !== u.id; });
       saveUsers(next, { type: "success", text: "User removed." });
     });
+  };
+
+  var saveRestaurantSetup = function (nextType, nextTables, msg) {
+    var finalType = nextType === "dine-in" || nextType === "delivery" ? nextType : "takeaway";
+    var finalTables = normalizeRestaurantTableCollection(nextTables);
+    S.set("tc3_restaurant_default_order_type", finalType);
+    S.set("tc3_restaurant_tables", finalTables);
+    setRestaurantDefaultOrderType(finalType);
+    setRestaurantSetupTables(finalTables);
+    if (msg) setRestaurantSetupMsg({ type: "success", text: msg });
+  };
+  var addRestaurantSetupTable = function () {
+    var cleanName = normalizeRestaurantTableName(newRestaurantTableName);
+    if (!cleanName) {
+      setRestaurantSetupMsg({ type: "error", text: "Enter a table name." });
+      return;
+    }
+    if (restaurantSetupTables.some(function (t) { return normalizeRestaurantTableName(t.name).toLowerCase() === cleanName.toLowerCase(); })) {
+      setRestaurantSetupMsg({ type: "error", text: "Table name already exists." });
+      return;
+    }
+    var used = {};
+    restaurantSetupTables.forEach(function (t) { used[t.id] = 1; });
+    var stableId = nextRestaurantStableId(used);
+    saveRestaurantSetup(restaurantDefaultOrderType, restaurantSetupTables.concat([{ id: stableId, name: cleanName, status: "free" }]), "Restaurant setup updated.");
+    setNewRestaurantTableName("");
+  };
+  var renameRestaurantSetupTable = function (tableId, nextName) {
+    var cleanName = normalizeRestaurantTableName(nextName);
+    var currentTable = restaurantSetupTables.find(function (t) { return t.id === tableId; });
+    if (!currentTable) return;
+    if (!cleanName || cleanName === normalizeRestaurantTableName(currentTable.name)) return;
+    if (restaurantSetupTables.some(function (t) { return t.id !== tableId && normalizeRestaurantTableName(t.name).toLowerCase() === cleanName.toLowerCase(); })) {
+      setRestaurantSetupMsg({ type: "error", text: "Table name already exists." });
+      return;
+    }
+    saveRestaurantSetup(restaurantDefaultOrderType, restaurantSetupTables.map(function (t) {
+      return t.id === tableId ? Object.assign({}, t, { name: cleanName }) : t;
+    }), "Restaurant setup updated.");
+  };
+  var deleteRestaurantSetupTable = function (tableId) {
+    var table = restaurantSetupTables.find(function (t) { return t.id === tableId; });
+    if (!table) return;
+    if (table.status !== "free") {
+      setRestaurantSetupMsg({ type: "error", text: "Only free tables can be deleted." });
+      return;
+    }
+    saveRestaurantSetup(restaurantDefaultOrderType, restaurantSetupTables.filter(function (t) { return t.id !== tableId; }), "Restaurant setup updated.");
   };
 
   useEffect(function () {
@@ -438,6 +542,7 @@ var Settings = function (props) {
     ns.allowCostFallback = ns.allowCostFallback === true;
     ns.glVatPostingEnabled = ns.glVatPostingEnabled !== false;
     ns.strictPeriodLock = ns.strictPeriodLock === true;
+    ns.purchaseReturnCostMode = ns.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac";
     ns.taxApplyBase = ns.taxApplyBase === "before_discount" ? "before_discount" : "after_discount";
     var sl = sanitizePersistedInvoiceLangs(ns.defaultInvoiceLang || "en", ns.optionalInvoiceLangs, ns.customInvoiceLangs);
     ns.optionalInvoiceLangs = sl.optionalInvoiceLangs;
@@ -448,6 +553,7 @@ var Settings = function (props) {
     criticalAccountingRef.current = {
       glMode: S.get("tc3_gl_mode", "live"),
       inventoryCostingMethod: ns.inventoryCostingMethod || "wac",
+      purchaseReturnCostMode: ns.purchaseReturnCostMode || "current_wac",
       taxMode: ns.taxMode === "inclusive" ? "inclusive" : "exclusive",
       taxEnabled: ns.taxEnabled === true,
       selectedTaxesKey: JSON.stringify(normalizeTaxList(ns.selectedTaxes || [])),
@@ -468,6 +574,7 @@ var Settings = function (props) {
     var dirty =
       gl !== base.glMode ||
       (f.inventoryCostingMethod || "wac") !== base.inventoryCostingMethod ||
+      (f.purchaseReturnCostMode || "current_wac") !== base.purchaseReturnCostMode ||
       fTaxMode !== base.taxMode ||
       (f.taxEnabled === true) !== base.taxEnabled ||
       taxKey !== base.selectedTaxesKey ||
@@ -486,6 +593,7 @@ var Settings = function (props) {
     criticalAccountingRef.current = {
       glMode: S.get("tc3_gl_mode", "live"),
       inventoryCostingMethod: state.settings.inventoryCostingMethod || "wac",
+      purchaseReturnCostMode: state.settings.purchaseReturnCostMode || "current_wac",
       taxMode: state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive",
       taxEnabled: state.settings.taxEnabled === true,
       selectedTaxesKey: JSON.stringify(normalizeTaxList(state.settings.selectedTaxes || [])),
@@ -627,7 +735,43 @@ var Settings = function (props) {
     });
   };
 
+  var runRmBfDryRun = function () {
+    var plan = computeRawMaterialPricingBackfillPlan(state.products || [], state.purchases || []);
+    setRmBfPreview(plan);
+  };
+  var runRmBfApply = function () {
+    if (!rmBfPreview || !rmBfPreview.changes || !rmBfPreview.changes.length) {
+      showAlert("Nothing to apply. Run dry-run first, or all products are already in sync.");
+      return;
+    }
+    var plan = rmBfPreview;
+    showConfirm(
+      "Apply " + plan.changes.length + " product update(s) from the latest purchase line for each ingredient? Download a backup first.",
+      function () {
+        var np = applyRawMaterialPricingPlanToProducts(state.products || [], plan);
+        S.set("tc3_products", np);
+        for (var i = 0; i < plan.changes.length; i++) {
+          var ch = plan.changes[i];
+          addAudit("Raw material pricing backfill", ch.name, {
+            productId: ch.id,
+            oldPrice: ch.oldPrice,
+            newPrice: ch.newPrice,
+            oldCost: ch.oldCost,
+            newCost: ch.newCost,
+            purchaseDate: ch.purchaseDate,
+            purchaseInvoiceNo: ch.purchaseInvoiceNo,
+            purchaseId: ch.purchaseId,
+          });
+        }
+        setState(function (s) { return Object.assign({}, s, { products: np }); });
+        setRmBfPreview(null);
+        showAlert("Applied " + plan.changes.length + " update(s). Check Activity Log.");
+      }
+    );
+  };
+
   var TABS = [["shop", "Shop Info"], ["langcurrency", "Language & Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["security", "Security"]];
+  if (isRestaurantBusiness) TABS.splice(1, 0, ["restaurantsetup", "Restaurant Setup"]);
   if (canManageUsers) TABS.push(["users", "Users"]);
   TABS.push(["activity", "Activity Log"]);
   if (isNetworkMode) TABS.push(["network", "Network"]);
@@ -1040,6 +1184,20 @@ var Settings = function (props) {
                       </select>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                      <label htmlFor="tc-settings-pr-cost-mode" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Purchase return cost</label>
+                      <select
+                        id="tc-settings-pr-cost-mode"
+                        value={f.purchaseReturnCostMode || "current_wac"}
+                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { purchaseReturnCostMode: e.target.value }); }); }}
+                        title="Cost basis for supplier returns: current policy uses unit cost captured on the purchase line (aligned with inventory). original_cost is reserved for a future FIFO layer match."
+                        style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
+                      >
+                        <option value="current_wac">Current policy (line / WAC snapshot on purchase)</option>
+                        <option value="original_cost">Original receipt cost (reserved — uses line cost for now)</option>
+                      </select>
+                      <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>GL posting uses stored line unit cost; product WAC is not recomputed on return.</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
                       <label htmlFor="tc-settings-lock-date" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Lock date</label>
                       <input
                         id="tc-settings-lock-date"
@@ -1048,13 +1206,13 @@ var Settings = function (props) {
                         onChange={function (e) { setF(function (x) { return Object.assign({}, x, { lockedUntilDate: e.target.value }); }); }}
                         style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text }}
                       />
-                      <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>Hard lock — no posts before this date</span>
+                      <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>Hard lock — no posts on or before this date</span>
                     </div>
                   </div>
 
                   {f.lockedUntilDate && (
                     <div style={{ gridColumn: "1 / -1", fontSize: 11, color: C.muted, marginTop: -4 }}>
-                      Transactions dated before <strong>{fmtDate(f.lockedUntilDate)}</strong> are blocked unless Admin (PIN) is unlocked.
+                      Transactions dated on or before <strong>{fmtDate(f.lockedUntilDate)}</strong> are blocked unless Admin (PIN) is unlocked.
                     </div>
                   )}
 
@@ -1067,7 +1225,7 @@ var Settings = function (props) {
                         style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent, marginTop: 2 }}
                       />
                       <span>
-                        <strong>Strict period lock</strong> (recommended for audit): transactions dated before the lock date cannot be edited, deleted, or have line items changed — only when this is on and a lock date is set. Admin (PIN) unlock still bypasses.
+                        <strong>Strict period lock</strong> (recommended for audit): transactions dated on or before the lock date cannot be edited, deleted, or have line items changed — only when this is on and a lock date is set. Admin (PIN) unlock still bypasses.
                       </span>
                     </label>
                   </div>
@@ -1111,8 +1269,42 @@ var Settings = function (props) {
                     {typeof props.repairInventoryLayersFromReplay === "function" && (
                       <Btn col="cyan" onClick={props.repairInventoryLayersFromReplay}>Repair inventory layers (replay)</Btn>
                     )}
+                    {glDeveloperToolsSettings && exportSupportBundle && downloadSupportBundleJson && (
+                      <Btn
+                        col="gray"
+                        onClick={function () {
+                          try {
+                            var bundle = exportSupportBundle({
+                              periodFrom: supBndFrom,
+                              periodTo: supBndTo,
+                              anonymize: supBndAnon,
+                              includeReplay: supBndReplay,
+                              replayProductId: supBndPid || "",
+                            });
+                            downloadSupportBundleJson(bundle, "techon-support-bundle.json");
+                          } catch (e) {
+                            showAlert("Could not build support bundle.");
+                          }
+                        }}
+                      >
+                        Export support bundle (JSON)
+                      </Btn>
+                    )}
                     <Btn col="cyan" onClick={saveAccountingSettings}>Save accounting settings</Btn>
                   </div>
+                  {glDeveloperToolsSettings && exportSupportBundle && (
+                    <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginTop: 8 }}>
+                      <Input type="date" label="Bundle period from" value={supBndFrom} onChange={function (e) { setSupBndFrom(e.target.value); }} compact />
+                      <Input type="date" label="Bundle period to" value={supBndTo} onChange={function (e) { setSupBndTo(e.target.value); }} compact />
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                        <input type="checkbox" checked={supBndAnon} onChange={function (e) { setSupBndAnon(e.target.checked); }} /> Anonymize customers in bundle subset
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                        <input type="checkbox" checked={supBndReplay} onChange={function (e) { setSupBndReplay(e.target.checked); }} /> Include replay sample
+                      </label>
+                      <Input label="Replay product ID (optional)" value={supBndPid} onChange={function (e) { setSupBndPid(e.target.value); }} placeholder="SKU id" compact style={{ minWidth: 160 }} />
+                    </div>
+                  )}
 
                   {typeof props.createFinancialSnapshot === "function" && (
                     <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 8, width: "100%", marginTop: 2 }}>
@@ -1141,6 +1333,96 @@ var Settings = function (props) {
                               <SnapshotIntegrityBadge variant="failed" liveStatus />
                             )}
                             {last.label && <span style={{ color: C.muted }}>{last.label}</span>}
+                          </div>
+                        );
+                      })()}
+                      {(function () {
+                        var snaps = S.get("tc3_financial_snapshots", []);
+                        if (!Array.isArray(snaps) || snaps.length === 0) return null;
+                        var idx = Math.max(0, Math.min(snapValIdx || 0, snaps.length - 1));
+                        return (
+                          <div style={{ marginTop: 10, paddingTop: 12, borderTop: "1px solid " + C.borderLight, display: "flex", flexDirection: "column", gap: 8 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Validate snapshot (hash + HMAC)</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                              <select
+                                value={idx}
+                                onChange={function (e) { setSnapValIdx(parseInt(e.target.value, 10) || 0); setSnapValResult(null); }}
+                                style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, maxWidth: "100%" }}
+                              >
+                                {snaps.map(function (s, i) {
+                                  var lab = (s.label || s.id || "snapshot").slice(0, 48);
+                                  var when = (s.createdAt || "").slice(0, 19);
+                                  return (
+                                    <option key={(s.id || i) + "_" + i} value={i}>{when + " — " + lab}</option>
+                                  );
+                                })}
+                              </select>
+                              <Btn
+                                col="gray"
+                                disabled={snapValBusy}
+                                onClick={function () {
+                                  var list = S.get("tc3_financial_snapshots", []);
+                                  var pick = list[idx];
+                                  if (!pick) return;
+                                  setSnapValBusy(true);
+                                  setSnapValResult(null);
+                                  validateSnapshotIntegrityFull(pick).then(function (r) {
+                                    setSnapValBusy(false);
+                                    setSnapValResult(r);
+                                  }).catch(function () {
+                                    setSnapValBusy(false);
+                                    setSnapValResult({ ok: false, tampered: true, reason: "validate_error" });
+                                  });
+                                }}
+                              >
+                                {snapValBusy ? "Checking…" : "Validate integrity"}
+                              </Btn>
+                            </div>
+                            {snapValResult && (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                <div style={{
+                                  fontSize: 12,
+                                  padding: "10px 12px",
+                                  borderRadius: 8,
+                                  border: "1.5px solid " + (snapValResult.tampered ? "#fecaca" : "#a7f3d0"),
+                                  background: snapValResult.tampered ? "#fef2f2" : "#ecfdf5",
+                                  color: snapValResult.tampered ? "#991b1b" : "#065f46",
+                                  whiteSpace: "pre-wrap",
+                                  wordBreak: "break-word",
+                                }}>
+                                  <div style={{ fontWeight: 700, marginBottom: 4 }}>{(snapValResult.tampered ? "Tampered or invalid — " : "Valid — ") + (snapValResult.reason || "")}</div>
+                                  {(snapValResult.snapshotCreatedAt ? <div>Snapshot time: {snapValResult.snapshotCreatedAt}</div> : null)}
+                                  {(snapValResult.snapshotPeriodDate ? <div>Period / as-of: {snapValResult.snapshotPeriodDate}</div> : null)}
+                                  {(snapValResult.recomputedContentHashShort ? <div>Content hash (recomputed): {snapValResult.recomputedContentHashShort}</div> : null)}
+                                  {(snapValResult.storedContentHashShort ? <div>Content hash (stored): {snapValResult.storedContentHashShort}</div> : null)}
+                                  {(snapValResult.storedIntegrityHmacShort ? <div>HMAC (stored): {snapValResult.storedIntegrityHmacShort}</div> : null)}
+                                  {(snapValResult.canonicalBodyLength != null ? <div>Canonical body length: {snapValResult.canonicalBodyLength}</div> : null)}
+                                  {(snapValResult.matched ? <div>Matched: {snapValResult.matched}</div> : null)}
+                                  {(snapValResult.legacy ? <div>(Legacy snapshot — hash-only seal)</div> : null)}
+                                </div>
+                                <Btn sm col="gray" onClick={function () {
+                                  var r = snapValResult;
+                                  var lines = [
+                                    "TechonERP snapshot validation",
+                                    "reason: " + (r.reason || ""),
+                                    "tampered: " + !!r.tampered,
+                                    "snapshotId: " + (r.snapshotId || ""),
+                                    "createdAt: " + (r.snapshotCreatedAt || ""),
+                                    "periodDate: " + (r.snapshotPeriodDate || ""),
+                                    "recomputedHash: " + (r.expectedContentHash || r.recomputedContentHashShort || ""),
+                                    "storedHash: " + (r.storedContentHashValue || r.storedContentHash || ""),
+                                    "storedHmac: " + (r.storedIntegrityHmac || ""),
+                                    "canonicalLen: " + (r.canonicalBodyLength != null ? r.canonicalBodyLength : ""),
+                                  ];
+                                  var t = lines.join("\n");
+                                  try {
+                                    navigator.clipboard.writeText(t).then(function () { showAlert("Copied validation details to clipboard."); }).catch(function () { showAlert(t); });
+                                  } catch (e) {
+                                    showAlert(t);
+                                  }
+                                }}>Copy debug details</Btn>
+                              </div>
+                            )}
                           </div>
                         );
                       })()}
@@ -2097,6 +2379,86 @@ var Settings = function (props) {
         </div>
       )}
 
+      {stab === "restaurantsetup" && isRestaurantBusiness && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <CardTitle sub="Choose the default order flow and manage restaurant tables">Restaurant Setup</CardTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              {restaurantSetupMsg && (
+                <div style={{ background: restaurantSetupMsg.type === "error" ? "#fef2f2" : "#f0fdf4", border: "1px solid " + (restaurantSetupMsg.type === "error" ? "#fca5a5" : "#86efac"), borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: restaurantSetupMsg.type === "error" ? "#b91c1c" : "#166534", fontWeight: 700 }}>
+                  {restaurantSetupMsg.text}
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "minmax(240px,320px) 1fr", gap: 16, alignItems: "start" }}>
+                <div style={{ border: "1.5px solid " + C.border, borderRadius: 12, padding: "14px 16px", background: "#f8fafc" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Default Order Type</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginBottom: 12 }}>This becomes the starting mode when restaurant sales opens or resets after sending an order.</div>
+                  <select
+                    value={restaurantDefaultOrderType}
+                    onChange={function (e) {
+                      saveRestaurantSetup(e.target.value, restaurantSetupTables, "Restaurant setup updated.");
+                    }}
+                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, fontFamily: "inherit" }}
+                  >
+                    <option value="takeaway">Takeaway</option>
+                    <option value="dine-in">Dine-in</option>
+                    <option value="delivery">Delivery</option>
+                  </select>
+                </div>
+                <div style={{ border: "1.5px solid " + C.border, borderRadius: 12, padding: "14px 16px", background: "#fff" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+                    <div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Table Manager</div>
+                      <div style={{ fontSize: 12, color: C.muted }}>Add, rename, or remove free tables used by the restaurant workflow.</div>
+                    </div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>
+                      {restaurantSetupTables.length} table{restaurantSetupTables.length !== 1 ? "s" : ""}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <Input label="New Table" value={newRestaurantTableName} onChange={function (e) { setNewRestaurantTableName(e.target.value); setRestaurantSetupMsg(null); }} placeholder="T7 or Table 10" />
+                    </div>
+                    <Btn col="cyan" onClick={addRestaurantSetupTable}>Add Table</Btn>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "48vh", overflowY: "auto" }}>
+                    {restaurantSetupTables.map(function (t) {
+                      return (
+                        <div key={"settings-restaurant-table-" + t.id} style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid " + C.borderLight, borderRadius: 10, padding: "9px 10px", background: "#fff" }}>
+                          <input
+                            type="text"
+                            defaultValue={t.name || t.id}
+                            onBlur={function (e) { renameRestaurantSetupTable(t.id, e.target.value); }}
+                            onKeyDown={function (e) {
+                              if (e.key === "Enter") e.currentTarget.blur();
+                              if (e.key === "Escape") {
+                                e.currentTarget.value = t.name || t.id;
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            style={{ flex: 1, border: "1.5px solid " + C.border, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", background: "#fff", color: C.text }}
+                          />
+                          <span style={{ fontSize: 10.5, fontWeight: 800, border: "1px solid " + (t.status === "free" ? "#86efac" : (t.status === "occupied" ? "#fca5a5" : "#fcd34d")), background: t.status === "free" ? "#dcfce7" : (t.status === "occupied" ? "#fee2e2" : "#fef3c7"), color: t.status === "free" ? "#166534" : (t.status === "occupied" ? "#991b1b" : "#92400e"), borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>
+                            {t.status === "free" ? "Free" : (t.status === "occupied" ? "Occupied" : "Pending")}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={function () { deleteRestaurantSetupTable(t.id); }}
+                            style={{ border: "1px solid #fecaca", background: "#fff1f2", color: "#b91c1c", borderRadius: 8, padding: "6px 9px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
       {stab === "backup" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {bakMsg && <div style={{ background: bakMsg.type === "error" ? C.dangerSoft : C.successSoft, color: bakMsg.type === "error" ? C.red : C.green, borderRadius: 10, padding: "12px 18px", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>{bakMsg.text}</div>}
@@ -2332,6 +2694,22 @@ var Settings = function (props) {
 
           {/* Network details moved to the Network tab */}
 
+          <Card>
+            <CardTitle sub="Uses latest purchase line per ingredient — cost per base unit; sell from purchase sell ÷ unit factor">Raw material pricing fix</CardTitle>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
+              One-time correction for ingredient products where cost/price were saved as a sack or pack total instead of per Kg (base unit). Run dry-run, review, then apply. Each change is logged in Activity Log.
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              <Btn col="blue" onClick={runRmBfDryRun}>Dry-run</Btn>
+              <Btn col="cyan" onClick={runRmBfApply} disabled={!rmBfPreview || !(rmBfPreview.changes && rmBfPreview.changes.length)}>Apply</Btn>
+              {rmBfPreview && rmBfPreview.changes && rmBfPreview.changes.length ? (
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{rmBfPreview.changes.length} change(s) ready</span>
+              ) : (
+                <span style={{ fontSize: 12, color: C.muted }}>Run dry-run to preview</span>
+              )}
+            </div>
+          </Card>
+
           {/* ── RESET SYSTEM DATA ── */}
           <Card>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
@@ -2347,6 +2725,46 @@ var Settings = function (props) {
           </Card>
 
         </div>
+      )}
+
+      {rmBfPreview && (
+        <Modal title="Raw material pricing — dry-run" onClose={function () { setRmBfPreview(null); }} wide>
+          <div style={{ fontSize: 13, marginBottom: 12 }}>
+            <strong>{rmBfPreview.changes.length}</strong> product(s) would update. Skipped: <strong>{rmBfPreview.skipped.length}</strong>.
+          </div>
+          <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid " + C.border, borderRadius: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead style={{ background: "#f1f5f9", position: "sticky", top: 0 }}>
+                <tr>
+                  <th style={{ textAlign: "left", padding: 8 }}>Product</th>
+                  <th style={{ textAlign: "right", padding: 8 }}>Old cost</th>
+                  <th style={{ textAlign: "right", padding: 8 }}>New cost</th>
+                  <th style={{ textAlign: "right", padding: 8 }}>Old price</th>
+                  <th style={{ textAlign: "right", padding: 8 }}>New price</th>
+                  <th style={{ textAlign: "left", padding: 8 }}>Purchase</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rmBfPreview.changes.map(function (ch, idx) {
+                  return (
+                    <tr key={ch.id || idx} style={{ borderTop: "1px solid " + C.border }}>
+                      <td style={{ padding: 8, fontWeight: 700 }}>{ch.name}</td>
+                      <td style={{ padding: 8, textAlign: "right" }}>{getCurrencySymbol()} {fmtNum(ch.oldCost)}</td>
+                      <td style={{ padding: 8, textAlign: "right", color: C.green }}>{getCurrencySymbol()} {fmtNum(ch.newCost)}</td>
+                      <td style={{ padding: 8, textAlign: "right" }}>{getCurrencySymbol()} {fmtNum(ch.oldPrice)}</td>
+                      <td style={{ padding: 8, textAlign: "right", color: C.green }}>{getCurrencySymbol()} {fmtNum(ch.newPrice)}</td>
+                      <td style={{ padding: 8, fontSize: 11, color: C.muted }}>{ch.purchaseDate}{ch.purchaseInvoiceNo ? " · " + ch.purchaseInvoiceNo : ""}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <Btn col="gray" onClick={function () { setRmBfPreview(null); }}>Close</Btn>
+            <Btn col="cyan" onClick={runRmBfApply}>Apply updates</Btn>
+          </div>
+        </Modal>
       )}
 
       {/* ── RESET CONFIRM MODAL ── */}

@@ -3,7 +3,7 @@
  * Snapshots are sealed with legacy content hash + HMAC-SHA256 for tamper detection.
  */
 
-import { trialBalance, balanceSheetFromLedger } from "./generalLedger.js";
+import { trialBalance, balanceSheetFromLedger, round2 } from "./generalLedger.js";
 import { isSnapshotDeviceHmacAllowed } from "../productionConfig.js";
 import { isProductionLicenseSecretMissingBlock } from "../ops/accountingGuards.js";
 import {
@@ -26,6 +26,15 @@ function stableStringify(obj) {
     parts.push(JSON.stringify(k) + ":" + stableStringify(obj[k]));
   }
   return "{" + parts.join(",") + "}";
+}
+
+/** Shorten hex/hash strings for UI (never truncate secrets — hashes only). */
+export function shortenHexForDisplay(hex, headLen, tailLen) {
+  headLen = headLen != null ? headLen : 14;
+  tailLen = tailLen != null ? tailLen : 10;
+  if (!hex || typeof hex !== "string") return "";
+  if (hex.length <= headLen + tailLen + 3) return hex;
+  return hex.slice(0, headLen) + "…" + hex.slice(-tailLen);
 }
 
 /** Deterministic hash for snapshot body (excludes seal fields). */
@@ -59,16 +68,71 @@ export function validateSnapshotIntegrity(snapshot) {
   return hashSnapshotContent(clone) === expected;
 }
 
+function snapshotAuditMeta(snapshot) {
+  var s = snapshot || {};
+  return {
+    snapshotCreatedAt: s.createdAt || "",
+    snapshotLabel: s.label || "",
+    snapshotPeriodDate: s.periodCloseDate || s.asOfDate || "",
+    snapshotId: s.id || "",
+    storedContentHash: typeof s.contentHash === "string" ? s.contentHash : "",
+    storedIntegrityHmac: typeof s.integrityHmac === "string" ? s.integrityHmac : "",
+  };
+}
+
 /**
  * Full check including HMAC (async).
  */
 export async function validateSnapshotIntegrityFull(snapshot) {
-  if (!validateSnapshotIntegrity(snapshot)) {
-    return { ok: false, tampered: true, reason: "legacy_hash_mismatch" };
+  var meta = snapshotAuditMeta(snapshot);
+  if (!snapshot || typeof snapshot !== "object") {
+    return Object.assign({}, meta, { ok: false, tampered: true, reason: "missing_snapshot" });
   }
+
+  var cloneForHash = JSON.parse(JSON.stringify(snapshot));
+  delete cloneForHash.contentHash;
+  delete cloneForHash.integritySealed;
+  delete cloneForHash.integrityHmac;
+  delete cloneForHash.tampered;
+  delete cloneForHash.algorithm;
+  var recomputedContentHash = hashSnapshotContent(cloneForHash);
+  var storedHash = typeof snapshot.contentHash === "string" ? snapshot.contentHash : "";
+
+  if (!snapshot.contentHash) {
+    if (!snapshot.id) {
+      return Object.assign({}, meta, { ok: false, tampered: true, reason: "invalid_snapshot_body" });
+    }
+    if (!snapshot.integrityHmac || typeof snapshot.integrityHmac !== "string") {
+      return Object.assign({}, meta, {
+        ok: true,
+        tampered: false,
+        legacy: true,
+        reason: "legacy_only",
+        recomputedContentHashShort: shortenHexForDisplay(recomputedContentHash),
+      });
+    }
+  } else if (recomputedContentHash !== storedHash) {
+    return Object.assign({}, meta, {
+      ok: false,
+      tampered: true,
+      reason: "legacy_hash_mismatch",
+      recomputedContentHashShort: shortenHexForDisplay(recomputedContentHash),
+      storedContentHashShort: shortenHexForDisplay(storedHash),
+      expectedContentHash: recomputedContentHash,
+      storedContentHashValue: storedHash,
+    });
+  }
+
   if (!snapshot.integrityHmac || typeof snapshot.integrityHmac !== "string") {
-    return { ok: true, tampered: false, legacy: true, reason: "legacy_only" };
+    return Object.assign({}, meta, {
+      ok: true,
+      tampered: false,
+      legacy: true,
+      reason: "legacy_only",
+      recomputedContentHashShort: shortenHexForDisplay(recomputedContentHash),
+    });
   }
+
   var clone = JSON.parse(JSON.stringify(snapshot));
   delete clone.contentHash;
   delete clone.integritySealed;
@@ -78,9 +142,23 @@ export async function validateSnapshotIntegrityFull(snapshot) {
   var canon = stableStringify(clone);
   var flex = await verifySnapshotHmacFlexible(snapshot, canon);
   if (!flex.ok) {
-    return { ok: true, tampered: true, reason: flex.reason || "hmac_mismatch" };
+    return Object.assign({}, meta, {
+      ok: true,
+      tampered: true,
+      reason: flex.reason || "hmac_mismatch",
+      recomputedContentHashShort: shortenHexForDisplay(recomputedContentHash),
+      canonicalBodyLength: canon.length,
+      storedIntegrityHmacShort: shortenHexForDisplay(meta.storedIntegrityHmac, 14, 12),
+    });
   }
-  return { ok: true, tampered: false, reason: "hmac_ok", matched: flex.matched };
+  return Object.assign({}, meta, {
+    ok: true,
+    tampered: false,
+    reason: "hmac_ok",
+    matched: flex.matched,
+    recomputedContentHashShort: shortenHexForDisplay(recomputedContentHash),
+    storedIntegrityHmacShort: shortenHexForDisplay(meta.storedIntegrityHmac, 14, 12),
+  });
 }
 
 export function buildFinancialSnapshot(S, lines, chart, invDer, opts) {
@@ -88,12 +166,22 @@ export function buildFinancialSnapshot(S, lines, chart, invDer, opts) {
   var tb = trialBalance(lines, chart);
   var bs = balanceSheetFromLedger(lines, chart, opts.asOfDate || null);
   var settings = S.get("tc3_settings", {}) || {};
+  var trialBalanceAccounts = {};
+  (tb.rows || []).forEach(function (r) {
+    trialBalanceAccounts[r.accountId] = {
+      debit: round2(r.debit || 0),
+      credit: round2(r.credit || 0),
+      code: r.code,
+      name: r.name,
+    };
+  });
   return {
     id: opts.id || "snap_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
     createdAt: new Date().toISOString(),
     label: opts.label || "",
     periodCloseDate: opts.periodCloseDate || settings.booksClosedDate || settings.lockedUntilDate || "",
     asOfDate: opts.asOfDate || null,
+    trialBalanceAccounts: trialBalanceAccounts,
     trialBalance: { totalDebit: tb.totalDebit, totalCredit: tb.totalCredit, balanced: tb.balanced, rowCount: (tb.rows || []).length },
     balanceSheet: {
       assets: bs.assets,

@@ -1,7 +1,32 @@
 import React, { useState, useEffect, useRef } from "react";
 import { purchaseReturnUiStatus, displayStatusForPurchase } from "../utils/returnDisplay.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
-import { validateExtraUnits, buildUnitsPersistFields, getProductUnitRows, factorForNamedUnit } from "../units/productUnits.js";
+import { validateExtraUnits, buildUnitsPersistFields, getProductUnitRows, factorForNamedUnit, isProductBaseUnitLabel } from "../units/productUnits.js";
+import {
+  normalizePurchaseLineItem,
+  normalizePurchaseLineEconomics,
+  sumPurchaseLinesStockTotal,
+  costPerInputUnitFromBase,
+  unitCostBaseFromInputCost,
+  purchaseLineStockTotal,
+  defaultCostInputMode,
+  COST_INPUT_PER_INPUT,
+  COST_INPUT_PER_BASE,
+  lineEconomicValue,
+} from "../utils/purchaseValuation.js";
+import {
+  RAW_MATERIAL_PRICE_COST_HINT,
+  isRawMaterialGuardBaseUnit,
+  rawMaterialEnteredLooksLikePackTotal,
+  rawMaterialPackPricingConfirmMessage,
+} from "../utils/rawMaterialPricingGuard.js";
+import {
+  purchaseUnitConversionMissingMessage,
+  isPurchaseInputUnitMissingFactor,
+  purchaseLineBaseUnitLooksLikePackTotal,
+  purchasePackTotalVsCatalogueMessage,
+  catalogSellPricePerBaseFromLine as catalogSellPricePerBaseFromLineCalc,
+} from "../utils/purchaseUnitGuard.js";
 
 var Purchases = React.memo(function (props) {
   var state = props.state;
@@ -78,7 +103,7 @@ var Purchases = React.memo(function (props) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         if (!show) return; /* only active when New Purchase modal is open */
         e.preventDefault();
-        setNewProd(null); setTimeout(function () { setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }, 30);
+        setNewProd(null); setTimeout(function () { setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }, 30);
       }
     };
     window.addEventListener("keydown", handler);
@@ -91,6 +116,8 @@ var Purchases = React.memo(function (props) {
   var [pPickedProduct, setPPickedProduct] = useState(null);
   var [pc, setPc] = useState("");
   var [pSell, setPSell] = useState("");
+  /** Cost entry: per purchase unit (sack) vs per storage base unit (kg) */
+  var [pCostInputMode, setPCostInputMode] = useState(COST_INPUT_PER_BASE);
   var [search, setSearch] = useState("");
   var [filterStatus, setFilterStatus] = useState("All");
   var purSearchRef = useRef(null);
@@ -184,7 +211,7 @@ var Purchases = React.memo(function (props) {
     return p.status !== "inactive" && (pn.includes(ps.toLowerCase()) || (p.barcode || "").toLowerCase().includes(ps.toLowerCase()));
   });
 
-  var formTotal = f.items.reduce(function (a, it) { return a + ((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost); }, 0);
+  var formTotal = sumPurchaseLinesStockTotal(f.items);
   var purTaxInput = (state.settings && state.settings.taxEnabled) ? Math.round((parseFloat(f.purchaseTaxAmount) || 0) * 100) / 100 : 0;
   var invoiceTotal = purTaxInput > 0.005 ? Math.round((formTotal + purTaxInput) * 100) / 100 : formTotal;
   var formPaid = f.payMode === "paid" ? invoiceTotal : (f.payMode === "partial" ? parseFloat(f.paidAmount) || 0 : 0);
@@ -192,7 +219,7 @@ var Purchases = React.memo(function (props) {
   var formStatus = formPaid >= invoiceTotal ? "Paid" : formPaid > 0 ? "Partial" : "Unpaid";
 
   /* Edit purchase computed totals */
-  var editLineTotal = editPur ? (editPur.items || []).reduce(function (a, it) { return a + ((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost); }, 0) : 0;
+  var editLineTotal = editPur ? sumPurchaseLinesStockTotal(editPur.items || []) : 0;
   var editTaxAmt = editPur && state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editPur.totalTax) || 0) * 100) / 100 : 0;
   var editTotal = editPur ? (editTaxAmt > 0.005 ? Math.round((editLineTotal + editTaxAmt) * 100) / 100 : editLineTotal) : 0;
   var editPaid = editPur ? (editPur.payMode === "paid" ? editTotal : (editPur.payMode === "partial" ? parseFloat(editPur.paidAmount) || 0 : 0)) : 0;
@@ -207,12 +234,39 @@ var Purchases = React.memo(function (props) {
     if (f == null || f <= 0) return "";
     return "1 " + unitName + " = " + f + " " + bu;
   };
-  var purCostSeemsLow = function (prod, unitName, enteredCost) {
+  var purCostSeemsLow = function (prod, unitName, enteredCost, costMode) {
     if (!prod) return false;
-    var exp = getUnitCostPrice(prod, unitName || prod.unit || "Pcs");
+    var baseU = prod.unit || "Pcs";
+    var un = unitName || baseU;
+    var mode = costMode || defaultCostInputMode(prod, un);
+    var exp =
+      mode === COST_INPUT_PER_BASE
+        ? getUnitCostPrice(prod, baseU)
+        : getUnitCostPrice(prod, un);
     var ent = parseFloat(enteredCost) || 0;
     if (exp <= 0.001 || ent <= 0) return false;
     return ent < exp * 0.3;
+  };
+
+  /** Table row: cost input matches costInputMode (per-base stored in it.cost). */
+  var purchaseLineCostFieldShown = function (it, rowProd) {
+    if (!rowProd) return Number(it.cost) || 0;
+    var iu = it.inputUnit || it.unit || rowProd.unit || "Pcs";
+    var mode = it.costInputMode || defaultCostInputMode(rowProd, iu);
+    if (mode === COST_INPUT_PER_BASE) return Math.round((Number(it.cost) || 0) * 10000) / 10000;
+    return costPerInputUnitFromBase(it.cost || 0, iu, rowProd, toProductBaseQty);
+  };
+
+  var syncCostModeAndDefaultsForUnit = function (prod, unitName) {
+    if (!prod) return;
+    var mode = defaultCostInputMode(prod, unitName);
+    setPCostInputMode(mode);
+    setPc(String(mode === COST_INPUT_PER_BASE ? getUnitCostPrice(prod, prod.unit || "Pcs") : getUnitCostPrice(prod, unitName)));
+  };
+
+  /** Catalogue `product.price` is sell Rs per base unit; line `sellPrice` is per selected purchase unit */
+  var catalogSellPricePerBaseFromLine = function (it, product) {
+    return catalogSellPricePerBaseFromLineCalc(it, product, toProductBaseQty, getUnitCostPrice, getUnitSellPrice);
   };
 
   var addEditItem = function () {
@@ -220,28 +274,118 @@ var Purchases = React.memo(function (props) {
     if (!match) return;
     var unit = match.unit || "Pcs";
     var qtyInput = parseFloat(pq) || 1;
-    var qty = toProductBaseQty(qtyInput, pUnit || unit, match);
-    var it = { id: match.id, name: match.name, barcode: match.barcode || "", unit: unit, qty: qty, inputUnit: pUnit || unit, inputQty: qtyInput, cost: parseFloat(pc) || match.cost || 0, sellPrice: parseFloat(pSell) || match.price || 0 };
+    var selU = pUnit || unit;
+    var inputCostPerUnit = parseFloat(pc);
+    if (!isFinite(inputCostPerUnit) || inputCostPerUnit <= 0) {
+      inputCostPerUnit =
+        pCostInputMode === COST_INPUT_PER_BASE
+          ? getUnitCostPrice(match, unit) || 0
+          : getUnitCostPrice(match, selU) || 0;
+    }
+    var econ = normalizePurchaseLineEconomics(qtyInput, selU, inputCostPerUnit, match, toProductBaseQty, pCostInputMode);
+    var qty = econ.baseQty;
+    var it = {
+      id: match.id, name: match.name, barcode: match.barcode || "", unit: unit,
+      qty: Math.round(qty * 1000000) / 1000000,
+      inputUnit: selU, inputQty: qtyInput,
+      cost: econ.unitCostBase,
+      lineStockValue: econ.lineStockValue,
+      costInputMode: econ.costInputMode,
+      sellPrice: parseFloat(pSell) || match.price || 0,
+    };
+    var iuEdit = pUnit || unit;
+    if (isPurchaseInputUnitMissingFactor(match, iuEdit)) {
+      showAlert("X " + purchaseUnitConversionMissingMessage(iuEdit));
+      return;
+    }
+    var pushEditLine = function () {
     setEditPur(function (x) {
       var items = x.items || [];
       var exists = items.find(function (i) { return i.id === match.id; });
-      if (exists) { return Object.assign({}, x, { items: items.map(function (i) { return i.id === match.id ? Object.assign({}, i, { qty: Math.round((i.qty + qty) * 10000) / 10000, cost: it.cost, sellPrice: it.sellPrice }) : i; }) }); }
+      if (exists) {
+        var newQty = Math.round((exists.qty + qty) * 1000000) / 1000000;
+        var mergedMoney = lineEconomicValue(exists, match, toProductBaseQty) + lineEconomicValue(it, match, toProductBaseQty);
+        var mergedCost = newQty > 0 ? mergedMoney / newQty : it.cost;
+        return Object.assign({}, x, {
+          items: items.map(function (i) {
+            return i.id === match.id ? Object.assign({}, i, {
+              qty: newQty,
+              cost: Math.round(mergedCost * 10000) / 10000,
+              lineStockValue: Math.round(mergedMoney * 100) / 100,
+              inputQty: i.inputUnit === it.inputUnit ? Math.round(((Number(i.inputQty) || 0) + qtyInput) * 1000000) / 1000000 : i.inputQty,
+              sellPrice: it.sellPrice,
+              costInputMode: i.inputUnit === it.inputUnit ? (i.costInputMode || it.costInputMode) : i.costInputMode,
+            }) : i;
+          }),
+        });
+      }
       return Object.assign({}, x, { items: items.concat([it]) });
     });
     setPs(""); setPq(1); setPc(""); setPSell(""); setPPickedProduct(null);
+    };
+    if (purchaseLineBaseUnitLooksLikePackTotal(match, it, getUnitCostPrice, getUnitSellPrice)) {
+      showConfirm(purchasePackTotalVsCatalogueMessage(), pushEditLine);
+      return;
+    }
+    pushEditLine();
   };
 
   var addItem = function (p) {
     var unit = p.unit || "Pcs";
     var qtyInput = parseFloat(pq) || 1;
-    var qty = toProductBaseQty(qtyInput, pUnit || unit, p);
-    var it = { id: p.id, name: p.name, barcode: p.barcode || "", unit: unit, qty: qty, inputUnit: pUnit || unit, inputQty: qtyInput, cost: parseFloat(pc) || p.cost || 0, sellPrice: parseFloat(pSell) || p.price || 0 };
+    var selU = pUnit || unit;
+    var inputCostPerUnit = parseFloat(pc);
+    if (!isFinite(inputCostPerUnit) || inputCostPerUnit <= 0) {
+      inputCostPerUnit =
+        pCostInputMode === COST_INPUT_PER_BASE
+          ? getUnitCostPrice(p, unit) || 0
+          : getUnitCostPrice(p, selU) || 0;
+    }
+    var econ = normalizePurchaseLineEconomics(qtyInput, selU, inputCostPerUnit, p, toProductBaseQty, pCostInputMode);
+    var qty = econ.baseQty;
+    var it = {
+      id: p.id, name: p.name, barcode: p.barcode || "", unit: unit,
+      qty: Math.round(qty * 1000000) / 1000000,
+      inputUnit: selU, inputQty: qtyInput,
+      cost: econ.unitCostBase,
+      lineStockValue: econ.lineStockValue,
+      costInputMode: econ.costInputMode,
+      sellPrice: parseFloat(pSell) || p.price || 0,
+    };
+    var iuAdd = pUnit || unit;
+    if (isPurchaseInputUnitMissingFactor(p, iuAdd)) {
+      showAlert("X " + purchaseUnitConversionMissingMessage(iuAdd));
+      return;
+    }
+    var pushPurLine = function () {
     setF(function (x) {
       var exists = x.items.find(function (i) { return i.id === p.id; });
-      if (exists) { return Object.assign({}, x, { items: x.items.map(function (i) { return i.id === p.id ? Object.assign({}, i, { qty: Math.round((i.qty + qty) * 10000) / 10000, cost: it.cost, sellPrice: it.sellPrice }) : i; }) }); }
+      if (exists) {
+        var newQty = Math.round((exists.qty + qty) * 1000000) / 1000000;
+        var mergedMoney = lineEconomicValue(exists, p, toProductBaseQty) + lineEconomicValue(it, p, toProductBaseQty);
+        var mergedCost = newQty > 0 ? mergedMoney / newQty : it.cost;
+        return Object.assign({}, x, {
+          items: x.items.map(function (i) {
+            return i.id === p.id ? Object.assign({}, i, {
+              qty: newQty,
+              cost: Math.round(mergedCost * 10000) / 10000,
+              lineStockValue: Math.round(mergedMoney * 100) / 100,
+              inputQty: i.inputUnit === it.inputUnit ? Math.round(((Number(i.inputQty) || 0) + qtyInput) * 1000000) / 1000000 : i.inputQty,
+              sellPrice: it.sellPrice,
+              costInputMode: i.inputUnit === it.inputUnit ? (i.costInputMode || it.costInputMode) : i.costInputMode,
+            }) : i;
+          }),
+        });
+      }
       return Object.assign({}, x, { items: x.items.concat([it]) });
     });
     setPs(""); setPq(1); setPc(""); setPSell(""); setPPickedProduct(null);
+    };
+    if (purchaseLineBaseUnitLooksLikePackTotal(p, it, getUnitCostPrice, getUnitSellPrice)) {
+      showConfirm(purchasePackTotalVsCatalogueMessage(), pushPurLine);
+      return;
+    }
+    pushPurLine();
   };
 
   var addMatchedItem = function () {
@@ -249,19 +393,46 @@ var Purchases = React.memo(function (props) {
     if (match) addItem(match);
   };
 
-  var doSavePurchase = function (withBarcode, forceSave) {
+  var doSavePurchase = function (withBarcode, forceSave, skipPackWarn) {
     if (!f.supplier || !f.items.length) return;
     /* Fix 1: Use forceSave flag to skip duplicate check after user confirms.
        Without this the confirm dialog would re-trigger itself infinitely. */
     if (!forceSave && f.invoiceNo && state.purchases.find(function (p) { return p.invoiceNo === f.invoiceNo; })) {
-      showConfirm("Purchase invoice \"" + f.invoiceNo + "\" already exists. Save anyway?", function () { doSavePurchase(withBarcode, true); });
+      showConfirm("Purchase invoice \"" + f.invoiceNo + "\" already exists. Save anyway?", function () { doSavePurchase(withBarcode, true, skipPackWarn); });
       return;
+    }
+    var vi, vIt, vPr, vIu;
+    for (vi = 0; vi < f.items.length; vi++) {
+      vIt = f.items[vi];
+      vPr = state.products.find(function (p) { return p.id === vIt.id; });
+      if (!vPr) continue;
+      vIu = vIt.inputUnit || vIt.unit || vPr.unit || "Pcs";
+      if (isPurchaseInputUnitMissingFactor(vPr, vIu)) {
+        showAlert("X " + purchaseUnitConversionMissingMessage(vIu));
+        return;
+      }
+    }
+    if (!skipPackWarn) {
+      for (vi = 0; vi < f.items.length; vi++) {
+        vIt = f.items[vi];
+        vPr = state.products.find(function (p) { return p.id === vIt.id; });
+        if (!vPr) continue;
+        var normPack = normalizePurchaseLineItem(vIt, vPr, toProductBaseQty);
+        if (purchaseLineBaseUnitLooksLikePackTotal(vPr, normPack, getUnitCostPrice, getUnitSellPrice)) {
+          showConfirm(purchasePackTotalVsCatalogueMessage(), function () { doSavePurchase(withBarcode, forceSave, true); });
+          return;
+        }
+      }
     }
     /* Build payment history from splitRows if present, else use legacy single method */
     var splitRows = f.splitRows && f.splitRows.length > 0 ? f.splitRows : null;
     var isCheque = !splitRows && f.cashMethod === "Cheque";
     var effPaid, effBal, effStatus, initPurPh = [];
-    var stockLineTotal = f.items.reduce(function (a, it) { return a + ((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost); }, 0);
+    var normalizedSaveItems = f.items.map(function (it) {
+      var pr = state.products.find(function (p) { return p.id === it.id; });
+      return pr ? normalizePurchaseLineItem(it, pr, toProductBaseQty) : it;
+    });
+    var stockLineTotal = sumPurchaseLinesStockTotal(normalizedSaveItems);
     var purTaxSave = (state.settings && state.settings.taxEnabled) ? Math.round((parseFloat(f.purchaseTaxAmount) || 0) * 100) / 100 : 0;
     var invoiceTotalSave = purTaxSave > 0.005 ? Math.round((stockLineTotal + purTaxSave) * 100) / 100 : stockLineTotal;
     if (splitRows) {
@@ -286,10 +457,10 @@ var Purchases = React.memo(function (props) {
       }
     }
     var purAmtErr = validateTxnAmounts("Purchase invoice", invoiceTotalSave, effPaid, effBal);
-    if (purAmtErr) { showAlert("❌ " + purAmtErr); return; }
-    var purObj = { id: uid(), supplier: f.supplier, invoiceNo: f.invoiceNo, date: f.date, payMode: f.payMode, items: f.items.slice(), total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave };
+    if (purAmtErr) { showAlert("X " + purAmtErr); return; }
+    var purObj = { id: uid(), supplier: f.supplier, invoiceNo: f.invoiceNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave };
     var np = state.products.slice();
-    f.items.forEach(function (it) {
+    normalizedSaveItems.forEach(function (it) {
       var idx = np.findIndex(function (p) { return p.id === it.id; });
       if (idx >= 0) {
           var oldStock = np[idx].stock || 0;
@@ -308,10 +479,11 @@ var Purchases = React.memo(function (props) {
             /* Normal WAC: both old and new stock are positive */
             newAvgCost = ((oldStock * oldCost) + (it.qty * it.cost)) / newStock;
           }
+          var catSell = catalogSellPricePerBaseFromLine(it, np[idx]);
           np[idx] = Object.assign({}, np[idx], {
             stock: newStock,
             cost:  Math.round(newAvgCost * 100) / 100,
-            price: it.sellPrice || np[idx].price
+            price: catSell != null ? Math.round(catSell * 100) / 100 : np[idx].price
           });
         }
     });
@@ -349,7 +521,7 @@ var Purchases = React.memo(function (props) {
     setState(function (st) { return Object.assign({}, st, purStateUpdate); });
     if (withBarcode) {
       /* Option C: show label qty popup so user can adjust before printing */
-      var qtyRows = f.items.map(function (it) {
+      var qtyRows = normalizedSaveItems.map(function (it) {
         var prod = np.find(function (p) { return p.id === it.id; });
         return {
           id: it.id, name: it.name,
@@ -371,18 +543,43 @@ var Purchases = React.memo(function (props) {
     if (typeof setActive === "function") setActive("returns");
   };
 
-  var saveEditPur = function () {
+  var saveEditPur = function (skipPackWarn) {
     if (!editPur) return;
     /* Recalculate totals from current items/payment state before saving */
-    var eLine = (editPur.items || []).reduce(function (a, it) { return a + ((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost); }, 0);
+    var normalizedEditItems = (editPur.items || []).map(function (it) {
+      var pr = state.products.find(function (p) { return p.id === it.id; });
+      return pr ? normalizePurchaseLineItem(it, pr, toProductBaseQty) : it;
+    });
+    var ei, eraw, epr, eiu;
+    for (ei = 0; ei < (editPur.items || []).length; ei++) {
+      eraw = editPur.items[ei];
+      epr = state.products.find(function (p) { return p.id === eraw.id; });
+      if (!epr) continue;
+      eiu = eraw.inputUnit || eraw.unit || epr.unit || "Pcs";
+      if (isPurchaseInputUnitMissingFactor(epr, eiu)) {
+        showAlert("X " + purchaseUnitConversionMissingMessage(eiu));
+        return;
+      }
+    }
+    if (!skipPackWarn) {
+      for (ei = 0; ei < normalizedEditItems.length; ei++) {
+        epr = state.products.find(function (p) { return p.id === normalizedEditItems[ei].id; });
+        if (!epr) continue;
+        if (purchaseLineBaseUnitLooksLikePackTotal(epr, normalizedEditItems[ei], getUnitCostPrice, getUnitSellPrice)) {
+          showConfirm(purchasePackTotalVsCatalogueMessage(), function () { saveEditPur(true); });
+          return;
+        }
+      }
+    }
+    var eLine = sumPurchaseLinesStockTotal(normalizedEditItems);
     var eTax = state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editPur.totalTax) || 0) * 100) / 100 : 0;
     var eTot = eTax > 0.005 ? Math.round((eLine + eTax) * 100) / 100 : eLine;
     var ePaid = editPur.payMode === "paid" ? eTot : (editPur.payMode === "partial" ? parseFloat(editPur.paidAmount) || 0 : 0);
     var eBal = eTot - ePaid;
     var eStat = ePaid >= eTot ? "Paid" : ePaid > 0 ? "Partial" : "Unpaid";
-    var purToSave = Object.assign({}, editPur, { total: eTot, totalTax: eTax, paidAmount: ePaid, balance: eBal, status: eStat });
+    var purToSave = Object.assign({}, editPur, { items: normalizedEditItems, total: eTot, totalTax: eTax, paidAmount: ePaid, balance: eBal, status: eStat });
     var editPurAmtErr = validateTxnAmounts("Edited purchase invoice", eTot, ePaid, eBal);
-    if (editPurAmtErr) { showAlert("❌ " + editPurAmtErr); return; }
+    if (editPurAmtErr) { showAlert("X " + editPurAmtErr); return; }
     var orig = state.purchases.find(function (p) { return p.id === purToSave.id; });
     checkPeriodClose(orig ? orig.date : null, state.settings, function () {
 
@@ -480,10 +677,11 @@ var Purchases = React.memo(function (props) {
           } else {
             newC = ((oldS * oldC) + ((ni.qty || 0) * (ni.cost || 0))) / newS;
           }
+          var catSellEd = catalogSellPricePerBaseFromLine(ni, p);
           return Object.assign({}, p, {
             stock: newS,
             cost: Math.round(newC * 100) / 100,
-            price: ni.sellPrice || p.price
+            price: catSellEd != null ? Math.round(catSellEd * 100) / 100 : p.price
           });
         });
       });
@@ -536,7 +734,7 @@ var Purchases = React.memo(function (props) {
       showAlert("A product with barcode \"" + newProd.barcode + "\" already exists.");
       return;
     }
-    var doSave = function () {
+    var performPurNewSave = function () {
       /* Force stock=0: purchase qty will add stock when saved — avoids double-counting */
       var unitErr = validateExtraUnits(newProd.unit, newProd.extraUnits || []);
       if (unitErr) { showAlert(unitErr); return; }
@@ -554,6 +752,7 @@ var Purchases = React.memo(function (props) {
           barcode: newProd.barcode || genBarcode(),
           category: newProd.category || "General",
           description: newProd.description || "",
+          type: (function () { var pt = String(newProd.type || "stock").toLowerCase(); return (pt === "service" || pt === "raw_material") ? pt : "stock"; })(),
           cost: parseFloat(newProd.cost) || 0,
           price: parseFloat(newProd.price) || 0,
           stock: 0,
@@ -574,10 +773,23 @@ var Purchases = React.memo(function (props) {
       /* Small delay then set name so product appears in search */
       setTimeout(function () { setPs(prod.name); }, 100);
     };
+    var maybeGuardThenPurSave = function () {
+      var pt = String(newProd.type || "stock").toLowerCase();
+      var isRm = pt === "raw_material";
+      if (
+        isRm &&
+        isRawMaterialGuardBaseUnit(newProd.unit) &&
+        rawMaterialEnteredLooksLikePackTotal(newProd.cost, newProd.price, newProd.unit)
+      ) {
+        showConfirm(rawMaterialPackPricingConfirmMessage(newProd.cost, newProd.price, newProd.unit), performPurNewSave);
+        return;
+      }
+      performPurNewSave();
+    };
     if (nameCheck && nameCheck.type === "similar") {
-      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + nameStr + "\" as a new product?", doSave);
+      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + nameStr + "\" as a new product?", maybeGuardThenPurSave);
     } else {
-      doSave();
+      maybeGuardThenPurSave();
     }
   };
 
@@ -597,7 +809,7 @@ var Purchases = React.memo(function (props) {
     <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
         <StatCard money={false} label="Total Purchases" value={state.purchases.length} accent={C.blue} icon="🛒" sub="orders" />
-        <StatCard label="Total Paid" value={totalPaid} accent={C.green} icon="✓" />
+        <StatCard label="Total Paid" value={totalPaid} accent={C.green} icon="OK" />
         <StatCard label="Outstanding" value={totalBal} accent={C.red} icon="!" />
       </div>
       <Card>
@@ -666,7 +878,7 @@ var Purchases = React.memo(function (props) {
               </div>
             </div>
             <Input label="Purchase Invoice #" value={f.invoiceNo} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }} />
-            <Input label="Date" type="date" value={f.date} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
+            <Input label="Date" type="date" value={f.date} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} applyPeriodLockMin={!!props.periodLockTransactionMinDate} periodLockTransactionMinDate={props.periodLockTransactionMinDate} />
           </div>
 
           {/* ── Row 2: Two columns — Product Search LEFT, Payment RIGHT ── */}
@@ -676,7 +888,7 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
@@ -696,20 +908,62 @@ var Purchases = React.memo(function (props) {
                   <tbody>
                     {(f.items || []).map(function (it, idx) {
                       var lineU = it.inputUnit || it.unit || "Pcs";
-                      var lineTot = (it.inputQty !== undefined ? it.inputQty : it.qty) * (it.cost || 0);
+                      var rowProd = state.products.find(function (p) { return p.id === it.id; });
+                      var lineTot = purchaseLineStockTotal(it);
+                      var costField = purchaseLineCostFieldShown(it, rowProd);
                       return (
                         <tr key={it.id || idx} style={{ background: idx % 2 === 0 ? "#fff" : "#fafbff", borderBottom: "1px solid " + C.borderLight }}>
                           <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
                           <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
                             <input type="number" value={it.qty} min="0" step="any"
-                              onChange={function (e) { var v = parseFloat(e.target.value); if (isNaN(v)) v = 0; setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { qty: v }) : r; }) }); }); }}
+                              onChange={function (e) {
+                                var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
+                                setF(function (x) {
+                                  return Object.assign({}, x, {
+                                    items: (x.items || []).map(function (r, i) {
+                                      if (i !== idx) return r;
+                                      var pr = state.products.find(function (p) { return p.id === r.id; });
+                                      var iu = r.inputUnit || r.unit || (pr && pr.unit) || "Pcs";
+                                      var factor = pr ? toProductBaseQty(1, iu, pr) : 1;
+                                      var newInputQty = factor > 0 ? Math.round((v / factor) * 1000000) / 1000000 : r.inputQty;
+                                      var ucb = Number(r.cost) || 0;
+                                      var lsv = Math.round(v * ucb * 100) / 100;
+                                      return Object.assign({}, r, { qty: v, inputQty: newInputQty != null ? newInputQty : r.inputQty, lineStockValue: lsv });
+                                    }),
+                                  });
+                                });
+                              }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
-                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }}>{lineU}</td>
+                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }} title="Storage base unit qty">{lineU}</td>
                           <td style={{ padding: "4px 6px" }}>
-                            <input type="number" value={it.cost}
-                              onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { cost: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                            <input type="number" value={costField}
+                              onChange={function (e) {
+                                var raw = parseFloat(e.target.value) || 0;
+                                setF(function (x) {
+                                  return Object.assign({}, x, {
+                                    items: (x.items || []).map(function (r, i) {
+                                      if (i !== idx) return r;
+                                      var pr = state.products.find(function (p) { return p.id === r.id; });
+                                      if (!pr) return Object.assign({}, r, { cost: raw, lineStockValue: Math.round((Number(r.qty) || 0) * raw * 100) / 100 });
+                                      var iu = r.inputUnit || r.unit || pr.unit || "Pcs";
+                                      var cm = r.costInputMode || defaultCostInputMode(pr, iu);
+                                      var qb = Number(r.qty) || 0;
+                                      var ucb;
+                                      var lsv;
+                                      if (cm === COST_INPUT_PER_BASE) {
+                                        ucb = raw;
+                                        lsv = Math.round(qb * ucb * 100) / 100;
+                                      } else {
+                                        ucb = unitCostBaseFromInputCost(raw, iu, pr, toProductBaseQty);
+                                        lsv = Math.round(qb * ucb * 100) / 100;
+                                      }
+                                      return Object.assign({}, r, { cost: ucb, lineStockValue: lsv, costInputMode: cm });
+                                    }),
+                                  });
+                                });
+                              }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
@@ -740,7 +994,7 @@ var Purchases = React.memo(function (props) {
                         if (e.key === "ArrowUp") { e.preventDefault(); setPurDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
                         if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
                           var pick = purDropIdx >= 0 ? list[purDropIdx] : (list.find(function (p) { return (p.barcode || "").toLowerCase() === ps.toLowerCase(); }) || list[0]);
-                          if (pick) { var bu = pick.unit || "Pcs"; setPs(pick.name); setPc(String(getUnitCostPrice(pick, bu))); setPSell(String(getUnitSellPrice(pick, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick); setShowPurDrop(false); setPurDropIdx(-1);
+                          if (pick) { var bu = pick.unit || "Pcs"; setPs(pick.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick); syncCostModeAndDefaultsForUnit(pick, bu); setPSell(String(getUnitSellPrice(pick, bu))); setShowPurDrop(false); setPurDropIdx(-1);
                             e.preventDefault();
                             setTimeout(function () { var qi = document.getElementById("pur-new-qty"); if (qi) qi.focus(); }, 50);
                           } else { e.preventDefault(); return; }
@@ -754,7 +1008,7 @@ var Purchases = React.memo(function (props) {
                       <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
                         {fp.slice(0, 7).map(function (p, pidx) {
                           return (
-                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPc(String(getUnitCostPrice(p, bu))); setPSell(String(getUnitSellPrice(p, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
+                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu))); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
                               <div>
                                 <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
                                 <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
@@ -767,7 +1021,7 @@ var Purchases = React.memo(function (props) {
                           );
                         })}
                         {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
-                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
+                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
                           + Create "{ps}" as new product
                         </div>
                       </div>
@@ -809,7 +1063,7 @@ var Purchases = React.memo(function (props) {
                                       if (!typedPick) return;
                                       setPUnit(uOpt);
                                       setPPickedProduct(typedPick);
-                                      setPc(String(getUnitCostPrice(typedPick, uOpt)));
+                                      syncCostModeAndDefaultsForUnit(typedPick, uOpt);
                                       setPSell(String(getUnitSellPrice(typedPick, uOpt)));
                                     }}
                                     style={{
@@ -827,7 +1081,7 @@ var Purchases = React.memo(function (props) {
                                 <button
                                   key={"q-" + r.name}
                                   type="button"
-                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); setPc(String(getUnitCostPrice(typedPick, r.name))); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
+                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); syncCostModeAndDefaultsForUnit(typedPick, r.name); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
                                   style={{ fontSize: 10, padding: "3px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
                                 >
                                   +1 {r.name}
@@ -838,14 +1092,43 @@ var Purchases = React.memo(function (props) {
                         );
                       })()}
                     </div>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Cost</div>
-                      <input id="pur-new-cost" type="number" value={pc}
-                        onChange={function (e) { setPc(e.target.value); }}
-                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-new-sell"); if (si) si.focus(); } }}
-                        placeholder="Cost"
-                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                    </div>
+                    {(function () {
+                      var typedPick2 = pPickedProduct
+                        || state.products.find(function (p) {
+                          return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                        })
+                        || state.products.find(function (p) {
+                          return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                        });
+                      var bu2 = typedPick2 ? (typedPick2.unit || "Pcs") : "Pcs";
+                      var selU2 = typedPick2 ? (pUnit || pBaseUnit || typedPick2.unit || "Pcs") : "Pcs";
+                      var showCostToggle = typedPick2 && !isProductBaseUnitLabel(typedPick2, selU2);
+                      var costLab = typedPick2
+                        ? (isProductBaseUnitLabel(typedPick2, selU2) ? ("Cost (per " + bu2 + ")") : ("Cost (per " + selU2 + ")"))
+                        : "Cost";
+                      return (
+                        <div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>{costLab}</div>
+                          {showCostToggle ? (
+                            <div style={{ display: "flex", gap: 4, marginBottom: 4, flexWrap: "wrap", alignItems: "center" }}>
+                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_INPUT); }}
+                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_INPUT ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                Per {selU2}
+                              </button>
+                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_BASE); }}
+                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_BASE ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                Per {bu2}
+                              </button>
+                            </div>
+                          ) : null}
+                          <input id="pur-new-cost" type="number" value={pc}
+                            onChange={function (e) { setPc(e.target.value); }}
+                            onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-new-sell"); if (si) si.focus(); } }}
+                            placeholder="Cost"
+                            style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
+                        </div>
+                      );
+                    })()}
                     <div>
                       <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Sell</div>
                       <input id="pur-new-sell" type="number" value={pSell}
@@ -876,12 +1159,14 @@ var Purchases = React.memo(function (props) {
                     var addBase = toProductBaseQty(parseFloat(pq) || 0, selU, typedPick);
                     var curSt = typedPick.stock || 0;
                     var afterSt = curSt + addBase;
-                    var lowCost = purCostSeemsLow(typedPick, selU, pc);
+                    var lowCost = purCostSeemsLow(typedPick, selU, pc, pCostInputMode);
+                    var expCost = pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : getUnitCostPrice(typedPick, selU);
+                    var expLbl = pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
                     return (
                       <div style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
                         {hint ? <div>{hint}</div> : null}
                         <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
-                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>⚠ Cost seems too low for selected unit (expected ~{getCurrencySymbol()} {fmtNum(getUnitCostPrice(typedPick, selU))} per {selU})</div> : null}
+                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>(!) Cost seems low vs catalogue (expected ~{getCurrencySymbol()} {fmtNum(expCost)} per {expLbl})</div> : null}
                       </div>
                     );
                   })()}
@@ -890,7 +1175,7 @@ var Purchases = React.memo(function (props) {
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -1045,7 +1330,19 @@ var Purchases = React.memo(function (props) {
             <thead><tr style={{ background: "#f8fafc" }}><TH>Product</TH><TH>Qty</TH><TH>Cost</TH><TH>Sell Price</TH><TH>Total</TH></tr></thead>
             <tbody>
               {(viewPur.items || []).map(function (it, i) {
-                return <TR key={i} i={i}><TD bold>{it.name || "Unknown Product"}</TD><TD center>{it.inputQty !== undefined ? it.inputQty : it.qty}</TD><TD>{getCurrencySymbol()} {fmtNum(it.cost)}</TD><TD>{it.sellPrice ? getCurrencySymbol() + " " + fmtNum(it.sellPrice) : "-"}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost)}</TD></TR>;
+                var vp = state.products.find(function (p) { return p.id === it.id; });
+                var vu = it.inputUnit || it.unit || (vp && vp.unit) || "Pcs";
+                var showCost = vp ? costPerInputUnitFromBase(Number(it.cost) || 0, vu, vp, toProductBaseQty) : (Number(it.cost) || 0);
+                var lineAmt = purchaseLineStockTotal(it);
+                return (
+                  <TR key={i} i={i}>
+                    <TD bold>{it.name || "Unknown Product"}</TD>
+                    <TD center title="Base storage qty">{fmtNum(it.qty)}{it.inputQty != null ? <span style={{ fontSize: 10, color: C.muted }}><br />({fmtNum(it.inputQty)} {vu})</span> : null}</TD>
+                    <TD>{getCurrencySymbol()} {fmtNum(showCost)} <span style={{ fontSize: 10, color: C.muted }}>/ {vu}</span></TD>
+                    <TD>{it.sellPrice ? getCurrencySymbol() + " " + fmtNum(it.sellPrice) : "-"}</TD>
+                    <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(lineAmt)}</TD>
+                  </TR>
+                );
               })}
             </tbody>
           </table>
@@ -1068,7 +1365,7 @@ var Purchases = React.memo(function (props) {
               </div>
             </div>
             <Input label="Purchase Invoice #" value={editPur.invoiceNo || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }} />
-            <Input label="Date" type="date" value={editPur.date || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
+            <Input label="Date" type="date" value={editPur.date || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} applyPeriodLockMin={!!props.periodLockTransactionMinDate} periodLockTransactionMinDate={props.periodLockTransactionMinDate} />
           </div>
 
           {/* ── Row 2: Product Search LEFT, Payment RIGHT ── */}
@@ -1078,7 +1375,7 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
@@ -1097,21 +1394,63 @@ var Purchases = React.memo(function (props) {
                   </thead>
                   <tbody>
                     {(editPur.items || []).map(function (it, idx) {
-                      var lineTotEd = (it.inputQty !== undefined ? it.inputQty : it.qty) * (it.cost || 0);
+                      var lineTotEd = purchaseLineStockTotal(it);
                       var lineUEd = it.inputUnit || it.unit || "Pcs";
+                      var rowProdEd = state.products.find(function (p) { return p.id === it.id; });
+                      var costFieldEd = purchaseLineCostFieldShown(it, rowProdEd);
                       return (
                         <tr key={it.id || idx} style={{ background: idx % 2 === 0 ? "#fff" : "#fafbff", borderBottom: "1px solid " + C.borderLight }}>
                           <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
                           <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
                             <input type="number" value={it.qty} min="0" step="any"
-                              onChange={function (e) { var v = parseFloat(e.target.value); if (isNaN(v)) v = 0; setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { qty: v }) : r; }) }); }); }}
+                              onChange={function (e) {
+                                var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
+                                setEditPur(function (x) {
+                                  return Object.assign({}, x, {
+                                    items: x.items.map(function (r, i) {
+                                      if (i !== idx) return r;
+                                      var pr = state.products.find(function (p) { return p.id === r.id; });
+                                      var iu = r.inputUnit || r.unit || (pr && pr.unit) || "Pcs";
+                                      var factor = pr ? toProductBaseQty(1, iu, pr) : 1;
+                                      var newInputQty = factor > 0 ? Math.round((v / factor) * 1000000) / 1000000 : r.inputQty;
+                                      var ucb = Number(r.cost) || 0;
+                                      var lsv = Math.round(v * ucb * 100) / 100;
+                                      return Object.assign({}, r, { qty: v, inputQty: newInputQty != null ? newInputQty : r.inputQty, lineStockValue: lsv });
+                                    }),
+                                  });
+                                });
+                              }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
-                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }}>{lineUEd}</td>
+                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }} title="Purchase unit">{lineUEd}</td>
                           <td style={{ padding: "4px 6px" }}>
-                            <input type="number" value={it.cost}
-                              onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { cost: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                            <input type="number" value={costFieldEd}
+                              onChange={function (e) {
+                                var raw = parseFloat(e.target.value) || 0;
+                                setEditPur(function (x) {
+                                  return Object.assign({}, x, {
+                                    items: x.items.map(function (r, i) {
+                                      if (i !== idx) return r;
+                                      var pr = state.products.find(function (p) { return p.id === r.id; });
+                                      if (!pr) return Object.assign({}, r, { cost: raw, lineStockValue: Math.round((Number(r.qty) || 0) * raw * 100) / 100 });
+                                      var iu = r.inputUnit || r.unit || pr.unit || "Pcs";
+                                      var cm = r.costInputMode || defaultCostInputMode(pr, iu);
+                                      var qb = Number(r.qty) || 0;
+                                      var ucb;
+                                      var lsv;
+                                      if (cm === COST_INPUT_PER_BASE) {
+                                        ucb = raw;
+                                        lsv = Math.round(qb * ucb * 100) / 100;
+                                      } else {
+                                        ucb = unitCostBaseFromInputCost(raw, iu, pr, toProductBaseQty);
+                                        lsv = Math.round(qb * ucb * 100) / 100;
+                                      }
+                                      return Object.assign({}, r, { cost: ucb, lineStockValue: lsv, costInputMode: cm });
+                                    }),
+                                  });
+                                });
+                              }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
@@ -1142,7 +1481,7 @@ var Purchases = React.memo(function (props) {
                         if (e.key === "ArrowUp") { e.preventDefault(); setPurDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
                         if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
                           var pick = purDropIdx >= 0 ? list[purDropIdx] : (list.find(function (p) { return (p.barcode || "").toLowerCase() === ps.toLowerCase(); }) || list[0]);
-                          if (pick) { var bu = pick.unit || "Pcs"; setPs(pick.name); setPc(String(getUnitCostPrice(pick, bu))); setPSell(String(getUnitSellPrice(pick, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick); setShowPurDrop(false); setPurDropIdx(-1);
+                          if (pick) { var bu = pick.unit || "Pcs"; setPs(pick.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick); syncCostModeAndDefaultsForUnit(pick, bu); setPSell(String(getUnitSellPrice(pick, bu))); setShowPurDrop(false); setPurDropIdx(-1);
                             e.preventDefault();
                             setTimeout(function () { var qi = document.getElementById("pur-edit-qty"); if (qi) qi.focus(); }, 50);
                           } else { e.preventDefault(); return; }
@@ -1156,7 +1495,7 @@ var Purchases = React.memo(function (props) {
                       <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
                         {fp.slice(0, 7).map(function (p, pidx) {
                           return (
-                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPc(String(getUnitCostPrice(p, bu))); setPSell(String(getUnitSellPrice(p, bu))); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
+                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu))); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
                               <div>
                                 <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
                                 <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
@@ -1169,7 +1508,7 @@ var Purchases = React.memo(function (props) {
                           );
                         })}
                         {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
-                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
+                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
                           + Create "{ps}" as new product
                         </div>
                       </div>
@@ -1211,7 +1550,7 @@ var Purchases = React.memo(function (props) {
                                       if (!typedPick) return;
                                       setPUnit(uOpt);
                                       setPPickedProduct(typedPick);
-                                      setPc(String(getUnitCostPrice(typedPick, uOpt)));
+                                      syncCostModeAndDefaultsForUnit(typedPick, uOpt);
                                       setPSell(String(getUnitSellPrice(typedPick, uOpt)));
                                     }}
                                     style={{
@@ -1229,7 +1568,7 @@ var Purchases = React.memo(function (props) {
                                 <button
                                   key={"qe-" + r.name}
                                   type="button"
-                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); setPc(String(getUnitCostPrice(typedPick, r.name))); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
+                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); syncCostModeAndDefaultsForUnit(typedPick, r.name); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
                                   style={{ fontSize: 10, padding: "3px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
                                 >
                                   +1 {r.name}
@@ -1240,14 +1579,43 @@ var Purchases = React.memo(function (props) {
                         );
                       })()}
                     </div>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Cost</div>
-                      <input id="pur-edit-cost" type="number" value={pc}
-                        onChange={function (e) { setPc(e.target.value); }}
-                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-edit-sell"); if (si) si.focus(); } }}
-                        placeholder="Cost"
-                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                    </div>
+                    {(function () {
+                      var typedPick2 = pPickedProduct
+                        || state.products.find(function (p) {
+                          return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                        })
+                        || state.products.find(function (p) {
+                          return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
+                        });
+                      var bu2 = typedPick2 ? (typedPick2.unit || "Pcs") : "Pcs";
+                      var selU2 = typedPick2 ? (pUnit || pBaseUnit || typedPick2.unit || "Pcs") : "Pcs";
+                      var showCostToggle = typedPick2 && !isProductBaseUnitLabel(typedPick2, selU2);
+                      var costLab = typedPick2
+                        ? (isProductBaseUnitLabel(typedPick2, selU2) ? ("Cost (per " + bu2 + ")") : ("Cost (per " + selU2 + ")"))
+                        : "Cost";
+                      return (
+                        <div>
+                          <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>{costLab}</div>
+                          {showCostToggle ? (
+                            <div style={{ display: "flex", gap: 4, marginBottom: 4, flexWrap: "wrap", alignItems: "center" }}>
+                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_INPUT); }}
+                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_INPUT ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                Per {selU2}
+                              </button>
+                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_BASE); }}
+                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_BASE ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                                Per {bu2}
+                              </button>
+                            </div>
+                          ) : null}
+                          <input id="pur-edit-cost" type="number" value={pc}
+                            onChange={function (e) { setPc(e.target.value); }}
+                            onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-edit-sell"); if (si) si.focus(); } }}
+                            placeholder="Cost"
+                            style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
+                        </div>
+                      );
+                    })()}
                     <div>
                       <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Sell</div>
                       <input id="pur-edit-sell" type="number" value={pSell}
@@ -1278,12 +1646,14 @@ var Purchases = React.memo(function (props) {
                     var addBase = toProductBaseQty(parseFloat(pq) || 0, selU, typedPick);
                     var curSt = typedPick.stock || 0;
                     var afterSt = curSt + addBase;
-                    var lowCost = purCostSeemsLow(typedPick, selU, pc);
+                    var lowCost = purCostSeemsLow(typedPick, selU, pc, pCostInputMode);
+                    var expCost = pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : getUnitCostPrice(typedPick, selU);
+                    var expLbl = pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
                     return (
                       <div style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
                         {hint ? <div>{hint}</div> : null}
                         <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
-                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>⚠ Cost seems too low for selected unit (expected ~{getCurrencySymbol()} {fmtNum(getUnitCostPrice(typedPick, selU))} per {selU})</div> : null}
+                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>(!) Cost seems low vs catalogue (expected ~{getCurrencySymbol()} {fmtNum(expCost)} per {expLbl})</div> : null}
                       </div>
                     );
                   })()}
@@ -1292,7 +1662,7 @@ var Purchases = React.memo(function (props) {
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -1494,6 +1864,11 @@ var Purchases = React.memo(function (props) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
               <Input label="Cost Price *" type="number" value={newProd.cost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
               <Input label="Sell Price *" type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+              <Sel label="Product Type" value={newProd.type || "stock"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
+                <option value="stock">Stock</option>
+                <option value="service">Service</option>
+                <option value="raw_material">Raw Material</option>
+              </Sel>
               <Sel label="Base Unit" value={newProd.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { unit: e.target.value }); }); }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
             </div>
             <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
@@ -1512,6 +1887,11 @@ var Purchases = React.memo(function (props) {
               })}
               <button type="button" onClick={function () { setNewProd(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
             </div>
+            {String(newProd.type || "").toLowerCase() === "raw_material" ? (
+              <div style={{ fontSize: 12, color: "#92400e", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 12px", lineHeight: 1.5 }}>
+                {RAW_MATERIAL_PRICE_COST_HINT}
+              </div>
+            ) : null}
             {newProd.cost && newProd.price && (
               <div style={{ background: C.accentSoft, borderRadius: 8, padding: "10px 14px", fontSize: 13, display: "flex", gap: 16 }}>
                 <span>Profit/unit: <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum((parseFloat(newProd.price) || 0) - (parseFloat(newProd.cost) || 0))}</strong></span>
@@ -1581,3 +1961,5 @@ var Purchases = React.memo(function (props) {
 });
 
 export default Purchases;
+
+

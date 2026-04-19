@@ -19,5 +19,16 @@ export default defineConfig({
     target: 'es2022',
     reportCompressedSize: false,
     chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        /** Split vendor only; same module graph, different chunk filenames (no runtime logic change). */
+        manualChunks(id) {
+          const n = id.split('\\').join('/')
+          if (n.includes('node_modules/react-dom')) return 'vendor-react-dom'
+          if (n.includes('node_modules/react/')) return 'vendor-react'
+          return undefined
+        },
+      },
+    },
   },
 })

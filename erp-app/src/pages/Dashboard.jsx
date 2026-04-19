@@ -1,4 +1,6 @@
 import React from "react";
+import { round2 } from "../utils/moneyRound.js";
+import { sumRawMaterialKitchenCostInRange } from "../utils/ingredientUsageCost.js";
 
 var Dashboard = function (props) {
   var state = props.state;
@@ -27,44 +29,51 @@ var Dashboard = function (props) {
   var getBusinessProfile = props.getBusinessProfile;
   var currentUser = props.currentUser || null;
   var t = today();
-  var todaySales = state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.total; }, 0);
-  var todayCost = state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); }, 0);
-  var todayProfit = todaySales - todayCost;
+  var todaySales = round2(state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.total; }, 0));
+  var todayInvoicedCost = round2(state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); }, 0));
+  var todayIngredientCost = round2(sumRawMaterialKitchenCostInRange(state, t, t));
+  var todayCost = round2(todayInvoicedCost + todayIngredientCost);
+  var todayProfit = round2(todaySales - todayCost);
   /* BUG1 FIX: Use getCashBalances() as the single source of truth for cash/bank.
      The old formula (capital + salesIncome - purchases - expenses - assets) was
      incomplete — it ignored manual payables, manual receivables, capital ledger
      entries, profit distributions and opening balance seeds. */
-  var balances = getCashBalances(state);
+  var balancesRaw = getCashBalances(state);
+  var balances = { total: round2(balancesRaw.total), cash: round2(balancesRaw.cash), bank: round2(balancesRaw.bank) };
   /* BUG2 FIX: Include manual receivables — GL AR when ledger synced */
   var totalReceivable = typeof getTotalReceivableDerived === "function"
-    ? getTotalReceivableDerived(state)
+    ? round2(getTotalReceivableDerived(state))
     : (function () {
       var fromSales = state.sales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
       var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
         var paid = (mr.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
         return a + Math.max(0, mr.amount - paid);
       }, 0);
-      return fromSales + fromManual;
+      return round2(fromSales + fromManual);
     }());
   /* BUG3 FIX: manual + supplier payables — GL AP when ledger synced */
   var totalPayable = typeof getTotalPayableDerived === "function"
-    ? getTotalPayableDerived(state)
+    ? round2(getTotalPayableDerived(state))
     : (function () {
       var fromSupp = getTotalSupplierPayable(state.purchases);
       var fromManual = S.get("tc3_manualPayables", []).reduce(function (a, mp) {
         var paid = (mp.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
         return a + Math.max(0, mp.amount - paid);
       }, 0);
-      return fromSupp + fromManual;
+      return round2(fromSupp + fromManual);
     }());
   /* FIX 1: Exclude soft-deleted (inactive) products from all stock calculations */
   var activeProducts = state.products.filter(function (p) { return p.status !== "inactive"; });
-  var stockValue = activeProducts.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
-  var stockRetailValue = activeProducts.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0);
+  /* Service products are not stocked like inventory — omit from stock value / low / out-of-stock / reorder (matches Inventory tab). */
+  var stockableProducts = activeProducts.filter(function (p) {
+    return String((p && p.type) || "stock").toLowerCase() !== "service";
+  });
+  var stockValue = round2(stockableProducts.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0));
+  var stockRetailValue = round2(stockableProducts.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0));
   var recentSales = state.sales.slice().reverse().slice(0, 5);
   var recentRepairs = state.repairs.slice().reverse().slice(0, 5);
-  var lowStock = activeProducts.filter(function (p) { return p.stock > 0 && p.stock <= 5; });
-  var outOfStockProducts = activeProducts.filter(function (p) { return (p.stock || 0) === 0; });
+  var lowStock = stockableProducts.filter(function (p) { return p.stock > 0 && p.stock <= 5; });
+  var outOfStockProducts = stockableProducts.filter(function (p) { return (p.stock || 0) === 0; });
   var reorderSuggestions = lowStock.slice(0, 8).map(function (p) {
     return {
       id: p.id,
@@ -81,7 +90,7 @@ var Dashboard = function (props) {
       dt.setDate(dt.getDate() - i);
       var key = dt.toISOString().slice(0, 10);
       var label = dt.toLocaleDateString("en-US", { weekday: "short" });
-      var total = state.sales.filter(function (s) { return s.date === key; }).reduce(function (a, s) { return a + (s.total || 0); }, 0);
+      var total = round2(state.sales.filter(function (s) { return s.date === key; }).reduce(function (a, s) { return a + (s.total || 0); }, 0));
       out.push({ key: key, label: label, total: total });
     }
     return out;
@@ -94,7 +103,7 @@ var Dashboard = function (props) {
         var k = it.id || it.name || "unknown";
         if (!map[k]) map[k] = { name: it.name || "Unknown", qty: 0, revenue: 0 };
         map[k].qty += Number(it.qty || 0);
-        map[k].revenue += Number((it.price || 0) * (it.qty || 0));
+        map[k].revenue = round2(map[k].revenue + Number((it.price || 0) * (it.qty || 0)));
       });
     });
     return Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return b.qty - a.qty; }).slice(0, 5);

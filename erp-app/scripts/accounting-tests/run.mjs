@@ -81,6 +81,28 @@ if (process.exitCode) {
     }
 
     pass("Snapshot HMAC v2 (LICENSE_SECRET) + key rotation path");
+
+    var fsnap = await import("../../src/accounting/financialSnapshot.js");
+    var goodBody = {
+      id: "snap_validate_t",
+      createdAt: "2026-03-01T12:00:00.000Z",
+      label: "unit test",
+      periodCloseDate: "2026-02-28",
+      trialBalance: { totalDebit: 1, totalCredit: 1, balanced: true, rowCount: 1 },
+      balanceSheet: { assets: 1, liabilities: 0, equity: 1, balanced: true, difference: 0 },
+    };
+    var badSnap = JSON.parse(JSON.stringify(goodBody));
+    badSnap.contentHash = "snap_deadbeef1234";
+    var vrBad = await fsnap.validateSnapshotIntegrityFull(badSnap);
+    if (!vrBad.tampered || vrBad.reason !== "legacy_hash_mismatch") {
+      fail("Snapshot full validate — hash mismatch", vrBad);
+      return;
+    }
+    if (!vrBad.recomputedContentHashShort || !vrBad.snapshotPeriodDate) {
+      fail("Snapshot full validate — diagnostic fields missing", vrBad);
+      return;
+    }
+    pass("validateSnapshotIntegrityFull (hash mismatch diagnostics)");
   } catch (e) {
     fail("Snapshot HMAC v2 suite", e && e.message ? e.message : String(e));
   }

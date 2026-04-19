@@ -3,9 +3,7 @@
  * and emit audit rows (append-only GL audit).
  */
 
-function dateBeforeLock(d, lock) {
-  return !!(d && lock && String(d) < String(lock));
-}
+import { isLockedThroughDate } from "./periodLockDates.js";
 
 /**
  * Collect affected record ids that strict period lock would have blocked.
@@ -28,6 +26,8 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
     tc3_capLedger: 1,
     tc3_assets: 1,
     tc3_profitDist: 1,
+    tc3_raw_material_usage: 1,
+    tc3_raw_material_counts: 1,
   };
 
   function pushId(row) {
@@ -50,7 +50,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
     for (var od = 0; od < oldArr.length; od++) {
       var oDel = oldArr[od];
       if (!oDel || oDel.id == null) continue;
-      if (!newIds[String(oDel.id)] && dateBeforeLock(oDel.date, lock)) {
+      if (!newIds[String(oDel.id)] && isLockedThroughDate(oDel.date, lock)) {
         pushId(oDel);
       }
     }
@@ -60,7 +60,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
       var prevN = null;
       if (nrow.id != null) prevN = oldById[String(nrow.id)] || null;
       else if (li < oldArr.length && oldArr[li] && !nrow.id && !oldArr[li].id) prevN = oldArr[li];
-      if (prevN && dateBeforeLock(prevN.date, lock)) {
+      if (prevN && isLockedThroughDate(prevN.date, lock)) {
         try {
           if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
             pushId(nrow);
@@ -74,7 +74,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
 
   if (k === "tc3_openBal" && v && typeof v === "object") {
     var obOld = oldV && typeof oldV === "object" ? oldV : null;
-    if (obOld && obOld.completed && obOld.date && dateBeforeLock(obOld.date, lock)) {
+    if (obOld && obOld.completed && obOld.date && isLockedThroughDate(obOld.date, lock)) {
       try {
         if (JSON.stringify(obOld) !== JSON.stringify(v)) {
           out.push("tc3_openBal");

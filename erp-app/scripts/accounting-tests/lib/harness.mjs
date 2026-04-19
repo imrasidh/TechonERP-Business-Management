@@ -9,11 +9,12 @@ import {
   balanceSheetFromLedger,
   validateJournalBalanced,
   GL,
+  round2,
 } from "../../../src/accounting/generalLedger.js";
 import { mergeJournalLinesByTransactionId } from "../../../src/accounting/journalMerge.js";
 import { collectStrictPeriodLockOverrideIds } from "../../../src/accounting/periodLockOverride.js";
 import { validateAccountingCommitInvariants } from "../../../src/accounting/commitInvariants.js";
-import { deriveInventoryEconomics } from "../../../src/accounting/inventoryEngine.js";
+import { deriveInventoryEconomics, reconcileInventoryToLedger } from "../../../src/accounting/inventoryEngine.js";
 import { evaluateArApPolicy } from "../../../src/accounting/arApPolicy.js";
 
 export {
@@ -27,8 +28,10 @@ export {
   collectStrictPeriodLockOverrideIds,
   validateAccountingCommitInvariants,
   deriveInventoryEconomics,
+  reconcileInventoryToLedger,
   evaluateArApPolicy,
   GL,
+  round2,
 };
 
 export function uid() {

@@ -6,6 +6,8 @@ import { validateJournalBalanced, DEFAULT_GL_CHART } from "../accounting/general
 import { deriveInventoryEconomics, reconcileInventoryToLedger } from "../accounting/inventoryEngine.js";
 import { SnapshotIntegrityBadge } from "../ui/SnapshotIntegrityBadge.jsx";
 import { validateExtraUnits, buildUnitsPersistFields } from "../units/productUnits.js";
+import { diffTrialBalanceSnapshotVsLive } from "../accounting/snapshotTbDiff.js";
+import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 
 /** Group GL lines by transactionId / entryGroupId for developer debug view only */
 function tcGroupJournalByTransaction(lines) {
@@ -84,6 +86,8 @@ var Accounts = function (props) {
     shareViaWhatsApp(body || captured, filename || "TechonReport", "");
   };
   var [atab, setAtab] = useState("overview");
+  var [snapTbDiffIdx, setSnapTbDiffIdx] = useState(0);
+  var [snapTbDiffRes, setSnapTbDiffRes] = useState(null);
 
   /* ── shared helpers ── */
   var getCapLedger = function () { return S.get("tc3_capLedger", []); };
@@ -133,7 +137,7 @@ var Accounts = function (props) {
   /* Theoretical stock reconciliation — catches direct edits, damage, deletions and WAC rounding in one formula */
   var acObSnap = S.get("tc3_openBal", null);
   var acObStockVal = (acObSnap && acObSnap.completed) ? (acObSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
-  var acTotalPurchasesVal = state.purchases.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + ((it.inputQty !== undefined ? it.inputQty : it.qty) * it.cost); }, 0); }, 0);
+  var acTotalPurchasesVal = state.purchases.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
   var acTotalPurchaseReturnsVal = (state.purchaseReturns || []).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
   var acTheoreticalStock = acObStockVal + acTotalPurchasesVal - totalCOGS - acTotalPurchaseReturnsVal;
   var acStockCostValue = state.products.filter(function (p) { return p.status !== "inactive"; }).reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
@@ -1071,6 +1075,66 @@ var Accounts = function (props) {
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {glDeveloperTools && snapsRecent.length > 0 && typeof getTrialBalanceSnapshot === "function" && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.border }}>
+                  <div style={{ fontWeight: 800, marginBottom: 8, fontSize: 12, color: C.textMd }}>Trial balance vs live (support)</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                    <select
+                      value={Math.min(snapTbDiffIdx, snapsRecent.length - 1)}
+                      onChange={function (e) { setSnapTbDiffIdx(parseInt(e.target.value, 10) || 0); setSnapTbDiffRes(null); }}
+                      style={{ fontSize: 12, padding: "6px 10px", borderRadius: 8, border: "1px solid " + C.border }}
+                    >
+                      {snapsRecent.map(function (s, i) {
+                        return (
+                          <option key={(s.id || "") + "_" + i} value={i}>
+                            {(s.createdAt || "").slice(0, 16)} — {(s.label || s.id || "").slice(0, 42)}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <Btn
+                      sm
+                      col="gray"
+                      onClick={function () {
+                        var ii = Math.min(snapTbDiffIdx, snapsRecent.length - 1);
+                        var pick = snapsRecent[ii];
+                        var tbLive = getTrialBalanceSnapshot();
+                        var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+                        setSnapTbDiffRes(diffTrialBalanceSnapshotVsLive(chart, pick, tbLive, 25));
+                      }}
+                    >
+                      Show top deltas
+                    </Btn>
+                  </div>
+                  {snapTbDiffRes && snapTbDiffRes.message ? (
+                    <div style={{ fontSize: 11, color: C.muted }}>{snapTbDiffRes.message}</div>
+                  ) : null}
+                  {snapTbDiffRes && snapTbDiffRes.rows && snapTbDiffRes.rows.length > 0 ? (
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                        <thead>
+                          <tr style={{ background: "#fff8e1" }}>
+                            <TH>Account</TH>
+                            <TH style={{ textAlign: "right" }}>Δ signed</TH>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {snapTbDiffRes.rows.map(function (rw, ri) {
+                            return (
+                              <TR key={(rw.accountId || "") + "_" + ri} i={ri}>
+                                <TD>{rw.code} — {rw.name}</TD>
+                                <TD style={{ textAlign: "right", fontWeight: 800 }}>{fmtNum(rw.deltaSigned)}</TD>
+                              </TR>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : snapTbDiffRes && !snapTbDiffRes.legacy ? (
+                    <div style={{ fontSize: 11, color: "#166534", fontWeight: 700 }}>No material per-account drift vs live TB.</div>
+                  ) : null}
                 </div>
               )}
             </Card>

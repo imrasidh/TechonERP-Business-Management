@@ -31,6 +31,7 @@ import {
   DEFAULT_GL_CHART,
   hashJournalLines,
   validateJournalBalanced,
+  GL,
 } from "./accounting/generalLedger.js";
 import { deriveInventoryEconomics, reconcileInventoryToLedger } from "./accounting/inventoryEngine.js";
 import { buildFinancialSnapshot, appendSnapshot, sanitizeFinancialSnapshots, verifyFinancialSnapshotsHmac } from "./accounting/financialSnapshot.js";
@@ -39,6 +40,11 @@ import { collectStrictPeriodLockOverrideIds } from "./accounting/periodLockOverr
 import { buildOperationalHealthSnapshot } from "./ops/operationalHealth.js";
 import { isProductionLicenseSecretMissingBlock } from "./ops/accountingGuards.js";
 import { handleOperationalGuardAudit } from "./ops/operationalGuard.js";
+import { isLockedThroughDate, nextCalendarDay } from "./accounting/periodLockDates.js";
+import { buildInventoryReconTimeSeries } from "./accounting/inventoryReconTimeSeries.js";
+import { buildSupportBundle as buildSupportBundlePayload, downloadSupportBundleJson } from "./utils/supportBundleExport.js";
+import { explainInventoryDifference } from "./accounting/inventoryReconExplain.js";
+import { buildInventoryReplayWindow } from "./utils/inventoryReplayDebug.js";
 import { appendFinancialMutationLog, MUTATION_ENTITY_BY_STORAGE_KEY } from "./accounting/mutationAudit.js";
 import { mergeRebuildWithImmutableHistory, mergeJournalLinesByTransactionId } from "./accounting/journalMerge.js";
 import { getOrCreateDeviceId } from "./accounting/ids.js";
@@ -70,7 +76,7 @@ import Accounts from "./pages/Accounts.jsx";
 import { ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, canAccessPageByRole, hasPermission, normalizeRole } from "./security/rbac.js";
 import { showPermissionDenied as showPermissionDeniedUi } from "./utils/permissionUi.js";
 
-/* ─── FONTS ───────────────────────────────────────── */
+/* --- FONTS ----------------------------------------- */
 if (!document.getElementById("erp-fonts")) {
   var _lnk = document.createElement("link");
   _lnk.id = "erp-fonts";
@@ -79,7 +85,7 @@ if (!document.getElementById("erp-fonts")) {
   document.head.appendChild(_lnk);
 }
 
-/* ─── AUDIT LOG HELPER ─────────────────────────────── */
+/* --- AUDIT LOG HELPER ------------------------------- */
 /* Writes an audit entry to IndexedDB via S. Keeps the 500 most recent entries. */
 var addAudit = function (action, reference, details) {
   try {
@@ -135,7 +141,7 @@ var roundMoney = function (n) {
   if (!isFinite(x)) x = 0;
   return Math.round(x * 100) / 100;
 };
-/** Qty / unit sums — 2 dp (e.g. 127.57 not 127.56666700000001) */
+/** Qty / unit sums - 2 dp (e.g. 127.57 not 127.56666700000001) */
 var roundQty = function (n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 };
@@ -146,7 +152,7 @@ var fmtNum = function (n) {
   return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
-/* ── SHA-256 password hashing via native crypto.subtle ── */
+/* -- SHA-256 password hashing via native crypto.subtle -- */
 var sha256 = function (str) {
   var enc = new TextEncoder();
   return crypto.subtle.digest("SHA-256", enc.encode(str)).then(function (buf) {
@@ -157,7 +163,7 @@ var sha256 = function (str) {
 var pwMatches = function (input, stored) {
   if (!stored) return false;
   if (stored.startsWith("sha256:")) {
-    /* async path — caller must use pwMatchesAsync */
+    /* async path - caller must use pwMatchesAsync */
     return false;
   }
   return input === stored; /* legacy plaintext */
@@ -186,7 +192,7 @@ var tryFinalizeAdminPinEntry = function (entry, stored, onUnlocked, onWrong) {
     else onWrong();
   }
 };
-/* Support challenge–response (no plaintext master PIN in app). Salt must match support desk tooling. */
+/* Support challenge-response (no plaintext master PIN in app). Salt must match support desk tooling. */
 var TC_SUPPORT_UNLOCK_SALT = "techon-master-salt-2026";
 var generateSupportChallengeCode = function () {
   var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -205,35 +211,35 @@ var computeSupportUnlockCode = function (challenge) {
     return hex.substring(0, 6).toUpperCase();
   });
 };
-/* Currency helper — reads from global state via getCurrency() set in App root */
+/* Currency helper - reads from global state via getCurrency() set in App root */
 var _currencySymbol = { value: "Rs" };
 var getCurrencySymbol = function () { return _currencySymbol.value; };
 var fmtMoney = function (n) { return _currencySymbol.value + " " + fmtNum(n); };
 var updateCurrencySymbol = function (sym) { if (sym) _currencySymbol.value = sym; };
 var fmtDate = function (d) { try { return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" }); } catch (e) { return d; } };
 var fmtDateFull = function (d) { try { return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch (e) { return d; } };
-/* isDecimalUnit — returns true for weight/volume units that should allow decimal quantities in POS */
+/* isDecimalUnit - returns true for weight/volume units that should allow decimal quantities in POS */
 var isDecimalUnit = function (unit) {
   return ["Kg", "G", "Litre", "ML", "Gram", "Metre", "CM", "MM"].indexOf(unit || "") >= 0;
 };
 
-/* ─── UNIT CONVERSION ENGINE ─────────────────────────────────────────────────
+/* --- UNIT CONVERSION ENGINE -------------------------------------------------
    Every unit belongs to a group. Within a group, quantities convert to the
    base unit automatically. Stock is always stored in the BASE unit.
    Selling/buying can use any unit in the same group.
 
    Groups:
-     weight  → base: Kg  (G = 0.001 Kg)
-     volume  → base: Litre  (ML = 0.001 Litre)
-     length  → base: Metre  (CM = 0.01, MM = 0.001)
-     count   → base: Pcs  (Dozen = 12 Pcs; all others = 1 Pcs)
+     weight  ? base: Kg  (G = 0.001 Kg)
+     volume  ? base: Litre  (ML = 0.001 Litre)
+     length  ? base: Metre  (CM = 0.01, MM = 0.001)
+     count   ? base: Pcs  (Dozen = 12 Pcs; all others = 1 Pcs)
 
    Example: product unit = Kg, sell 400 G
      factor = UNIT_FACTORS["G"] = 0.001
-     qty (base) = 400 × 0.001 = 0.4 Kg  ← stored, deducted from stock
-     total = 0.4 × price_per_Kg            ← accounting correct
-     invoice shows: 400 G                  ← customer-friendly
-──────────────────────────────────────────────────────────────────────────── */
+     qty (base) = 400 - 0.001 = 0.4 Kg  ? stored, deducted from stock
+     total = 0.4 - price_per_Kg            ? accounting correct
+     invoice shows: 400 G                  ? customer-friendly
+---------------------------------------------------------------------------- */
 var UNIT_GROUPS = {
   weight: { base: "Kg",    units: ["G", "Kg"],                                                   factors: { G: 0.001, Kg: 1 } },
   volume: { base: "Litre", units: ["ML", "Litre"],                                               factors: { ML: 0.001, Litre: 1 } },
@@ -261,7 +267,7 @@ var getCompatibleUnits = function (baseUnit) {
 };
 
 /* Convert saleQty in saleUnit to base unit quantity.
-   e.g. toBaseQty(400, "G", "Kg") → 0.4 */
+   e.g. toBaseQty(400, "G", "Kg") ? 0.4 */
 var toBaseQty = function (saleQty, saleUnit, baseUnit) {
   if (saleUnit === baseUnit) return saleQty;
   var group = getUnitGroup(baseUnit);
@@ -270,7 +276,7 @@ var toBaseQty = function (saleQty, saleUnit, baseUnit) {
   return Math.round((saleQty * fromFactor / toFactor) * 1000000) / 1000000;
 };
 
-/* Package-style unit (box, carton) vs count/weight — for conversion direction */
+/* Package-style unit (box, carton) vs count/weight - for conversion direction */
 var isPackageBulkUnit = function (a, b) {
   if (!a || !b) return false;
   var pkg = /^(box|carton|tray|sack|bundle|pack|case|dozen|bag|crate)$/i;
@@ -278,7 +284,7 @@ var isPackageBulkUnit = function (a, b) {
 };
 
 /* Optional bulk support. Stock is always stored in product.unit (the "storage unit" field).
-   bulkConversion means: 1 bulkUnit = bulkConversion × smallest-count unit (Pcs) when bulk is Box.
+   bulkConversion means: 1 bulkUnit = bulkConversion - smallest-count unit (Pcs) when bulk is Box.
    Supports both: (Pcs + Box) and inverted (Box + Pcs) product setup. */
 var toProductBaseQty = function (qty, inputUnit, product) {
   var q = parseFloat(qty) || 0;
@@ -344,21 +350,30 @@ var getUnitCostPrice = function (product, unit) {
   }
   return baseCost;
 };
-/** Catalog sell price per base (smallest) unit — factor-1 row or product.price */
+/** Catalog sell price per base (smallest) unit - factor-1 row or product.price */
 var getBaseSellPcsPrice = function (product) {
   if (!product) return 0;
-  if (isProductsUnitsArray(product)) {
-    var rows = getProductUnitRows(product);
-    var baseRow = rows[0];
-    if (baseRow && baseRow.factor <= 1) {
-      var fromRow = parseFloat(baseRow.sellPrice) || 0;
-      if (fromRow > 0) return fromRow;
-    }
+  if (!isProductsUnitsArray(product)) return parseFloat(product.price) || 0;
+  var rows = getProductUnitRows(product);
+  if (!rows || rows.length === 0) return parseFloat(product.price) || 0;
+  var largest = rows[rows.length - 1];
+  var lf = parseFloat(largest && largest.factor) || 0;
+  var lp = parseFloat(largest && largest.sellPrice) || 0;
+  var impliedFromPack = lf > 1 && lp > 0 ? Math.round((lp / lf) * 100) / 100 : 0;
+  var baseRow = rows[0];
+  var fromRow = baseRow && baseRow.factor <= 1 ? parseFloat(baseRow.sellPrice) || 0 : 0;
+  var topPrice = parseFloat(product.price) || 0;
+  /* Data entry mistake: base row or main price equals the pack/tier total (e.g. Rs 3300 per 10kg bag copied to per-kg row) — use packPrice/factor so stock & POS stay per-base. */
+  if (rows.length >= 2 && impliedFromPack > 0) {
+    var eps = 0.015;
+    if (fromRow > 0 && Math.abs(fromRow - lp) < eps) return impliedFromPack;
+    if (fromRow <= 0 && topPrice > 0 && Math.abs(topPrice - lp) < eps) return impliedFromPack;
   }
-  return parseFloat(product.price) || 0;
+  if (fromRow > 0) return fromRow;
+  return topPrice;
 };
 /**
- * POS / Sales: display & line math = baseSellPcs × unitFactor (ignores per-tier sell overrides on larger rows).
+ * POS / Sales: display & line math = baseSellPcs - unitFactor (ignores per-tier sell overrides on larger rows).
  * Purchases & reports keep using getUnitSellPrice when explicit tier prices matter.
  */
 var getPosSellPricePerSaleUnit = function (product, unit) {
@@ -376,12 +391,21 @@ var getBaseCostPcsPrice = function (product) {
   if (!product) return 0;
   if (!isProductsUnitsArray(product)) return parseFloat(product.cost) || 0;
   var rows = getProductUnitRows(product);
+  if (!rows || rows.length === 0) return parseFloat(product.cost) || 0;
+  var largest = rows[rows.length - 1];
+  var lf = parseFloat(largest && largest.factor) || 0;
+  var lc = parseFloat(largest && largest.cost) || 0;
+  var impliedFromPack = lf > 1 && lc > 0 ? Math.round((lc / lf) * 10000) / 10000 : 0;
   var baseRow = rows[0];
-  if (baseRow && baseRow.factor <= 1) {
-    var fromRow = parseFloat(baseRow.cost) || 0;
-    if (fromRow > 0) return fromRow;
+  var fromRow = baseRow && baseRow.factor <= 1 ? parseFloat(baseRow.cost) || 0 : 0;
+  var topCost = parseFloat(product.cost) || 0;
+  var eps = 0.015;
+  if (rows.length >= 2 && impliedFromPack > 0) {
+    if (fromRow > 0 && Math.abs(fromRow - lc) < eps) return impliedFromPack;
+    if (fromRow <= 0 && topCost > 0 && Math.abs(topCost - lc) < eps) return impliedFromPack;
   }
-  var fromProduct = parseFloat(product.cost) || 0;
+  if (fromRow > 0) return fromRow;
+  var fromProduct = topCost;
   if (fromProduct > 0) return fromProduct;
   for (var j = rows.length - 1; j >= 1; j--) {
     var tr = rows[j];
@@ -391,7 +415,7 @@ var getBaseCostPcsPrice = function (product) {
   }
   return 0;
 };
-/** POS: cost per selected sale unit = baseCostPcs × factor (matches tiered sell math; avoids comparing strip price to box cost). */
+/** POS: cost per selected sale unit = baseCostPcs - factor (matches tiered sell math; avoids comparing strip price to box cost). */
 var getPosCostPerSaleUnit = function (product, unit) {
   if (!product) return 0;
   if (isProductsUnitsArray(product)) {
@@ -448,9 +472,9 @@ var fmtQtyUnit = function (qty, unit) {
 };
 
 /* Smart stock/qty display:
-   Kg   >= 1  → "5 Kg"     Kg   < 1  → "400 G"
-   Litre >= 1 → "2 L"      Litre < 1 → "500 ML"
-   Pcs/others → "12 Pcs"
+   Kg   >= 1  ? "5 Kg"     Kg   < 1  ? "400 G"
+   Litre >= 1 ? "2 L"      Litre < 1 ? "500 ML"
+   Pcs/others ? "12 Pcs"
 */
 var fmtStock = function (qty, unit) {
   var q = qty || 0;
@@ -466,7 +490,7 @@ var fmtStock = function (qty, unit) {
   return parseFloat(q.toFixed(4)) + " " + u;
 };
 
-/** Display for summed qty / mixed units — 2 decimal places, no float junk */
+/** Display for summed qty / mixed units - 2 decimal places, no float junk */
 var fmtSumQty = function (n) {
   return roundQty(n);
 };
@@ -556,7 +580,7 @@ var remainingPcsAfterCartForProduct = function (product, cart) {
 
 /* Quick-amount chips shown in POS cart for weight/volume products.
    Returns array of {label, qty, unit} objects for the product's base unit.
-   e.g. base=Kg → [{label:"100g",qty:100,unit:"G"},{label:"250g",...},...]  */
+   e.g. base=Kg ? [{label:"100g",qty:100,unit:"G"},{label:"250g",...},...]  */
 /* Quick-amount chips for grocery products.
    qty values are in the product's own unit (Kg or Litre).
    e.g. Kg product: 100g chip sets qty=0.1, 1Kg chip sets qty=1 */
@@ -582,16 +606,16 @@ var getQuickAmounts = function (unit) {
   return [];
 };
 
-/* ─── WHATSAPP PDF SHARE ──────────────────────────────────────────────────────
+/* --- WHATSAPP PDF SHARE ------------------------------------------------------
    Wraps the full print HTML (with embedded CSS + fonts) and sends it to the
    Electron main process which generates a real PDF, saves it to the folder
    in Settings (default: Documents/TechonERP/Invoices), reveals it in Explorer,
    then opens WhatsApp with the customer phone.
    Falls back gracefully when not running inside Electron.
-─────────────────────────────────────────────────────────────────────────────── */
+------------------------------------------------------------------------------- */
 var shareViaWhatsApp = function (html, filename, phone, options) {
   options = options || {};
-  /* headStyles: full <style>...</style> blocks for @page — must live in <head> or PDF defaults to A4 */
+  /* headStyles: full <style>...</style> blocks for @page - must live in <head> or PDF defaults to A4 */
   var headStyles = options.headStyles || "";
   var pageFormat = options.pageFormat || "";
   var fullHtml = headStyles
@@ -606,27 +630,27 @@ var shareViaWhatsApp = function (html, filename, phone, options) {
       "</head><body>" + html + "</body></html>");
 
   if (window.electronAPI && window.electronAPI.sharePDF) {
-    showAlert("⏳ Generating PDF… Please wait a moment.");
+    showAlert("? Generating PDF- Please wait a moment.");
     var _st = S.get("tc3_settings", {});
     var invoicePdfFolder = (_st && _st.invoicePdfFolder) ? String(_st.invoicePdfFolder).trim() : "";
     window.electronAPI.sharePDF({ html: fullHtml, filename: filename, phone: phone || "", pageFormat: pageFormat, invoicePdfFolder: invoicePdfFolder })
       .then(function (res) {
         if (res && res.ok) {
           var p = res.path ? String(res.path) : "";
-          showAlert("✅ PDF saved.\n\n" + (p ? "Location:\n" + p + "\n\n" : "") + "The file is highlighted in File Explorer.\nWhatsApp has opened — attach the file and send.");
+          showAlert("? PDF saved.\n\n" + (p ? "Location:\n" + p + "\n\n" : "") + "The file is highlighted in File Explorer.\nWhatsApp has opened - attach the file and send.");
         } else {
-          showAlert("❌ PDF generation failed.\n" + (res && res.message ? res.message : "Please try again."));
+          showAlert("? PDF generation failed.\n" + (res && res.message ? res.message : "Please try again."));
         }
       })
       .catch(function (err) {
-        showAlert("❌ PDF error: " + (err && err.message ? err.message : String(err)));
+        showAlert("? PDF error: " + (err && err.message ? err.message : String(err)));
       });
   } else {
     showAlert("WhatsApp sharing is only available in the desktop app.");
   }
 };
 
-/* ─── WABtn — small green WhatsApp icon button ────────────────────────────── */
+/* --- WABtn - small green WhatsApp icon button ------------------------------ */
 var WABtn = function (props) {
   var onClick = props.onClick;
   var disabled = props.disabled;
@@ -675,7 +699,7 @@ var genInvNo = function (pfx) {
 };
 var genPurNo = function () { return genInvNo("PUR"); };
 
-/* ─── IN-APP DIALOG (replaces alert/confirm to avoid Electron focus loss) ── */
+/* --- IN-APP DIALOG (replaces alert/confirm to avoid Electron focus loss) -- */
 var _dialogState = { listeners: [] };
 var _setDialog = function (d) {
   _dialogState.current = d;
@@ -732,8 +756,8 @@ var getRememberedPayDupPickId = function (nameKey) {
 };
 
 var showPaymentAppliedToast = function (custName, phoneLine) {
-  var phoneShow = phoneLine !== undefined && phoneLine !== null && String(phoneLine).trim() ? String(phoneLine).trim() : "—";
-  var msg = "✔ Payment applied to: " + (custName || "Customer") + " (" + phoneShow + ")";
+  var phoneShow = phoneLine !== undefined && phoneLine !== null && String(phoneLine).trim() ? String(phoneLine).trim() : "-";
+  var msg = "? Payment applied to: " + (custName || "Customer") + " (" + phoneShow + ")";
   var payload = { main: msg, hint: "", id: Date.now(), variant: "success" };
   if (msg === _payToastDedupMain && Date.now() - _payToastDedupAt < 2500) return;
   _payToastDedupMain = msg;
@@ -818,14 +842,14 @@ var AppDialog = function () {
         {dlg.type === "payDupPick" ? (
           <React.Fragment>
             <div style={{ fontSize: 16, fontWeight: 800, color: "#0d1b3e", marginBottom: 6 }}>Select the correct customer</div>
-            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>Same name on multiple records — pick who should receive this payment, or skip to use the previous behavior (all name matches).</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>Same name on multiple records - pick who should receive this payment, or skip to use the previous behavior (all name matches).</div>
             <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: 10, marginBottom: 16 }}>
               {(dlg.candidates || []).map(function (c) {
                 var isHl = dupPickSel === c.id;
                 return (
                   <label key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: "1px solid #f1f5f9", cursor: "pointer", fontSize: 13, background: isHl ? "#eff6ff" : "#fff", borderLeft: isHl ? "3px solid #2979ff" : "3px solid transparent", paddingLeft: isHl ? 11 : 14 }}>
                     <input type="radio" name="tc_pay_dup" checked={isHl} onChange={function () { setDupPickSel(c.id); }} style={{ accentColor: "#2979ff" }} />
-                    <span><strong>{c.name}</strong><span style={{ color: "#64748b", marginLeft: 8 }}>{c.phone ? c.phone : "—"}</span></span>
+                    <span><strong>{c.name}</strong><span style={{ color: "#64748b", marginLeft: 8 }}>{c.phone ? c.phone : "-"}</span></span>
                   </label>
                 );
               })}
@@ -865,8 +889,8 @@ var AppDialog = function () {
 };
 
 
-/* ─── COST CIPHER: configurable secret word (10 letters, digits 0-9 → letters) ── */
-var COST_KEY = "STARLIGHKZ"; // legacy fallback — overridden by settings.costCodeWord
+/* --- COST CIPHER: configurable secret word (10 letters, digits 0-9 ? letters) -- */
+var COST_KEY = "STARLIGHKZ"; // legacy fallback - overridden by settings.costCodeWord
 var encodeCost = function (cost, key) {
   /* digits 1-9 map to letters 1st-9th, digit 0 maps to 10th letter */
   var k = (key && key.length === 10) ? key.toUpperCase() : COST_KEY;
@@ -874,7 +898,7 @@ var encodeCost = function (cost, key) {
   return "X" + core + "X";
 };
 
-/* ─── PRODUCT NAME HELPERS ──────────────────────────── */
+/* --- PRODUCT NAME HELPERS ---------------------------- */
 var toTitleCase = function (str) {
   var s = String(str == null ? "" : str).trim();
   return s.replace(/\w\S*/g, function (w) { return w.charAt(0).toUpperCase() + w.slice(1); });
@@ -887,7 +911,7 @@ var checkProductName = function (name, products, excludeId) {
     return String(p.name == null ? "" : p.name).trim().toLowerCase() === trimmed;
   });
   if (exact) return { type: "exact", match: exact.name };
-  /* Similar — 2+ meaningful words overlap */
+  /* Similar - 2+ meaningful words overlap */
   var words = trimmed.split(/\s+/).filter(function (w) { return w.length > 2; });
   if (words.length < 1) return null;
   var similar = active.find(function (p) {
@@ -898,15 +922,15 @@ var checkProductName = function (name, products, excludeId) {
   if (similar) return { type: "similar", match: similar.name };
   return null;
 };
-/* ─── INDEXEDDB STORAGE — replaces localStorage, ~500MB capacity ─── */
-var _idbCache = {};  /* in-memory cache — S.get reads from here synchronously */
+/* --- INDEXEDDB STORAGE - replaces localStorage, ~500MB capacity --- */
+var _idbCache = {};  /* in-memory cache - S.get reads from here synchronously */
 var _idbDB    = null; /* IndexedDB connection, set after initAndLoadIDB() */
 var _IDB_NAME  = "techon_erp_v1";
 var _IDB_STORE = "kv";
 
 /* Expose cache on window so main.cjs executeJavaScript can read it on close */
 window._tcCache = _idbCache;
-window._idbCache = _idbCache; /* alias — matches DeepSeek/Gemini recommendations */
+window._idbCache = _idbCache; /* alias - matches DeepSeek/Gemini recommendations */
 
 var _idbWrite = function (k, v) {
   if (!_idbDB) return;
@@ -917,7 +941,7 @@ var _idbWrite = function (k, v) {
     } else {
       tx.objectStore(_IDB_STORE).put(v, k);
     }
-  } catch (e) { /* fire-and-forget — never crash on write */ }
+  } catch (e) { /* fire-and-forget - never crash on write */ }
 };
 
 /* Dual-write small backup: survives slow IDB / quota edge cases on next cold start */
@@ -935,7 +959,7 @@ var _mirrorTc3ToLocalStorage = function (k, v) {
   }
 };
 
-/* When IDB load runs after localStorage hydrate, the cursor overwrites _idbCache — including with empty [].
+/* When IDB load runs after localStorage hydrate, the cursor overwrites _idbCache - including with empty [].
    Old merge only filled *missing* keys, so empty IDB arrays hid full localStorage copies. Prefer LS when richer. */
 var shouldPreferLocalStorageMerge = function (cur, parsed) {
   if (parsed === undefined || parsed === null) return false;
@@ -967,7 +991,7 @@ var mergeLocalStorageIntoCache = function () {
       _idbWrite(k, parsed);
       try {
         localStorage.setItem(k, JSON.stringify(parsed));
-      } catch (e) { /* quota — cache + IDB still aligned */ }
+      } catch (e) { /* quota - cache + IDB still aligned */ }
     } catch (e) {
       if (tcIsDevEnv()) try { console.warn("[TechonERP] merge skip key " + k + ":", e.message); } catch (e2) {}
     }
@@ -975,7 +999,7 @@ var mergeLocalStorageIntoCache = function () {
 };
 
 /* Persist IDB-loaded values into localStorage when LS has no copy (keeps stores aligned).
-   NEVER run synchronously during startup — serializing large tables blocks the UI for 10–30+ seconds. */
+   NEVER run synchronously during startup - serializing large tables blocks the UI for 10-30+ seconds. */
 var backfillLocalStorageFromCache = function () {
   if (typeof localStorage === "undefined") return;
   Object.keys(_idbCache).forEach(function (k) {
@@ -992,7 +1016,7 @@ var backfillLocalStorageFromCache = function () {
   });
 };
 
-/* Schedule backfill after first paint / login — avoids multi-second "Loading Techon ERP…" freeze */
+/* Schedule backfill after first paint / login - avoids multi-second "Loading Techon ERP-" freeze */
 var scheduleDeferredLocalStorageBackfill = function () {
   var run = function () {
     try { backfillLocalStorageFromCache(); } catch (e) { /* ignore */ }
@@ -1004,7 +1028,7 @@ var scheduleDeferredLocalStorageBackfill = function () {
   }
 };
 
-/* Pre-save accounting rules (negative stock, locked period) — replaced after loadState */
+/* Pre-save accounting rules (negative stock, locked period) - replaced after loadState */
 var validateAccountingMutation = function (k, v, oldV) {
   return { ok: true };
 };
@@ -1025,20 +1049,22 @@ var GL_TRIGGER_KEYS = {
   tc3_openBal: 1,
   tc3_settings: 1,
   tc3_gl_mode: 1,
+  tc3_raw_material_usage: 1,
+  tc3_raw_material_counts: 1,
 };
 
-/* Core storage write (no GL side-effects) — used for journal + internal keys */
+/* Core storage write (no GL side-effects) - used for journal + internal keys */
 var _coreStorageSet = function (k, v) {
   _idbCache[k] = v;
   _idbWrite(k, v);
   _mirrorTc3ToLocalStorage(k, v);
 };
 
-/* Debounced live journal refresh — replaced after loadState() with real scheduler */
+/* Debounced live journal refresh - replaced after loadState() with real scheduler */
 var scheduleGlLiveRebuild = function () {};
 
-/* S.get — synchronous read from in-memory cache (zero changes needed in components) */
-/* S.set — updates cache immediately, then writes to IndexedDB asynchronously        */
+/* S.get - synchronous read from in-memory cache (zero changes needed in components) */
+/* S.set - updates cache immediately, then writes to IndexedDB asynchronously        */
 var S = {
   get: function (k, def) {
     var v = _idbCache[k];
@@ -1049,6 +1075,17 @@ var S = {
     if (_glSilentDepth === 0) {
       var vr = validateAccountingMutation(k, v, oldV);
       if (!vr.ok) {
+        try {
+          if (typeof appendGlAuditRow === "function") {
+            appendGlAuditRow("mutation_blocked", {
+              storageKey: k,
+              message: vr.message || "",
+              attemptedAction: "S.set",
+              actor: typeof window !== "undefined" ? window._tcAuditActor : null,
+              ts: new Date().toISOString(),
+            });
+          }
+        } catch (e1) { /* ignore */ }
         try {
           showAlert(vr.message || "Accounting validation failed.");
         } catch (e) {}
@@ -1099,7 +1136,7 @@ var S = {
   },
   /**
    * Append (or prepend) one record to a stored array without the caller building a new giant array first.
-   * Uses S.set once so sync/IDB mirror stays atomic. opts.prepend = true → front insert (e.g. tc3_sales).
+   * Uses S.set once so sync/IDB mirror stays atomic. opts.prepend = true ? front insert (e.g. tc3_sales).
    */
   appendRecord: function (k, record, opts) {
     var prepend = opts && opts.prepend;
@@ -1113,9 +1150,9 @@ var S = {
 /* Expose S globally so SyncEngine can patch S.set for network sync */
 window._tcS = S;
 
-var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
 
-/** JSON backup download before GL/inventory repair — same key set as auto-backup. */
+/** JSON backup download before GL/inventory repair - same key set as auto-backup. */
 var downloadPreRepairJsonBackup = function () {
   try {
     var st = S.get("tc3_settings", {}) || {};
@@ -1140,8 +1177,8 @@ var downloadPreRepairJsonBackup = function () {
   }
 };
 
-/* Warm cache from localStorage before React mounts — same source as dual-write S.set mirrors.
-   Lets login / first paint run immediately while IndexedDB opens in the background (no 10–20s “Loading…” gate). */
+/* Warm cache from localStorage before React mounts - same source as dual-write S.set mirrors.
+   Lets login / first paint run immediately while IndexedDB opens in the background (no 10-20s -Loading-- gate). */
 var hydrateCacheFromLocalStorageSync = function () {
   if (typeof localStorage === "undefined") return;
   try {
@@ -1162,7 +1199,7 @@ hydrateCacheFromLocalStorageSync();
 var initAndLoadIDB = function () {
   /* Guard against double-init (e.g. App unmount/remount during wizard transition) */
   if (initAndLoadIDB._done) return Promise.resolve();
-  /* Multiple callers (mount effect + network sync effect) must share one Promise — otherwise two
+  /* Multiple callers (mount effect + network sync effect) must share one Promise - otherwise two
      parallel IDB cursors can race and wipe _idbCache after server_state hydrate. */
   if (initAndLoadIDB._promise) return initAndLoadIDB._promise;
 
@@ -1177,7 +1214,7 @@ var initAndLoadIDB = function () {
     }
 
     /* After any load path: merge LS gaps into cache, then resolve immediately.
-       Heavy localStorage backfill is deferred — it was blocking startup for 15–30s on large DBs. */
+       Heavy localStorage backfill is deferred - it was blocking startup for 15-30s on large DBs. */
     var timeoutId = null;
     function finishInit() {
       mergeLocalStorageIntoCache();
@@ -1188,11 +1225,11 @@ var initAndLoadIDB = function () {
 
     try {
       var req = indexedDB.open(_IDB_NAME, 1);
-      /* Only bail out if indexedDB.open itself hangs — never resolve while a cursor is still
+      /* Only bail out if indexedDB.open itself hangs - never resolve while a cursor is still
          filling _idbCache (that used to wipe a concurrent loadStateFromServer hydrate). */
       timeoutId = setTimeout(function () {
         if (!settled && req.readyState !== "done") {
-          if (tcIsDevEnv()) try { console.warn("[TechonERP] IDB open hung — merging localStorage fallback and continuing"); } catch (e2) {}
+          if (tcIsDevEnv()) try { console.warn("[TechonERP] IDB open hung - merging localStorage fallback and continuing"); } catch (e2) {}
           mergeLocalStorageIntoCache();
           safeResolve();
           scheduleDeferredLocalStorageBackfill();
@@ -1218,7 +1255,7 @@ var initAndLoadIDB = function () {
       req.onsuccess = function (e) {
         clearTimeout(timeoutId);
         var db = e.target.result;
-        /* Timeout resolved first — keep DB handle for writes; do not run cursor (would overwrite newer cache). */
+        /* Timeout resolved first - keep DB handle for writes; do not run cursor (would overwrite newer cache). */
         if (settled) {
           _idbDB = db;
           return;
@@ -1268,7 +1305,7 @@ var initAndLoadIDB = function () {
 initAndLoadIDB._done = false;
 initAndLoadIDB._promise = null;
 
-/* ─── CASH / BANK BALANCE CALCULATOR ──────────────── */
+/* --- CASH / BANK BALANCE CALCULATOR ---------------- */
 
 /* BUG8 FIX: Helper to get a supplier's true payable balance from purchase records.
    The supplier.payable field can drift when purchases are edited/deleted.
@@ -1294,7 +1331,7 @@ var getTotalSupplierPayable = function (purchases) {
   return Object.keys(bySupplier).reduce(function (a, k) { return a + bySupplier[k]; }, 0);
 };
 
-/** Total payables (supplier invoices + manual) — prefers GL Accounts Payable when journal is synced */
+/** Total payables (supplier invoices + manual) - prefers GL Accounts Payable when journal is synced */
 var getTotalPayableDerived = function (state) {
   try {
     var jlines = S.get("tc3_journal_lines", []);
@@ -1310,7 +1347,7 @@ var getTotalPayableDerived = function (state) {
   return fromSupp + fromManual;
 };
 
-/** Total receivables — prefers GL Accounts Receivable when journal is synced */
+/** Total receivables - prefers GL Accounts Receivable when journal is synced */
 var getTotalReceivableDerived = function (state) {
   try {
     var jlines = S.get("tc3_journal_lines", []);
@@ -1369,7 +1406,7 @@ var getDuplicateNormalizedNameKeys = function (customers) {
 };
 
 /**
- * ID-first; else normalized name + optional phone match; duplicate names → needPicker or legacy apply-all.
+ * ID-first; else normalized name + optional phone match; duplicate names ? needPicker or legacy apply-all.
  */
 var resolvePaymentCreditTargetIds = function (customers, sale, opts) {
   opts = opts || {};
@@ -1455,7 +1492,7 @@ var warnPaymentCustomerMatchSafety = function (customers, sale, context) {
   }, 0);
   if (dup > 1) {
     if (tcIsDevEnv()) try {
-      console.warn("[TechonERP] Duplicate customer name detected — payment matched by name may be ambiguous", context || "", sale.invoiceNo || sale.id || "");
+      console.warn("[TechonERP] Duplicate customer name detected - payment matched by name may be ambiguous", context || "", sale.invoiceNo || sale.id || "");
     } catch (_) {}
   }
 };
@@ -1481,21 +1518,21 @@ var toastAfterCustomerPaymentApplied = function (customers, res) {
     var cc = (customers || []).find(function (x) { return x.id === res.ids[0]; });
     showPaymentAppliedToast(cc ? cc.name : "Customer", cc ? cc.phone : "");
   } else {
-    showPaymentAppliedToast(res.ids.length + " customer records", "same name · legacy");
+    showPaymentAppliedToast(res.ids.length + " customer records", "same name - legacy");
   }
 };
 
-/* ── getNetCOGS: Bug 3 Fix ──────────────────────────────────────────────────
+/* -- getNetCOGS: Bug 3 Fix --------------------------------------------------
    When a sale is returned, sale.total is reduced (net revenue) but sale.items
    remain intact (good for viewing receipts). This means raw COGS from sale.items
-   is GROSS COGS — it includes cost of returned goods.
+   is GROSS COGS - it includes cost of returned goods.
    FIX 1+3: Each return now stores r.cost at save time, so we use r.cost * r.qty
-   directly — no lookup map needed, no cross-period inaccuracy. */
+   directly - no lookup map needed, no cross-period inaccuracy. */
 var getNetCOGS = function (sales, salesReturns) {
   var grossCOGS = (sales || []).reduce(function (a, s) {
     return a + (s.items || []).reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0);
   }, 0);
-  /* Use the cost stored on the return entry — exact match to original transaction */
+  /* Use the cost stored on the return entry - exact match to original transaction */
   var returnedCOGS = (salesReturns || []).reduce(function (a, r) {
     return a + (r.qty || 0) * (r.cost || 0);
   }, 0);
@@ -1533,7 +1570,7 @@ var getCashBalances = function (state) {
   }
 
   /* Capital ledger: invest = inflow, withdraw = outflow
-     Skip "Opening" method — opening capital is NOT physical cash */
+     Skip "Opening" method - opening capital is NOT physical cash */
   S.get("tc3_capLedger", []).forEach(function (e) {
     if (e.cashMethod === "Opening") return;
     var m = e.cashMethod || "Cash";
@@ -1577,13 +1614,13 @@ var getCashBalances = function (state) {
   });
 
   /* FIX 4: Repair revenue is NOT added directly here.
-     Repairs flow through convertToInvoice() → POS sale → paymentHistory.
+     Repairs flow through convertToInvoice() ? POS sale ? paymentHistory.
      Cash is already captured above via state.sales[].paymentHistory.
      Adding it again here would cause double-counting in cash balances.
      Repair revenue still appears correctly in P&L reports (those read state.repairs directly). */
 
   /* Manual Payables: Borrowed money = inflow (cash received), payments = outflow
-     Skip opening payables — they are pre-existing liabilities, not new cash */
+     Skip opening payables - they are pre-existing liabilities, not new cash */
   S.get("tc3_manualPayables", []).forEach(function (mp) {
     if (mp._isOpening) {
       /* only count repayments as outflow */
@@ -1606,7 +1643,7 @@ var getCashBalances = function (state) {
   });
 
   /* Manual Receivables: Loan given = outflow, payments received = inflow
-     Skip opening receivables — they are pre-existing assets, not new outflows */
+     Skip opening receivables - they are pre-existing assets, not new outflows */
   S.get("tc3_manualReceivables", []).forEach(function (mr) {
     if (mr._isOpening) {
       /* only count collections as inflow */
@@ -1637,7 +1674,7 @@ var getCashBalances = function (state) {
        - manualReceivables[].paymentHistory  (for manual receivable cheques)
      Adding the cleared cheque again here would count it TWICE. */
 
-  /* FIX Bug 1: Purchase Return refunds — when supplier gives cash back after a return,
+  /* FIX Bug 1: Purchase Return refunds - when supplier gives cash back after a return,
      that cash must flow into balances. Only count entries where isRefund=true. */
   (state.purchaseReturns || S.get("tc3_purchaseReturns", [])).forEach(function (r) {
     if (!r.isRefund || !r.refundMethod || !r.refundAmount) return;
@@ -1664,10 +1701,10 @@ var getCashBalances = function (state) {
 
   return { cash: cash, bank: bank, total: cash + bank };
 };
-var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
+var WARRANTY_TEXT = "WARRANTY POLICY\n- Laptops & Desktops: 6 months warranty on hardware defects.\n- Accessories & Peripherals: 1 month replacement warranty.\n- Warranty is void if physically damaged, liquid damaged, or tampered with.\n- Warranty covers manufacturer defects only, not user damage.\n- Please retain this invoice as proof of purchase for warranty claims.";
 
 var SEED = {
-  settings: { shopName: "My Shop", address: "", phone: "", phone2: "", whatsapp: "", email: "", website: "", brn: "", footer: "Thank you for your purchase!", capitalInvested: 0, warrantyEnabled: true, warrantyText: WARRANTY_TEXT, invoiceAccentColor: "#0d47a1", invoiceDefaultSize: "a4", invoiceThermalSize: "thermal80", invoiceLogo: "", invoiceLogoSize: 80, barcodeWidth: 60, barcodeHeight: 30, barcodeFontSize: 9, barcodeShowCost: true, barcodeShowPrice: true, barcodeShowShopName: true, labelWidth: "60mm", labelHeight: "auto", barcodeWidthMm: "100%", labelCopies: 1, costCodeWord: "STARLIGHKZ", adminPin: "", autoLockEnabled: true, autoLockMinutes: 10, currency: "Rs", requirePasswordOnLogin: true, booksClosedDate: "", lockedUntilDate: "", strictPeriodLock: defaultStrictPeriodLock(), glArApNegativeTolerance: 50, glArApHardBlockAt: 1000000, inventoryCostingMethod: "wac", preventNegativeStock: true, allowCostFallback: false, glVatPostingEnabled: true, taxApplyBase: "after_discount", invoicePdfFolder: "", shopCountry: "", defaultInvoiceLang: "en", optionalInvoiceLangs: ["ta", "si"], customInvoiceLangs: [], taxEnabled: false, taxMode: "exclusive", selectedTaxes: [] },
+  settings: { shopName: "My Shop", address: "", phone: "", phone2: "", whatsapp: "", email: "", website: "", brn: "", footer: "Thank you for your purchase!", capitalInvested: 0, warrantyEnabled: true, warrantyText: WARRANTY_TEXT, invoiceAccentColor: "#0d47a1", invoiceDefaultSize: "a4", invoiceThermalSize: "thermal80", invoiceLogo: "", invoiceLogoSize: 80, barcodeWidth: 60, barcodeHeight: 30, barcodeFontSize: 9, barcodeShowCost: true, barcodeShowPrice: true, barcodeShowShopName: true, labelWidth: "60mm", labelHeight: "auto", barcodeWidthMm: "100%", labelCopies: 1, costCodeWord: "STARLIGHKZ", adminPin: "", autoLockEnabled: true, autoLockMinutes: 10, currency: "Rs", requirePasswordOnLogin: true, booksClosedDate: "", lockedUntilDate: "", strictPeriodLock: defaultStrictPeriodLock(), glArApNegativeTolerance: 50, glArApHardBlockAt: 1000000, inventoryCostingMethod: "wac", purchaseReturnCostMode: "current_wac", preventNegativeStock: true, allowCostFallback: false, glVatPostingEnabled: true, taxApplyBase: "after_discount", invoicePdfFolder: "", shopCountry: "", defaultInvoiceLang: "en", optionalInvoiceLangs: ["ta", "si"], customInvoiceLangs: [], taxEnabled: false, taxMode: "exclusive", selectedTaxes: [] },
   products: [],
   customers: [],
   suppliers: [],
@@ -1675,100 +1712,109 @@ var SEED = {
   damageLog: [], productLog: []
 };
 
-/* ─── BUSINESS PROFILES ──────────────────────────────────────────────────────
+/* --- BUSINESS PROFILES ------------------------------------------------------
    Single source of truth for every business type.
-   modules.repairs  → show/hide Repairs in sidebar + Reports
-   modules.barcode  → show/hide Barcode Printer in sidebar
-   modules.expiry   → show expiry date field on products
-   modules.serial   → show serial/IMEI field on products
-   units            → available units in product form unit dropdown
-   categories       → pre-loaded category suggestions in product form
-   searchTags       → words customers might type to find this business type
-─────────────────────────────────────────────────────────────────────────── */
+   modules.repairs  ? show/hide Repairs in sidebar + Reports
+   modules.barcode  ? show/hide Barcode Printer in sidebar
+   modules.expiry   ? show expiry date field on products
+   modules.serial   ? show serial/IMEI field on products
+   units            ? available units in product form unit dropdown
+   categories       ? pre-loaded category suggestions in product form
+   searchTags       ? words customers might type to find this business type
+--------------------------------------------------------------------------- */
 var BUSINESS_PROFILES = {
   tech: {
     name: "Tech & Electronics",
-    emoji: "🖥️",
+    emoji: "\u{1F4BB}",
     color: "#2979ff",
-    covers: "Computer Shops · Mobile Phone Shops · CCTV & Security · Electronics Retail · IT Service Centers · Repair Shops · Networking Shops · Gadget Stores · Game Shops",
+    covers: "Computer Shops - Mobile Phone Shops - CCTV & Security - Electronics Retail - IT Service Centers - Repair Shops - Networking Shops - Gadget Stores - Game Shops",
     modules: { repairs: true, barcode: true, serial: true, expiry: false },
     units: ["Pcs", "Box", "Set", "Pair", "Roll", "Kit"],
     categories: ["Mobile Phones", "Laptops & Computers", "Tablets & iPads", "CCTV & Security Systems", "Networking & WiFi", "TV & Home Electronics", "Gaming & Consoles", "Cameras & Photography", "Printers & Scanners", "UPS & Power Backup", "Cables & Connectors", "Accessories", "Software & Licenses", "Spare Parts & Components"]
   },
   grocery: {
     name: "Grocery & Supermarket",
-    emoji: "🛒",
+    emoji: "\u{1F6D2}",
     color: "#00c853",
-    covers: "Grocery Stores · Supermarkets · Mini Markets · Convenience Stores · Wholesale Food · Organic Stores · Dry Goods Shops",
+    covers: "Grocery Stores - Supermarkets - Mini Markets - Convenience Stores - Wholesale Food - Organic Stores - Dry Goods Shops",
     modules: { repairs: false, barcode: true, serial: false, expiry: true },
     units: ["Kg", "G", "Litre", "ML", "Pcs", "Dozen", "Pack", "Sack", "Bottle", "Tin", "Box", "Bundle", "Tray", "Carton"],
     categories: ["Rice & Grains", "Flour & Pulses", "Vegetables & Fruits", "Dairy & Eggs", "Meat & Poultry", "Seafood", "Cooking Oil & Ghee", "Spices & Condiments", "Sauces & Pastes", "Beverages & Drinks", "Snacks & Confectionery", "Bakery & Bread", "Frozen Foods", "Canned & Packaged Foods", "Cleaning & Household", "Personal Care & Hygiene", "Baby Products", "Pet Food"]
   },
   fashion: {
     name: "Fashion & Apparel",
-    emoji: "👗",
+    emoji: "\u{1F457}",
     color: "#e91e8c",
-    covers: "Clothing Stores · Footwear Shops · Bag & Accessory Stores · Textile & Fabric Shops · Boutiques · Uniform Suppliers · Sportswear Stores · Online Fashion Retailers",
+    covers: "Clothing Stores - Footwear Shops - Bag & Accessory Stores - Textile & Fabric Shops - Boutiques - Uniform Suppliers - Sportswear Stores - Online Fashion Retailers",
     modules: { repairs: false, barcode: true, serial: false, expiry: false },
     units: ["Pcs", "Pair", "Dozen", "Set", "Metre", "Roll", "Box", "Bundle"],
     categories: ["Men's Clothing", "Women's Clothing", "Children's Clothing", "Footwear & Shoes", "Bags & Handbags", "Belts & Wallets", "Hats & Caps", "Scarves & Ties", "Jewellery & Accessories", "Underwear & Innerwear", "Sportswear & Activewear", "School & Work Uniforms", "Fabric & Textiles", "Swimwear", "Seasonal & Festive Wear"]
   },
   hardware: {
     name: "Hardware & Construction",
-    emoji: "🔧",
+    emoji: "\u{1F527}",
     color: "#ff6d00",
-    covers: "Hardware Stores · Building Material Suppliers · Plumbing Shops · Electrical Supply Stores · Paint Shops · Tool Shops · Roofing & Flooring Suppliers · Industrial Supply Stores",
+    covers: "Hardware Stores - Building Material Suppliers - Plumbing Shops - Electrical Supply Stores - Paint Shops - Tool Shops - Roofing & Flooring Suppliers - Industrial Supply Stores",
     modules: { repairs: false, barcode: true, serial: false, expiry: false },
     units: ["Pcs", "Kg", "Litre", "Metre", "Roll", "Sheet", "Bag", "Box", "Set", "Pair", "Bundle", "Tin", "Drum", "Cubic Metre"],
     categories: ["Cement & Concrete", "Steel & Iron", "Pipes & Plumbing Fittings", "Electrical Wiring & Cables", "Paint & Varnish", "Tiles & Flooring", "Timber & Wood", "Hand Tools & Power Tools", "Bolts, Nuts & Fasteners", "Roofing & Insulation", "Safety Equipment & PPE", "Adhesives & Sealants", "Doors & Windows", "Scaffolding & Formwork", "Sanitary Ware"]
   },
   pharmacy: {
     name: "Health & Pharmacy",
-    emoji: "💊",
+    emoji: "\u{1F48A}",
     color: "#00bcd4",
-    covers: "Pharmacies · Medical Supply Stores · Ayurvedic & Herbal Shops · Optical Stores · Health & Wellness Stores · Baby & Mother Care Shops · Dental Supply Stores",
+    covers: "Pharmacies - Medical Supply Stores - Ayurvedic & Herbal Shops - Optical Stores - Health & Wellness Stores - Baby & Mother Care Shops - Dental Supply Stores",
     modules: { repairs: false, barcode: true, serial: false, expiry: true },
     units: ["Pcs", "Strip", "Bottle", "Box", "ML", "G", "Sachet", "Tube", "Vial", "Ampule", "Capsule", "Tablet", "Pack"],
     categories: ["Prescription Medicines", "OTC & Counter Medicines", "Vitamins & Supplements", "Ayurvedic & Herbal Products", "Surgical & Medical Supplies", "Baby & Mother Care", "Skin & Personal Care", "Medical Devices & Equipment", "Eye Care & Optical", "Dental Care", "Orthopaedic Supports", "Diagnostic & Test Kits", "Cosmetics & Beauty"]
   },
   jewelry: {
     name: "Jewelry & Watches",
-    emoji: "💍",
+    emoji: "\u{1F48D}",
     color: "#ffd600",
-    covers: "Gold & Silver Jewelry Shops · Watch Retailers · Gem & Stone Dealers · Pawn Shops · Diamond Jewelry Stores · Custom Jewelry Makers",
+    covers: "Gold & Silver Jewelry Shops - Watch Retailers - Gem & Stone Dealers - Pawn Shops - Diamond Jewelry Stores - Custom Jewelry Makers",
     modules: { repairs: true, barcode: true, serial: false, expiry: false },
     units: ["Pcs", "Gram", "Sovereign", "Carat", "Tola", "Ounce", "Set", "Pair"],
     categories: ["Gold Jewelry", "Silver Jewelry", "Diamond Jewelry", "Gemstone Jewelry", "Watches & Clocks", "Chains & Necklaces", "Bangles & Bracelets", "Rings & Bands", "Earrings", "Pendants & Charms", "Watch Straps & Accessories", "Loose Gems & Stones", "Coins & Bullion"]
   },
   automotive: {
     name: "Automotive",
-    emoji: "🚗",
+    emoji: "\u{1F697}",
     color: "#7c4dff",
-    covers: "Auto Spare Parts Shops · Tyre & Wheel Shops · Battery Dealers · Car Accessory Stores · Lubricant & Oil Shops · Motorcycle Parts Shops · Truck & Heavy Vehicle Parts · Auto Service Centers",
+    covers: "Auto Spare Parts Shops - Tyre & Wheel Shops - Battery Dealers - Car Accessory Stores - Lubricant & Oil Shops - Motorcycle Parts Shops - Truck & Heavy Vehicle Parts - Auto Service Centers",
     modules: { repairs: true, barcode: true, serial: false, expiry: false },
     units: ["Pcs", "Litre", "Set", "Pair", "Box", "Roll", "Metre", "Kit", "Drum", "Bottle"],
     categories: ["Engine Parts", "Body Parts & Panels", "Electrical & Ignition Parts", "Tyres & Wheels", "Batteries", "Lubricants & Engine Oil", "Filters (Oil/Air/Fuel)", "Brakes & Clutch", "Transmission & Gearbox", "Suspension & Steering", "Car Accessories & Interior", "Motorcycle Parts", "Truck & Heavy Parts", "Tools & Workshop Equipment", "AC & Cooling Parts"]
   },
   agriculture: {
     name: "Agriculture & Livestock",
-    emoji: "🌾",
+    emoji: "\u{1F33E}",
     color: "#76c442",
-    covers: "Agricultural Input Shops · Seed & Fertilizer Dealers · Pesticide Shops · Animal Feed Stores · Veterinary Supply Shops · Farm Equipment Dealers · Plant Nurseries · Irrigation Supply Stores",
+    covers: "Agricultural Input Shops - Seed & Fertilizer Dealers - Pesticide Shops - Animal Feed Stores - Veterinary Supply Shops - Farm Equipment Dealers - Plant Nurseries - Irrigation Supply Stores",
     modules: { repairs: false, barcode: true, serial: false, expiry: true },
     units: ["Kg", "G", "Litre", "ML", "Bag", "Pcs", "Bundle", "Box", "Sack", "Bottle", "Pack", "Acre", "Roll"],
     categories: ["Seeds & Seedlings", "Fertilizers", "Pesticides & Insecticides", "Herbicides & Weedicides", "Animal Feed & Fodder", "Veterinary Medicines", "Farm Tools & Equipment", "Irrigation & Water Systems", "Plant Nursery & Pots", "Organic & Bio Products", "Packaging & Storage Materials", "Agri Chemicals"]
   },
+  restaurant: {
+    name: "Restaurant & Cafe",
+    emoji: "\u{1F374}",
+    color: "#fb8c00",
+    covers: "Restaurants - Cafes - Bakeries - Fast Food - Food Courts - Catering - Juice Bars - Cloud Kitchens",
+    modules: { repairs: false, barcode: true, serial: false, expiry: true },
+    units: ["Plate", "Portion", "Set", "Cup", "Glass", "Bottle", "Nos", "Half", "Full", "Slice", "Piece", "Kg", "g", "L", "ml", "Tray", "Pack"],
+    categories: ["Ingredients", "Breakfast", "Lunch", "Dinner", "Starters", "Main Course", "Rice & Noodles", "Breads", "Snacks", "Desserts", "Beverages", "Hot Drinks", "Cold Drinks", "Sides", "Combo Meals"]
+  },
   general: {
     name: "General Retail & Services",
-    emoji: "🏪",
+    emoji: "\u{1F3EA}",
     color: "#90a4ae",
-    covers: "Stationery Shops · Gift Stores · Sports & Fitness · Toy Stores · Book Shops · Printing Services · Laundry · Beauty Salons · Repair Services · Any business not listed above",
+    covers: "Stationery Shops - Gift Stores - Sports & Fitness - Toy Stores - Book Shops - Printing Services - Laundry - Beauty Salons - Repair Services - Any business not listed above",
     modules: { repairs: true, barcode: true, serial: false, expiry: false },
     units: ["Pcs", "Box", "Set", "Pair", "Dozen", "Metre", "Litre", "Kg", "Roll", "Bundle", "Sheet", "Hour", "Job"],
-    categories: ["General Merchandise", "Stationery & Office Supplies", "Sports & Fitness", "Toys & Games", "Books & Media", "Gifts & Novelties", "Home Décor", "Cleaning Supplies", "Beauty & Salon Products", "Printing & Signage", "Services & Labour", "Miscellaneous"]
+    categories: ["General Merchandise", "Stationery & Office Supplies", "Sports & Fitness", "Toys & Games", "Books & Media", "Gifts & Novelties", "Home D-cor", "Cleaning Supplies", "Beauty & Salon Products", "Printing & Signage", "Services & Labour", "Miscellaneous"]
   }
 };
-/* Helper: get the active business profile (defaults to general retail if unset / bad key — neutral UX) */
+/* Helper: get the active business profile (defaults to general retail if unset / bad key - neutral UX) */
 var getBusinessProfile = function () {
   var bt = S.get("tc3_businessType", null);
   var p = BUSINESS_PROFILES[bt] || BUSINESS_PROFILES.general;
@@ -1790,6 +1836,8 @@ var loadState = function () {
     suppliers: S.get("tc3_suppliers", SEED.suppliers),
     sales: S.get("tc3_sales", SEED.sales),
     purchases: S.get("tc3_purchases", SEED.purchases),
+    rawMaterialCounts: S.get("tc3_raw_material_counts", []),
+    rawMaterialUsages: S.get("tc3_raw_material_usage", []),
     expenses: S.get("tc3_expenses", SEED.expenses),
     repairs: S.get("tc3_repairs", SEED.repairs),
     assets: S.get("tc3_assets", SEED.assets),
@@ -1818,7 +1866,7 @@ var loadState = function () {
   return st;
 };
 
-/** Body for https://api.techon.lk/sync.php — always reads live storage via loadState()/S.get (never stale React state). */
+/** Body for https://api.techon.lk/sync.php - always reads live storage via loadState()/S.get (never stale React state). */
 var buildCloudSyncPayload = function () {
   var st = S.get("tc3_settings", {});
   var balances = getCashBalances(loadState());
@@ -1854,6 +1902,8 @@ var buildCloudSyncPayload = function () {
     expenses: S.get("tc3_expenses", []),
     repairs: S.get("tc3_repairs", []),
     cheques: S.get("tc3_cheques", []),
+    rawMaterialCounts: S.get("tc3_raw_material_counts", []),
+    rawMaterialUsages: S.get("tc3_raw_material_usage", []),
     salesReturns: S.get("tc3_salesReturns", []),
     manualReceivables: S.get("tc3_manualReceivables", []),
     manualPayables: S.get("tc3_manualPayables", []),
@@ -1873,26 +1923,30 @@ validateAccountingMutation = function (k, v, oldV) {
     var arr = Array.isArray(v) ? v : [];
     for (var i = 0; i < arr.length; i++) {
       if ((arr[i].stock || 0) < 0) {
-        return { ok: false, message: "Negative stock is not allowed. Enable negative stock in Settings → Accounting (advanced) or adjust quantities." };
+        return { ok: false, message: "Negative stock is not allowed. Enable negative stock in Settings ? Accounting (advanced) or adjust quantities." };
       }
     }
   }
   var lock = settings.lockedUntilDate;
-  var lockMsg = "Transaction date is within a locked period. Unlock Admin (PIN) or change the lock in Settings → Period & GL.";
-  var strictLockMsg = "Transaction belongs to a locked period and cannot be modified";
+  var lockThrough = lock ? fmtDateFull(lock) : "";
+  var lockMsg =
+    "This period is locked. Changes are not allowed." +
+    (lockThrough ? "\n\nLocked through: " + lockThrough + " (inclusive)." : "") +
+    "\n\nUnlock Admin accounting (PIN) under Settings → Period & GL if you must override.";
+  var strictLockMsg =
+    "This period is locked. Changes are not allowed." +
+    (lockThrough ? "\n\nLocked through: " + lockThrough + " (inclusive)." : "") +
+    "\n\nStrict lock is on — Admin override may still be audited.";
   var strictLock = settings.strictPeriodLock === true;
   if (lock && !window._tcAccountingPeriodAdmin) {
-    var dateBeforeLock = function (d) {
-      return !!(d && String(d) < String(lock));
-    };
     var newRowViolatesPeriodLock = function (row) {
       if (!row) return false;
-      if (dateBeforeLock(row.date)) return true;
+      if (isLockedThroughDate(row.date, lock)) return true;
       var ph = row.paymentHistory;
       if (!Array.isArray(ph)) return false;
       for (var pi = 0; pi < ph.length; pi++) {
         var p = ph[pi];
-        if (p && dateBeforeLock(p.date)) return true;
+        if (p && isLockedThroughDate(p.date, lock)) return true;
       }
       return false;
     };
@@ -1915,9 +1969,9 @@ validateAccountingMutation = function (k, v, oldV) {
         }
         if (oldP) {
           if (String(np.date || "") !== String(oldP.date || "")) {
-            if (dateBeforeLock(np.date)) return true;
+            if (isLockedThroughDate(np.date, lock)) return true;
           }
-        } else if (dateBeforeLock(np.date)) {
+        } else if (isLockedThroughDate(np.date, lock)) {
           return true;
         }
       }
@@ -1932,7 +1986,7 @@ validateAccountingMutation = function (k, v, oldV) {
         return newRowViolatesPeriodLock(row);
       }
       if (String(row.date || "") !== String(prevRow.date || "")) {
-        if (dateBeforeLock(row.date)) return true;
+        if (isLockedThroughDate(row.date, lock)) return true;
       }
       return paymentHistoryDeltaViolatesLock(prevRow, row);
     };
@@ -1947,6 +2001,8 @@ validateAccountingMutation = function (k, v, oldV) {
       tc3_capLedger: 1,
       tc3_assets: 1,
       tc3_profitDist: 1,
+      tc3_raw_material_usage: 1,
+      tc3_raw_material_counts: 1,
     };
     if (periodLockArrayKeys[k] && Array.isArray(v)) {
       var oldArr = Array.isArray(oldV) ? oldV : [];
@@ -1964,7 +2020,7 @@ validateAccountingMutation = function (k, v, oldV) {
         for (var od = 0; od < oldArr.length; od++) {
           var oDel = oldArr[od];
           if (!oDel || oDel.id == null) continue;
-          if (!newIds[String(oDel.id)] && dateBeforeLock(oDel.date)) {
+          if (!newIds[String(oDel.id)] && isLockedThroughDate(oDel.date, lock)) {
             return { ok: false, message: strictLockMsg };
           }
         }
@@ -1978,7 +2034,7 @@ validateAccountingMutation = function (k, v, oldV) {
         } else if (li < oldArr.length && oldArr[li] && !nrow.id && !oldArr[li].id) {
           prevN = oldArr[li];
         }
-        if (strictLock && prevN && dateBeforeLock(prevN.date)) {
+        if (strictLock && prevN && isLockedThroughDate(prevN.date, lock)) {
           try {
             if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
               return { ok: false, message: strictLockMsg };
@@ -1995,7 +2051,7 @@ validateAccountingMutation = function (k, v, oldV) {
     }
     if (k === "tc3_openBal" && v && typeof v === "object") {
       var obOld = oldV && typeof oldV === "object" ? oldV : null;
-      if (strictLock && obOld && obOld.completed && obOld.date && dateBeforeLock(obOld.date)) {
+      if (strictLock && obOld && obOld.completed && obOld.date && isLockedThroughDate(obOld.date, lock)) {
         try {
           if (JSON.stringify(obOld) !== JSON.stringify(v)) {
             return { ok: false, message: strictLockMsg };
@@ -2006,7 +2062,7 @@ validateAccountingMutation = function (k, v, oldV) {
       } else if (v.completed && v.date) {
         var obNeedDateCheck = !obOld || !obOld.completed;
         if (!obNeedDateCheck && obOld && String(v.date || "") !== String(obOld.date || "")) obNeedDateCheck = true;
-        if (obNeedDateCheck && dateBeforeLock(v.date)) {
+        if (obNeedDateCheck && isLockedThroughDate(v.date, lock)) {
           return { ok: false, message: lockMsg };
         }
       }
@@ -2031,7 +2087,7 @@ validateAccountingMutation = function (k, v, oldV) {
   return { ok: true };
 };
 
-/* ─── General ledger: persist, audit, live debounce (after loadState exists) ─── */
+/* --- General ledger: persist, audit, live debounce (after loadState exists) --- */
 var _glLiveDebounceTimer = null;
 
 var appendGlAuditRow = function (action, detail) {
@@ -2163,13 +2219,13 @@ var persistTechonGLJournal = function (source) {
       _coreStorageSet("tc3_journal_lines", prevLines);
       _coreStorageSet("tc3_gl_last_error", { ts: new Date().toISOString(), type: "imbalance", imbalances: r.validate.imbalances });
       appendGlAuditRow("journal_validation_failed", { source: source, imbalances: r.validate.imbalances });
-      if (tcIsDevEnv()) try { console.error("[TechonERP GL] Validation failed — kept previous journal", r.validate.imbalances); } catch (e) {}
+      if (tcIsDevEnv()) try { console.error("[TechonERP GL] Validation failed - kept previous journal", r.validate.imbalances); } catch (e) {}
       return r;
     }
     if (!r.valid) {
       _coreStorageSet("tc3_journal_lines", prevLines);
       appendGlAuditRow("journal_warnings_block", { source: source, warnings: r.warnings });
-      if (tcIsDevEnv()) try { console.warn("[TechonERP GL] Warnings — kept previous journal", r.warnings); } catch (e) {}
+      if (tcIsDevEnv()) try { console.warn("[TechonERP GL] Warnings - kept previous journal", r.warnings); } catch (e) {}
       return r;
     }
     var merged = mergeRebuildWithImmutableHistory(prevLines, r.lines, uid);
@@ -2178,7 +2234,7 @@ var persistTechonGLJournal = function (source) {
       _coreStorageSet("tc3_journal_lines", prevLines);
       _coreStorageSet("tc3_gl_last_error", { ts: new Date().toISOString(), type: "post_merge_imbalance", imbalances: vf.imbalances });
       appendGlAuditRow("journal_post_merge_imbalance", { source: source, imbalances: vf.imbalances });
-      if (tcIsDevEnv()) try { console.error("[TechonERP GL] Merge produced imbalance — kept previous journal", vf.imbalances); } catch (e) {}
+      if (tcIsDevEnv()) try { console.error("[TechonERP GL] Merge produced imbalance - kept previous journal", vf.imbalances); } catch (e) {}
       return r;
     }
     var cr = commitGlJournalPersist(merged, r, source || "journal_persist", invDer);
@@ -2234,7 +2290,7 @@ var resolveInitialBusinessType = function () {
   return null;
 };
 
-/* Core identity — must match startup wizard validation (shop name + phone or address). */
+/* Core identity - must match startup wizard validation (shop name + phone or address). */
 var validateCoreStartupIdentity = function (ts) {
   var missing = [];
   if (!ts || typeof ts !== "object") {
@@ -2266,12 +2322,12 @@ var getCoreStartupIdentityAlertMessage = function (missing) {
   return "Please enter your shop name and at least a phone number or address.";
 };
 
-/* Onboarding “ready” = persisted core identity — NOT merged SEED (no tc3_settings until first save). */
+/* Onboarding -ready- = persisted core identity - NOT merged SEED (no tc3_settings until first save). */
 var hasMeaningfulStartupData = function () {
   return validateCoreStartupIdentity(S.get("tc3_settings")).ok;
 };
 
-/* Any non-empty business tables — legacy DBs may lack phone/address on settings but are clearly not “new install”. */
+/* Any non-empty business tables - legacy DBs may lack phone/address on settings but are clearly not -new install-. */
 var hasLegacyBusinessRecords = function () {
   try {
     return !!(
@@ -2298,7 +2354,7 @@ var isStartupFlowSatisfied = function () {
   return hasMeaningfulStartupData() || hasLegacyBusinessRecords();
 };
 
-/* Wizard progress only — mirrors key fields, not validateCoreStartupIdentity rules. Tax counts only when enabled. */
+/* Wizard progress only - mirrors key fields, not validateCoreStartupIdentity rules. Tax counts only when enabled. */
 var getOnboardingDataProgress = function (st) {
   if (!st || typeof st !== "object") return { done: 0, total: 3, pct: 0 };
   var done = 0;
@@ -2330,14 +2386,14 @@ var isStartupWizardSessionActive = function () {
   }
 };
 
-/* Persisted wizard completion — treat true / "1" / 1 as done; never auto-clear on load */
+/* Persisted wizard completion - treat true / "1" / 1 as done; never auto-clear on load */
 var isStartupWizardMarkedDone = function () {
   var v = S.get("tc3_startup_wizard_done");
   return v === true || v === "1" || v === 1;
 };
 
-/* ─── DESIGN TOKENS ───────────────────────────────── */
-/* ─── HTML ESCAPE — prevents XSS in print report windows ─────────────────── */
+/* --- DESIGN TOKENS --------------------------------- */
+/* --- HTML ESCAPE - prevents XSS in print report windows ------------------- */
 var escapeHtml = function (val) {
   if (val == null) return "";
   return String(val)
@@ -2383,7 +2439,7 @@ var C = {
   shadowCard: "0 2px 8px rgba(13,27,62,0.08)"
 };
 
-/* ─── GLOBAL CSS ──────────────────────────────────── */
+/* --- GLOBAL CSS ------------------------------------ */
 var GCSS = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}body{font-family:'Plus Jakarta Sans',system-ui,sans-serif}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#f0f4ff;border-radius:4px}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#a8bcf0,#7499e8);border-radius:4px}::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#2979ff,#2255d4)}input[type=number]::-webkit-inner-spin-button{opacity:.4}@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.erp-page{animation:fadeIn .18s cubic-bezier(.22,1,.36,1)}.no-print{display:block}@media print{.no-print{display:none!important}.print-only{display:block!important}}.stat-card-hover{transition:transform .18s,box-shadow .18s}.stat-card-hover:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(13,27,62,0.13)!important}.nav-btn{transition:all .15s cubic-bezier(.22,1,.36,1)!important}.nav-btn:hover{background:rgba(41,121,255,0.12)!important;transform:translateX(2px)}.table-row-hover:hover td{background:#f4f7ff!important}.tc-snapshot-badge:focus:not(:focus-visible){outline:none}.tc-snapshot-badge:focus-visible{outline:2px solid #2979ff;outline-offset:2px;border-radius:999px}@media (prefers-reduced-motion:reduce){.tc-snapshot-badge,.tc-snapshot-badge *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}";
 if (!document.getElementById("erp-gcss")) {
   var _s = document.createElement("style");
@@ -2392,7 +2448,7 @@ if (!document.getElementById("erp-gcss")) {
   document.head.appendChild(_s);
 }
 
-/* ─── SHARED COMPONENTS ───────────────────────────── */
+/* --- SHARED COMPONENTS ----------------------------- */
 
 var TH = function (props) {
   return <th style={{ textAlign: "left", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap", background: "#f7f9ff" }}>{props.children}</th>;
@@ -2411,10 +2467,17 @@ var Input = function (props) {
   var label = props.label;
   var error = props.error;
   var compact = props.compact === true;
+  var applyPeriodLockMin = props.applyPeriodLockMin === true;
+  var periodLockTransactionMinDate = props.periodLockTransactionMinDate;
   var rest = Object.assign({}, props);
   delete rest.label;
   delete rest.error;
   delete rest.compact;
+  delete rest.applyPeriodLockMin;
+  delete rest.periodLockTransactionMinDate;
+  if (rest.type === "date" && applyPeriodLockMin && periodLockTransactionMinDate && !rest.min) {
+    rest.min = periodLockTransactionMinDate;
+  }
   var origFocus = rest.onFocus; delete rest.onFocus;
   var origBlur = rest.onBlur; delete rest.onBlur;
   var origKeyDown = rest.onKeyDown; delete rest.onKeyDown;
@@ -2568,6 +2631,26 @@ var Modal = function (props) {
   );
 };
 
+/** Maps legacy ASCII icon tokens to symbols so labels read as "TOTAL PAID" not "OK TOTAL PAID". */
+var resolveStatCardIcon = function (icon) {
+  if (icon == null || icon === "") return null;
+  var s = String(icon).trim();
+  var aliases = {
+    OK: "\u2714\uFE0F",
+    "!": "\u26A0\uFE0F",
+    INFO: "\u2139\uFE0F",
+    NONE: "\u2014",
+    Inventory: "\uD83D\uDCE6",
+    Money: "\uD83D\uDCB0",
+    Trend: "\uD83D\uDCC8",
+    Out: "\uD83D\uDCC9",
+    RM: "\uD83E\uDD44",
+    Cost: "\uD83C\uDFF7\uFE0F",
+  };
+  if (Object.prototype.hasOwnProperty.call(aliases, s)) return aliases[s];
+  return s;
+};
+
 var StatCard = function (props) {
   var isMoney = props.money !== false;
   var displayVal;
@@ -2584,18 +2667,24 @@ var StatCard = function (props) {
       else displayVal = fmtNum(nv);
     }
   }
+  var iconResolved = resolveStatCardIcon(props.icon);
   return (
     <div className="stat-card-hover" style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", border: "1.5px solid " + C.border, position: "relative", overflow: "hidden", boxShadow: C.shadowCard }}>
       <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: props.accent || C.accent, borderRadius: "14px 14px 0 0" }}></div>
       <div style={{ position: "absolute", top: 0, right: 0, width: 80, height: 80, background: (props.accent || C.accent) + "10", borderRadius: "0 14px 0 80px" }}></div>
-      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}><span style={{ fontSize: 14 }}>{props.icon}</span> {props.label}</div>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
+        <span style={{ flex: 1, minWidth: 0, lineHeight: 1.35 }}>{props.label}</span>
+        {iconResolved ? (
+          <span style={{ fontSize: 18, lineHeight: 1.2, flexShrink: 0, marginTop: -1 }} aria-hidden="true">{iconResolved}</span>
+        ) : null}
+      </div>
       <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 3, letterSpacing: "-0.02em" }}>{displayVal}</div>
       {props.sub && <div style={{ fontSize: 11.5, color: C.muted, fontWeight: 500 }}>{props.sub}</div>}
     </div>
   );
 };
 
-/* ─── BARCODE COMPONENT (JsBarcode SVG — prints on all printers) ─── */
+/* --- BARCODE COMPONENT (JsBarcode SVG - prints on all printers) --- */
 var JsBarcodeWidget = function (props) {
   var value = props.value || "0";
   var h = props.height || 40;
@@ -2631,7 +2720,7 @@ var JsBarcodeWidget = function (props) {
   return <svg ref={svgRef} style={{ display: "block" }} />;
 };
 
-/* ─── BARCODE LABEL SHEET ─────────────────────────── */
+/* --- BARCODE LABEL SHEET --------------------------- */
 var BarcodeLabelSheet = function (props) {
   var items = props.items || [];
   var shopName = props.shopName || "";
@@ -2688,12 +2777,12 @@ var BarcodeLabelSheet = function (props) {
   );
 };
 
-/* ─── THERMAL INVOICE ─────────────────────────────── */
-/* ─── THERMAL RECEIPT (58mm / 80mm POS) ──────────────────── */
-/* ═══════════════════════════════════════════════════════════
-   Monochrome receipt layout — width: 218px (58mm) or 302px (80mm) @ 96dpi.
+/* --- THERMAL INVOICE ------------------------------- */
+/* --- THERMAL RECEIPT (58mm / 80mm POS) -------------------- */
+/* -----------------------------------------------------------
+   Monochrome receipt layout - width: 218px (58mm) or 302px (80mm) @ 96dpi.
    Height is content-driven (no fixed height). Print UI only.
-═══════════════════════════════════════════════════════════ */
+----------------------------------------------------------- */
 var InvoiceThermal = function (props) {
   var inv = props.inv;
   var settings = props.settings;
@@ -2717,7 +2806,7 @@ var InvoiceThermal = function (props) {
   var _otlInv = inv.originTerminalLabel;
   var servedByText = (_otlInv != null && String(_otlInv).trim() !== "") ? String(_otlInv).trim() : "Server";
   var pad = isNarrow ? "8px 6px" : "10px 8px";
-  /* Base receipt text: 13px, monospace — optimized for thermal print clarity */
+  /* Base receipt text: 13px, monospace - optimized for thermal print clarity */
   var bodyFs = 13;
   var hdrShopSize = Math.max(14, Math.round((settings.thermalShopNameSize || 14) * (isNarrow ? 0.92 : 1)));
   var hdrInfoFs = isNarrow ? 12 : Math.max(12, settings.thermalInfoSize != null ? settings.thermalInfoSize : 12);
@@ -2725,7 +2814,7 @@ var InvoiceThermal = function (props) {
   var tfs = bodyFs;
   var bcH = isNarrow ? 34 : 40;
   var bcW = isNarrow ? 1.05 : 1.2;
-  /* Line-item block header (ITEM / Qty x Price … Total) */
+  /* Line-item block header (ITEM / Qty x Price - Total) */
   var itemHdrFs = isNarrow ? 11 : 12;
   var invNoDisplay = inv.invoiceNo || inv.id;
   var bcVal = String(invNoDisplay).replace(/[^A-Za-z0-9]/g, "");
@@ -2756,7 +2845,7 @@ var InvoiceThermal = function (props) {
         MozOsxFontSmoothing: "grayscale",
       }}
     >
-      {/* ── HEADER (center) ── */}
+      {/* -- HEADER (center) -- */}
       <div style={{ textAlign: "center", marginBottom: isNarrow ? 8 : 10 }}>
         {settings.invoiceLogo ? (
           <img src={settings.invoiceLogo} alt="" style={{ width: thermalLogoW, height: "auto", objectFit: "contain", display: "block", margin: "0 auto " + (isNarrow ? 6 : 8) + "px" }} />
@@ -2773,12 +2862,12 @@ var InvoiceThermal = function (props) {
 
       <DashedRule />
 
-      {/* ── TITLE (center) ── */}
+      {/* -- TITLE (center) -- */}
       <div style={{ textAlign: "center", fontWeight: 700, fontSize: 14, letterSpacing: "0.18em", margin: isNarrow ? "8px 0" : "10px 0", lineHeight: 1.4 }}>RECEIPT</div>
 
       <DashedRule />
 
-      {/* ── RECEIPT INFO (left) ── */}
+      {/* -- RECEIPT INFO (left) -- */}
       <div style={{ textAlign: "left", marginBottom: isNarrow ? 10 : 12, whiteSpace: "pre-wrap", fontSize: bodyFs, lineHeight: 1.5 }}>
         <div style={{ marginBottom: 6, fontWeight: 700 }}>Receipt No: <span style={{ fontWeight: 600 }}>{invNoDisplay}</span></div>
         <div style={{ marginBottom: 6, fontWeight: 700 }}>
@@ -2801,7 +2890,7 @@ var InvoiceThermal = function (props) {
 
       <SolidRule />
 
-      {/* ── LINE ITEMS: ITEM / Qty x Price … TOTAL, then each product name + "qty x unit price" | line total ── */}
+      {/* -- LINE ITEMS: ITEM / Qty x Price - TOTAL, then each product name + "qty x unit price" | line total -- */}
       <div style={{ marginBottom: 12, marginTop: 2, fontSize: tfs }}>
         <div style={{ fontWeight: 800, fontSize: itemHdrFs, letterSpacing: "0.06em", color: "#000", marginBottom: 4, lineHeight: 1.2 }}>{L.item}</div>
         <div
@@ -2886,7 +2975,7 @@ var InvoiceThermal = function (props) {
 
       <DashedRule />
 
-      {/* ── TOTALS (label left, amount right — matches POS receipt strip) ── */}
+      {/* -- TOTALS (label left, amount right - matches POS receipt strip) -- */}
       <div style={{ fontSize: tfs, marginBottom: 8, lineHeight: 1.5 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
           <span style={{ fontWeight: 600 }}>{L.subtotal}</span>
@@ -2922,7 +3011,7 @@ var InvoiceThermal = function (props) {
 
       <DashedRule />
 
-      {/* ── PAYMENT (label left, amount right) ── */}
+      {/* -- PAYMENT (label left, amount right) -- */}
       <div style={{ fontSize: tfs, marginBottom: 8, lineHeight: 1.5 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
           <span style={{ fontWeight: 700 }}>{L.paid}</span>
@@ -2942,7 +3031,7 @@ var InvoiceThermal = function (props) {
         ) : null}
       </div>
 
-      {/* ── WARRANTY ── */}
+      {/* -- WARRANTY -- */}
       {inv.includeWarranty && (settings.warrantyText || WARRANTY_TEXT) ? (
         <div style={{ marginTop: 10 }}>
           <DashedRule />
@@ -2955,7 +3044,7 @@ var InvoiceThermal = function (props) {
 
       <DashedRule />
 
-      {/* ── BARCODE (center) ── */}
+      {/* -- BARCODE (center) -- */}
       <div style={{ textAlign: "center", marginTop: 10, marginBottom: 10 }}>
         <div style={{ display: "flex", justifyContent: "center", width: "100%", marginBottom: 10 }}>
           <JsBarcodeWidget value={bcVal} width={bcW} height={bcH} />
@@ -2965,7 +3054,7 @@ var InvoiceThermal = function (props) {
 
       <DashedRule />
 
-      {/* ── FOOTER (center) ── */}
+      {/* -- FOOTER (center) -- */}
       <div style={{ textAlign: "center", fontSize: bodyFs, fontWeight: 600, lineHeight: 1.5, marginTop: 8, whiteSpace: "pre-wrap" }}>
         {settings.footer || "Thank you for shopping with " + shopName + "!"}
       </div>
@@ -2978,10 +3067,10 @@ var InvoiceThermal = function (props) {
   );
 };
 
-/* ═══════════════════════════════════════════════════════════
-   A4 / A5 INVOICE  —  full professional layout
+/* -----------------------------------------------------------
+   A4 / A5 INVOICE  -  full professional layout
    A4: 794px wide  |  A5: 559px wide
-═══════════════════════════════════════════════════════════ */
+----------------------------------------------------------- */
 var InvoiceA4 = function (props) {
   var inv = props.inv;
   var settings = props.settings;
@@ -2995,7 +3084,7 @@ var InvoiceA4 = function (props) {
   var invTotalTaxA4 = inv.totalTax || 0;
   var showTaxBlockA4 = invTotalTaxA4 > 0 && invTaxLinesA4.length > 0;
 
-  var accent = "#1a4fa0"; /* fixed professional blue — not user-configurable */
+  var accent = "#1a4fa0"; /* fixed professional blue - not user-configurable */
   var shopName = settings.shopName || "Techon Computers";
   var _otlA4 = inv.originTerminalLabel;
   var servedByTextA4 = (_otlA4 != null && String(_otlA4).trim() !== "") ? String(_otlA4).trim() : "Server";
@@ -3007,7 +3096,7 @@ var InvoiceA4 = function (props) {
   var MM = String(now.getMinutes()).padStart(2, "0");
   var tStr = HH + ":" + MM;
 
-  /* A4 and A5 share identical design — only the page width differs */
+  /* A4 and A5 share identical design - only the page width differs */
   var mw = isA5 ? 560 : 794;
   var pad = 24; /* same compact padding for both */
   var fs = 11;  /* same font size for both */
@@ -3017,7 +3106,7 @@ var InvoiceA4 = function (props) {
   return (
     <div style={{ fontFamily: "'Segoe UI',Arial,sans-serif", background: "#fff", width: mw, margin: "0 auto", color: "#111", minHeight: isA5 ? "420px" : "1123px", display: "flex", flexDirection: "column" }}>
 
-      {/* ── HEADER ── */}
+      {/* -- HEADER -- */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "24px " + px + " 16px" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -3054,10 +3143,10 @@ var InvoiceA4 = function (props) {
         </div>
       </div>
 
-      {/* ── RULE ── */}
+      {/* -- RULE -- */}
       <div style={{ margin: "0 " + px, borderTop: "2px solid " + accent, marginBottom: vg }}></div>
 
-      {/* ── BODY ── */}
+      {/* -- BODY -- */}
       <div style={{ }}>
         <div style={{ padding: "0 " + px, marginBottom: vg }}>
           <div style={{ fontSize: fs + 1, fontWeight: 800, color: accent, marginBottom: 6 }}>{L.billTo}:</div>
@@ -3117,7 +3206,7 @@ var InvoiceA4 = function (props) {
         })()}
       </div>
 
-      {/* ── TOTALS ── */}
+      {/* -- TOTALS -- */}
       <div style={{ margin: "0 " + px, marginBottom: 14, display: "flex", justifyContent: "flex-end" }}>
         <table style={{ fontSize: fs, borderCollapse: "collapse", minWidth: 220 }}>
           <tbody>
@@ -3145,10 +3234,10 @@ var InvoiceA4 = function (props) {
         </table>
       </div>
 
-      {/* ── PAYMENT + SIGNATURES ── */}
+      {/* -- PAYMENT + SIGNATURES -- */}
       <div style={{ margin: "0 " + px, marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 16, fontSize: fs - 1, marginBottom: 8 }}>
-          <div><span style={{ color: "#888" }}>{L.paymentMethod}: </span><span style={{ fontWeight: 700 }}>{inv.cashMethod || (inv.payStatus === "Unpaid" ? "—" : "Cash")}</span></div>
+          <div><span style={{ color: "#888" }}>{L.paymentMethod}: </span><span style={{ fontWeight: 700 }}>{inv.cashMethod || (inv.payStatus === "Unpaid" ? "-" : "Cash")}</span></div>
           <div><span style={{ color: "#888" }}>{L.amountReceived}: </span><span style={{ fontWeight: 700 }}>{fmtNum(inv.paid || 0)}</span></div>
           <div><span style={{ color: "#888" }}>{L.balanceDueShort} </span><span style={{ fontWeight: 700, color: balance > 0 ? "#dc2626" : "#333" }}>{fmtNum(balance)}</span></div>
         </div>
@@ -3158,24 +3247,24 @@ var InvoiceA4 = function (props) {
         </div>
       </div>
 
-      {/* ── WARRANTY ── */}
+      {/* -- WARRANTY -- */}
       {inv.includeWarranty && (settings.warrantyText || WARRANTY_TEXT) && (
         <div style={{ margin: "0 " + px, paddingTop: vg, borderTop: "1px solid #e5e7eb", marginBottom: vg }}>
           <div style={{ fontWeight: 800, color: accent, fontSize: fs, marginBottom: 5 }}>{L.warrantyPolicy}</div>
           {(settings.warrantyText || WARRANTY_TEXT).split("\n").filter(function (l) { return l.trim(); }).map(function (ln, i) {
-            return <div key={i} style={{ fontSize: fs - 1, color: "#444", lineHeight: 1.7, paddingLeft: ln.charAt(0) === "•" ? 4 : 0 }}>{ln}</div>;
+            return <div key={i} style={{ fontSize: fs - 1, color: "#444", lineHeight: 1.7, paddingLeft: ln.charAt(0) === "-" ? 4 : 0 }}>{ln}</div>;
           })}
         </div>
       )}
 
-      {/* ── Spacer pushes footer to bottom of page ── */}
+      {/* -- Spacer pushes footer to bottom of page -- */}
       <div style={{ flex: 1 }}></div>
 
-      {/* ── FOOTER ── */}
+      {/* -- FOOTER -- */}
       <div style={{ margin: "0 " + px, paddingTop: 10, paddingBottom: 16, borderTop: "2px solid " + accent, marginTop: vg }}>
         <div style={{ fontSize: 12, fontWeight: 700, color: accent, textAlign: "center" }}>{settings.footer || "Thank you for shopping with " + shopName + "!"}</div>
       </div>
-      <div style={{ textAlign: "center", fontSize: 9, color: "#bbb", marginTop: 6, paddingBottom: 4 }}>{L.footerPowered} <strong>TechonERP</strong> • www.erp.techon.lk</div>
+      <div style={{ textAlign: "center", fontSize: 9, color: "#bbb", marginTop: 6, paddingBottom: 4 }}>{L.footerPowered} <strong>TechonERP</strong> - www.erp.techon.lk</div>
 
     </div>
   );
@@ -3218,7 +3307,7 @@ var Pager = function (props) {
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 2px", borderTop: "1px solid " + C.border, marginTop: 4 }}>
       <div style={{ fontSize: 12, color: C.muted, fontWeight: 500 }}>
         Showing <strong style={{ color: C.text }}>{p.start.toLocaleString()}</strong>
-        {"–"}
+        {"-"}
         <strong style={{ color: C.text }}>{p.end.toLocaleString()}</strong>
         {" of "}
         <strong style={{ color: C.text }}>{p.total.toLocaleString()}</strong>
@@ -3254,28 +3343,28 @@ var getCats = function () {
   if (base.indexOf("General") < 0) base.push("General");
   return base;
 };
-var CATS = getCats(); /* backward-compat alias — components should call getCats() directly */
+var CATS = getCats(); /* backward-compat alias - components should call getCats() directly */
 
 
 
-/* ─── SALES INVOICES ──────────────────────────────── */
-/* ─── SPLIT PAYMENT MODAL ─────────────────────────────
+/* --- SALES INVOICES -------------------------------- */
+/* --- SPLIT PAYMENT MODAL -----------------------------
    Reusable component for multi-method split payments.
    Works for both sales (incoming) and purchases (outgoing).
    Props:
-     title        — modal title string
-     invoiceTotal — total invoice amount
-     alreadyPaid  — amount already paid
-     isSale       — true=incoming(customer), false=outgoing(supplier)
-     onSave(splits) — callback with [{method,amount,chequeNo,chequeBankName,chequeDueDate,note}]
-     onClose      — close handler
-──────────────────────────────────────────────────────── */
+     title        - modal title string
+     invoiceTotal - total invoice amount
+     alreadyPaid  - amount already paid
+     isSale       - true=incoming(customer), false=outgoing(supplier)
+     onSave(splits) - callback with [{method,amount,chequeNo,chequeBankName,chequeDueDate,note}]
+     onClose      - close handler
+-------------------------------------------------------- */
 var SplitPaymentModal = function (props) {
   var balance = Math.max(0, (props.invoiceTotal || 0) - (props.alreadyPaid || 0));
   var isSale = props.isSale !== false;
   var METHODS = isSale
-    ? [["Cash","💵 Cash"],["Bank","🏦 Bank"],["Cheque","🏷 Cheque"],["Card","💳 Card"],["Online","📱 Online"]]
-    : [["Cash","💵 Cash"],["Bank","🏦 Bank"],["Cheque","🏷 Cheque"]];
+    ? [["Cash","Cash"],["Bank","Bank"],["Cheque","Cheque"],["Card","Card"],["Online","Online"]]
+    : [["Cash","Cash"],["Bank","Bank"],["Cheque","Cheque"]];
 
   var [rows, setRows] = useState([{ id: uid(), method: "Cash", amount: "", chequeNo: "", chequeBankName: "", chequeDueDate: today(), note: "" }]);
 
@@ -3336,7 +3425,7 @@ var SplitPaymentModal = function (props) {
                 <div style={{ paddingBottom: 1 }}>
                   {rows.length > 1 && (
                     <button onClick={function () { removeRow(row.id); }}
-                      style={{ width: 34, height: 36, borderRadius: 7, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
+                      style={{ width: 34, height: 36, borderRadius: 7, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>-</button>
                   )}
                 </div>
               </div>
@@ -3360,7 +3449,7 @@ var SplitPaymentModal = function (props) {
                     <input type="date" value={row.chequeDueDate || today()} onChange={function (e) { updateRow(row.id, { chequeDueDate: e.target.value }); }}
                       style={{ width: "100%", border: "1.5px solid #ddd6fe", borderRadius: 7, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", outline: "none" }} />
                   </div>
-                  <div style={{ gridColumn: "1/-1", fontSize: 11, color: "#7c3aed", fontWeight: 600 }}>⚠ Cash/Bank balance updates only when cheque is cleared in Cheque Register</div>
+                  <div style={{ gridColumn: "1/-1", fontSize: 11, color: "#7c3aed", fontWeight: 600 }}>? Cash/Bank balance updates only when cheque is cleared in Cheque Register</div>
                 </div>
               )}
             </div>
@@ -3378,13 +3467,12 @@ var SplitPaymentModal = function (props) {
           </div>
           {remaining > 0.01 && <div style={{ fontSize: 11, color: C.amber, fontWeight: 700 }}>Still unallocated: {getCurrencySymbol()} {fmtNum(remaining)}</div>}
           {remaining < -0.01 && <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>Overpayment: {getCurrencySymbol()} {fmtNum(Math.abs(remaining))}</div>}
-          {Math.abs(remaining) <= 0.01 && totalSplit > 0 && <div style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>✓ Fully allocated</div>}
+          {Math.abs(remaining) <= 0.01 && totalSplit > 0 && <div style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>? Fully allocated</div>}
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 8 }}>
-        <Btn col={isSale ? "cyan" : "orange"} onClick={function () { props.onSave(rows.filter(function (r) { return parseFloat(r.amount) > 0; })); }} disabled={!canSave}>
-          💰 Save Payment ({getCurrencySymbol()} {fmtNum(totalSplit)})
+        <Btn col={isSale ? "cyan" : "orange"} onClick={function () { props.onSave(rows.filter(function (r) { return parseFloat(r.amount) > 0; })); }} disabled={!canSave}>Save Payment ({getCurrencySymbol()} {fmtNum(totalSplit)})
         </Btn>
         <Btn col="green" onClick={function () {
           /* Fill remaining balance into first empty row or last row */
@@ -3401,7 +3489,7 @@ var SplitPaymentModal = function (props) {
 };
 
 
-/* ─── PAYMENT BREAKDOWN COMPONENT ─────────────────────────
+/* --- PAYMENT BREAKDOWN COMPONENT -------------------------
    Shows enhanced payment status for an invoice:
    - Cash/Bank paid
    - Pending cheques (with details)
@@ -3409,7 +3497,7 @@ var SplitPaymentModal = function (props) {
    - Balance to pay (excl pending)
    - Actual balance (incl pending)
    Props: invoice (sale or purchase), cheques (state.cheques), isSale
-─────────────────────────────────────────────────────────── */
+----------------------------------------------------------- */
 var PaymentBreakdown = function (props) {
   var inv = props.invoice;
   var allCheques = props.cheques || [];
@@ -3455,7 +3543,7 @@ var PaymentBreakdown = function (props) {
       {cashBankPaid > 0 && (
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 14 }}>✅</span>
+            <span style={{ fontSize: 14 }}>?</span>
             <span style={{ color: C.textMd }}>Cash / Bank Paid</span>
           </span>
           <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(cashBankPaid)}</strong>
@@ -3467,7 +3555,7 @@ var PaymentBreakdown = function (props) {
         return (
           <div key={ch.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 14 }}>✅</span>
+              <span style={{ fontSize: 14 }}>?</span>
               <span style={{ color: C.textMd }}>Cheque #{ch.chequeNo} <span style={{ fontSize: 11, color: C.muted }}>cleared {ch.clearedDate ? fmtDate(ch.clearedDate) : ""}</span></span>
             </span>
             <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(ch.amount)}</strong>
@@ -3480,10 +3568,10 @@ var PaymentBreakdown = function (props) {
         return (
           <div key={ch.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6, background: "#fef9ec", borderRadius: 7, padding: "7px 10px", border: "1px solid #fde68a" }}>
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 14 }}>🕐</span>
+              <span style={{ fontSize: 14 }}>CHQ</span>
               <div>
                 <div style={{ color: C.textMd, fontWeight: 600 }}>Cheque #{ch.chequeNo} <span style={{ fontSize: 11, color: "#d97706", fontWeight: 700 }}>PENDING</span></div>
-                <div style={{ fontSize: 11, color: C.muted }}>{ch.bankName ? ch.bankName + " · " : ""}Due: {fmtDate(ch.dueDate || "")}</div>
+                <div style={{ fontSize: 11, color: C.muted }}>{ch.bankName ? ch.bankName + " - " : ""}Due: {fmtDate(ch.dueDate || "")}</div>
               </div>
             </span>
             <strong style={{ color: "#d97706" }}>{getCurrencySymbol()} {fmtNum(ch.amount)}</strong>
@@ -3496,7 +3584,7 @@ var PaymentBreakdown = function (props) {
         return (
           <div key={ch.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6, background: "#fef2f2", borderRadius: 7, padding: "7px 10px", border: "1px solid #fca5a5" }}>
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 14 }}>❌</span>
+              <span style={{ fontSize: 14 }}>?</span>
               <div>
                 <div style={{ color: C.red, fontWeight: 600 }}>Cheque #{ch.chequeNo} <span style={{ fontSize: 11 }}>BOUNCED</span></div>
                 <div style={{ fontSize: 11, color: C.muted }}>{ch.bankName || ""}</div>
@@ -3520,8 +3608,7 @@ var PaymentBreakdown = function (props) {
           <strong style={{ color: actualBalance > 0 ? C.red : C.green, fontSize: 16 }}>{getCurrencySymbol()} {fmtNum(actualBalance)}</strong>
         </div>
         {pendingTotal > 0 && (
-          <div style={{ fontSize: 11, color: "#d97706", fontWeight: 600, textAlign: "right" }}>
-            🕐 {getCurrencySymbol()} {fmtNum(pendingTotal)} in pending cheques — actual balance reduces when cleared
+          <div style={{ fontSize: 11, color: "#d97706", fontWeight: 600, textAlign: "right" }}>{getCurrencySymbol()} {fmtNum(pendingTotal)} in pending cheques - actual balance reduces when cleared
           </div>
         )}
       </div>
@@ -3533,14 +3620,14 @@ var PaymentBreakdown = function (props) {
 
 
 
-/* ─── REPORTS ─────────────────────────────────────── */
-/* ── Period close warning helper ── */
+/* --- REPORTS --------------------------------------- */
+/* -- Period close warning helper -- */
 var checkPeriodClose = function (recordDate, settings, onProceed) {
   var lock = settings && settings.lockedUntilDate;
-  if (lock && recordDate && String(recordDate) < String(lock)) {
+  if (lock && recordDate && isLockedThroughDate(recordDate, lock)) {
     var adminOk = typeof window !== "undefined" && window._tcAccountingPeriodAdmin;
     if (!adminOk) {
-      showAlert("Accounting period is locked through " + fmtDate(lock) + ". Unlock Admin (PIN) or change the lock date in Settings → Period & GL.");
+      showAlert("Accounting period is locked through " + fmtDate(lock) + ". Unlock Admin (PIN) or change the lock date in Settings ? Period & GL.");
       return;
     }
     onProceed();
@@ -3548,11 +3635,11 @@ var checkPeriodClose = function (recordDate, settings, onProceed) {
   }
   var closed = settings && settings.booksClosedDate;
   if (!closed || !recordDate || recordDate >= closed) { onProceed(); return; }
-  showConfirm("⚠️ Period Close Warning\n\nThis record is dated " + fmtDate(recordDate) + ", which is before the Books Closed Date (" + fmtDate(closed) + ").\n\nModifying historical records may affect your financial reports.\n\nAre you sure you want to continue?", onProceed);
+  showConfirm("Period Close Warning\n\nThis record is dated " + fmtDate(recordDate) + ", which is before the Books Closed Date (" + fmtDate(closed) + ").\n\nModifying historical records may affect your financial reports.\n\nAre you sure you want to continue?", onProceed);
 };
 
 
-/* ─── ABOUT TAB (update checker — hooks must be at component top level) ── */
+/* --- ABOUT TAB (update checker - hooks must be at component top level) -- */
 var AboutTab = function (props) {
   var licenseInfo = props.licenseInfo;
   var onActivate = props.onActivate;
@@ -3562,7 +3649,7 @@ var AboutTab = function (props) {
   var [updateInfo, setUpdateInfo] = useState(null);
   var [showUpdateModal, setShowUpdateModal] = useState(false);
   /* Dynamic version loaded from Electron app.getVersion() on mount */
-  var [appVersion, setAppVersion] = useState("—");
+  var [appVersion, setAppVersion] = useState("-");
 
   useEffect(function () {
     if (window.electronAPI && window.electronAPI.getAppVersion) {
@@ -3623,7 +3710,7 @@ var AboutTab = function (props) {
           onClick={function (e) { if (e.target === e.currentTarget) setShowUpdateModal(false); }}>
           <div style={{ background: "#fff", borderRadius: 16, padding: "32px 36px", maxWidth: 440, width: "calc(100vw - 48px)", boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#2979ff,#5ca8ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>🚀</div>
+              <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#2979ff,#5ca8ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>UPD</div>
               <div>
                 <div style={{ fontSize: 17, fontWeight: 900, color: "#0d1b3e", letterSpacing: "-0.02em" }}>New Version Available!</div>
                 <div style={{ fontSize: 12, color: "#5a78a5", fontWeight: 500, marginTop: 2 }}>A newer version of Techon ERP is ready</div>
@@ -3646,12 +3733,12 @@ var AboutTab = function (props) {
               </div>
             ) : null}
             <div style={{ background: "#fef3e2", border: "1.5px solid #fcd34d", borderRadius: 9, padding: "10px 14px", marginBottom: 20, fontSize: 12.5, color: "#92400e", fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-              <span>⚠️</span><span>Please backup your data before updating.</span>
+              <span>!</span><span>Please backup your data before updating.</span>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={function () { openDownload(updateInfo.download); setShowUpdateModal(false); }}
                 style={{ flex: 1, padding: "11px", background: "linear-gradient(135deg,#2979ff,#5ca8ff)", color: "#fff", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                ⬇ Download Update
+                ? Download Update
               </button>
               <button onClick={function () { setShowUpdateModal(false); }}
                 style={{ padding: "11px 20px", background: "#f0f4ff", color: "#3d5280", border: "1.5px solid #c7d7f8", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
@@ -3662,10 +3749,10 @@ var AboutTab = function (props) {
         </div>
       )}
 
-      {/* ── About: wide, compact two-column layout ── */}
+      {/* -- About: wide, compact two-column layout -- */}
       <div style={{ background: "#fff", borderRadius: 20, border: "1.5px solid " + C.border, width: "100%", boxShadow: "0 10px 44px rgba(13,27,62,0.11)", overflow: "hidden" }}>
 
-        {/* Header — horizontal on wide view */}
+        {/* Header - horizontal on wide view */}
         <div style={{ background: "linear-gradient(135deg, #0d1b3e 0%, #1a3580 55%, #2979ff 100%)", padding: "18px 22px 20px", position: "relative" }}>
           <div style={{ position: "absolute", top: -16, right: -16, width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, position: "relative", zIndex: 1 }}>
@@ -3683,10 +3770,10 @@ var AboutTab = function (props) {
               <div style={{ fontSize: 11.5, color: "rgba(200,218,255,0.88)", marginTop: 6, fontWeight: 500, lineHeight: 1.4 }}>
                 {licenseInfo && licenseInfo.shopName
                   ? <span>Licensed to <strong style={{ color: "#fff" }}>{licenseInfo.shopName}</strong></span>
-                  : <span>Techon Computers · Negombo, Sri Lanka</span>}
+                  : <span>Techon Computers - Negombo, Sri Lanka</span>}
                 {licenseInfo && licenseInfo.deviceId && (
                   <span style={{ display: "block", fontSize: 10, color: "rgba(160,190,235,0.75)", marginTop: 4, fontFamily: "'JetBrains Mono',monospace" }}>
-                    Device: {licenseInfo.deviceId.slice(0, 24)}…
+                    Device: {licenseInfo.deviceId.slice(0, 24)}-
                   </span>
                 )}
               </div>
@@ -3694,7 +3781,7 @@ var AboutTab = function (props) {
           </div>
         </div>
 
-        {/* Body — two columns: left = updates + meta + support | right = license */}
+        {/* Body - two columns: left = updates + meta + support | right = license */}
         <div style={{ padding: "18px 20px 16px" }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 18, alignItems: "stretch" }}>
             <div style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -3702,51 +3789,51 @@ var AboutTab = function (props) {
               <div>
                 <button onClick={checkForUpdates} disabled={updateState === "checking"}
                   style={{ padding: "9px 22px", background: updateState === "checking" ? "#e2e8f0" : "linear-gradient(135deg,#0d47a1,#2979ff)", color: updateState === "checking" ? "#5a78a5" : "#fff", border: "none", borderRadius: 9, fontSize: 12.5, fontWeight: 800, cursor: updateState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: updateState === "checking" ? "none" : "0 3px 12px rgba(41,121,255,0.28)" }}>
-                  {updateState === "checking" ? "⏳ Checking..." : "🔄 Check for Updates"}
+                  {updateState === "checking" ? "? Checking..." : "Check for Updates"}
                 </button>
                 {updateState === "uptodate" && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>✅ Latest version.</div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>? Latest version.</div>
                 )}
                 {updateState === "error" && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>⚠ Update server unreachable.</div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>? Update server unreachable.</div>
                 )}
                 {updateState === "available" && !showUpdateModal && (
-                  <div onClick={function () { setShowUpdateModal(true); }} style={{ marginTop: 8, fontSize: 12, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 7, padding: "6px 12px", display: "inline-block", cursor: "pointer" }}>🚀 Update available — click to view</div>
+                  <div onClick={function () { setShowUpdateModal(true); }} style={{ marginTop: 8, fontSize: 12, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 7, padding: "6px 12px", display: "inline-block", cursor: "pointer" }}>Update available - click to view</div>
                 )}
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 <div style={{ background: "#f7f9ff", borderRadius: 9, padding: "8px 12px", border: "1.5px solid " + C.border }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>📦 Version</div>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Version</div>
                   <div style={{ fontSize: 12.5, fontWeight: 800, color: C.text, fontFamily: "'JetBrains Mono',monospace" }}>{"v" + appVersion}</div>
                 </div>
                 <div style={{ background: "#f7f9ff", borderRadius: 9, padding: "8px 12px", border: "1.5px solid " + C.border }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>🗓 Validity</div>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Validity</div>
                   <div style={{ fontSize: 12.5, fontWeight: 800, color: C.text, lineHeight: 1.25 }}>
                     {(function () {
-                      if (!licenseInfo) return "—";
+                      if (!licenseInfo) return "-";
                       var plan = (licenseInfo.plan || "").toLowerCase();
                       var status = licenseInfo.status;
-                      if (plan === "lifetime") return "♾ Lifetime";
+                      if (plan === "lifetime") return "? Lifetime";
                       if (plan === "2year" || plan === "2years") return "730 days";
                       if (plan === "yearly" || plan === "year" || plan === "1year") return "365 days";
                       if (plan === "monthly" || plan === "month" || plan === "1month") return "30 days";
                       if (status === "trial") return "3 days (Trial)";
                       if (licenseInfo.daysLeft !== undefined) return licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s left" : " left");
-                      return "—";
+                      return "-";
                     })()}
                   </div>
                 </div>
               </div>
 
               <div style={{ background: "#f0f4ff", borderRadius: 11, padding: "10px 12px", border: "1.5px solid " + C.border }}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>🛠 Developer &amp; Support</div>
+                <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Developer &amp; Support</div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                   {[
-                    ["🌐", "Site", "www.erp.techon.lk", "https://www.erp.techon.lk"],
-                    ["✉️", "Email", "info@techon.lk", "mailto:info@techon.lk"],
-                    ["📞", "+94", "701234678", "tel:+94701234678"],
-                    ["📞", "+94", "701234178", "tel:+94701234178"]
+                    ["*", "Site", "www.erp.techon.lk", "https://www.erp.techon.lk"],
+                    ["*", "Email", "info@techon.lk", "mailto:info@techon.lk"],
+                    ["*", "+94", "701234678", "tel:+94701234678"],
+                    ["*", "+94", "701234178", "tel:+94701234178"]
                   ].map(function (row, i) {
                     return (
                       <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, minWidth: 0 }}>
@@ -3769,14 +3856,14 @@ var AboutTab = function (props) {
                   return (
                     <div style={{ background: "linear-gradient(135deg,#e6f7f2,#f0fdf8)", border: "1.5px solid #9ee8ce", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#0f9e6e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>✅</div>
+                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#0f9e6e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>?</div>
                         <div>
                           <div style={{ fontWeight: 800, fontSize: 13.5, color: "#0a7a53" }}>Software Activated</div>
-                          <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 600 }}>Full version — all features unlocked</div>
+                          <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 600 }}>Full version - all features unlocked</div>
                         </div>
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5 }}>
-                        {[["Licensed To", licenseInfo.shopName || "—", "#0a7a53"], ["License Key", licenseInfo.key || "—", "#047857"], ["Device ID", (licenseInfo.deviceId || "—").slice(0, 18) + "…", C.muted]].map(function (row) {
+                        {[["Licensed To", licenseInfo.shopName || "-", "#0a7a53"], ["License Key", licenseInfo.key || "-", "#047857"], ["Device ID", (licenseInfo.deviceId || "-").slice(0, 18) + "-", C.muted]].map(function (row) {
                           return (
                             <div key={row[0]} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, background: "rgba(255,255,255,0.65)", borderRadius: 7, padding: "6px 10px" }}>
                               <span style={{ fontWeight: 700, color: "#065f46", flexShrink: 0 }}>{row[0]}</span>
@@ -3791,7 +3878,7 @@ var AboutTab = function (props) {
                 return (
                   <div style={{ background: "linear-gradient(135deg,#fef3e2,#fff8ed)", border: "1.5px solid #fcd34d", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                      <div style={{ width: 30, height: 30, borderRadius: 8, background: "#f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>🕒</div>
+                      <div style={{ width: 30, height: 30, borderRadius: 8, background: "#f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>KEY</div>
                       <div>
                         <div style={{ fontWeight: 800, fontSize: 13.5, color: "#92400e" }}>Trial Version</div>
                         <div style={{ fontSize: 10.5, color: "#b45309", fontWeight: 600 }}>Limited period active</div>
@@ -3804,8 +3891,7 @@ var AboutTab = function (props) {
                       {" "}Activate a license key to unlock the full version permanently.
                     </div>
                     <button onClick={function () { if (onActivate) onActivate(); }}
-                      style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(245,158,11,0.32)" }}>
-                      🔑 Activate Now
+                      style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(245,158,11,0.32)" }}>Activate Now
                     </button>
                   </div>
                 );
@@ -3816,7 +3902,7 @@ var AboutTab = function (props) {
           <div style={{ borderTop: "1.5px solid " + C.border, paddingTop: 12, marginTop: 14, textAlign: "center" }}>
             <div style={{ fontSize: 11.5, color: C.muted, fontWeight: 500, lineHeight: 1.65 }}>
               Designed &amp; developed by <span style={{ fontWeight: 700, color: C.accent }}>Techon Computers</span>
-              {" · "}© {new Date().getFullYear()} All rights reserved.
+              {" - "}- {new Date().getFullYear()} All rights reserved.
             </div>
           </div>
         </div>
@@ -3850,9 +3936,9 @@ var NAV_ICONS = {
 
 
 
-/* ═══════════════════════════════════════════════════════════
-   STATEMENTS PAGE — Customer & Supplier account statements
-   ═══════════════════════════════════════════════════════════ */
+/* -----------------------------------------------------------
+   STATEMENTS PAGE - Customer & Supplier account statements
+   ----------------------------------------------------------- */
 var Statements = function (props) {
   var state = props.state;
   var cur = getCurrencySymbol();
@@ -3867,12 +3953,12 @@ var Statements = function (props) {
   var people = mode === "customer" ? customers : suppliers;
   var selected = people.find(function (p) { return p.id === selId; }) || null;
 
-  /* ── Build transaction rows ── */
+  /* -- Build transaction rows -- */
   var rows = [];
 
   if (selected) {
     if (mode === "customer") {
-      /* Sales invoices — use original total (before returns) for the debit so the
+      /* Sales invoices - use original total (before returns) for the debit so the
          return credit row shows the reduction cleanly without double-counting.
          We reconstruct original total = current total + sum of returns on that invoice */
       (state.sales || []).forEach(function (s) {
@@ -3881,27 +3967,27 @@ var Statements = function (props) {
         var saleReturns = (state.salesReturns || []).filter(function (r) { return r.invoiceId === s.id || r.invoiceNo === s.invoiceNo; });
         var returnedTotal = saleReturns.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
         var originalTotal = s.total + returnedTotal; /* restore original invoice value */
-        rows.push({ date: s.date, type: "Invoice", ref: s.invoiceNo || s.id.slice(0, 8), detail: (s.items || []).map(function (i) { return i.name + (i.qty > 1 ? " x" + i.qty : ""); }).join(", ") || "—", debit: originalTotal, credit: 0, paid: s.paid || 0, payStatus: s.payStatus });
+        rows.push({ date: s.date, type: "Invoice", ref: s.invoiceNo || s.id.slice(0, 8), detail: (s.items || []).map(function (i) { return i.name + (i.qty > 1 ? " x" + i.qty : ""); }).join(", ") || "-", debit: originalTotal, credit: 0, paid: s.paid || 0, payStatus: s.payStatus });
         /* Payment history entries */
         (s.paymentHistory || []).forEach(function (ph) {
           if (ph.amount > 0) {
-            rows.push({ date: ph.date || s.date, type: "Payment", ref: s.invoiceNo || s.id.slice(0, 8), detail: "Payment received" + (ph.method ? " — " + ph.method : ""), debit: 0, credit: ph.amount, paid: 0, payStatus: "" });
+            rows.push({ date: ph.date || s.date, type: "Payment", ref: s.invoiceNo || s.id.slice(0, 8), detail: "Payment received" + (ph.method ? " - " + ph.method : ""), debit: 0, credit: ph.amount, paid: 0, payStatus: "" });
           }
         });
       });
-      /* Sales returns — show as credit (reduces what customer owes) */
+      /* Sales returns - show as credit (reduces what customer owes) */
       (state.salesReturns || []).forEach(function (r) {
         if (r.customerId !== selected.id && r.customerName !== selected.name && r.customer !== selected.name) return;
-        rows.push({ date: r.date, type: "Return", ref: r.invoiceNo || r.id.slice(0, 8), detail: (r.productName || "Return") + (r.reason ? " — " + r.reason : ""), debit: 0, credit: r.amount || 0, paid: 0, payStatus: "" });
+        rows.push({ date: r.date, type: "Return", ref: r.invoiceNo || r.id.slice(0, 8), detail: (r.productName || "Return") + (r.reason ? " - " + r.reason : ""), debit: 0, credit: r.amount || 0, paid: 0, payStatus: "" });
       });
     } else {
       /* Purchases */
       (state.purchases || []).forEach(function (p) {
         if (p.supplier !== selected.name && p.supplierId !== selected.id) return;
-        rows.push({ date: p.date, type: "Purchase", ref: p.invoiceNo || p.id.slice(0, 8), detail: (p.items || p.stock || []).map(function (i) { return i.name + (i.qty > 1 ? " x" + i.qty : ""); }).join(", ") || "—", debit: p.total, credit: 0, paid: p.paid || 0, payStatus: p.payStatus });
+        rows.push({ date: p.date, type: "Purchase", ref: p.invoiceNo || p.id.slice(0, 8), detail: (p.items || p.stock || []).map(function (i) { return i.name + (i.qty > 1 ? " x" + i.qty : ""); }).join(", ") || "-", debit: p.total, credit: 0, paid: p.paid || 0, payStatus: p.payStatus });
         (p.paymentHistory || []).forEach(function (ph) {
           if (ph.amount > 0) {
-            rows.push({ date: ph.date || p.date, type: "Payment", ref: p.invoiceNo || p.id.slice(0, 8), detail: "Payment made" + (ph.method ? " — " + ph.method : ""), debit: 0, credit: ph.amount, paid: 0, payStatus: "" });
+            rows.push({ date: ph.date || p.date, type: "Payment", ref: p.invoiceNo || p.id.slice(0, 8), detail: "Payment made" + (ph.method ? " - " + ph.method : ""), debit: 0, credit: ph.amount, paid: 0, payStatus: "" });
           }
         });
       });
@@ -3929,15 +4015,15 @@ var Statements = function (props) {
   var totalCredit = filtered.reduce(function (a, r) { return a + r.credit; }, 0);
   var netBalance = totalDebit - totalCredit;
 
-  /* ── Print statement ── */
+  /* -- Print statement -- */
   var printStatement = function () {
     if (!selected) return;
     var shopName = (state.settings && state.settings.shopName) || "Techon ERP";
     var shopAddr = (state.settings && state.settings.address) || "";
     var shopPhone = (state.settings && state.settings.phone) || "";
     var accent = (state.settings && state.settings.invoiceAccentColor) || "#0d47a1";
-    var periodLabel = (dateFrom || dateTo) ? ("Period: " + (dateFrom ? fmtDate(dateFrom) : "Start") + " — " + (dateTo ? fmtDate(dateTo) : "Today")) : "All Time";
-    var html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Statement — " + escapeHtml(selected.name) + "</title>";
+    var periodLabel = (dateFrom || dateTo) ? ("Period: " + (dateFrom ? fmtDate(dateFrom) : "Start") + " - " + (dateTo ? fmtDate(dateTo) : "Today")) : "All Time";
+    var html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Statement - " + escapeHtml(selected.name) + "</title>";
     html += "<style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff;padding:32px 36px;}";
     html += ".hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:16px;border-bottom:2px solid " + accent + ";}";
     html += ".shop-name{font-size:20px;font-weight:900;color:" + accent + ";text-transform:uppercase;letter-spacing:-0.02em;}";
@@ -3968,8 +4054,8 @@ var Statements = function (props) {
     html += "<div class='stmt-sub'>" + escapeHtml(periodLabel) + "</div>";
     html += "<div class='stmt-sub'>Printed: " + new Date().toLocaleString() + "</div></div></div>";
     html += "<div class='party-box'><div><div class='party-name'>" + escapeHtml(selected.name) + "</div>";
-    if (selected.phone) html += "<div class='party-sub'>📞 " + escapeHtml(selected.phone) + "</div>";
-    if (selected.address) html += "<div class='party-sub'>📍 " + escapeHtml(selected.address) + "</div>";
+    if (selected.phone) html += "<div class='party-sub'>" + escapeHtml(selected.phone) + "</div>";
+    if (selected.address) html += "<div class='party-sub'>" + escapeHtml(selected.address) + "</div>";
     html += "</div><div class='bal-box'><div class='bal-label'>Outstanding Balance</div><div class='bal-val'>" + cur + " " + fmtNum(Math.abs(netBalance)) + (netBalance <= 0 ? " CR" : "") + "</div></div></div>";
     html += "<table><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Details</th><th class='r'>Debit (" + cur + ")</th><th class='r'>Credit (" + cur + ")</th><th class='r'>Balance (" + cur + ")</th></tr></thead><tbody>";
     withBalance.forEach(function (r) {
@@ -3978,13 +4064,13 @@ var Statements = function (props) {
       html += "<td><span class='" + typeClass + "'>" + escapeHtml(r.type) + "</span></td>";
       html += "<td class='bold'>" + escapeHtml(r.ref) + "</td>";
       html += "<td style='max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>" + escapeHtml(r.detail) + "</td>";
-      html += "<td class='r'>" + (r.debit > 0 ? fmtNum(r.debit) : "—") + "</td>";
-      html += "<td class='r' style='color:#16a34a;'>" + (r.credit > 0 ? fmtNum(r.credit) : "—") + "</td>";
+      html += "<td class='r'>" + (r.debit > 0 ? fmtNum(r.debit) : "-") + "</td>";
+      html += "<td class='r' style='color:#16a34a;'>" + (r.credit > 0 ? fmtNum(r.credit) : "-") + "</td>";
       html += "<td class='r bold' style='color:" + (r.runningBalance > 0 ? "#dc2626" : "#16a34a") + ";'>" + fmtNum(Math.abs(r.runningBalance)) + (r.runningBalance <= 0 ? " CR" : "") + "</td></tr>";
     });
     html += "<tr class='totals-row'><td colspan='4'>TOTALS</td><td class='r'>" + fmtNum(totalDebit) + "</td><td class='r'>" + fmtNum(totalCredit) + "</td><td class='r' style='color:" + (netBalance > 0 ? "#dc2626" : "#16a34a") + ";'>" + fmtNum(Math.abs(netBalance)) + (netBalance <= 0 ? " CR" : "") + "</td></tr>";
     html += "</tbody></table>";
-    html += "<div class='footer'>Powered by TechonERP • www.erp.techon.lk</div></body></html>";
+    html += "<div class='footer'>Powered by TechonERP - www.erp.techon.lk</div></body></html>";
     var w = window.open("", "_blank", "width=900,height=700");
     if (!w) return;
     w.document.write(html);
@@ -4000,12 +4086,12 @@ var Statements = function (props) {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: C.text, letterSpacing: "-0.03em" }}>📋 Account Statements</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: C.text, letterSpacing: "-0.03em" }}>Account Statements</div>
           <div style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Full transaction history for customers and suppliers</div>
         </div>
         {selected && withBalance.length > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <Btn col="blue" onClick={printStatement}>🖨 Print Statement</Btn>
+            <Btn col="blue" onClick={printStatement}>Print Statement</Btn>
             <WABtn title="Share Statement via WhatsApp" onClick={function () { shareAnyReport(printStatement, "Statement-" + (selected || "account")); }} />
           </div>
         )}
@@ -4017,7 +4103,7 @@ var Statements = function (props) {
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Statement Type</div>
           <div style={{ display: "flex", border: "1.5px solid " + C.border, borderRadius: 8, overflow: "hidden" }}>
-            {[["customer", "👤 Customer"], ["supplier", "🏭 Supplier"]].map(function (opt) {
+            {[["customer", "Customer"], ["supplier", "Supplier"]].map(function (opt) {
               var active = mode === opt[0];
               return <button key={opt[0]} onClick={function () { setMode(opt[0]); setSelId(""); }}
                 style={{ padding: "8px 18px", border: "none", cursor: "pointer", fontWeight: active ? 700 : 500, fontSize: 13,
@@ -4030,8 +4116,8 @@ var Statements = function (props) {
           <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>{mode === "customer" ? "Select Customer" : "Select Supplier"}</div>
           <select value={selId} onChange={function (e) { setSelId(e.target.value); }}
             style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, outline: "none", cursor: "pointer", fontFamily: "inherit" }}>
-            <option value="">— Select {mode === "customer" ? "a customer" : "a supplier"} —</option>
-            {people.map(function (p) { return <option key={p.id} value={p.id}>{p.name}{p.phone ? "  ·  " + p.phone : ""}</option>; })}
+            <option value="">- Select {mode === "customer" ? "a customer" : "a supplier"} -</option>
+            {people.map(function (p) { return <option key={p.id} value={p.id}>{p.name}{p.phone ? "  -  " + p.phone : ""}</option>; })}
           </select>
         </div>
         {/* Date range */}
@@ -4046,7 +4132,7 @@ var Statements = function (props) {
             style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text }} />
         </div>
         {(dateFrom || dateTo) && (
-          <button onClick={function () { setDateFrom(""); setDateTo(""); }} style={{ alignSelf: "flex-end", padding: "9px 14px", background: "#f1f5f9", border: "1.5px solid " + C.border, borderRadius: 8, fontSize: 12, fontWeight: 700, color: C.textMd, cursor: "pointer", fontFamily: "inherit" }}>✕ Clear</button>
+          <button type="button" onClick={function () { setDateFrom(""); setDateTo(""); }} style={{ alignSelf: "flex-end", padding: "9px 14px", background: "#f1f5f9", border: "1.5px solid " + C.border, borderRadius: 8, fontSize: 12, fontWeight: 700, color: C.textMd, cursor: "pointer", fontFamily: "inherit" }}>Clear dates</button>
         )}
       </div>
 
@@ -4055,8 +4141,8 @@ var Statements = function (props) {
         <div style={{ background: "linear-gradient(135deg,#0d47a1,#1565c0)", borderRadius: 12, padding: "16px 22px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{selected.name}</div>
-            {selected.phone && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginTop: 3 }}>📞 {selected.phone}</div>}
-            {selected.address && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginTop: 2 }}>📍 {selected.address}</div>}
+            {selected.phone && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginTop: 3 }}>{selected.phone}</div>}
+            {selected.address && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginTop: 2 }}>{selected.address}</div>}
           </div>
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
             {[
@@ -4076,18 +4162,18 @@ var Statements = function (props) {
       {/* No selection state */}
       {!selected && (
         <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, padding: "60px 20px", textAlign: "center" }}>
-          <div style={{ fontSize: 40, marginBottom: 14 }}>📋</div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Select a {mode === "customer" ? "Customer" : "Supplier"}</div>
-          <div style={{ fontSize: 13, color: C.muted }}>Choose from the dropdown above to view their full account statement</div>
+          <div style={{ fontSize: 44, marginBottom: 14, lineHeight: 1 }} aria-hidden="true">📋</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Select a {mode === "customer" ? "customer" : "supplier"}</div>
+          <div style={{ fontSize: 13, color: C.muted }}>Choose from the dropdown above to view their full account statement.</div>
         </div>
       )}
 
       {/* Transactions table */}
       {selected && withBalance.length === 0 && (
         <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, padding: "50px 20px", textAlign: "center" }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
+          <div style={{ fontSize: 40, marginBottom: 12, lineHeight: 1 }} aria-hidden="true">📭</div>
           <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 6 }}>No transactions found</div>
-          <div style={{ fontSize: 13, color: C.muted }}>No records found for {selected.name}{(dateFrom || dateTo) ? " in this date range" : ""}</div>
+          <div style={{ fontSize: 13, color: C.muted }}>No records for {selected.name}{(dateFrom || dateTo) ? " in this date range" : ""}.</div>
         </div>
       )}
 
@@ -4118,8 +4204,8 @@ var Statements = function (props) {
                       </td>
                       <td style={{ padding: "10px 12px", fontWeight: 700, color: C.text, whiteSpace: "nowrap" }}>{r.ref}</td>
                       <td style={{ padding: "10px 12px", color: C.textMd, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.detail}>{r.detail}</td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.debit > 0 ? C.red : C.muted }}>{r.debit > 0 ? fmtNum(r.debit) : "—"}</td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.credit > 0 ? C.green : C.muted }}>{r.credit > 0 ? fmtNum(r.credit) : "—"}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.debit > 0 ? C.red : C.muted }}>{r.debit > 0 ? fmtNum(r.debit) : "-"}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.credit > 0 ? C.green : C.muted }}>{r.credit > 0 ? fmtNum(r.credit) : "-"}</td>
                       <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 800, color: r.runningBalance > 0 ? C.red : C.green }}>
                         {fmtNum(Math.abs(r.runningBalance))}{r.runningBalance <= 0 ? <span style={{ fontSize: 10, marginLeft: 3 }}>CR</span> : ""}
                       </td>
@@ -4140,9 +4226,9 @@ var Statements = function (props) {
             </table>
           </div>
           <div style={{ padding: "12px 16px", background: "#f8fafc", borderTop: "1px solid " + C.border, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-            <div style={{ fontSize: 12, color: C.muted }}>{withBalance.length} transaction{withBalance.length !== 1 ? "s" : ""}{(dateFrom || dateTo) ? " in selected period" : " — all time"}</div>
+            <div style={{ fontSize: 12, color: C.muted }}>{withBalance.length} transaction{withBalance.length !== 1 ? "s" : ""}{(dateFrom || dateTo) ? " in selected period" : " - all time"}</div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <Btn col="blue" onClick={printStatement}>🖨 Print / Save PDF</Btn>
+              <Btn col="blue" onClick={printStatement}>Print / Save PDF</Btn>
               <WABtn title="Share Statement via WhatsApp" onClick={function () { shareAnyReport(printStatement, "Statement-" + (selected || "account")); }} />
             </div>
           </div>
@@ -4152,7 +4238,7 @@ var Statements = function (props) {
   );
 };
 
-/* ─── STARTUP ONBOARDING (steps 2–5 after mode wizard: admin → industry → shop → lang) ─ */
+/* --- STARTUP ONBOARDING (steps 2-5 after mode wizard: admin ? industry ? shop ? lang) - */
 var StartupOnboardingWizard = function (props) {
   var state = props.state;
   var setState = props.setState;
@@ -4193,7 +4279,7 @@ var StartupOnboardingWizard = function (props) {
   var stepOf5 = phase === "admin" ? 2 : phase === "industry" ? 3 : phase === "shop" ? 4 : 5;
   var dpProgress = getOnboardingDataProgress(state.settings);
   var wizTitles = {
-    industry: { title: "What type of business are you setting up?", sub: "Choose one — you can't change this later." },
+    industry: { title: "What type of business are you setting up?", sub: "Choose one - you can't change this later." },
     shop: { title: "Tell us about your shop", sub: "We use this on invoices and receipts. You can edit details anytime in Settings." },
     lang: { title: "Language, currency & tax", sub: "Match your region and how invoices print. You can adjust these later in Settings." },
   };
@@ -4204,7 +4290,7 @@ var StartupOnboardingWizard = function (props) {
   };
   var canWizardBack = phase === "industry" || phase === "shop" || phase === "lang";
 
-  /* Settings.jsx expects the same module-level helpers as <ActivePage /> — wizard embedded paths must pass them explicitly */
+  /* Settings.jsx expects the same module-level helpers as <ActivePage /> - wizard embedded paths must pass them explicitly */
   var wizSettingsProps = {
     S: S,
     C: C,
@@ -4254,7 +4340,7 @@ var StartupOnboardingWizard = function (props) {
         "Inventory / journal repair will replay all transactions to rebuild the ledger and inventory layers.\n\nA JSON backup file will be downloaded first. Continue?",
         function () {
           if (!downloadPreRepairJsonBackup()) {
-            showAlert("Backup download failed — repair cancelled.");
+            showAlert("Backup download failed - repair cancelled.");
             addAudit("Repair cancelled", "inventory_layers", { reason: "backup_failed" });
             return;
           }
@@ -4266,7 +4352,7 @@ var StartupOnboardingWizard = function (props) {
             setState(loadState());
             showAlert("Inventory layers updated from full transaction replay.");
           } else {
-            showAlert(r && r.commitFailed ? "Repair did not apply — the journal could not be saved." : "Repair did not apply — resolve journal warnings or check the console.");
+            showAlert(r && r.commitFailed ? "Repair did not apply - the journal could not be saved." : "Repair did not apply - resolve journal warnings or check the console.");
           }
         }
       );
@@ -4289,13 +4375,13 @@ var StartupOnboardingWizard = function (props) {
               <img src={TECHON_LOGO} alt="" style={{ width: 32, height: 32, borderRadius: 8 }} />
               <div>
                 <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(138,170,212,0.9)", letterSpacing: "0.12em", textTransform: "uppercase" }}>Setup Wizard</div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Welcome — let&apos;s finish your profile</div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#fff" }}>Welcome - let&apos;s finish your profile</div>
               </div>
             </div>
             <div style={{ marginBottom: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 6 }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(200,220,255,0.95)" }}>Step {stepOf5} of 5</span>
-                <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(138,170,212,0.9)" }}>Profile data {dpProgress.done}/{dpProgress.total} · {dpProgress.pct}%</span>
+                <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(138,170,212,0.9)" }}>Profile data {dpProgress.done}/{dpProgress.total} - {dpProgress.pct}%</span>
               </div>
               <div style={{ height: 5, borderRadius: 99, background: "rgba(255,255,255,0.1)", overflow: "hidden" }}>
                 <div style={{ height: "100%", width: dpProgress.pct + "%", borderRadius: 99, background: "linear-gradient(90deg,#6366f1,#3b82f6)", transition: "width .28s ease" }} />
@@ -4320,7 +4406,7 @@ var StartupOnboardingWizard = function (props) {
             }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 18 }} aria-hidden>🚀</span>
+                  <span style={{ fontSize: 18 }} aria-hidden>BACK</span>
                   <span style={{ fontSize: 15, fontWeight: 600, color: "#f8fafc", letterSpacing: "-0.02em" }}>Setup Wizard</span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -4330,18 +4416,18 @@ var StartupOnboardingWizard = function (props) {
                       style={{
                         width: 30, height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.15)", background: canWizardBack ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)",
                         color: canWizardBack ? "#e2e8f0" : "rgba(148,163,184,0.5)", cursor: canWizardBack ? "pointer" : "default", fontSize: 14, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
-                      }} title="Back">‹</button>
+                      }} title="Back">-</button>
                     <button type="button" disabled style={{
                       width: 30, height: 30, borderRadius: 7, border: "1px solid rgba(255,255,255,0.08)", background: "rgba(255,255,255,0.04)",
                       color: "rgba(148,163,184,0.45)", cursor: "default", fontSize: 14, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
-                    }} title="Next step">›</button>
+                    }} title="Next step">-</button>
                   </div>
                 </div>
               </div>
               <div style={{ marginTop: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4, flexWrap: "wrap", gap: 6 }}>
                   <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(148,163,184,0.95)" }}>Profile setup</span>
-                  <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(165,180,252,0.95)" }}>{dpProgress.done}/{dpProgress.total} · {dpProgress.pct}%</span>
+                  <span style={{ fontSize: 10, fontWeight: 600, color: "rgba(165,180,252,0.95)" }}>{dpProgress.done}/{dpProgress.total} - {dpProgress.pct}%</span>
                 </div>
                 <div style={{ height: 6, borderRadius: 99, background: "rgba(255,255,255,0.12)", overflow: "hidden" }}>
                   <div style={{ height: "100%", width: dpProgress.pct + "%", borderRadius: 99, background: "linear-gradient(90deg,#818cf8,#38bdf8)", transition: "width .35s cubic-bezier(.4,0,.2,1)" }} />
@@ -4407,7 +4493,7 @@ var StartupOnboardingWizard = function (props) {
   );
 };
 
-/* ─── BUSINESS TYPE SELECTOR (shown on first launch for new installs) ──────── */
+/* --- BUSINESS TYPE SELECTOR (shown on first launch for new installs) -------- */
 var BusinessTypeSelector = function (props) {
   var onSelect = props.onSelect;
   var onBack = props.onBack;
@@ -4418,7 +4504,7 @@ var BusinessTypeSelector = function (props) {
   var [confirming, setConfirming] = useState(false);
   var [expandKey, setExpandKey] = useState(null);
 
-  var PROFILE_KEYS = ["tech", "grocery", "fashion", "hardware", "pharmacy", "jewelry", "automotive", "agriculture", "general"];
+  var PROFILE_KEYS = ["tech", "grocery", "fashion", "hardware", "pharmacy", "jewelry", "automotive", "agriculture", "restaurant", "general"];
 
   /* Filter cards based on search */
   var query = search.trim().toLowerCase();
@@ -4455,7 +4541,7 @@ var BusinessTypeSelector = function (props) {
     return bits.length ? bits.join(", ") : "Retail essentials";
   };
 
-  /* Light-panel UX on ERP dark blue — reference: clean white cards, navy text */
+  /* Light-panel UX on ERP dark blue - reference: clean white cards, navy text */
   var LP = {
     paper: "#ffffff",
     text: "#1e293b",
@@ -4472,11 +4558,11 @@ var BusinessTypeSelector = function (props) {
     return (
       <div style={{ fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif" }}>
         <div style={{ position: "relative", marginBottom: 12 }}>
-          <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4, pointerEvents: "none" }} aria-hidden>🔍</span>
+          <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4, pointerEvents: "none" }} aria-hidden>S</span>
           <input
             autoFocus
             type="text"
-            placeholder="Search business type…"
+            placeholder="Search business type-"
             value={search}
             onChange={function (e) { setSearch(e.target.value); setSelected(null); }}
             style={{
@@ -4489,7 +4575,7 @@ var BusinessTypeSelector = function (props) {
             onBlur={function (e) { e.target.style.borderColor = "#e2e8f0"; e.target.style.boxShadow = "none"; }}
           />
           {search ? (
-            <button type="button" onClick={function () { setSearch(""); setSelected(null); }} style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", fontSize: 22, cursor: "pointer", lineHeight: 1, padding: 4 }} aria-label="Clear search">×</button>
+            <button type="button" onClick={function () { setSearch(""); setSelected(null); }} style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", fontSize: 22, cursor: "pointer", lineHeight: 1, padding: 4 }} aria-label="Clear search">-</button>
           ) : null}
         </div>
         {filtered.length === 0 ? (
@@ -4503,8 +4589,8 @@ var BusinessTypeSelector = function (props) {
               var isSelected = selected === key;
               var isHov = hovered === key;
               var isEx = expandKey === key;
-              var covParts = (p.covers || "").split("·");
-              var covShort = covParts.slice(0, 3).map(function (s) { return s.trim(); }).filter(Boolean).join(" · ");
+              var covParts = (p.covers || "").split("-");
+              var covShort = covParts.slice(0, 3).map(function (s) { return s.trim(); }).filter(Boolean).join(" - ");
               return (
                 <div
                   key={key}
@@ -4536,7 +4622,7 @@ var BusinessTypeSelector = function (props) {
                       <div style={{ fontSize: 14, fontWeight: 600, color: "#0f172a", letterSpacing: "-0.02em", marginBottom: 4 }}>{p.name}</div>
                       <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.45, fontWeight: 500 }}>{covShort}</div>
                       <div style={{ fontSize: 11, color: "#047857", fontWeight: 600, marginTop: 8, display: "flex", alignItems: "flex-start", gap: 5, lineHeight: 1.4 }}>
-                        <span aria-hidden style={{ flexShrink: 0 }}>✔</span>
+                        <span aria-hidden style={{ flexShrink: 0 }}>?</span>
                         <span>What&apos;s included: {whatsIncludedLine(p)}</span>
                       </div>
                     </div>
@@ -4553,7 +4639,7 @@ var BusinessTypeSelector = function (props) {
                       <div style={{ fontSize: 10, fontWeight: 900, color: "#64748b", letterSpacing: "0.12em", margin: "14px 0 8px" }}>UNITS</div>
                       <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.55 }}>{(p.units || []).join(", ")}</div>
                       <div style={{ fontSize: 10, fontWeight: 900, color: "#64748b", letterSpacing: "0.12em", margin: "14px 0 8px" }}>CATEGORIES</div>
-                      <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.55, maxHeight: 120, overflowY: "auto" }}>{(p.categories || []).slice(0, 14).join(" · ")}{(p.categories || []).length > 14 ? " · …" : ""}</div>
+                      <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.55, maxHeight: 120, overflowY: "auto" }}>{(p.categories || []).slice(0, 14).join(" - ")}{(p.categories || []).length > 14 ? " - -" : ""}</div>
                     </div>
                   ) : null}
                   <button
@@ -4584,7 +4670,7 @@ var BusinessTypeSelector = function (props) {
               fontSize: 14, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: "inherit",
             }}
           >
-            ← Back
+            ? Back
           </button>
           <button
             type="button"
@@ -4599,7 +4685,7 @@ var BusinessTypeSelector = function (props) {
               fontFamily: "inherit",
             }}
           >
-            {confirming ? "Setting up…" : "Continue →"}
+            {confirming ? "Setting up-" : "Continue ?"}
           </button>
         </div>
       </div>
@@ -4638,16 +4724,16 @@ var BusinessTypeSelector = function (props) {
               What type of business are you setting up?
             </div>
             <div style={{ fontSize: 14, color: LP.muted, marginTop: 10, fontWeight: 500, lineHeight: 1.55 }}>
-              This configures your ERP for the right modules, units and categories. Choose carefully — this cannot be changed later.
+              This configures your ERP for the right modules, units and categories. Choose carefully - this cannot be changed later.
             </div>
           </div>
 
           {/* Search bar */}
           <div style={{ position: "relative", marginTop: 22, marginBottom: 22 }}>
-            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, opacity: 0.45 }}>🔍</span>
+            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, opacity: 0.45 }}>S</span>
             <input
               autoFocus
-              placeholder="Search your business type — e.g. mobile, salon, pharmacy, hardware…"
+              placeholder="Search your business type - e.g. mobile, salon, pharmacy, hardware-"
               value={search}
               onChange={function (e) { setSearch(e.target.value); setSelected(null); }}
               style={{
@@ -4661,7 +4747,7 @@ var BusinessTypeSelector = function (props) {
               onBlur={function (e) { e.target.style.borderColor = LP.border; e.target.style.boxShadow = "none"; }}
             />
             {search && (
-              <button type="button" onClick={function () { setSearch(""); setSelected(null); }} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", fontSize: 20, cursor: "pointer", lineHeight: 1, padding: 4 }}>×</button>
+              <button type="button" onClick={function () { setSearch(""); setSelected(null); }} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#94a3b8", fontSize: 20, cursor: "pointer", lineHeight: 1, padding: 4 }}>-</button>
             )}
           </div>
 
@@ -4672,7 +4758,7 @@ var BusinessTypeSelector = function (props) {
             </div>
           )}
 
-          {/* Cards grid — horizontal rows, light cards */}
+          {/* Cards grid - horizontal rows, light cards */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
             {filtered.map(function (key) {
               var p = BUSINESS_PROFILES[key];
@@ -4701,7 +4787,7 @@ var BusinessTypeSelector = function (props) {
                       position: "absolute", bottom: 10, right: 10, width: 22, height: 22, borderRadius: "50%",
                       background: LP.selRing, display: "flex", alignItems: "center", justifyContent: "center",
                       fontSize: 11, color: "#fff", fontWeight: 900, boxShadow: "0 2px 8px rgba(59,130,246,0.4)"
-                    }}>✓</div>
+                    }}>?</div>
                   )}
                   <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
                     <div style={{ fontSize: 34, lineHeight: 1, flexShrink: 0 }}>{p.emoji}</div>
@@ -4724,7 +4810,7 @@ var BusinessTypeSelector = function (props) {
         </div>
       </div>
 
-      {/* Sticky confirm bar — light strip on dark bg (in wizard: in-flow sticky) */}
+      {/* Sticky confirm bar - light strip on dark bg (in wizard: in-flow sticky) */}
       <div style={{
         position: embed ? "sticky" : "fixed",
         bottom: 0, left: embed ? "auto" : 0, right: embed ? "auto" : 0,
@@ -4747,9 +4833,9 @@ var BusinessTypeSelector = function (props) {
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 800, color: LP.text }}>{profile.name}</div>
                 <div style={{ fontSize: 11, color: LP.muted, fontWeight: 500 }}>
-                  {profile.units.length} units · {profile.categories.length} categories
-                  {profile.modules.repairs ? " · Repairs module" : ""}
-                  {profile.modules.expiry ? " · Expiry tracking" : ""}
+                  {profile.units.length} units - {profile.categories.length} categories
+                  {profile.modules.repairs ? " - Repairs module" : ""}
+                  {profile.modules.expiry ? " - Expiry tracking" : ""}
                 </div>
               </div>
             </div>
@@ -4766,7 +4852,7 @@ var BusinessTypeSelector = function (props) {
               transition: "all .15s"
             }}
           >
-            {confirming ? "Setting up…" : "Confirm & Continue →"}
+            {confirming ? "Setting up-" : "Confirm & Continue ?"}
           </button>
         </div>
       </div>
@@ -4804,7 +4890,7 @@ var NAV_GROUPS = [
   { label: "INSIGHT", ids: ["reports", "barcodeprint", "auditlog", "settings"] }
 ];
 
-/* ─── NAV SVG ICON ────────────────────────────────── */
+/* --- NAV SVG ICON ---------------------------------- */
 var NavIcon = function (niProps) {
   var d = NAV_ICONS[niProps.id] || "";
   var sz = niProps.size || 18;
@@ -4817,8 +4903,8 @@ var NavIcon = function (niProps) {
 };
 
 
-/* ─── APP ─────────────────────────────────────────── */
-/* ─── LOGIN SCREEN ────────────────────────────────── */
+/* --- APP ------------------------------------------- */
+/* --- LOGIN SCREEN ---------------------------------- */
 var LoginScreen = function (props) {
   var [pw, setPw] = useState("");
   var [err, setErr] = useState("");
@@ -4969,7 +5055,7 @@ var LoginScreen = function (props) {
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100vw", height: "100vh", background: "linear-gradient(135deg,#0a1628 0%,#0d1e38 50%,#0f2252 100%)" }}>
       <div style={{ background: "#fff", borderRadius: 20, padding: "32px 28px", width: "100%", maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.4)", margin: "0 16px" }}>
         <div style={{ textAlign: "center", marginBottom: 28 }}>
-          {/* Logo — no hard border, smooth purple glow */}
+          {/* Logo - no hard border, smooth purple glow */}
           <div style={{ width: 82, height: 82, borderRadius: 22, margin: "0 auto 14px", filter: "drop-shadow(0 0 12px rgba(180,100,255,0.8)) drop-shadow(0 0 28px rgba(120,100,255,0.45))" }}>
             <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
           </div>
@@ -4980,7 +5066,7 @@ var LoginScreen = function (props) {
         {err && <div style={{ background: "#fde8ed", color: "#e03151", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontWeight: 600, marginBottom: 14, textAlign: "center" }}>{err}</div>}
 
         {isFirst ? (
-          /* ── First launch: name + password setup ── */
+          /* -- First launch: name + password setup -- */
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#0369a1" }}>
               Welcome! Enter your name and create a password to protect your ERP.
@@ -4992,7 +5078,7 @@ var LoginScreen = function (props) {
             <Btn col="cyan" full onClick={handleCreate} disabled={!adminName || !newPw || !newPw2}>Create Account & Enter</Btn>
           </div>
         ) : needName ? (
-          /* ── Existing user: ask for name once ── */
+          /* -- Existing user: ask for name once -- */
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#0369a1" }}>
               Please enter your name so we can personalise the ERP for you.
@@ -5001,13 +5087,13 @@ var LoginScreen = function (props) {
             <Btn col="cyan" full onClick={handleSaveName} disabled={!adminName}>Save & Continue</Btn>
           </div>
         ) : (
-          /* ── Normal login ── */
+          /* -- Normal login -- */
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <Input label="Username" value={username} onChange={function (e) { setUsername(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="e.g. admin" />
             <Input label="Password" type="password" value={pw} onChange={function (e) { setPw(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="Enter password..." />
             <Btn col="cyan" full onClick={handleLogin} disabled={!pw || !username}>Login</Btn>
             <div style={{ textAlign: "center", marginTop: 6 }}>
-              <button type="button" onClick={function () { if (loginForgotOpen) { setLoginForgotOpen(false); setErr(""); } else openLoginForgotSupport(); }} style={{ background: "none", border: "none", color: "#8fa3c8", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>{loginForgotOpen ? "← Back to login" : "Forgot password?"}</button>
+              <button type="button" onClick={function () { if (loginForgotOpen) { setLoginForgotOpen(false); setErr(""); } else openLoginForgotSupport(); }} style={{ background: "none", border: "none", color: "#8fa3c8", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>{loginForgotOpen ? "? Back to login" : "Forgot password?"}</button>
             </div>
             {loginForgotOpen && (
               <div style={{ background: "#f8fafc", border: "1.5px solid " + C.border, borderRadius: 12, padding: "14px 14px", textAlign: "left", marginTop: 4 }}>
@@ -5023,7 +5109,7 @@ var LoginScreen = function (props) {
                     fontFamily: "ui-monospace, Consolas, monospace", fontSize: 20, fontWeight: 800, letterSpacing: "0.14em",
                     background: "linear-gradient(135deg,#eef2ff,#e0e7ff)", border: "2px solid #2979ff", borderRadius: 10,
                     padding: "12px 14px", marginBottom: 8, color: "#0d1b3e", textAlign: "center", userSelect: "all"
-                  }}>{loginForgotChallenge || "······"}</div>
+                  }}>{loginForgotChallenge || "------"}</div>
                 <button type="button" onClick={function () {
                   var code = loginForgotChallenge;
                   if (!code) return;
@@ -5055,7 +5141,7 @@ var LoginScreen = function (props) {
                     width: "100%", padding: "11px 14px", borderRadius: 8, border: "none", fontWeight: 800, fontSize: 13, cursor: (loginForgotBusy || loginForgotUnlock.length !== 6) ? "not-allowed" : "pointer", fontFamily: "inherit",
                     background: (loginForgotBusy || loginForgotUnlock.length !== 6) ? "#cbd5e1" : "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff"
                   }}>
-                  {loginForgotBusy ? "Verifying…" : "Verify & Unlock"}
+                  {loginForgotBusy ? "Verifying-" : "Verify & Unlock"}
                 </button>
               </div>
             )}
@@ -5066,9 +5152,9 @@ var LoginScreen = function (props) {
   );
 };
 
-/* ═══════════════════════════════════════════════════════════
-   ERROR BOUNDARY — catches render crashes, shows friendly fallback
-   ═══════════════════════════════════════════════════════════ */
+/* -----------------------------------------------------------
+   ERROR BOUNDARY - catches render crashes, shows friendly fallback
+   ----------------------------------------------------------- */
 class AppErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -5079,7 +5165,15 @@ class AppErrorBoundary extends React.Component {
   }
   componentDidCatch(error, info) {
     this.setState({ info: info });
-    if (tcIsDevEnv()) try { console.error("Techon ERP render error:", error, info); } catch (e) {}
+    try { console.error("Techon ERP render error:", error, info); } catch (e) {}
+    try {
+      var msg = String((error && (error.stack || error.message)) || error || "Unknown render error");
+      var comp = String((info && info.componentStack) || "");
+      if (window.electronAPI && window.electronAPI.writeLog) {
+        window.electronAPI.writeLog({ level: "error", message: "[render] " + msg + "\n" + comp });
+      }
+      window.__tcLastRenderError = { message: msg, componentStack: comp, at: new Date().toISOString() };
+    } catch (e2) {}
   }
   render() {
     if (!this.state.hasError) return this.props.children;
@@ -5090,37 +5184,40 @@ class AppErrorBoundary extends React.Component {
       React.createElement("div", {
         style: { background: "#fff", borderRadius: 16, padding: "40px 48px", maxWidth: 520, textAlign: "center", boxShadow: "0 8px 40px rgba(10,22,50,0.12)", border: "1.5px solid #fee2e2" }
       },
-        React.createElement("div", { style: { fontSize: 48, marginBottom: 12 } }, "⚠️"),
+        React.createElement("div", { style: { fontSize: 48, marginBottom: 12 } }, "*"),
         React.createElement("div", { style: { fontSize: 20, fontWeight: 900, color: "#1e293b", marginBottom: 8 } }, "Something went wrong"),
         React.createElement("div", { style: { fontSize: 13, color: "#64748b", marginBottom: 20, lineHeight: 1.6 } },
-          "A component crashed unexpectedly. Your data is safe — this is a display error only."
+          "A component crashed unexpectedly. Your data is safe - this is a display error only."
         ),
         err && React.createElement("div", {
           style: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#b91c1c", fontFamily: "monospace", marginBottom: 20, textAlign: "left", wordBreak: "break-all" }
         }, String(err.message || err)),
+        this.state.info && this.state.info.componentStack && React.createElement("pre", {
+          style: { background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#334155", fontFamily: "monospace", marginBottom: 16, textAlign: "left", whiteSpace: "pre-wrap", maxHeight: 180, overflow: "auto" }
+        }, String(this.state.info.componentStack)),
         React.createElement("button", {
           onClick: function () { window.location.reload(); },
           style: { padding: "12px 28px", background: "#2979ff", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }
-        }, "🔄 Reload App")
+        }, "Reload App")
       )
     );
   }
 }
 
 
-/* ─── Trial guard ─────────────────────────────────────────────────────────────
+/* --- Trial guard -------------------------------------------------------------
    Call BEFORE any .concat() that creates a new record.
    Returns true (allow) or false (block) with an appropriate message.
 
    Arguments:
      localArray        - current module array (standalone/server: used for count)
      moduleKey         - module name: 'sales'|'products'|'customers' etc.
-     isActiveCheckout  — (optional) true when completing an already-started cart;
+     isActiveCheckout  - (optional) true when completing an already-started cart;
                          grants a one-time "cart grace" if server goes offline mid-sale
 
    License authority:
-     Standalone / Network Server  →  local array length (always authoritative)
-     Network Client               →  serverCounts from server (never local arrays)
+     Standalone / Network Server  ?  local array length (always authoritative)
+     Network Client               ?  serverCounts from server (never local arrays)
 
    Short-cache policy (client only):
      serverCounts saved in the license cache are trusted for up to 2 minutes.
@@ -5140,11 +5237,11 @@ function _tcLog(level, msg) {
 
 function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
   var info = window._tcLicInfo;
-  if (!info || info.status !== 'trial') return true;  /* not in trial — allow */
-  if (info.isReadOnly) return false;                  /* already read-only — block silently */
+  if (!info || info.status !== 'trial') return true;  /* not in trial - allow */
+  if (info.isReadOnly) return false;                  /* already read-only - block silently */
   var MAX = info.trialMaxRecords || 20;
 
-  /* ── Network Client: server is the single source of truth ────────────────
+  /* -- Network Client: server is the single source of truth ----------------
      NEVER use local array lengths. Only server-provided counts are trusted.  */
   if (window._tcNetRole === 'network_client') {
     var sc         = info.serverCounts;
@@ -5160,7 +5257,7 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
     if (fromCache && sc && cachedAt) {
       var cacheAgeMs = Date.now() - cachedAt;
       if (cacheAgeMs >= _TC_COUNTS_CACHE_MS) {
-        /* Cache is stale — treat the same as missing counts */
+        /* Cache is stale - treat the same as missing counts */
         cacheExpired = true;
         sc = null;
         _tcLog('warn', '[TrialGuard] serverCounts cache expired (' +
@@ -5168,7 +5265,7 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
       }
     }
 
-    /* ── No server counts available ── */
+    /* -- No server counts available -- */
     if (!sc || !moduleKey) {
       /* Cart grace: only allowed when cache is still fresh (< 2 min old).
          An expired cache means the server was unreachable well before checkout,
@@ -5178,11 +5275,11 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
         return true;
       }
       if (isActiveCheckout && cacheExpired) {
-        _tcLog('warn', '[TrialGuard] Cart grace denied — cache expired before checkout. module=' + moduleKey);
+        _tcLog('warn', '[TrialGuard] Cart grace denied - cache expired before checkout. module=' + moduleKey);
         showAlert(
           'Connection lost.\n\n' +
           'Please reconnect to the server to complete checkout.\n\n' +
-          'Your cart is safe — reconnect and try again.'
+          'Your cart is safe - reconnect and try again.'
         );
         return false;
       }
@@ -5190,7 +5287,7 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
       /* Differentiate: was the server unreachable, or is it missing the feature? */
       var blockMsg;
       if (fromCache) {
-        /* Server was unreachable — license came from local cache */
+        /* Server was unreachable - license came from local cache */
         blockMsg =
           'Server connection lost.\n\n' +
           'Please check the network connection and try again.\n\n' +
@@ -5204,7 +5301,7 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
           'Record creation is disabled until the server is updated.';
         _tcLog('warn', '[TrialGuard] Old-server block (supportsCounts=false). module=' + moduleKey);
       } else {
-        /* Unknown state — fail safe */
+        /* Unknown state - fail safe */
         blockMsg =
           'Unable to verify license with server.\n\n' +
           'Please check the server connection and try again.\n\n' +
@@ -5217,7 +5314,7 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
       return false;
     }
 
-    /* ── Server counts available — enforce the limit ── */
+    /* -- Server counts available - enforce the limit -- */
     var serverCount = sc[moduleKey];
     if (typeof serverCount === 'number' && serverCount >= MAX) {
       _tcLog('warn', '[TrialGuard] Trial limit block: ' + moduleKey + '=' +
@@ -5225,22 +5322,22 @@ function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
       showAlert(
         'Trial limit reached on the server (' + serverCount + '/' + MAX + ' ' + moduleKey + ').\n\n' +
         'Activate the license on the main server PC to continue.\n\n' +
-        '\uD83D\uDD12 Your data is safe — activate to unlock all features.'
+        '\uD83D\uDD12 Your data is safe - activate to unlock all features.'
       );
       return false;
     }
 
-    return true;  /* server count is within limit — allow */
+    return true;  /* server count is within limit - allow */
   }
 
-  /* ── Standalone / Network Server: use local array length ─────────────── */
+  /* -- Standalone / Network Server: use local array length --------------- */
   if (Array.isArray(localArray) && localArray.length >= MAX) {
     _tcLog('warn', '[TrialGuard] Local limit block: ' + moduleKey + '=' +
       localArray.length + '/' + MAX);
     showAlert(
       'You have reached the free trial limit (' + MAX + ' records).\n\n' +
       'Activate your license to continue adding records.\n\n' +
-      '\uD83D\uDD12 Your data is safe — activate to unlock all features.'
+      '\uD83D\uDD12 Your data is safe - activate to unlock all features.'
     );
     return false;
   }
@@ -5250,7 +5347,7 @@ function App(props) {
   if (!props) props = {};
   var licenseInfo = props.licenseInfo || null;
 
-  /* ── Network / System mode (from SetupWizard via LicenseGate) ── */
+  /* -- Network / System mode (from SetupWizard via LicenseGate) -- */
   var systemConfig    = props.systemConfig || { role: 'standalone', apiUrl: '' };
   var isNetworkServer = systemConfig.role === 'network_server';
   var isNetworkClient = systemConfig.role === 'network_client';
@@ -5284,11 +5381,11 @@ function App(props) {
   var [businessType, setBusinessType] = useState(resolveInitialBusinessType);
   /* Bump after wizard completes so the main shell re-renders with the flag set */
   var [, setStartupWizBump] = useState(0);
-  /* Bump when background cloud sync succeeds — clears stale “no internet” banner in Settings */
+  /* Bump when background cloud sync succeeds - clears stale -no internet- banner in Settings */
   var [cloudSyncBump, setCloudSyncBump] = useState(0);
   var [holdModal, setHoldModal] = useState(null); /* targetId when user tries to leave POS with cart */
   var [isAdminMode, setIsAdminMode] = useState(false);
-  /* Network server: always full ERP (admin) — no Sales/Admin toggle */
+  /* Network server: always full ERP (admin) - no Sales/Admin toggle */
   var uiAdminMode = isNetworkServer || isAdminMode;
   var [pinModal, setPinModal] = useState(false); /* show PIN entry */
   var [pinEntry, setPinEntry] = useState("");
@@ -5337,13 +5434,13 @@ function App(props) {
     return function () { appMountedRef.current = false; };
   }, []);
 
-  /* Vite dev loads http://127.0.0.1 — a different web origin than file:// in the packaged app, so IDB/LS are empty vs .exe */
+  /* Vite dev loads http://127.0.0.1 - a different web origin than file:// in the packaged app, so IDB/LS are empty vs .exe */
   useEffect(function () {
     try {
       if (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) {
         console.warn(
           "[TechonERP] Dev server storage is separate from the installed .exe (see main.cjs). " +
-          "Use Settings → backup JSON from the desktop app, then Restore here to test with real data."
+          "Use Settings ? backup JSON from the desktop app, then Restore here to test with real data."
         );
       }
     } catch (e) {}
@@ -5367,7 +5464,7 @@ function App(props) {
     try { window._tcAccountingPeriodAdmin = !!uiAdminMode; } catch (e) {}
   }, [uiAdminMode]);
 
-  /* Network server: keep admin mode on — no lock-to-sales */
+  /* Network server: keep admin mode on - no lock-to-sales */
   useEffect(function () {
     if (!loggedIn || !isNetworkServer) return;
     setIsAdminMode(true);
@@ -5393,7 +5490,7 @@ function App(props) {
         var hs = hashJournalLines(srv);
         var hl = hashJournalLines(loc);
         if (hs && hl && hs !== hl) {
-          if (tcIsDevEnv()) try { console.warn("[TechonERP GL] Journal hash differs — merging by transactionId (no overwrite of posted lines)"); } catch (e) {}
+          if (tcIsDevEnv()) try { console.warn("[TechonERP GL] Journal hash differs - merging by transactionId (no overwrite of posted lines)"); } catch (e) {}
           var mer = mergeJournalLinesByTransactionId(loc, srv, function (d) {
             appendGlAuditRow("journal_sync_conflict", Object.assign({ deviceId: getOrCreateDeviceId() }, d));
           });
@@ -5406,7 +5503,7 @@ function App(props) {
               serverHash: hs,
               localHash: hl,
             });
-            if (tcIsDevEnv()) try { console.error("[TechonERP GL] Sync merge journal not balanced — not saved", vfSync.imbalances); } catch (e) {}
+            if (tcIsDevEnv()) try { console.error("[TechonERP GL] Sync merge journal not balanced - not saved", vfSync.imbalances); } catch (e) {}
             _coreStorageSet("tc3_gl_last_error", {
               ts: new Date().toISOString(),
               type: "sync_merge_imbalance",
@@ -5478,7 +5575,7 @@ function App(props) {
       setPinModal(false);
       resetPinModalUi();
       safeSetActive("settings");
-      showAlert("Unlocked. Set a new Admin PIN under Settings → Security, then tap Update Settings.");
+      showAlert("Unlocked. Set a new Admin PIN under Settings ? Security, then tap Update Settings.");
     }).catch(function () {
       if (!appMountedRef.current) return;
       setSupportUnlockBusy(false);
@@ -5486,7 +5583,7 @@ function App(props) {
     });
   };
 
-  /* ── Keyboard support for PIN numpad ── */
+  /* -- Keyboard support for PIN numpad -- */
   useEffect(function () {
     if (!pinModal) return;
     var handleKey = function (e) {
@@ -5510,7 +5607,7 @@ function App(props) {
             tryFinalizeAdminPinEntry(newPin, storedPin, function () {
               setIsAdminMode(true); setPinModal(false); resetPinModalUi();
             }, function () {
-              setPinError("Incorrect PIN — try again"); setPinEntry("");
+              setPinError("Incorrect PIN - try again"); setPinEntry("");
             });
           }, 150);
           return newPin;
@@ -5546,10 +5643,10 @@ function App(props) {
       _currencySymbol.value = (loaded.settings && loaded.settings.currency) || "Rs";
       setState(loaded);
       setIdbReady(true);
-      /* ── Business type resolution ──
-         1. Already set → use it
-         2. Not set BUT existing data exists → silently default to "tech" (protect existing customers)
-         3. Not set AND empty DB → set null so BusinessTypeSelector shows
+      /* -- Business type resolution --
+         1. Already set ? use it
+         2. Not set BUT existing data exists ? silently default to "tech" (protect existing customers)
+         3. Not set AND empty DB ? set null so BusinessTypeSelector shows
       */
       var existing = S.get("tc3_businessType", null);
       var hasBusinessData = !!(
@@ -5638,13 +5735,13 @@ function App(props) {
     };
   }, []);
 
-  /* ── Sync Engine init (network modes only) ─────────────────── */
+  /* -- Sync Engine init (network modes only) ------------------- */
   useEffect(function () {
     if (!isNetworkMode || !systemConfig.apiUrl) return;
 
     var cancelled = false;
 
-    /* Init the sync engine — it will patch S.set automatically */
+    /* Init the sync engine - it will patch S.set automatically */
     initSyncEngine(systemConfig);
 
     /* Subscribe to status changes for UI indicator */
@@ -5708,11 +5805,11 @@ function App(props) {
     return function () {
       cancelled = true;
       unsub();
-      destroySyncEngine(); /* unpatches storage + clears retry timers — required for HMR / Strict Mode */
+      destroySyncEngine(); /* unpatches storage + clears retry timers - required for HMR / Strict Mode */
     };
   }, [isNetworkMode, systemConfig.apiUrl, isNetworkClient, isNetworkServer]);
 
-  /* ── Connection monitor (network modes only) — single timer, backoff on client ─ */
+  /* -- Connection monitor (network modes only) - single timer, backoff on client - */
   useEffect(function () {
     if (!isNetworkMode || !systemConfig.apiUrl) return;
 
@@ -5773,7 +5870,7 @@ function App(props) {
     };
   }, [isNetworkMode, systemConfig.apiUrl, isNetworkClient]);
 
-  /* ── Before-close sync flush warning ───────────────────────── */
+  /* -- Before-close sync flush warning ------------------------- */
   useEffect(function () {
     if (!isNetworkMode) return;
 
@@ -5788,7 +5885,7 @@ function App(props) {
     return function () { window.removeEventListener('beforeunload', handleBeforeUnload); };
   }, [isNetworkMode]);
 
-  /* ── Daily DB backup: reminder + auto-run if overdue ───────── */
+  /* -- Daily DB backup: reminder + auto-run if overdue --------- */
   useEffect(function () {
     if (!isNetworkServer || !loggedIn) return;
     var api = window.electronAPI;
@@ -5800,7 +5897,7 @@ function App(props) {
         if (api.backupDatabase) {
           api.backupDatabase({}).then(function (res) {
             if (res && res.success) {
-              /* Remind banner not needed — already backed up */
+              /* Remind banner not needed - already backed up */
               setShowBakReminder(false);
             } else {
               /* Auto-backup failed: show manual reminder */
@@ -5814,7 +5911,7 @@ function App(props) {
     }).catch(function () {});
   }, [loggedIn, isNetworkServer]);
 
-  /* ── DB Health Check (server mode, run once on login) ───────── */
+  /* -- DB Health Check (server mode, run once on login) --------- */
   useEffect(function () {
     if (!isNetworkServer || !loggedIn) return;
     var cfg = props.systemConfig;
@@ -5834,7 +5931,7 @@ function App(props) {
         }
       })
       .catch(function (err) {
-        /* Health check unreachable — log but do not block UI in server mode */
+        /* Health check unreachable - log but do not block UI in server mode */
         if (window.electronAPI && window.electronAPI.writeLog) {
           window.electronAPI.writeLog({ level: 'warn', message: '[HealthCheck] Could not reach: ' + err.message });
         }
@@ -5886,12 +5983,12 @@ function App(props) {
       sessionStorage.removeItem("tc3_forgot_pw_open_settings");
       safeSetActive("settings");
       setTimeout(function () {
-        showAlert("Unlocked. Set a new login password under Security → Change Login Password (leave Current Password empty for this one-time reset), then tap Update Settings.");
+        showAlert("Unlocked. Set a new login password under Security ? Change Login Password (leave Current Password empty for this one-time reset), then tap Update Settings.");
       }, 150);
     } catch (e) { /* ignore */ }
   }, [loggedIn, uiAdminMode]);
 
-  /* ── Sales Mode pages (always accessible) ── */
+  /* -- Sales Mode pages (always accessible) -- */
   var _activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
   var SALES_MODE_PAGES = ["pos", "invoices", "purchases", "returns", "customers"].concat(
     _activeProfile.modules.repairs ? ["repairs"] : []
@@ -5907,6 +6004,10 @@ function App(props) {
   var canEditInvoices = hasPermission(normalizedCurrentUser, "invoices.edit");
   var canDeleteInvoices = hasPermission(normalizedCurrentUser, "invoices.delete");
   var canOverrideDiscount = normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role) !== ROLE_CASHIER;
+  var _hdrNr = normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role);
+  var _hdrRoleLbl = ROLE_LABELS[_hdrNr] || "Staff";
+  var _hdrNm = normalizedCurrentUser && (normalizedCurrentUser.name || normalizedCurrentUser.username);
+  var posHeaderRestaurantLoggedIn = _hdrNm ? (_hdrNm + " (" + _hdrRoleLbl + ")") : _hdrRoleLbl;
   var showPermissionDenied = function (actionName) {
     showPermissionDeniedUi(actionName, {
       showAlert: showAlert,
@@ -5925,7 +6026,7 @@ function App(props) {
     } catch (e) {}
   }, [normalizedCurrentUser, isNetworkClient, isNetworkServer]);
 
-  /* POS terminal (network_client): fixed page allow-list — repairs only for selected business types */
+  /* POS terminal (network_client): fixed page allow-list - repairs only for selected business types */
   var CLIENT_POS_REPAIR_BT = { tech: true, jewelry: true, automotive: true, general: true };
   var buildClientPosPages = function (bt) {
     var pages = ["pos", "invoices", "customers", "returns", "settings"];
@@ -6013,7 +6114,7 @@ function App(props) {
     return function () { cancelled = true; };
   }, [isNetworkClient]);
 
-  /* ── Auto-lock: reset timer on any user activity ── */
+  /* -- Auto-lock: reset timer on any user activity -- */
   /* FIX #5: Use a ref for the timer so it's stable and cleanup is guaranteed
      even when isAdminMode changes mid-cycle. */
   var lockTimerRef = useRef(null);
@@ -6044,7 +6145,7 @@ function App(props) {
     };
   }, [loggedIn, isAdminMode, isNetworkServer, state && state.settings ? state.settings.autoLockEnabled : undefined, state && state.settings ? state.settings.autoLockMinutes : undefined]);
 
-  /* ── PIN verification ── */
+  /* -- PIN verification -- */
   var tryUnlockAdmin = function () {
     var settings = state && state.settings ? state.settings : {};
     var pin = settings.adminPin || "";
@@ -6076,7 +6177,7 @@ function App(props) {
     if (isNetworkMode || !SALES_MODE_PAGES.includes(active)) setActive("pos");
   };
 
-  /* ── setActive wrapper — block Sales Mode navigation to restricted pages ── */
+  /* -- setActive wrapper - block Sales Mode navigation to restricted pages -- */
   var safeSetActive = function (id) {
     if (!isNetworkClient && !isStartupFlowSatisfied() && SALES_MODE_PAGES.indexOf(id) >= 0) {
       showAlert("Please complete setup before using the system");
@@ -6090,7 +6191,7 @@ function App(props) {
       showPermissionDenied("open this page");
       return;
     }
-    /* Network server: full navigation — no sales/admin mode gate */
+    /* Network server: full navigation - no sales/admin mode gate */
     if (!isNetworkServer) {
       if (isNetworkMode && !isAdminMode && id !== "pos") return;
       if (!isAdminMode && !SALES_MODE_PAGES.includes(id)) return;
@@ -6098,7 +6199,7 @@ function App(props) {
     setActive(id);
   };
 
-  /* If setup identity is incomplete, keep user off sales-only pages — redirect without a modal (banner on dashboard is enough; repeated state updates were re-firing the old alert). */
+  /* If setup identity is incomplete, keep user off sales-only pages - redirect without a modal (banner on dashboard is enough; repeated state updates were re-firing the old alert). */
   useEffect(function () {
     if (!idbReady || !loggedIn || !state || isNetworkClient) return;
     if (isStartupFlowSatisfied()) return;
@@ -6162,7 +6263,7 @@ function App(props) {
 
   useEffect(function () {
     if (!loggedIn) return;
-    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
     var buildBackup = function () {
       var st = S.get("tc3_settings", null);
       var sn = st ? (st.shopName || "Techon") : "Techon";
@@ -6239,6 +6340,8 @@ function App(props) {
     S.set("tc3_suppliers", state.suppliers);
     S.set("tc3_sales", state.sales);
     S.set("tc3_purchases", state.purchases);
+    S.set("tc3_raw_material_counts", state.rawMaterialCounts || []);
+    S.set("tc3_raw_material_usage", state.rawMaterialUsages || []);
     S.set("tc3_expenses", state.expenses);
     S.set("tc3_repairs", state.repairs);
     S.set("tc3_assets", state.assets || []);
@@ -6251,12 +6354,12 @@ function App(props) {
     S.set("tc3_cheques", state.cheques || []);
 
     /* Write backup file on every state change (debounced 2s).
-       This ensures the file is always current — no reliance on beforeunload. */
+       This ensures the file is always current - no reliance on beforeunload. */
     if (window.electronAPI && window.electronAPI.saveBackup) {
       clearTimeout(window._bakDebounce);
       window._bakDebounce = setTimeout(function () {
         try {
-          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
           var st = _idbCache["tc3_settings"] || {};
           var sn = st.shopName || "Techon";
           var bk = { version: 2, timestamp: new Date().toISOString(), shopName: sn, data: {} };
@@ -6273,10 +6376,10 @@ function App(props) {
     }
   }, [state, loggedIn]);
 
-  /* ═══════════════════════════════════════════════════════════════
-     CLOUD SYNC ENGINE — login-per-sync (no token expiry issues)
+  /* ---------------------------------------------------------------
+     CLOUD SYNC ENGINE - login-per-sync (no token expiry issues)
      Logs in fresh each time, then syncs. Silent, never crashes ERP.
-  ═══════════════════════════════════════════════════════════════ */
+  --------------------------------------------------------------- */
   useEffect(function () {
     if (!loggedIn) return;
 
@@ -6290,7 +6393,7 @@ function App(props) {
       try {
         var apiKey = S.get("tc3_cloud_api_key", null);
         if (!apiKey) return;
-        /* Use api_key directly — no login needed, browser session stays intact */
+        /* Use api_key directly - no login needed, browser session stays intact */
         fetch(SYNC_API + "/sync.php", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -6315,12 +6418,12 @@ function App(props) {
 
   }, [loggedIn]);
 
-  /* ── Network Client: full-screen error if server unreachable ── */
+  /* -- Network Client: full-screen error if server unreachable -- */
   if (isNetworkClient && clientError) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100vw", height: "100vh", background: "linear-gradient(135deg,#0a1628,#0d1e38)", fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif" }}>
         <div style={{ background: "#fff", borderRadius: 20, padding: "40px 44px", width: 460, boxShadow: "0 20px 60px rgba(0,0,0,0.4)", textAlign: "center" }}>
-          <div style={{ fontSize: 48, marginBottom: 12 }}>🔌</div>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>ERR</div>
           <div style={{ fontSize: 20, fontWeight: 900, color: "#0d1b3e", marginBottom: 8 }}>Unable to Connect to Server</div>
           <div style={{ fontSize: 13, color: "#6b82a8", marginBottom: 20, lineHeight: 1.6 }}>{clientError}</div>
           <div style={{ background: "#fef3e2", border: "1px solid #fcd34d", borderRadius: 10, padding: "12px 14px", marginBottom: 20, fontSize: 12, color: "#92400e", textAlign: "left" }}>
@@ -6342,8 +6445,7 @@ function App(props) {
                 }
               })
               .catch(function (err) { setClientError("Still cannot connect. " + err.message); });
-          }} style={{ background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-            🔄 Try Again
+          }} style={{ background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Try Again
           </button>
         </div>
       </div>
@@ -6373,7 +6475,7 @@ function App(props) {
     return <LoginScreen onLogin={handleLogin} />;
   }
 
-  /* ── Startup onboarding: not marked done AND (no meaningful data OR active wizard session) ── */
+  /* -- Startup onboarding: not marked done AND (no meaningful data OR active wizard session) -- */
   if (!isStartupWizardMarkedDone() && (!isStartupFlowSatisfied() || isStartupWizardSessionActive())) {
     return (
       <React.Fragment>
@@ -6399,7 +6501,7 @@ function App(props) {
     );
   }
 
-  /* ── Business Type Selector gate — only for fresh installs with no data ── */
+  /* -- Business Type Selector gate - only for fresh installs with no data -- */
   if (businessType === null) {
     return (
       <React.Fragment>
@@ -6423,6 +6525,9 @@ function App(props) {
   };
   var ActivePage = PAGE_COMPONENTS[active] || Dashboard;
 
+  var periodLockTransactionMinDate = state && state.settings && state.settings.lockedUntilDate ? nextCalendarDay(state.settings.lockedUntilDate) : undefined;
+  var showPeriodLockBanner = !!(state && state.settings && state.settings.lockedUntilDate && String(today()) <= String(state.settings.lockedUntilDate));
+
   return (
     <React.Fragment>
       <div style={{ display: "flex", flex: 1, width: "100%", minHeight: 0, minWidth: 0, background: C.bg, fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif", overflow: "hidden", boxSizing: "border-box" }}>
@@ -6432,7 +6537,7 @@ function App(props) {
           {/* Logo */}
           <div onClick={function () { if (isNetworkClient) { safeSetActive("pos"); } else { setActive("dashboard"); } }} style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.06)", cursor: "pointer" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {/* Logo — filter drop-shadow: no hard ring, pure glow */}
+              {/* Logo - filter drop-shadow: no hard ring, pure glow */}
               <div style={{ width: 40, height: 40, flexShrink: 0, filter: "drop-shadow(0 0 6px rgba(180,100,255,0.8)) drop-shadow(0 0 14px rgba(120,100,255,0.4))" }}>
                 <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
               </div>
@@ -6443,7 +6548,7 @@ function App(props) {
             </div>
           </div>
 
-          {/* Network Mode Banner — shown below logo */}
+          {/* Network Mode Banner - shown below logo */}
           {isNetworkServer && (
             <div style={{ padding: "6px 14px", background: "rgba(15,158,110,0.18)", borderBottom: "1px solid rgba(15,158,110,0.3)", display: "flex", alignItems: "center", gap: 6 }}>
               <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22d88f", boxShadow: "0 0 6px #22d88f", flexShrink: 0 }}></div>
@@ -6464,7 +6569,7 @@ function App(props) {
               var activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
               var groupItems = NAV_ITEMS.filter(function (n) {
                 if (group.ids.indexOf(n.id) < 0) return false;
-                /* POS terminal (network_client): fixed sidebar — no admin mode */
+                /* POS terminal (network_client): fixed sidebar - no admin mode */
                 if (isNetworkClient) {
                   if (clientPosPages.indexOf(n.id) < 0) return false;
                   if (n.id === "repairs" && CLIENT_POS_REPAIR_BT[businessType] !== true) return false;
@@ -6480,7 +6585,7 @@ function App(props) {
                 if (isNetworkMode && !isAdminMode && n.id !== "pos") return false;
                 /* Standalone Sales Mode: only show allowed pages */
                 if (!isNetworkMode && !isAdminMode && !SALES_MODE_PAGES.includes(n.id)) return false;
-                /* Business profile — hide modules not relevant to this business type */
+                /* Business profile - hide modules not relevant to this business type */
                 if (n.id === "repairs" && !activeProfile.modules.repairs) return false;
                 if (n.id === "barcodeprint" && !activeProfile.modules.barcode) return false;
                 if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
@@ -6525,7 +6630,7 @@ function App(props) {
             })}
           </div>
 
-          {/* User footer — reads admin name from localStorage */}
+          {/* User footer - reads admin name from localStorage */}
           {(function () {
             var adminN = normalizedCurrentUser && (normalizedCurrentUser.name || normalizedCurrentUser.username)
               ? (normalizedCurrentUser.name || normalizedCurrentUser.username)
@@ -6544,8 +6649,8 @@ function App(props) {
                 {!isNetworkClient && !isNetworkServer ? (
                 <button onClick={function () { if (isAdminMode) { lockToSalesMode(); } else { var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4; if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); } else { setIsAdminMode(true); } } }}
                   title={isAdminMode ? "Lock to Sales Mode" : "Unlock Admin Mode"}
-                  style={{ width: 32, height: 32, borderRadius: 8, background: isAdminMode ? "rgba(245,158,11,0.2)" : "rgba(255,255,255,0.06)", border: "1px solid " + (isAdminMode ? "rgba(245,158,11,0.4)" : "rgba(255,255,255,0.1)"), cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, transition: "all .15s" }}>
-                  {isAdminMode ? "🔓" : "🔒"}
+                  style={{ width: 32, height: 32, borderRadius: 8, background: isAdminMode ? "#fff4dd" : "#e8f7ef", border: "1px solid " + (isAdminMode ? "#f2c66d" : "#9ee8ce"), color: isAdminMode ? "#92400e" : "#065f46", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, flexShrink: 0, transition: "all .15s" }}>
+                  {isAdminMode ? "A" : "S"}
                 </button>
                 ) : null}
               </div>
@@ -6555,8 +6660,13 @@ function App(props) {
 
         {/* Main area */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, minHeight: 0 }}>
+          {showPeriodLockBanner && (
+            <div style={{ padding: "10px 16px", background: "linear-gradient(90deg,#fff4e6,#ffe8cc)", borderBottom: "1.5px solid #f59e0b", color: "#7c2d12", fontSize: 12.5, fontWeight: 700, textAlign: "center", flexShrink: 0 }}>
+              System locked through {fmtDateFull(state.settings.lockedUntilDate)} — transactions on or before this date are frozen unless Admin (PIN) unlocks accounting.
+            </div>
+          )}
           {/* Header */}
-          <div style={{ height: 58, background: "#fff", borderBottom: "1.5px solid " + C.border, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 20px", flexShrink: 0, boxShadow: "0 1px 8px rgba(13,27,62,0.05)" }}>
+          <div style={{ minHeight: 58, background: "#fff", borderBottom: "1.5px solid " + C.border, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 20px", flexShrink: 0, boxShadow: "0 1px 8px rgba(13,27,62,0.05)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {activeItem && <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#2979ff,#5591ff)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(41,121,255,0.3)" }}><NavIcon id={activeItem.icon} size={16} color="#ffffff" /></div>}
@@ -6567,16 +6677,22 @@ function App(props) {
                 </span>
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, minWidth: 0 }}>
+              {active === "pos" && String(businessType || "").toLowerCase() === "restaurant" && (
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, lineHeight: 1.25, textAlign: "right", width: "100%" }}>
+                  Logged in as: <span style={{ color: C.text, fontWeight: 800 }}>{posHeaderRestaurantLoggedIn}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", justifyContent: "flex-end" }}>
               {dbHealthError && isNetworkServer && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fde8ed", border: "1px solid #f9a8ba", borderRadius: 8, padding: "5px 12px", fontSize: 11, color: "#9b1c34" }}>
-                  <span>⚠️ Server database issue — {dbHealthError}. Please restore from backup.</span>
-                  <button onClick={function () { setDbHealthError(null); }} style={{ background: "none", border: "none", color: "#9b1c34", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>×</button>
+                  <span>Server database issue - {dbHealthError}. Please restore from backup.</span>
+                  <button onClick={function () { setDbHealthError(null); }} style={{ background: "none", border: "none", color: "#9b1c34", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>-</button>
                 </div>
               )}
               {showBakReminder && !isNetworkClient && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fef3e2", border: "1px solid #fcd34d", borderRadius: 8, padding: "5px 12px", fontSize: 11, color: "#92400e" }}>
-                  <span>💾 {isNetworkServer ? "Server backup reminder — backup your database!" : "Backup reminder — it has been a while since your last backup!"}</span>
+                  <span>{isNetworkServer ? "Server backup reminder - backup your database!" : "Backup reminder - it has been a while since your last backup!"}</span>
                   {isNetworkServer ? (
                     <button onClick={function () {
                       var api = window.electronAPI;
@@ -6586,11 +6702,11 @@ function App(props) {
                           else { showAlert("Backup failed: " + r.message); }
                         });
                       }
-                    }} style={{ background: "#e07a10", color: "#fff", border: "none", borderRadius: 5, padding: "3px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>💾 Backup Now</button>
+                    }} style={{ background: "#e07a10", color: "#fff", border: "none", borderRadius: 5, padding: "3px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>Backup Now</button>
                   ) : (
                     <button onClick={function () { setActive("settings"); setShowBakReminder(false); }} style={{ background: "#e07a10", color: "#fff", border: "none", borderRadius: 5, padding: "3px 8px", fontSize: 10, fontWeight: 700, cursor: "pointer" }}>Backup Now</button>
                   )}
-                  <button onClick={function () { setShowBakReminder(false); }} style={{ background: "none", border: "none", color: "#92400e", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>×</button>
+                  <button onClick={function () { setShowBakReminder(false); }} style={{ background: "none", border: "none", color: "#92400e", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>-</button>
                 </div>
               )}
               {/* Mode indicator in header */}
@@ -6600,7 +6716,7 @@ function App(props) {
                   title={connStatus === "connected" ? "Connected" : (connStatus === "reconnecting" || connStatus === "unknown" ? "Connecting" : "Disconnected")}
                 >
                   <span style={{ fontSize: 15, lineHeight: 1 }} aria-hidden>
-                    {connStatus === "connected" ? "🟢" : (connStatus === "reconnecting" || connStatus === "unknown" ? "🟡" : "🔴")}
+                    {connStatus === "connected" ? "•" : (connStatus === "reconnecting" || connStatus === "unknown" ? "•" : "•")}
                   </span>
                   <span style={{
                     fontSize: 11,
@@ -6619,23 +6735,19 @@ function App(props) {
                     if (!disp) return null;
                     return (
                       <span style={{ fontSize: 11, fontWeight: 700, color: "#1e3a5f", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={disp}>
-                        — {disp}
+                        - {disp}
                       </span>
                     );
                   })()}
                 </div>
               ) : isNetworkServer ? (
               <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 8, border: "1.5px solid #fde68a", background: "#fffbeb", cursor: "default" }} title="Full ERP access on this PC">
-                <span style={{ fontSize: 13 }}>👑</span>
                 <span style={{ fontSize: 11, fontWeight: 800, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.08em" }}>Admin Mode</span>
-                <span style={{ fontSize: 11, color: "#b45309" }}>🔓</span>
               </div>
               ) : (
               <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 8, border: "1.5px solid " + (isAdminMode ? "#fde68a" : "#9ee8ce"), background: isAdminMode ? "#fffbeb" : "#e6f7f2", cursor: "pointer" }}
                 onClick={function () { if (isAdminMode) { lockToSalesMode(); } else { var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4; if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); } else { setIsAdminMode(true); } } }}>
-                <span style={{ fontSize: 13 }}>{isAdminMode ? "👑" : "🛒"}</span>
                 <span style={{ fontSize: 11, fontWeight: 800, color: isAdminMode ? "#92400e" : "#065f46", textTransform: "uppercase", letterSpacing: "0.08em" }}>{isAdminMode ? "Admin Mode" : "Sales Mode"}</span>
-                <span style={{ fontSize: 11, color: isAdminMode ? "#b45309" : "#047857" }}>{isAdminMode ? "🔓" : "🔒"}</span>
               </div>
               )}
               <button
@@ -6646,11 +6758,10 @@ function App(props) {
                 }}
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, border: "1px solid " + C.border, background: "#f8fafc", color: C.textMd, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
                 title="Switch User"
-              >
-                👤 Switch User
+              >Switch User
               </button>
               <div style={{ fontSize: 12, color: C.muted, fontWeight: 500, background: "#f0f4ff", padding: "5px 12px", borderRadius: 8, border: "1px solid " + C.border }}>{fmtDateFull(today())}</div>
-              {/* System role — hidden on POS client (CLIENT MODE badge is enough) */}
+              {/* System role - hidden on POS client (CLIENT MODE badge is enough) */}
               {!isNetworkClient && (function () {
                 var role = (systemConfig && systemConfig.role) || "standalone";
                 var roleUi = {
@@ -6690,26 +6801,26 @@ function App(props) {
                   </div>
                 );
               })()}
-              {/* Connection status dot — non-client; POS client uses CLIENT MODE strip (🟢/🟡/🔴 only) */}
+              {/* Connection status dot - non-client */}
               {(function () {
                 if (isNetworkClient) return null;
                 var connCfg = isNetworkMode ? ({
-                  connected:     { bg: "#e6f7f2", border: "#9ee8ce", emoji: "🟢", title: "Connected" },
-                  reconnecting:  { bg: "#fef3e2", border: "#fcd34d", emoji: "🟡", title: "Connecting" },
-                  disconnected:  { bg: "#fde8ed", border: "#f9a8ba", emoji: "🔴", title: "Disconnected" },
-                  unknown:       { bg: "#f0f4ff", border: C.border, emoji: "🟡", title: "Connecting" },
-                }[connStatus] || { bg: "#f0f4ff", border: C.border, emoji: "🟡", title: "Connecting" })
-                : { bg: "#e6f7f2", border: "#9ee8ce", emoji: "🟢", title: "Online" };
+                  connected:     { bg: "#e6f7f2", border: "#9ee8ce", dot: "#16a34a", title: "Connected" },
+                  reconnecting:  { bg: "#fef3e2", border: "#fcd34d", dot: "#d97706", title: "Connecting" },
+                  disconnected:  { bg: "#fde8ed", border: "#f9a8ba", dot: "#dc2626", title: "Disconnected" },
+                  unknown:       { bg: "#f0f4ff", border: C.border, dot: "#64748b", title: "Connecting" },
+                }[connStatus] || { bg: "#f0f4ff", border: C.border, dot: "#64748b", title: "Connecting" })
+                : { bg: "#e6f7f2", border: "#9ee8ce", dot: "#16a34a", title: "Online" };
                 return (
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: connCfg.bg, padding: "5px 12px", borderRadius: 8, border: "1px solid " + connCfg.border }} title={connCfg.title}>
-                    <span style={{ fontSize: 15, lineHeight: 1 }} aria-hidden="true">{connCfg.emoji}</span>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: connCfg.dot, boxShadow: "0 0 4px " + connCfg.dot, display: "inline-block" }} aria-hidden="true"></span>
                   </div>
                 );
               })()}
               {/* Network Sync Indicator */}
               {isNetworkMode && (function () {
                 var syncCfg = {
-                  saving: { bg: "#fef3e2", border: "#fcd34d", dot: "#e07a10", label: "Saving…", dotColor: "#e07a10" },
+                  saving: { bg: "#fef3e2", border: "#fcd34d", dot: "#e07a10", label: "Saving-", dotColor: "#e07a10" },
                   synced: { bg: "#e6f7f2", border: "#9ee8ce", dot: "#12b07a", label: "Synced", dotColor: "#12b07a" },
                   error:  { bg: "#fde8ed", border: "#f9a8ba", dot: "#e03151", label: "Sync failed", dotColor: "#e03151" },
                   failed: { bg: "#fde8ed", border: "#f9a8ba", dot: "#e03151", label: "Sync failed", dotColor: "#e03151" },
@@ -6723,15 +6834,16 @@ function App(props) {
                   </div>
                 );
               })()}
+              </div>
             </div>
           </div>
           {licenseInfo && licenseInfo.isReadOnly && (
             <div style={{ padding: "6px 14px", background: "linear-gradient(90deg,#fff7ed,#fef2f2)", borderBottom: "1px solid #f9a8ba", color: "#9a3412", fontSize: 11.5, fontWeight: 700 }}>
               {(function () {
                 var rr = String(licenseInfo.readOnlyReason || "");
-                if (rr === "license_expired") return "🔒 Read-only mode: License expired. Renew to continue full usage.";
-                if (rr === "blocked") return "🔒 Read-only mode: Client limit reached. Contact server admin.";
-                if (rr === "clock_tamper") return "⚠ System time change detected. Please correct your date/time or connect to internet.";
+                if (rr === "license_expired") return "Read-only mode: License expired. Renew to continue full usage.";
+                if (rr === "blocked") return "Read-only mode: Client limit reached. Contact server admin.";
+                if (rr === "clock_tamper") return "? System time change detected. Please correct your date/time or connect to internet.";
                 var d = parseInt(licenseInfo.offlineDays || 0, 10) || 0;
                 var ts = null;
                 if (!d && licenseInfo.lastSuccessfulSyncTime) {
@@ -6743,7 +6855,7 @@ function App(props) {
                   if (!isNaN(dt.getTime())) ts = dt.toLocaleString();
                 }
                 var extra = d > 0 ? (" Last synced: " + d + " day" + (d !== 1 ? "s" : "") + " ago" + (ts ? (" (" + ts + ")") : "") + ".") : "";
-                return "🔒 System is in read-only mode. Connect internet to restore full access." + extra;
+                return "System is in read-only mode. Connect internet to restore full access." + extra;
               })()}
             </div>
           )}
@@ -6760,17 +6872,17 @@ function App(props) {
                   : "Offline license verification warning.";
                 var extra2 = d2 > 0 ? (" Offline for " + d2 + " day" + (d2 !== 1 ? "s" : "") + ".") : "";
                 var soft = (d2 >= 10 && d2 < 15) ? " Please connect internet once to keep the system active." : "";
-                return "⚠ " + msg + " Connect internet soon." + soft + extra2;
+                return "? " + msg + " Connect internet soon." + soft + extra2;
               })()}
             </div>
           )}
           {sessionTimeoutWarning && (
             <div style={{ padding: "6px 14px", background: "linear-gradient(90deg,#fff7ed,#fffbeb)", borderBottom: "1px solid #fcd34d", color: "#9a3412", fontSize: 11.5, fontWeight: 700 }}>
-              ⏳ You will be signed out soon due to inactivity.
+              ? You will be signed out soon due to inactivity.
             </div>
           )}
-          {/* key=active on the component directly — React unmounts+remounts on every navigation */}
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 20px", minWidth: 0, position: "relative" }}>
+          {/* key=active on the component directly - React unmounts+remounts on every navigation */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: active === "pos" ? "8px 20px 16px 20px" : "18px 20px", minWidth: 0, position: "relative" }}>
             <ActivePage
               key={active}
               cloudSyncBump={cloudSyncBump}
@@ -6850,6 +6962,7 @@ function App(props) {
               getUnitCostPrice={getUnitCostPrice}
               getPosSellPricePerSaleUnit={getPosSellPricePerSaleUnit}
               getBaseSellPcsPrice={getBaseSellPcsPrice}
+              getBaseCostPcsPrice={getBaseCostPcsPrice}
               getPosCostPerSaleUnit={getPosCostPerSaleUnit}
               getQuickAmounts={getQuickAmounts}
               remainingPcsAfterCartForProduct={remainingPcsAfterCartForProduct}
@@ -6896,7 +7009,7 @@ function App(props) {
                   "Rebuild the general ledger from all transactions?\n\nA JSON backup file will be downloaded first. Continue?",
                   function () {
                     if (!downloadPreRepairJsonBackup()) {
-                      showAlert("Backup download failed — rebuild cancelled.");
+                      showAlert("Backup download failed - rebuild cancelled.");
                       addAudit("Journal rebuild cancelled", "manual_rebuild", { reason: "backup_failed" });
                       return;
                     }
@@ -6905,14 +7018,14 @@ function App(props) {
                     var invDer = deriveInventoryEconomics(loadState(), S);
                     var r = rebuildJournalFromState(loadState(), S, uid, invDer);
                     if (!r.validate.ok || !r.valid) {
-                      showAlert("Journal rebuild failed validation — check console.");
+                      showAlert("Journal rebuild failed validation - check console.");
                       addAudit("Journal rebuild failed", "manual_rebuild", { validateOk: !!(r && r.validate && r.validate.ok), valid: !!(r && r.valid) });
                       return r;
                     }
                     var merged = mergeRebuildWithImmutableHistory(prevLines, r.lines, uid);
                     var vf = validateJournalBalanced(merged);
                     if (!vf.ok) {
-                      showAlert("Merged journal would be unbalanced — no changes saved.");
+                      showAlert("Merged journal would be unbalanced - no changes saved.");
                       addAudit("Journal rebuild aborted", "manual_rebuild", { reason: "merge_imbalance" });
                       return r;
                     }
@@ -6948,7 +7061,7 @@ function App(props) {
                   "Inventory / journal repair will replay all transactions to rebuild the ledger and inventory layers.\n\nA JSON backup file will be downloaded first. Continue?",
                   function () {
                     if (!downloadPreRepairJsonBackup()) {
-                      showAlert("Backup download failed — repair cancelled.");
+                      showAlert("Backup download failed - repair cancelled.");
                       addAudit("Repair cancelled", "inventory_layers", { reason: "backup_failed" });
                       return;
                     }
@@ -6960,7 +7073,7 @@ function App(props) {
                       setState(loadState());
                       showAlert("Inventory layers updated from full transaction replay.");
                     } else {
-                      showAlert(r && r.commitFailed ? "Repair did not apply — the journal could not be saved." : "Repair did not apply — resolve journal warnings or check the console.");
+                      showAlert(r && r.commitFailed ? "Repair did not apply - the journal could not be saved." : "Repair did not apply - resolve journal warnings or check the console.");
                     }
                   }
                 );
@@ -6973,6 +7086,53 @@ function App(props) {
               }}
               getNetCOGS={getNetCOGS}
               getNetCOGSForRange={getNetCOGSForRange}
+              getInventoryReconciliation={function () {
+                var lines = S.get("tc3_journal_lines", []);
+                var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+                var invDer = deriveInventoryEconomics(loadState(), S);
+                var reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
+                var invLines = (lines || []).filter(function (ln) {
+                  return ln.accountId === GL.INV;
+                });
+                invLines.sort(function (a, b) {
+                  var od = String(b.date || "").localeCompare(String(a.date || ""));
+                  if (od !== 0) return od;
+                  return String(b.id || "").localeCompare(String(a.id || ""));
+                });
+                var recentGlInvLines = invLines.slice(0, 35).map(function (ln) {
+                  return {
+                    id: ln.id,
+                    date: ln.date,
+                    debit: ln.debit,
+                    credit: ln.credit,
+                    memo: ln.memo,
+                    referenceType: ln.referenceType,
+                    referenceId: ln.referenceId,
+                  };
+                });
+                var drilldown;
+                if (tcIsDevEnv()) try { console.time("tc_inv_recon_explain"); } catch (e) {}
+                drilldown = explainInventoryDifference(lines, chart, { maxLines: 500, maxPerBucket: 10 });
+                if (tcIsDevEnv()) try { console.timeEnd("tc_inv_recon_explain"); } catch (e) {}
+                return { reconciliation: reconciliation, recentGlInvLines: recentGlInvLines, drilldown: drilldown };
+              }}
+              getInventoryReconTimeTravel={function (from, to) {
+                return buildInventoryReconTimeSeries(loadState(), S, S.get("tc3_journal_lines", []), S.get("tc3_gl_accounts", DEFAULT_GL_CHART), from, to);
+              }}
+              exportSupportBundle={function (opts) {
+                var st = loadState();
+                var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+                return buildSupportBundlePayload(st, S, chart, opts || {});
+              }}
+              downloadSupportBundleJson={downloadSupportBundleJson}
+              periodLockTransactionMinDate={periodLockTransactionMinDate}
+              getInventoryReplayDebug={function (productId, from, to, replayOpts) {
+                var invDer = deriveInventoryEconomics(loadState(), S);
+                if (tcIsDevEnv()) try { console.time("tc_inv_replay_window"); } catch (e) {}
+                var r = buildInventoryReplayWindow(invDer, productId, from, to, replayOpts || {});
+                if (tcIsDevEnv()) try { console.timeEnd("tc_inv_replay_window"); } catch (e) {}
+                return r;
+              }}
               pwMatchesAsync={pwMatchesAsync}
               hashPw={hashPw}
               isAdminMode={uiAdminMode}
@@ -6992,11 +7152,11 @@ function App(props) {
       <AppDialog />
       <PayMatchToast />
 
-    {/* ── Sync Pending Close Warning Modal ── */}
+    {/* -- Sync Pending Close Warning Modal -- */}
     {showCloseWarn && (
       <div style={{ position: "fixed", inset: 0, background: "rgba(10,22,50,0.82)", backdropFilter: "blur(8px)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#fff", borderRadius: 20, padding: "36px 40px", width: 420, boxShadow: "0 32px 80px rgba(10,22,50,0.4)", textAlign: "center" }}>
-          <div style={{ fontSize: 42, marginBottom: 10 }}>⏳</div>
+          <div style={{ fontSize: 42, marginBottom: 10 }}>?</div>
           <div style={{ fontSize: 19, fontWeight: 900, color: C.text, marginBottom: 8 }}>Data Still Syncing</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6 }}>
             Some of your data hasn't been saved to the server yet. Please wait a moment.
@@ -7009,8 +7169,7 @@ function App(props) {
                   else showAlert("Sync still failing. Please check your network connection.");
                 });
               }
-            }} style={{ flex: 1, padding: "11px 0", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
-              🔄 Retry Sync
+            }} style={{ flex: 1, padding: "11px 0", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Retry Sync
             </button>
             <button onClick={function () { setShowCloseWarn(false); }} style={{ flex: 1, padding: "11px 0", background: "#f0f4ff", color: C.textMd, border: "1.5px solid " + C.border, borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
               Dismiss
@@ -7021,29 +7180,29 @@ function App(props) {
     )}
 
 
-    {/* ── Hold Invoice Modal — shown when user tries to leave POS with active cart ── */}
+    {/* -- Hold Invoice Modal - shown when user tries to leave POS with active cart -- */}
     {holdModal && (
       <div style={{ position: "fixed", inset: 0, background: "rgba(10,22,50,0.75)", backdropFilter: "blur(8px)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#fff", borderRadius: 20, padding: "32px 36px", width: 420, boxShadow: "0 32px 80px rgba(10,22,50,0.4)", border: "1.5px solid #e1e8f5" }}>
-          <div style={{ fontSize: 36, textAlign: "center", marginBottom: 12 }}>🧾</div>
+          <div style={{ fontSize: 36, textAlign: "center", marginBottom: 12 }}>HOLD</div>
           <div style={{ fontSize: 19, fontWeight: 900, color: "#0d1b3e", textAlign: "center", marginBottom: 6 }}>Invoice In Progress</div>
           <div style={{ fontSize: 13, color: "#6b82a8", textAlign: "center", marginBottom: 24, lineHeight: 1.6 }}>
             You have an unfinished invoice. What would you like to do?
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <button onClick={function () {
-              /* Hold — save/update in IDB persistently */
+              /* Hold - save/update in IDB persistently */
               var posState = window._techon_pos_snapshot || null;
               if (posState && posState.cart && posState.cart.length > 0) {
                 var held = S.get("tc3_held_invoices", []);
                 var existingId = posState._activeHeldId;
                 var custLabel = posState.custSearch || (posState.custMode === "walkin" ? "Walk-in" : (posState.newCust && posState.newCust.name ? posState.newCust.name : "Walk-in"));
                 var entry = Object.assign({}, posState, {
-                  label: custLabel + " — " + (posState.cart || []).length + " item(s)",
+                  label: custLabel + " - " + (posState.cart || []).length + " item(s)",
                   heldAt: new Date().toISOString()
                 });
                 if (existingId) {
-                  /* Update existing held entry — preserve same ID */
+                  /* Update existing held entry - preserve same ID */
                   entry.id = existingId;
                   held = held.map(function (h) { return h.id === existingId ? entry : h; });
                   /* If somehow not found, add it */
@@ -7060,14 +7219,14 @@ function App(props) {
               setHoldModal(null);
               safeSetActive(dest);
             }} style={{ padding: "13px 20px", borderRadius: 12, border: "2px solid #2979ff", background: "#e8eeff", color: "#2979ff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 22 }}>⏸</span>
+              <span style={{ fontSize: 22 }}>?</span>
               <div>
                 <div>Hold Invoice</div>
                 <div style={{ fontSize: 11, fontWeight: 500, color: "#6b82a8", marginTop: 2 }}>Save your cart and come back to continue later</div>
               </div>
             </button>
             <button onClick={function () {
-              /* Cancel — clear window bridge so POS mounts fresh */
+              /* Cancel - clear window bridge so POS mounts fresh */
               window._techon_pos_snapshot = null;
               sessionStorage.removeItem("tc3_dirty");
               var dest = holdModal;
@@ -7075,7 +7234,7 @@ function App(props) {
               safeSetActive("pos");
               if (dest !== "pos") setTimeout(function () { safeSetActive(dest); }, 80);
             }} style={{ padding: "13px 20px", borderRadius: 12, border: "2px solid #e03151", background: "#fde8ed", color: "#e03151", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 22 }}>🗑</span>
+              <span style={{ fontSize: 22 }}>SAVE</span>
               <div>
                 <div>Cancel Invoice</div>
                 <div style={{ fontSize: 11, fontWeight: 500, color: "#9f1239", marginTop: 2 }}>Discard this invoice and leave the page</div>
@@ -7083,20 +7242,20 @@ function App(props) {
             </button>
             <button onClick={function () { setHoldModal(null); }}
               style={{ padding: "11px 20px", borderRadius: 12, border: "1.5px solid #e1e8f5", background: "#f8fafc", color: "#6b82a8", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
-              ← Stay and continue invoice
+              ? Stay and continue invoice
             </button>
           </div>
         </div>
       </div>
     )}
 
-    {/* ── PIN Entry Modal ── */}
+    {/* -- PIN Entry Modal -- */}
     {pinModal && (
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100020, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#fff", borderRadius: 20, padding: "36px 40px", width: pinSupportMode ? 430 : 380, maxWidth: "calc(100vw - 32px)", boxShadow: "0 32px 80px rgba(10,22,50,0.4)", border: "1.5px solid " + C.border, textAlign: "center" }}>
           {pinSupportMode ? (
             <React.Fragment>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>🛟</div>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>LOCK</div>
               <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 6 }}>Support unlock</div>
               <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.55 }}>
                 Tell Techon support this <strong>challenge code</strong>. They will give you a 6-character unlock code derived from it.
@@ -7109,7 +7268,7 @@ function App(props) {
                 fontFamily: "ui-monospace, Consolas, 'Courier New', monospace", fontSize: 24, fontWeight: 800, letterSpacing: "0.18em",
                 background: "linear-gradient(135deg,#eef2ff,#e0e7ff)", border: "2px solid #2979ff", borderRadius: 12,
                 padding: "16px 20px", marginBottom: 10, color: "#0d1b3e", userSelect: "all", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.6)"
-              }}>{supportChallengeCode || "······"}</div>
+              }}>{supportChallengeCode || "------"}</div>
               <button type="button" onClick={function () {
                 var code = supportChallengeCode;
                 if (!code) return;
@@ -7150,11 +7309,11 @@ function App(props) {
                     width: "100%", padding: "12px 16px", borderRadius: 10, border: "none", fontWeight: 800, fontSize: 14, cursor: (supportUnlockBusy || supportUnlockInput.length !== 6) ? "not-allowed" : "pointer", fontFamily: "inherit",
                     background: (supportUnlockBusy || supportUnlockInput.length !== 6) ? "#cbd5e1" : "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", opacity: supportUnlockBusy ? 0.85 : 1
                   }}>
-                  {supportUnlockBusy ? "Verifying…" : "Verify & Unlock"}
+                  {supportUnlockBusy ? "Verifying-" : "Verify & Unlock"}
                 </button>
                 <button type="button" onClick={function () { setPinSupportMode(false); setSupportUnlockInput(""); setPinError(""); setSupportCopyHint(false); }}
                   style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: "1.5px solid " + C.border, background: "#f7f9ff", fontWeight: 700, fontSize: 13, color: C.accent, cursor: "pointer", fontFamily: "inherit" }}>
-                  ← Back to PIN entry
+                  ? Back to PIN entry
                 </button>
                 <button type="button" onClick={function () { setPinModal(false); resetPinModalUi(); }}
                   style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: "1.5px solid " + C.border, background: "#fff", fontWeight: 700, fontSize: 13, color: C.textMd, cursor: "pointer", fontFamily: "inherit" }}>
@@ -7164,7 +7323,7 @@ function App(props) {
             </React.Fragment>
           ) : (
             <React.Fragment>
-          <div style={{ fontSize: 42, marginBottom: 10 }}>🔐</div>
+          <div style={{ fontSize: 42, marginBottom: 10 }}>PIN</div>
           <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 4 }}>Admin Mode</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 24 }}>Enter your PIN or admin login password to unlock</div>
 
@@ -7179,11 +7338,11 @@ function App(props) {
 
           {/* Number pad */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
-            {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(function (k, i) {
+            {["1","2","3","4","5","6","7","8","9","","0","?"].map(function (k, i) {
               if (k === "") return <div key={"empty-" + i}></div>;
               return (
                 <button key={k + "-" + i} onClick={function () {
-                  if (k === "⌫") { setPinEntry(function (p) { return p.slice(0, -1); }); setPinError(""); return; }
+                  if (k === "?") { setPinEntry(function (p) { return p.slice(0, -1); }); setPinError(""); return; }
                   if (pinEntry.length >= 6) return;
                   var newPin = pinEntry + k;
                   setPinEntry(newPin);
@@ -7194,11 +7353,11 @@ function App(props) {
                     tryFinalizeAdminPinEntry(newPin, storedPin, function () {
                       setIsAdminMode(true); setPinModal(false); resetPinModalUi();
                     }, function () {
-                      setPinError("Incorrect PIN — try again"); setPinEntry("");
+                      setPinError("Incorrect PIN - try again"); setPinEntry("");
                     });
                   }, 150);
                 }}
-                  style={{ padding: "16px 0", borderRadius: 12, border: "1.5px solid " + C.border, background: k === "⌫" ? "#fde8ed" : "#f7f9ff", fontSize: k === "⌫" ? 18 : 20, fontWeight: 700, color: k === "⌫" ? C.red : C.text, cursor: "pointer", fontFamily: "inherit", transition: "background .1s" }}>
+                  style={{ padding: "16px 0", borderRadius: 12, border: "1.5px solid " + C.border, background: k === "?" ? "#fde8ed" : "#f7f9ff", fontSize: k === "?" ? 18 : 20, fontWeight: 700, color: k === "?" ? C.red : C.text, cursor: "pointer", fontFamily: "inherit", transition: "background .1s" }}>
                   {k}
                 </button>
               );
@@ -7226,7 +7385,7 @@ function App(props) {
                   pwMatchesAsync(masterPwEntry, appPass).then(function (ok) {
                     if (!appMountedRef.current) return;
                     if (ok) { setIsAdminMode(true); setPinModal(false); resetPinModalUi(); }
-                    else { setPinError("Incorrect password — try again."); }
+                    else { setPinError("Incorrect password - try again."); }
                   });
                 }
               }}
@@ -7238,7 +7397,7 @@ function App(props) {
               pwMatchesAsync(masterPwEntry, appPass).then(function (ok) {
                 if (!appMountedRef.current) return;
                 if (ok) { setIsAdminMode(true); setPinModal(false); resetPinModalUi(); }
-                else { setPinError("Incorrect password — try again."); }
+                else { setPinError("Incorrect password - try again."); }
               });
             }} style={{ padding: "10px 16px", background: "#2979ff", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>
               Unlock
@@ -7267,3 +7426,5 @@ var WrappedApp = function (props) {
   return React.createElement(AppErrorBoundary, null, React.createElement(App, props));
 };
 export default WrappedApp;
+
+

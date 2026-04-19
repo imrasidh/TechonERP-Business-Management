@@ -67,19 +67,29 @@ export function productHasMultipleSaleUnits(product) {
 export function factorForNamedUnit(product, unitName) {
   var rows = getProductUnitRows(product);
   var u = unitName || product.unit || "Pcs";
+  var ul = String(u).trim().toLowerCase();
   for (var i = 0; i < rows.length; i++) {
-    if (rows[i].name === u) return rows[i].factor;
+    if (String(rows[i].name || "").trim().toLowerCase() === ul) return rows[i].factor;
   }
   return null;
+}
+
+/** True if `unitName` is the product's base (storage) unit — case-insensitive. */
+export function isProductBaseUnitLabel(product, unitName) {
+  if (!product) return true;
+  var base = String(product.unit != null && String(product.unit).trim() !== "" ? product.unit : "Pcs").trim();
+  var u = String(unitName != null && String(unitName).trim() !== "" ? unitName : base).trim();
+  return base.toLowerCase() === u.toLowerCase();
 }
 
 export function getUnitSellPriceFromRows(product, unit) {
   var rows = getProductUnitRows(product);
   var basePrice = parseFloat(product.price) || 0;
   var u = unit || product.unit || "Pcs";
+  var ul = String(u).trim().toLowerCase();
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
-    if (row.name !== u) continue;
+    if (String(row.name || "").trim().toLowerCase() !== ul) continue;
     if (row.factor <= 1) return row.sellPrice > 0 ? row.sellPrice : basePrice;
     if (row.sellPrice > 0) return row.sellPrice;
     return Math.round(basePrice * row.factor * 100) / 100;
@@ -91,9 +101,10 @@ export function getUnitCostFromRows(product, unit) {
   var rows = getProductUnitRows(product);
   var baseCost = parseFloat(product.cost) || 0;
   var u = unit || product.unit || "Pcs";
+  var ul = String(u).trim().toLowerCase();
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
-    if (row.name !== u) continue;
+    if (String(row.name || "").trim().toLowerCase() !== ul) continue;
     if (row.factor <= 1) return row.cost > 0 ? row.cost : baseCost;
     if (row.cost > 0) return row.cost;
     return Math.round(baseCost * row.factor * 10000) / 10000;
