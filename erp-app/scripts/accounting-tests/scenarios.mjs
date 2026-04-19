@@ -3,6 +3,7 @@
  */
 import {
   baseState,
+  balanceSheetFromLedger,
   makeSmock,
   rebuild,
   DEFAULT_GL_CHART,
@@ -22,7 +23,10 @@ import { isLockedThroughDate } from "../../src/accounting/periodLockDates.js";
 import { compareRoundSumMethods } from "../../src/accounting/roundingDrift.js";
 import { buildInventoryReconTimeSeries } from "../../src/accounting/inventoryReconTimeSeries.js";
 import { diffTrialBalanceSnapshotVsLive } from "../../src/accounting/snapshotTbDiff.js";
-import { sumRawMaterialKitchenCostInRange } from "../../src/utils/ingredientUsageCost.js";
+import {
+  aggregateKitchenCostByMonthInRange,
+  sumRawMaterialKitchenCostInRange,
+} from "../../src/utils/ingredientUsageCost.js";
 
 /**
  * @param {{ fail: (name: string, detail?: unknown) => void, pass: (name: string) => void }} ctx
@@ -491,5 +495,87 @@ export function runScenarioTests(ctx) {
     });
     if (!ids.length) return fail("Period lock: expected override id for RM usage edit", ids);
     pass("Period lock override detection (raw material usage)");
+  })();
+
+  /* ── 23: Monthly kitchen aggregation matches range replay total ── */
+  (function () {
+    var st = baseState();
+    var pid = "rm_month_agg";
+    st.products = [{ id: pid, type: "raw_material", name: "M", stock: 100, cost: 2, sellPrice: 5 }];
+    st.purchases = [{ id: "pma", date: "2026-11-01", total: 200, totalTax: 0, items: [{ id: pid, qty: 100, cost: 2 }], paymentHistory: [] }];
+    st.rawMaterialUsages = [
+      { id: "u1", productId: pid, date: "2026-11-05", qty: 3, unit: "Kg", qtyBase: 3 },
+      { id: "u2", productId: pid, date: "2026-12-08", qty: 4, unit: "Kg", qtyBase: 4 },
+    ];
+    var inv = deriveInventoryEconomics(st, makeSmock());
+    var byM = aggregateKitchenCostByMonthInRange(st, "2026-11-01", "2026-12-31", inv);
+    var t11 = sumRawMaterialKitchenCostInRange(st, "2026-11-01", "2026-11-30", inv);
+    var t12 = sumRawMaterialKitchenCostInRange(st, "2026-12-01", "2026-12-31", inv);
+    if (round2((byM["2026-11"] || 0) + (byM["2026-12"] || 0)) !== sumRawMaterialKitchenCostInRange(st, "2026-11-01", "2026-12-31", inv)) {
+      return fail("Monthly kitchen agg: sum of months vs range");
+    }
+    if (round2(byM["2026-11"] || 0) !== t11 || round2(byM["2026-12"] || 0) !== t12) {
+      return fail("Monthly kitchen agg: per-month mismatch", byM, t11, t12);
+    }
+    pass("Monthly kitchen aggregation (replay by month)");
+  })();
+
+  /* ── 24: Balance sheet equation includes cumulative P&L (display) — matches golden gap closed by NI ── */
+  (function () {
+    var st = baseState();
+    st.products = [{ id: "gp1", name: "Golden", stock: 0, cost: 5, sellPrice: 20 }];
+    st.purchases = [
+      {
+        id: "gpur",
+        date: "2026-01-01",
+        total: 50,
+        totalTax: 0,
+        items: [{ id: "gp1", productId: "gp1", qty: 10, cost: 5 }],
+        paymentHistory: [{ date: "2026-01-01", amount: 50, cashMethod: "Cash" }],
+      },
+    ];
+    st.sales = [
+      {
+        id: "gsale",
+        date: "2026-01-02",
+        invoiceNo: "GINV",
+        total: 80,
+        paid: 80,
+        items: [{ id: "gp1", productId: "gp1", qty: 2, cost: 5, lineTotal: 80 }],
+        paymentHistory: [{ amount: 80, cashMethod: "Cash", note: "" }],
+      },
+    ];
+    var x = rebuild(st, makeSmock());
+    var bs = balanceSheetFromLedger(x.r.lines, DEFAULT_GL_CHART, null);
+    if (bs.balanced) return fail("BS book-only: expected gap before NI", bs);
+    if (!bs.balancedWithEarnings) return fail("BS with earnings: should balance", bs);
+    if (Math.abs(bs.differenceWithEarnings) > 0.02) return fail("BS with earnings: diff", bs.differenceWithEarnings);
+    if (Math.abs(bs.currentEarnings - 70) > 0.02) return fail("BS currentEarnings vs P&L net", bs.currentEarnings);
+    pass("Balance sheet balancedWithEarnings (cumulative NI)");
+  })();
+
+  /* -- 25: Opening stock participates in replay so INV vs GL reconciliation stays aligned -- */
+  (function () {
+    var st = baseState();
+    var pid = "ob_rec_1";
+    st.products = [{ id: pid, productId: "ob1", name: "OB Product", barcode: "OBCODE1", stock: 10, cost: 100, sellPrice: 150 }];
+    st.openBal = {
+      completed: true,
+      date: "2026-01-01",
+      cash: 0,
+      bank: 0,
+      receivables: [],
+      payables: [],
+      stock: [{ productId: pid, name: "OB Product", barcode: "OBCODE1", qty: 10, cost: 100 }],
+      assets: [],
+      capital: 1000,
+    };
+    var Sm = makeSmock({ tc3_openBal: st.openBal });
+    var x = rebuild(st, Sm);
+    var rec = reconcileInventoryToLedger(x.r.lines, x.invDer, DEFAULT_GL_CHART);
+    if (!rec.ok) return fail("Opening stock reconcile: INV vs GL", rec);
+    if (Math.abs(round2(rec.glInventoryBalance) - 1000) > 0.02) return fail("Opening stock reconcile: expected GL INV 1000", rec);
+    if (Math.abs(round2(rec.physicalValue) - 1000) > 0.02) return fail("Opening stock reconcile: expected physical 1000", rec);
+    pass("Opening stock included in inventory replay reconciliation");
   })();
 }

@@ -679,6 +679,14 @@ export function balanceSheetFromLedger(lines, chart, asOfDate) {
   });
   var rhs = round2(liab + eq);
   var diff = round2(assets - rhs);
+  /* Unclosed P&L (income/expense) lives outside BS equity until closing entries — include for equation display only */
+  var pnlThrough = profitAndLossFromLedger(f, chart, null, asOfDate);
+  var currentEarnings = round2(pnlThrough.net);
+  var equityWithCurrentEarnings = round2(eq + currentEarnings);
+  var rhsWithEarn = round2(liab + equityWithCurrentEarnings);
+  var diffWithEarnings = round2(assets - rhsWithEarn);
+  var tol = 0.02;
+  var balancedWithEarnings = Math.abs(diffWithEarnings) <= tol;
   return {
     assets: round2(assets),
     liabilities: round2(liab),
@@ -686,6 +694,12 @@ export function balanceSheetFromLedger(lines, chart, asOfDate) {
     balanced: diff === 0,
     difference: diff,
     rhsTotal: rhs,
+    equityBase: round2(eq),
+    currentEarnings: currentEarnings,
+    equityWithCurrentEarnings: equityWithCurrentEarnings,
+    balancedWithEarnings: balancedWithEarnings,
+    differenceWithEarnings: diffWithEarnings,
+    rhsTotalWithEarnings: rhsWithEarn,
   };
 }
 

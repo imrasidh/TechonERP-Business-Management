@@ -7,6 +7,12 @@
     "equity": 0,
     "balanced": false,
     "difference": 70,
-    "rhsTotal": 0
+    "rhsTotal": 0,
+    "equityBase": 0,
+    "currentEarnings": 70,
+    "equityWithCurrentEarnings": 70,
+    "balancedWithEarnings": true,
+    "differenceWithEarnings": 0,
+    "rhsTotalWithEarnings": 70
   }
 }

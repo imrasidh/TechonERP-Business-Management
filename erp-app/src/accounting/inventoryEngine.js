@@ -64,6 +64,21 @@ function blendWac(layers, addQty, addCost) {
   return [{ remainingQty: round2(totalQty), unitCost: wac, qty: round2(totalQty), source: "wac_blend" }];
 }
 
+function normalizeText(v) {
+  return String(v == null ? "" : v).trim().toLowerCase();
+}
+
+function findOpeningProductId(row, productsById, productsByBarcode, productsByName) {
+  if (!row) return null;
+  var pidRaw = row.productId != null ? row.productId : row.id;
+  if (pidRaw != null && productsById[String(pidRaw)] != null) return String(pidRaw);
+  var bc = normalizeText(row.barcode);
+  if (bc && productsByBarcode[bc] != null) return productsByBarcode[bc];
+  var nm = normalizeText(row.name);
+  if (nm && productsByName[nm] != null) return productsByName[nm];
+  return null;
+}
+
 /**
  * Full replay of inventory events → movements, COGS per sale, layer valuation, INV $.
  * opts.asOfDate — optional YYYY-MM-DD; only transactions on or before this date participate.
@@ -83,6 +98,45 @@ export function deriveInventoryEconomics(state, S, opts) {
   var blockingErrors = [];
 
   var events = [];
+  var productsById = {};
+  var productsByBarcode = {};
+  var productsByName = {};
+  (state.products || []).forEach(function (p) {
+    if (!p || p.id == null) return;
+    var pid = String(p.id);
+    productsById[pid] = p;
+    var bc = normalizeText(p.barcode);
+    if (bc && productsByBarcode[bc] == null) productsByBarcode[bc] = pid;
+    var nm = normalizeText(p.name);
+    if (nm && productsByName[nm] == null) productsByName[nm] = pid;
+  });
+
+  /* Opening stock is part of inventory replay (GL 1200 already includes it). */
+  var ob = (state && state.openBal) || (S && typeof S.get === "function" ? S.get("tc3_openBal", null) : null);
+  if (ob && ob.completed && Array.isArray(ob.stock)) {
+    var obDate = String(ob.date || "");
+    ob.stock.forEach(function (it, j) {
+      if (!it) return;
+      if (asOfDate && obDate && obDate > asOfDate) return;
+      var pid = findOpeningProductId(it, productsById, productsByBarcode, productsByName);
+      if (!pid) return;
+      var q = Number(it.qty);
+      var uc = Number(it.cost);
+      if (!isFinite(q) || q <= 0) return;
+      if (!isFinite(uc) || uc < 0) return;
+      events.push({
+        _seq: seq++,
+        date: obDate,
+        type: "open_in",
+        productId: pid,
+        qty: q,
+        unitCost: round2(uc),
+        referenceType: "opening_balance",
+        referenceId: "ob-1",
+        lineIdx: j,
+      });
+    });
+  }
 
   (state.purchases || []).forEach(function (p) {
     if (asOfDate && String(p.date || "") > asOfDate) return;
@@ -157,10 +211,7 @@ export function deriveInventoryEconomics(state, S, opts) {
     });
   });
 
-  var productsByIdRm = {};
-  (state.products || []).forEach(function (p) {
-    if (p && p.id != null) productsByIdRm[String(p.id)] = p;
-  });
+  var productsByIdRm = productsById;
   /* After purchases/sales/returns so same-day ordering consumes layers in that sequence */
   (state.rawMaterialUsages || []).forEach(function (u) {
     if (!u || u.productId == null) return;
@@ -188,6 +239,31 @@ export function deriveInventoryEconomics(state, S, opts) {
     var pid = ev.productId;
     if (!pid) return;
     if (!layersByProduct[pid]) layersByProduct[pid] = [];
+
+    if (ev.type === "open_in") {
+      if (method === "fifo") {
+        layersByProduct[pid].push({
+          remainingQty: ev.qty,
+          unitCost: ev.unitCost,
+          sourceRef: ev.referenceId,
+          batchTag: "opening_balance",
+        });
+      } else {
+        layersByProduct[pid] = blendWac(layersByProduct[pid], ev.qty, round2(ev.qty * ev.unitCost));
+      }
+      movements.push({
+        id: stableJournalTransactionId("stk", ev.referenceId, "open_in_" + ev.lineIdx),
+        productId: pid,
+        qtyIn: ev.qty,
+        qtyOut: 0,
+        unitCost: ev.unitCost,
+        referenceType: ev.referenceType,
+        referenceId: ev.referenceId,
+        date: ev.date,
+        journalTxnHint: stableJournalTransactionId("opening_balance", ev.referenceId, "inv"),
+      });
+      return;
+    }
 
     if (ev.type === "pur_in") {
       if (method === "fifo") {

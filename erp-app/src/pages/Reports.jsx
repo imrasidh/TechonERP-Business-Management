@@ -9,10 +9,11 @@ import {
   rawMaterialOpeningQty,
 } from "../utils/rawMaterialQty.js";
 import {
-  getLatestRawMaterialUnitCost,
+  aggregateKitchenCostByMonthInRange,
   sumRawMaterialKitchenCostInRange,
   sumRawMaterialUsageCostInRange,
 } from "../utils/ingredientUsageCost.js";
+import { deriveInventoryEconomics } from "../accounting/inventoryEngine.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 
 var Reports = React.memo(function (props) {
@@ -321,7 +322,8 @@ var Reports = React.memo(function (props) {
     var consumedCost = consumed != null ? consumed * unitCost : null;
     return { product: p, opening: opening, purchased: purchased, closing: closing, consumed: consumed, unitCost: unitCost, consumedCost: consumedCost, hasClosing: hasClosing };
   });
-  var rawConsumedTotalCostRpt = rawConsumptionRowsRpt.reduce(function (a, r) { return a + (r.consumedCost != null ? (Number(r.consumedCost) || 0) : 0); }, 0);
+  var rawReplayInvDerRpt = deriveInventoryEconomics(state, S);
+  var rawConsumedReplayCostRpt = round2(sumRawMaterialKitchenCostInRange(state, reportDate, reportDate, rawReplayInvDerRpt));
   var rawNegativeRowsRpt = rawConsumptionRowsRpt.filter(function (r) { return r.consumed != null && r.consumed < 0; });
 
   var printRawConsumptionReport = function () {
@@ -343,7 +345,7 @@ var Reports = React.memo(function (props) {
     var html = "<div class='header'><div><div class='shop'>" + escapeHtml(shopName) + "</div><div class='title'>Raw Material Consumption Report - " + escapeHtml(dateLabel) + "</div></div><div style='text-align:right;font-size:12px;color:#666;'>Printed: " + new Date().toLocaleString() + "</div></div>";
     html += "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;'>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Raw Materials</div><div style='font-size:22px;font-weight:800;'>" + rawMaterialProductsRpt.length + "</div></div>";
-    html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Consumed Cost</div><div style='font-size:22px;font-weight:800;color:#1b5e20;'>" + getCurrencySymbol() + " " + fmtNum(rawConsumedTotalCostRpt) + "</div></div>";
+    html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Consumed Cost</div><div style='font-size:22px;font-weight:800;color:#1b5e20;'>" + getCurrencySymbol() + " " + fmtNum(rawConsumedReplayCostRpt) + "</div></div>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Negative Warnings</div><div style='font-size:22px;font-weight:800;color:" + (rawNegativeRowsRpt.length ? "#b71c1c" : "#1b5e20") + ";'>" + rawNegativeRowsRpt.length + "</div></div>";
     html += "</div>";
     if (!rawCountExactRpt) {
@@ -788,20 +790,11 @@ var Reports = React.memo(function (props) {
             if (!monthlyBD[m]) monthlyBD[m] = { rev: 0, cogs: 0, exp: 0 };
             monthlyBD[m].exp += e.amount;
           });
-          (state.rawMaterialUsages || []).forEach(function (u) {
-            var d = String(u && u.date || "");
-            if (!inR(d)) return;
-            var pr = state.products.find(function (x) {
-              return x && String(x.id) === String(u.productId);
-            });
-            if (!pr || String((pr.type || "")).toLowerCase() !== "raw_material") return;
-            var base = Number(u.qtyBase);
-            if (!isFinite(base) || base <= 0) return;
-            var uc = getLatestRawMaterialUnitCost(u.productId, d, state);
-            var rowCost = round2(base * uc);
-            var m = d.slice(0, 7);
+          var invDerMonthlyBD = deriveInventoryEconomics(state, null, {});
+          var kitchenByMonthBD = aggregateKitchenCostByMonthInRange(state, rf, rt, invDerMonthlyBD);
+          Object.keys(kitchenByMonthBD).forEach(function (m) {
             if (!monthlyBD[m]) monthlyBD[m] = { rev: 0, cogs: 0, exp: 0 };
-            monthlyBD[m].cogs += rowCost;
+            monthlyBD[m].cogs += kitchenByMonthBD[m];
           });
         }
 
@@ -1071,7 +1064,10 @@ var Reports = React.memo(function (props) {
                 <div style={{ background: "#fffbeb", borderRadius: 10, padding: "12px 14px", border: "1px solid #fde68a" }}>
                   <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Balance sheet (ledger)</div>
                   <div style={{ fontWeight: 800, fontSize: 14 }}>Assets {getCurrencySymbol()} {fmtNum(glBS.assets)}</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Liabilities {fmtNum(glBS.liabilities)} · Equity {fmtNum(glBS.equity)} {glBS.balanced ? "· ✓" : ""}</div>
+                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                    Liabilities {fmtNum(glBS.liabilities)} · Equity (book) {fmtNum(glBS.equity)}
+                    {(glBS.balancedWithEarnings !== undefined ? glBS.balancedWithEarnings : glBS.balanced) ? " · ✓ A=L+E+NI" : ""}
+                  </div>
                 </div>
               </div>
             </Card>
@@ -1679,8 +1675,11 @@ var Reports = React.memo(function (props) {
             )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 10, marginBottom: 10 }}>
               <StatCard money={false} label="Raw Materials" value={rawMaterialProductsRpt.length} accent={C.blue} icon="RM" sub={reportDate} />
-              <StatCard label="Consumed Cost" value={rawConsumedTotalCostRpt} accent={C.green} icon="Cost" sub={(rawCountExactRpt ? "calculated" : "waiting for count")} />
+              <StatCard label="Consumed Cost" value={rawConsumedReplayCostRpt} accent={C.green} icon="Cost" sub={(rawCountExactRpt ? "replay / GL kitchen" : "waiting for count")} />
               <StatCard money={false} label="Negative Warnings" value={rawNegativeRowsRpt.length} accent={rawNegativeRowsRpt.length ? C.red : C.green} icon={rawNegativeRowsRpt.length ? "!" : "OK"} sub="review if not expected" />
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.45 }}>
+              Cost total follows accounting replay / GL kitchen COGS (Dr {GL.COGS_KITCHEN}). Row “Consumed Cost” columns remain count × unit estimate for operational visibility and may differ from this total when timing diverges from usage replay.
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>

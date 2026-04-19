@@ -75,3 +75,21 @@ export function sumRawMaterialKitchenCostInRange(state, fromStr, toStr, invDerOp
   });
   return round2(total);
 }
+
+/**
+ * Kitchen COGS summed by calendar month (YYYY-MM) — same replay economics as GL 5005 / monthlyBD.
+ */
+export function aggregateKitchenCostByMonthInRange(state, fromStr, toStr, invDerOpt) {
+  var invDer = invDerOpt || deriveInventoryEconomics(state, null, {});
+  var byMonth = {};
+  (invDer.movements || []).forEach(function (mv) {
+    if (!mv || mv.referenceType !== "raw_material_usage") return;
+    if (!movementDateInRange(mv.date, fromStr, toStr)) return;
+    var d = String(mv.date || "");
+    var m = d.slice(0, 7);
+    if (!m || m.length < 7) return;
+    var tc = mv.totalCost != null ? round2(mv.totalCost) : round2((mv.qtyOut || 0) * round2(mv.unitCost || 0));
+    byMonth[m] = round2((byMonth[m] || 0) + tc);
+  });
+  return byMonth;
+}

@@ -62,6 +62,12 @@ export function runGoldenTests(ctx) {
       balanced: bs.balanced,
       difference: bs.difference,
       rhsTotal: bs.rhsTotal,
+      equityBase: bs.equityBase,
+      currentEarnings: bs.currentEarnings,
+      equityWithCurrentEarnings: bs.equityWithCurrentEarnings,
+      balancedWithEarnings: bs.balancedWithEarnings,
+      differenceWithEarnings: bs.differenceWithEarnings,
+      rhsTotalWithEarnings: bs.rhsTotalWithEarnings,
     },
   };
 

@@ -2196,7 +2196,8 @@ var commitGlJournalPersist = function (mergedLines, r, source, invDer) {
   }
 };
 
-var persistTechonGLJournal = function (source) {
+var persistTechonGLJournal = function (source, opts) {
+  opts = opts || {};
   if (isProductionLicenseSecretMissingBlock()) {
     appendGlAuditRow("journal_persist_blocked_missing_license_secret", { source: source });
     try {
@@ -2228,7 +2229,9 @@ var persistTechonGLJournal = function (source) {
       if (tcIsDevEnv()) try { console.warn("[TechonERP GL] Warnings - kept previous journal", r.warnings); } catch (e) {}
       return r;
     }
-    var merged = mergeRebuildWithImmutableHistory(prevLines, r.lines, uid);
+    var merged = opts.forceCanonical === true
+      ? (Array.isArray(r.lines) ? r.lines.slice() : [])
+      : mergeRebuildWithImmutableHistory(prevLines, r.lines, uid);
     var vf = validateJournalBalanced(merged);
     if (!vf.ok) {
       _coreStorageSet("tc3_journal_lines", prevLines);
@@ -4345,7 +4348,7 @@ var StartupOnboardingWizard = function (props) {
             return;
           }
           addAudit("Repair started", "inventory_layers", { source: "repair_layers" });
-          var r = persistTechonGLJournal("repair_layers");
+          var r = persistTechonGLJournal("repair_layers", { forceCanonical: true });
           var ok = r && r.validate && r.validate.ok && r.valid;
           addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, commitFailed: !!(r && r.commitFailed), warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
           if (ok) {
@@ -7014,29 +7017,18 @@ function App(props) {
                       return;
                     }
                     addAudit("Journal rebuild started", "manual_rebuild", {});
-                    var prevLines = S.get("tc3_journal_lines", []);
-                    var invDer = deriveInventoryEconomics(loadState(), S);
-                    var r = rebuildJournalFromState(loadState(), S, uid, invDer);
-                    if (!r.validate.ok || !r.valid) {
-                      showAlert("Journal rebuild failed validation - check console.");
-                      addAudit("Journal rebuild failed", "manual_rebuild", { validateOk: !!(r && r.validate && r.validate.ok), valid: !!(r && r.valid) });
+                    var r = persistTechonGLJournal("manual_rebuild", { forceCanonical: true });
+                    var ok = r && r.validate && r.validate.ok && r.valid;
+                    if (!ok) {
+                      addAudit("Journal rebuild failed", "manual_rebuild", {
+                        validateOk: !!(r && r.validate && r.validate.ok),
+                        valid: !!(r && r.valid),
+                        commitFailed: !!(r && r.commitFailed),
+                      });
+                      showAlert(r && r.commitFailed ? "Could not save the journal." : "Journal rebuild failed validation - check console.");
                       return r;
                     }
-                    var merged = mergeRebuildWithImmutableHistory(prevLines, r.lines, uid);
-                    var vf = validateJournalBalanced(merged);
-                    if (!vf.ok) {
-                      showAlert("Merged journal would be unbalanced - no changes saved.");
-                      addAudit("Journal rebuild aborted", "manual_rebuild", { reason: "merge_imbalance" });
-                      return r;
-                    }
-                    var crRebuild = commitGlJournalPersist(merged, r, "manual_rebuild", invDer);
-                    if (!crRebuild || !crRebuild.ok) {
-                      addAudit("Journal rebuild failed", "manual_rebuild", { reason: "commit_failed", error: crRebuild && crRebuild.error });
-                      if (tcIsDevEnv() && crRebuild && crRebuild.error) try { console.error("[TechonERP GL] manual_rebuild commit", crRebuild.error); } catch (e) {}
-                      showAlert("Could not save the journal.");
-                      return r;
-                    }
-                    addAudit("Journal rebuild completed", "manual_rebuild", { lineCount: (merged || []).length });
+                    addAudit("Journal rebuild completed", "manual_rebuild", { lineCount: (r.lines || []).length, forceCanonical: true });
                     setState(loadState());
                     showAlert("Journal rebuilt successfully.");
                     return r;
@@ -7066,7 +7058,7 @@ function App(props) {
                       return;
                     }
                     addAudit("Repair started", "inventory_layers", { source: "repair_layers" });
-                    var r = persistTechonGLJournal("repair_layers");
+                    var r = persistTechonGLJournal("repair_layers", { forceCanonical: true });
                     var ok = r && r.validate && r.validate.ok && r.valid;
                     addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, commitFailed: !!(r && r.commitFailed), warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
                     if (ok) {
@@ -7426,5 +7418,4 @@ var WrappedApp = function (props) {
   return React.createElement(AppErrorBoundary, null, React.createElement(App, props));
 };
 export default WrappedApp;
-
 

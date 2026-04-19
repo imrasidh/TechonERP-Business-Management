@@ -904,7 +904,15 @@ var Accounts = function (props) {
       {/* ── GENERAL LEDGER / TRIAL BALANCE (double-entry) ── */}
       {atab === "gledger" && (function () {
         var tb = typeof getTrialBalanceSnapshot === "function" ? getTrialBalanceSnapshot() : { rows: [], totalDebit: 0, totalCredit: 0, balanced: false };
-        var bs = typeof getBalanceSheetFromLedger === "function" ? getBalanceSheetFromLedger(null) : { assets: 0, liabilities: 0, equity: 0, balanced: false, difference: 0 };
+        var bs = typeof getBalanceSheetFromLedger === "function" ? getBalanceSheetFromLedger(null) : {
+          assets: 0,
+          liabilities: 0,
+          equity: 0,
+          balanced: false,
+          difference: 0,
+          balancedWithEarnings: false,
+          differenceWithEarnings: 0,
+        };
         var pl = typeof getProfitAndLossFromLedger === "function" ? getProfitAndLossFromLedger(null, null) : { income: 0, expenses: 0, net: 0 };
         var glErr = S.get("tc3_gl_last_error", null);
         var glAudit = S.get("tc3_gl_audit", []);
@@ -918,7 +926,8 @@ var Accounts = function (props) {
         var snapListRaw = S.get("tc3_financial_snapshots", []);
         var snapsRecent = Array.isArray(snapListRaw) ? snapListRaw.slice(-15).reverse() : [];
         var acctOpts = tb.rows && tb.rows.length ? tb.rows : [];
-        var bsDiffAmt = Math.abs(bs.difference != null ? bs.difference : 0);
+        var bsEqBal = bs.balancedWithEarnings !== undefined ? bs.balancedWithEarnings : bs.balanced;
+        var bsEqDiffAmt = Math.abs(bs.differenceWithEarnings != null ? bs.differenceWithEarnings : bs.difference != null ? bs.difference : 0);
         return (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <Card>
@@ -928,8 +937,8 @@ var Accounts = function (props) {
                 <span title="Debits equal credits across all GL accounts" style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, border: "1px solid " + (tb.balanced ? "#86efac" : "#fecaca"), background: tb.balanced ? "#f0fdf4" : "#fef2f2", color: tb.balanced ? "#166534" : "#991b1b" }}>
                   {tb.balanced ? "✓ Trial balance balanced" : "⚠ Trial balance mismatch"}
                 </span>
-                <span title="Assets = Liabilities + Equity" style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, border: "1px solid " + (bs.balanced ? "#86efac" : "#fdba74"), background: bs.balanced ? "#f0fdf4" : "#fffbeb", color: bs.balanced ? "#166534" : "#9a3412" }}>
-                  {bs.balanced ? "✓ Ledger balanced (A = L + E)" : "⚠ Balance sheet equation off by " + getCurrencySymbol() + fmtNum(bsDiffAmt)}
+                <span title="Assets = Liabilities + Equity (book) + cumulative ledger net income through date — display only" style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, border: "1px solid " + (bsEqBal ? "#86efac" : "#fdba74"), background: bsEqBal ? "#f0fdf4" : "#fffbeb", color: bsEqBal ? "#166534" : "#9a3412" }}>
+                  {bsEqBal ? "✓ Ledger balanced (A = L + E + NI)" : "⚠ Balance sheet equation off by " + getCurrencySymbol() + fmtNum(bsEqDiffAmt)}
                 </span>
               </div>
               {glErr && (
@@ -959,19 +968,19 @@ var Accounts = function (props) {
                   <div style={{ fontSize: 13, marginTop: 4 }}>Net {getCurrencySymbol()} {fmtNum(pl.net)}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>Income {fmtNum(pl.income)} · Exp {fmtNum(pl.expenses)}</div>
                 </div>
-                <div style={{ background: bs.balanced ? "#fefce8" : "#fff7ed", border: "1px solid " + (bs.balanced ? "#fde047" : "#fdba74"), borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ background: bsEqBal ? "#fefce8" : "#fff7ed", border: "1px solid " + (bsEqBal ? "#fde047" : "#fdba74"), borderRadius: 10, padding: "12px 14px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
                     <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase" }}>Balance sheet (ledger)</div>
-                    {bs.balanced ? (
-                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#dcfce7", color: "#166534", border: "1px solid #86efac" }}>✓ A = L + E</span>
+                    {bsEqBal ? (
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#dcfce7", color: "#166534", border: "1px solid #86efac" }}>✓ A = L + E + NI</span>
                     ) : (
-                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#ffedd5", color: "#9a3412", border: "1px solid #fdba74" }}>⚠ Δ {getCurrencySymbol()}{fmtNum(bsDiffAmt)}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#ffedd5", color: "#9a3412", border: "1px solid #fdba74" }}>⚠ Δ {getCurrencySymbol()}{fmtNum(bsEqDiffAmt)}</span>
                     )}
                   </div>
                   <div style={{ fontSize: 13, marginTop: 4 }}>Assets {getCurrencySymbol()} {fmtNum(bs.assets)}</div>
                   <div style={{ fontSize: 11, color: C.muted }}>
-                    Liab {fmtNum(bs.liabilities)} · Equity {fmtNum(bs.equity)}
-                    {!bs.balanced && <span style={{ color: "#c2410c", fontWeight: 700 }}> — Assets ≠ Liabilities + Equity</span>}
+                    Liab {fmtNum(bs.liabilities)} · Equity {fmtNum(bs.equity)} · NI {fmtNum(bs.currentEarnings != null ? bs.currentEarnings : 0)}
+                    {!bsEqBal && <span style={{ color: "#c2410c", fontWeight: 700 }}> — check rounding / opening balance</span>}
                   </div>
                 </div>
               </div>
