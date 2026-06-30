@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
 /* ─── CHEQUE REGISTER PAGE ────────────────────────────────────────────────── */
 var Cheques = React.memo(function (props) {
@@ -23,6 +25,8 @@ var Cheques = React.memo(function (props) {
   var TH = props.TH;
   var TR = props.TR;
   var TD = props.TD;
+  var usePager = props.usePager;
+  var Pager = props.Pager;
 
   var [tab, setTab] = useState("all");
   var [search, setSearch] = useState("");
@@ -31,7 +35,7 @@ var Cheques = React.memo(function (props) {
   var [addModal, setAddModal] = useState(null); /* "incoming" | "outgoing" */
   var [addForm, setAddForm] = useState({ chequeNo: "", bankName: "", amount: "", dueDate: today(), partyName: "", note: "", partyType: "customer" });
 
-  var cheques = (state.cheques || []).slice().reverse();
+  var cheques = sortNewestFirst(state.cheques || []);
   var todayStr = today();
 
   /* Status badge */
@@ -59,6 +63,7 @@ var Cheques = React.memo(function (props) {
       || (tab === "bounced" && ch.status === "Bounced");
     return matchQ && matchTab;
   });
+  var chqPager = usePager(filtered, LIST_PAGE_SIZE);
 
   /* Totals */
   var pendingOut = cheques.filter(function (c) { return c.type === "outgoing" && c.status === "Pending"; }).reduce(function (a, c) { return a + c.amount; }, 0);
@@ -264,7 +269,7 @@ var Cheques = React.memo(function (props) {
               <TH>Amount</TH><TH>Due Date</TH><TH>Status</TH><TH>Actions</TH>
             </tr></thead>
             <tbody>
-              {filtered.map(function (ch, i) {
+              {chqPager.slice.map(function (ch, i) {
                 var party = ch.type === "outgoing" ? (ch.supplierName || ch.partyName || "—") : (ch.customerName || ch.partyName || "—");
                 var linked = ch.type === "outgoing" ? (ch.purchaseNo || "—") : (ch.invoiceNo || "—");
                 var daysLeft = Math.ceil((new Date(ch.dueDate) - new Date(todayStr)) / 86400000);
@@ -286,24 +291,24 @@ var Cheques = React.memo(function (props) {
                       {ch.status === "Pending" && <div style={{ fontSize: 11, color: daysLeft < 0 ? C.red : daysLeft <= 7 ? C.orange : C.muted, fontWeight: 600 }}>{daysLeft < 0 ? Math.abs(daysLeft) + "d overdue" : daysLeft === 0 ? "Due today!" : daysLeft + "d left"}</div>}
                     </td>
                     <td style={{ padding: "10px 14px" }}><ChequeStatusBadge status={ch.status} due={ch.dueDate} /></td>
-                    <td style={{ padding: "6px 10px" }}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        {ch.status === "Pending" && (
+                    <td style={actBtnCellStyle}>
+                      <ActBtnGroup>
+                        {ch.status === "Pending" ? (
                           <React.Fragment>
-                            <Btn sm col="green" onClick={function () { setActionModal({ cheque: ch, action: "clear" }); }}>✅ Clear</Btn>
-                            <Btn sm col="red" onClick={function () { markBounced(ch); }}>↩ Bounce</Btn>
+                            <ActBtn tone="green" title="Clear cheque" onClick={function () { setActionModal({ cheque: ch, action: "clear" }); }}>✓</ActBtn>
+                            <ActBtn tone="red" title="Mark bounced" onClick={function () { markBounced(ch); }}>↩</ActBtn>
                           </React.Fragment>
-                        )}
-                        {ch.status === "Bounced" && !ch.replacedByChequeid && (
-                          <Btn sm col="blue" onClick={function () { setActionModal({ cheque: ch, action: "reissue_prompt" }); }}>🔄 Re-issue</Btn>
-                        )}
-                        {ch.status === "Bounced" && ch.replacedByChequeid && (
+                        ) : null}
+                        {ch.status === "Bounced" && !ch.replacedByChequeid ? (
+                          <ActBtn tone="blue" title="Re-issue cheque" onClick={function () { setActionModal({ cheque: ch, action: "reissue_prompt" }); }}>🔄</ActBtn>
+                        ) : null}
+                        {ch.status === "Bounced" && ch.replacedByChequeid ? (
                           <span style={{ fontSize: 11, color: C.muted }}>Re-issued</span>
-                        )}
-                        {!ch.purchaseId && !ch.saleId && (
-                          <Btn sm col="red" onClick={function () { deleteStandalone(ch.id); }}>✕</Btn>
-                        )}
-                      </div>
+                        ) : null}
+                        {!ch.purchaseId && !ch.saleId ? (
+                          <ActBtn tone="red" title="Delete standalone cheque" onClick={function () { deleteStandalone(ch.id); }}>✕</ActBtn>
+                        ) : null}
+                      </ActBtnGroup>
                     </td>
                   </TR>
                 );
@@ -314,6 +319,7 @@ var Cheques = React.memo(function (props) {
             </tbody>
           </table>
         </div>
+        <Pager pager={chqPager} />
       </Card>
 
       {/* ── Action Modal — Confirm Clear ── */}

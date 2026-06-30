@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { GL, DEFAULT_GL_CHART } from "../accounting/generalLedger.js";
+import { GL, DEFAULT_GL_CHART, sumAccount, signedBalanceForAccount } from "../accounting/generalLedger.js";
 import { round2 } from "../utils/moneyRound.js";
 import { buildReconAutoSuggest } from "../accounting/reconAutoSuggest.js";
 import { warnIfAggregateRoundingDrift } from "../accounting/roundingDrift.js";
@@ -13,8 +13,10 @@ import {
   sumRawMaterialKitchenCostInRange,
   sumRawMaterialUsageCostInRange,
 } from "../utils/ingredientUsageCost.js";
-import { deriveInventoryEconomics } from "../accounting/inventoryEngine.js";
+import { deriveInventoryEconomics, isInventoryReconcileOk } from "../accounting/inventoryEngine.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
+import { activeSales, activePurchases } from "../utils/voidInvoice.js";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 
 var Reports = React.memo(function (props) {
   var state = props.state;
@@ -155,19 +157,21 @@ var Reports = React.memo(function (props) {
   /* BUG1 FIX: Use getCashBalances() as authoritative cash figure (replaces stale manual formula) */
   var _rptBalances = getCashBalances(state);
   var cashInHand = round2(_rptBalances.total);
+  var liveSalesRpt = activeSales(state.sales);
+  var livePurchasesRpt = activePurchases(state.purchases);
   /* capital — used in overview and assets tabs */
   var capital = round2(state.settings.capitalInvested || 0);
-  var totalSalesIncome = round2(state.sales.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
-  var totalPurchasesPaid = round2(state.purchases.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0));
+  var totalSalesIncome = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
+  var totalPurchasesPaid = round2(livePurchasesRpt.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0));
   var totalExpenses = round2(state.expenses.reduce(function (a, e) { return a + e.amount; }, 0));
   var totalAssetsSpent = round2((state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0));
-  var invoicedCOGS = round2(getNetCOGS(state.sales, state.salesReturns)); /* Bug 3 fix: net COGS after returns */
+  var invoicedCOGS = round2(getNetCOGS(liveSalesRpt, state.salesReturns)); /* Bug 3 fix: net COGS after returns */
   var ingredientUsageCOGS = round2(sumRawMaterialKitchenCostInRange(state, null, null));
   var totalCOGS = round2(invoicedCOGS + ingredientUsageCOGS);
   /* sale.total is already reduced by returns, so totalRevenue IS netRevenue.
      Reconstruct grossRevenue by adding back the return amounts for display. */
-  var netRevenue = round2(state.sales.reduce(function (a, s) { return a + s.total; }, 0));
-  var totalTaxOnInvoices = round2(state.sales.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
+  var netRevenue = round2(liveSalesRpt.reduce(function (a, s) { return a + s.total; }, 0));
+  var totalTaxOnInvoices = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
   /* Sales returns: r.amount = retail value reversed; cash refunds tracked separately in getCashBalances via r.refundAmount */
   var totalSalesReturnAmt = round2((state.salesReturns || []).reduce(function (a, r) { return a + (r.amount || 0); }, 0));
   var totalPurchaseReturnAmt = round2((state.purchaseReturns || []).reduce(function (a, r) { return a + (r.amount || 0); }, 0));
@@ -182,7 +186,7 @@ var Reports = React.memo(function (props) {
   var totalReceivable = typeof getTotalReceivableDerived === "function"
     ? round2(getTotalReceivableDerived(state))
     : (function () {
-      var fromSales = state.sales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
+      var fromSales = liveSalesRpt.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
       var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
         var paid = (mr.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
         return a + Math.max(0, mr.amount - paid);
@@ -213,7 +217,7 @@ var Reports = React.memo(function (props) {
   }, 0));
   var activeRepairs = state.repairs.filter(function (r) { return r.status === "Repairing" || r.status === "Pending"; }).length;
 
-  var daySales = state.sales.filter(function (s) { return s.date === reportDate; });
+  var daySales = liveSalesRpt.filter(function (s) { return s.date === reportDate; });
   var daySalesTotal = round2(daySales.reduce(function (a, s) { return a + s.total; }, 0));
   var dayReturns = (state.salesReturns || []).filter(function (r) { return r.date === reportDate; });
   var dayInvoicedCOGS = round2(getNetCOGSForRange(daySales, dayReturns));
@@ -226,7 +230,7 @@ var Reports = React.memo(function (props) {
   var dayUnpaid = round2(daySales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0));
   var dayTaxCollected = round2(daySales.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
 
-  var monthSales = state.sales.filter(function (s) { return s.date.slice(0, 7) === reportMonth; });
+  var monthSales = liveSalesRpt.filter(function (s) { return s.date.slice(0, 7) === reportMonth; });
   var monthSalesTotal = round2(monthSales.reduce(function (a, s) { return a + s.total; }, 0));
   var monthReturns = (state.salesReturns || []).filter(function (r) { return r.date.slice(0, 7) === reportMonth; });
   var monthLastStr = (function () {
@@ -711,7 +715,7 @@ var Reports = React.memo(function (props) {
         var range = getRange(); var rf = range.from; var rt = range.to;
         var inR = function (d) { return (d || "") >= rf && (d || "") <= rt; };
 
-        var rSales = state.sales.filter(function (s) { return inR(s.date); });
+        var rSales = liveSalesRpt.filter(function (s) { return inR(s.date); });
         var rPurch = state.purchases.filter(function (p) { return inR(p.date); });
         var rExp = state.expenses.filter(function (e) { return inR(e.date); });
         var rRepairs = state.repairs.filter(function (r) { return inR(r.dateIn || r.date); });
@@ -1310,7 +1314,10 @@ var Reports = React.memo(function (props) {
         var rec = bundle && bundle.reconciliation ? bundle.reconciliation : null;
         var recent = bundle && bundle.recentGlInvLines ? bundle.recentGlInvLines : [];
         var drilldown = bundle && bundle.drilldown ? bundle.drilldown : null;
-        var mismatch = rec && !rec.ok;
+        var invReconSettings = state && state.settings ? state.settings : {};
+        var invReconOk = rec && isInventoryReconcileOk(rec, invReconSettings);
+        var mismatch = rec && !invReconOk;
+        var wacToleranceOnly = rec && !rec.ok && invReconOk;
         var debugReplay = (glDeveloperTools || (typeof localStorage !== "undefined" && localStorage.getItem("TC_DEBUG_INVENTORY_REPLAY") === "1")) && getInventoryReplayDebug;
         var replayResult = null;
         if (debugReplay && invReplayPid && invReplayFrom && invReplayTo) {
@@ -1507,10 +1514,12 @@ var Reports = React.memo(function (props) {
                     </div>
                   ) : (
                     <div style={{ padding: "10px 14px", borderRadius: 10, border: "1.5px solid #a7f3d0", background: "#ecfdf5", color: "#065f46", fontSize: 13 }}>
-                      Inventory valuation agrees with the general ledger (within tolerance).
+                      {wacToleranceOnly
+                        ? "Inventory valuation agrees with the general ledger (within WAC rounding tolerance — difference " + getCurrencySymbol() + " " + fmtNum(Math.abs(diffDisp)) + ")."
+                        : "Inventory valuation agrees with the general ledger (within tolerance)."}
                     </div>
                   )}
-                  {autoS && Math.abs(diffDisp) > 0.01 ? (
+                  {autoS && mismatch && Math.abs(diffDisp) > 0.01 ? (
                     <div style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid " + C.border, background: "#fafbff", fontSize: 12 }}>
                       <div style={{ fontWeight: 800, marginBottom: 8, color: C.textMd }}>Suggested checks (informational — nothing is posted)</div>
                       <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
@@ -1919,11 +1928,11 @@ var Reports = React.memo(function (props) {
                           </td>
                           <td style={{ padding: "10px 12px", fontWeight: 800, color: C.orange, fontSize: 14 }}>{getCurrencySymbol()} {fmtNum(a.amount)}</td>
                           <TD color={C.muted}>{a.note || "—"}</TD>
-                          <td style={{ padding: "8px 10px" }}>
-                            <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
-                              <button onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("edit"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }} style={{ padding: "5px 12px", background: C.accentSoft, color: C.accent, border: "1.5px solid " + C.accent, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Edit</button>
-                              <button onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("delete"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }} style={{ padding: "5px 12px", background: C.dangerSoft, color: C.red, border: "1.5px solid " + C.red, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Delete</button>
-                            </div>
+                          <td style={actBtnCellStyle}>
+                            <ActBtnGroup>
+                              <ActBtn tone="blue" title="Edit asset" onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("edit"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }}>✎</ActBtn>
+                              <ActBtn tone="red" title="Delete asset" onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("delete"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }}>✕</ActBtn>
+                            </ActBtnGroup>
                           </td>
                         </TR>
                       );
@@ -2094,39 +2103,64 @@ var Reports = React.memo(function (props) {
         var printedOn = new Date().toLocaleString();
 
         /* ── ASSETS SIDE ── */
-        /* Current Assets */
-        var bsCash = cashInHand;
-        var bsReceivables = totalReceivable;
-        var bsStock = stockCostValue;
-        var bsCurrentAssets = bsCash + bsReceivables + bsStock;
+        var journalLinesBs = S.get("tc3_journal_lines", []) || [];
+        var useLedgerBs = journalLinesBs.length > 0 && glBS;
+        var ledgerAcctBal = function (acctId) {
+          var chartBs = S.get("tc3_gl_accounts", DEFAULT_GL_CHART) || DEFAULT_GL_CHART;
+          var rowBs = chartBs.find(function (a) { return a.id === acctId; }) || { normal: "debit" };
+          var sBs = sumAccount(journalLinesBs, acctId);
+          return signedBalanceForAccount(rowBs, sBs.debit, sBs.credit);
+        };
 
-        /* Fixed Assets */
-        var bsFixedAssets = totalAssetsSpent;
+        var bsCash;
+        var bsReceivables;
+        var bsStock;
+        var bsCurrentAssets;
+        var bsFixedAssets;
+        var bsTotalAssets;
+        var bsPayables;
+        var bsTotalLiabilities;
+        var bsCapital;
+        var bsRetainedEarnings;
+        var bsTotalEquity;
+        var bsBalanced;
 
-        /* Total Assets */
-        var bsTotalAssets = bsCurrentAssets + bsFixedAssets;
-
-        /* ── LIABILITIES SIDE ── */
-        /* Current Liabilities */
-        var bsPayables = totalPayable;
-
-        /* Total Liabilities */
-        var bsTotalLiabilities = bsPayables;
-
-        /* ── OWNER'S EQUITY ── */
-        /* Theoretical stock = what stock SHOULD be based on all recorded transactions.
-           Any difference vs actual stock catches direct edits, damages, deletions and WAC rounding in one shot. */
-        var obSnap = S.get("tc3_openBal", null);
-        var obStockVal = (obSnap && obSnap.completed) ? (obSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
-        var totalPurchasesVal = state.purchases.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
-        var totalPurchaseReturnsVal = (state.purchaseReturns || []).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
-        var theoreticalStock = obStockVal + totalPurchasesVal - totalCOGS - totalPurchaseReturnsVal;
-        var manualStockAdjustments = stockCostValue - theoreticalStock;
-        var totalProfitDist = S.get("tc3_profitDist", []).reduce(function (a, pd) { return a + pd.amount; }, 0);
-        var bsCapital = capital;
-        var bsRetainedEarnings = totalProfit - totalExpenses - totalProfitDist + manualStockAdjustments;
-        var bsTotalEquity = bsCapital + bsRetainedEarnings;
-        var bsBalanced = Math.abs(bsTotalAssets - (bsTotalLiabilities + bsTotalEquity)) < 1;
+        if (useLedgerBs) {
+          var rptBalBs = getCashBalances(state);
+          bsCash = round2(rptBalBs.total);
+          bsReceivables = round2(ledgerAcctBal(GL.AR));
+          bsStock = round2(ledgerAcctBal(GL.INV));
+          bsFixedAssets = round2(ledgerAcctBal(GL.FIXED));
+          bsCurrentAssets = round2(bsCash + bsReceivables + bsStock);
+          bsTotalAssets = round2(glBS.assets);
+          bsPayables = round2(ledgerAcctBal(GL.AP));
+          bsTotalLiabilities = round2(glBS.liabilities);
+          bsCapital = round2(ledgerAcctBal(GL.EQUITY));
+          bsRetainedEarnings = round2(glBS.currentEarnings != null ? glBS.currentEarnings : 0);
+          bsTotalEquity = round2(glBS.equityWithCurrentEarnings != null ? glBS.equityWithCurrentEarnings : bsCapital + bsRetainedEarnings);
+          bsBalanced = !!(glBS.balancedWithEarnings !== undefined ? glBS.balancedWithEarnings : glBS.balanced);
+        } else {
+          /* Legacy manual balance sheet when journal is empty */
+          bsCash = cashInHand;
+          bsReceivables = totalReceivable;
+          bsStock = stockCostValue;
+          bsCurrentAssets = bsCash + bsReceivables + bsStock;
+          bsFixedAssets = totalAssetsSpent;
+          bsTotalAssets = bsCurrentAssets + bsFixedAssets;
+          bsPayables = totalPayable;
+          bsTotalLiabilities = bsPayables;
+          var obSnap = S.get("tc3_openBal", null);
+          var obStockVal = (obSnap && obSnap.completed) ? (obSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
+          var totalPurchasesVal = state.purchases.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
+          var totalPurchaseReturnsVal = (state.purchaseReturns || []).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
+          var theoreticalStock = obStockVal + totalPurchasesVal - totalCOGS - totalPurchaseReturnsVal;
+          var manualStockAdjustments = stockCostValue - theoreticalStock;
+          var totalProfitDist = S.get("tc3_profitDist", []).reduce(function (a, pd) { return a + pd.amount; }, 0);
+          bsCapital = capital;
+          bsRetainedEarnings = totalProfit - totalExpenses - totalProfitDist + manualStockAdjustments;
+          bsTotalEquity = bsCapital + bsRetainedEarnings;
+          bsBalanced = Math.abs(bsTotalAssets - (bsTotalLiabilities + bsTotalEquity)) < 1;
+        }
 
         /* ── Row helper for on-screen ── */
         var BSRow = function (p) {
@@ -2297,15 +2331,16 @@ var Reports = React.memo(function (props) {
                 <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Total Assets minus Total Liabilities</div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 32, fontWeight: 900, color: bsTotalEquity >= 0 ? C.green : C.red }}>{cur} {fmtNum(Math.abs(bsTotalEquity))}</div>
-                {bsTotalEquity < 0 && <div style={{ fontSize: 12, color: C.red, fontWeight: 700, marginTop: 2 }}>⚠️ Liabilities exceed assets — business is in deficit</div>}
-                {bsTotalEquity >= 0 && <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginTop: 2 }}>✅ Business has positive equity</div>}
+                <div style={{ fontSize: 32, fontWeight: 900, color: bsTotalEquity >= 0 ? C.green : C.red }}>{cur} {fmtNum(bsTotalEquity)}</div>
+                {bsTotalEquity < 0 && <div style={{ fontSize: 12, color: C.red, fontWeight: 700, marginTop: 2 }}>⚠️ Owner's equity is negative — review losses and distributions</div>}
+                {bsTotalEquity >= 0 && bsTotalAssets >= bsTotalLiabilities && <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginTop: 2 }}>✅ Business has positive equity</div>}
+                {bsTotalEquity >= 0 && bsTotalAssets < bsTotalLiabilities && <div style={{ fontSize: 12, color: "#92400e", fontWeight: 700, marginTop: 2 }}>⚠️ Liabilities exceed total assets</div>}
               </div>
             </div>
 
             {/* ── BALANCE CHECK ── */}
             <div style={{ textAlign: "center", padding: "10px 14px", borderRadius: 8, background: bsBalanced ? "#e6f7f2" : "#fef9c3", border: "1px solid " + (bsBalanced ? "#9ee8ce" : "#fde68a"), fontSize: 12, fontWeight: 700, color: bsBalanced ? C.green : "#92400e" }}>
-              {bsBalanced ? "✅ Balance Sheet is balanced — Assets = Liabilities + Equity" : "⚠️ Minor rounding difference detected — figures are correct"}
+              {bsBalanced ? "✅ Balance Sheet is balanced — Assets = Liabilities + Equity" : (useLedgerBs ? "⚠️ Ledger balance sheet equation is off — rebuild journal in Accounts → GL" : "⚠️ Manual balance sheet does not tie — enable GL or rebuild journal")}
             </div>
           </div>
         );
@@ -2424,7 +2459,11 @@ var Reports = React.memo(function (props) {
             return a + deriveLineStockValue(it);
           }, 0);
           var returnsSum = (state.purchaseReturns || []).filter(function (r) { return r.purchaseId === p.id; })
-            .reduce(function (a, r) { return a + (r.amount || 0); }, 0);
+            .reduce(function (a, r) {
+              if (r.returnGross != null && !isNaN(parseFloat(r.returnGross))) return a + parseFloat(r.returnGross);
+              if (r.returnTax != null && !isNaN(parseFloat(r.returnTax))) return a + round2((r.amount || 0) + parseFloat(r.returnTax));
+              return a + (r.amount || 0);
+            }, 0);
           var expectedPur = Math.max(0, integrityExpectedGrand(p, itemsSum) - returnsSum);
           var actualPur = integrityStoredGrand(p);
           if (Math.abs(expectedPur - actualPur) > INT_TOL) {
@@ -2539,8 +2578,10 @@ var Reports = React.memo(function (props) {
 
         /* ── CHECK 11: Negative cash balance ── */
         var balances = getCashBalances(state);
-        if (balances.cash < -1) {
-          issues.push({ label: "Negative Cash Balance", count: 1, detail: "Cash drawer shows " + cur + " " + fmtNum(balances.cash) + " — check for missing payment entries", severity: "error" });
+        if (balances.cash < -1 && balances.total < -1) {
+          issues.push({ label: "Negative Cash & Bank Balance", count: 1, detail: "Combined cash and bank show " + cur + " " + fmtNum(balances.total) + " — check for missing payment entries", severity: "error" });
+        } else if (balances.cash < -1) {
+          warnings.push({ label: "Negative Cash Drawer (Bank Available)", count: 1, detail: "Cash drawer " + cur + " " + fmtNum(balances.cash) + " but cash+bank total is " + cur + " " + fmtNum(balances.total) + " — payments may be coded Cash instead of Bank", severity: "warn" });
         } else if (balances.bank < -1) {
           warnings.push({ label: "Negative Bank Balance", count: 1, detail: "Bank account shows " + cur + " " + fmtNum(balances.bank) + " — check for missing deposit entries", severity: "warn" });
         } else {

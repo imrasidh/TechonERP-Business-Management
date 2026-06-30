@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE } from "../utils/listPage.js";
 
 var Customers = function (props) {
   var state = props.state;
@@ -35,7 +37,7 @@ var Customers = function (props) {
     return !q || c.name.toLowerCase().includes(q) || (c.phone || "").includes(q) || (c.address || "").toLowerCase().includes(q);
   });
   var custDupNameKeys = getDuplicateNormalizedNameKeys(state.customers);
-  var custPager = usePager(filteredCusts, 50);
+  var custPager = usePager(filteredCusts, LIST_PAGE_SIZE);
   var saveNew = function () {
     if (!f.name) return;
     if (f.phone && state.customers.find(function (c) { return c.phone === f.phone; })) {
@@ -81,9 +83,11 @@ var Customers = function (props) {
                   <TD bold>{c.name}{dupR ? <span title="Duplicate name exists"> ⚠️</span> : null}</TD><TD>{c.phone}</TD><TD>{c.address}</TD>
                   <TD color={(c.credit || 0) > 0 ? C.red : C.muted}>{getCurrencySymbol()} {fmtNum(c.credit || 0)}</TD>
                   <TD color={C.blue}>{getCurrencySymbol()} {fmtNum(c.totalSpent || 0)}</TD>
-                  <td style={{ padding: "9px 12px", display: "flex", gap: 6 }}>
-                    <Btn sm col="cyan" onClick={function () { setEditCust({ id: c.id, name: c.name, phone: c.phone || "", address: c.address || "" }); }}>Edit</Btn>
-                    <Btn sm col="gray" onClick={function () { setSel(c); }}>View</Btn>
+                  <td style={actBtnCellStyle}>
+                    <ActBtnGroup align="left">
+                      <ActBtn tone="blue" title="Edit customer" onClick={function () { setEditCust({ id: c.id, name: c.name, phone: c.phone || "", address: c.address || "" }); }}>✎</ActBtn>
+                      <ActBtn tone="cyan" title="View history" onClick={function () { setSel(c); }}>🧾</ActBtn>
+                    </ActBtnGroup>
                   </td>
                 </TR>
               );

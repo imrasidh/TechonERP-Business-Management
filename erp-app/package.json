@@ -16,6 +16,7 @@
     "backfill:raw-material-pricing": "node scripts/raw-material-pricing-backfill.mjs",
     "test:accounting": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/accounting-tests/run.mjs",
     "test:erp": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/erp-tests/run.mjs",
+    "seed:demo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/seed-demo-data.mjs",
     "audit:health": "node scripts/audit-health.mjs",
     "ci:scan-secrets": "node scripts/ci-scan-secrets.mjs",
     "release:check": "npm run ci",

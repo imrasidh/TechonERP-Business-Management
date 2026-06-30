@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { validateExtraUnits, buildUnitsPersistFields, formExtraUnitsFromProduct, getProductUnitRows } from "../units/productUnits.js";
 import {
   RAW_MATERIAL_PRICE_COST_HINT,
@@ -6,6 +6,12 @@ import {
   rawMaterialEnteredLooksLikePackTotal,
   rawMaterialPackPricingConfirmMessage,
 } from "../utils/rawMaterialPricingGuard.js";
+import { productMatchesSearch } from "../utils/productSearch.js";
+import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
+import ProductNameDuplicateHint from "../components/ProductNameDuplicateHint.jsx";
+import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE } from "../utils/listPage.js";
 
 var Inventory = React.memo(function (props) {
   var state = props.state;
@@ -60,7 +66,7 @@ var Inventory = React.memo(function (props) {
     var handler = function (e) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         e.preventDefault();
-        setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: false, comment_label: "" });
+        setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
       }
     };
     window.addEventListener("keydown", handler);
@@ -111,6 +117,11 @@ var Inventory = React.memo(function (props) {
   /* FIX 8: Exclude inactive (soft-deleted) products from all inventory views and stats.
      Inactive products still exist in state.products so historical records remain intact. */
   var products = state.products.filter(function (p) { return p.status !== "inactive"; });
+  var newProductNameMatch = useMemo(function () {
+    if (!newP || !String(newP.name || "").trim()) return null;
+    return evaluateProductNameMatch(newP.name, state.products, null);
+  }, [newP, state.products]);
+  var newProductNameExactDup = !!(newProductNameMatch && newProductNameMatch.type === "exact");
   var getProductType = function (p) { return String((p && p.type) || "stock").toLowerCase(); };
   var isServiceProduct = function (p) { return getProductType(p) === "service"; };
   var isRawMaterialProduct = function (p) { return getProductType(p) === "raw_material"; };
@@ -229,7 +240,7 @@ var Inventory = React.memo(function (props) {
 
   var rows = baseRows.filter(function (p) {
     var q = search.toLowerCase();
-    var matchQ = !q || p.name.toLowerCase().includes(q) || (p.barcode || "").toLowerCase().includes(q) || (p.category || "").toLowerCase().includes(q);
+    var matchQ = !q || productMatchesSearch(p, q);
     var matchCat = catFilter === "All" || p.category === catFilter;
     var isService = isServiceProduct(p);
     var matchStock = stockFilter === "All"
@@ -240,20 +251,17 @@ var Inventory = React.memo(function (props) {
     return matchQ && matchCat && matchStock;
   });
 
-  var invPager = usePager(rows, 50);
+  var invPager = usePager(rows, LIST_PAGE_SIZE);
   var rawMaterialProducts = products.filter(isRawMaterialProduct);
   var rawMatSearchQ = rmSearch.trim().toLowerCase();
   var rawMaterialFiltered = !rawMatSearchQ
     ? rawMaterialProducts
     : rawMaterialProducts.filter(function (p) {
-      return (p.name || "").toLowerCase().includes(rawMatSearchQ)
-        || String(p.barcode || "").toLowerCase().includes(rawMatSearchQ)
-        || String(p.category || "").toLowerCase().includes(rawMatSearchQ);
+      return productMatchesSearch(p, rawMatSearchQ);
     });
   var rmAutocompleteSuggestions = rawMatSearchQ
     ? rawMaterialProducts.filter(function (p) {
-      return (p.name || "").toLowerCase().includes(rawMatSearchQ)
-        || String(p.barcode || "").toLowerCase().includes(rawMatSearchQ);
+      return productMatchesSearch(p, rawMatSearchQ);
     }).slice(0, 12)
     : [];
   var rawCountRecords = Array.isArray(state.rawMaterialCounts) ? state.rawMaterialCounts : [];
@@ -316,7 +324,7 @@ var Inventory = React.memo(function (props) {
     }
     var booksClosed = state.settings && state.settings.booksClosedDate;
     if (booksClosed && String(rmUseDate || "") < String(booksClosed) && typeof window !== "undefined" && !window._tcAccountingPeriodAdmin) {
-      showAlert("Books are closed through " + fmtDateFull(booksClosed) + ". Choose a date on or after the books closed date, or unlock Admin accounting (PIN) under Settings → Period & GL.");
+      showAlert("Books are closed through " + fmtDateFull(booksClosed) + ". Choose a date on or after the books closed date, or unlock Admin accounting (PIN) under Settings → Accounting.");
       return;
     }
     var qtyEntered = Number(rmUseQty);
@@ -465,8 +473,8 @@ var Inventory = React.memo(function (props) {
           price: parseFloat(newP.price) || 0,
           stock: parseInt(newP.stock) || 0,
           damaged: 0,
-          require_comment: !!newP.require_comment,
-          comment_label: String(newP.comment_label || "").trim(),
+          require_comment: true,
+          comment_label: String(newP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         },
         unitFields
       );
@@ -488,8 +496,9 @@ var Inventory = React.memo(function (props) {
       }
       performNewSave();
     };
-    if (nameCheck && nameCheck.type === "similar") {
-      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + nameStr + "\" as a new product?", maybeGuardThenNewSave);
+    if (nameCheck && (nameCheck.type === "likely_same" || nameCheck.type === "reordered")) {
+      var dupNames = (nameCheck.matches || []).map(function (m) { return "\"" + m.name + "\""; }).join(", ");
+      showConfirm("This looks like a product you already have:\n" + dupNames + "\n\nCreate \"" + nameStr + "\" as a new product anyway?", maybeGuardThenNewSave);
     } else {
       maybeGuardThenNewSave();
     }
@@ -529,8 +538,8 @@ var Inventory = React.memo(function (props) {
               cost: parseFloat(editP.cost) || 0,
               price: parseFloat(editP.price) || 0,
               stock: origStock,
-              require_comment: !!editP.require_comment,
-              comment_label: String(editP.comment_label || "").trim(),
+              require_comment: true,
+              comment_label: String(editP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
             }, unitFieldsEdit)
           : p;
       });
@@ -600,12 +609,76 @@ var Inventory = React.memo(function (props) {
 
   var ITABS = [["overview", "Overview"], ["products", "Products"], ["rawcount", "Daily count"], ["damaged", "Damaged"], ["history", "Log"]];
 
-  return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+  var invTabBtn = function (id, label) {
+    var active = itab === id;
+    return (
+      <button type="button" key={id} onClick={function () { setItab(id); }}
+        style={{
+          padding: "7px 14px", borderRadius: 8, border: "none",
+          background: active ? "#fff" : "transparent",
+          color: active ? C.accent : C.muted,
+          fontWeight: active ? 700 : 600,
+          fontSize: 12.5,
+          cursor: "pointer",
+          boxShadow: active ? "0 1px 4px rgba(15,23,42,0.08)" : "none",
+          fontFamily: "inherit",
+          whiteSpace: "nowrap",
+        }}>{label}</button>
+    );
+  };
 
-      {/* -- TOP STAT CARDS (hidden on simplified Daily count) -- */}
-      {itab !== "rawcount" && (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
+  var InvEmpty = function (p) {
+    return (
+      <div style={{ padding: "32px 20px", textAlign: "center" }}>
+        <div style={{ width: 48, height: 48, borderRadius: 12, background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", fontSize: 22, opacity: 0.85 }}>{p.icon || "📦"}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 4 }}>{p.title}</div>
+        {p.sub ? <div style={{ fontSize: 12, color: C.muted, maxWidth: 300, margin: "0 auto", lineHeight: 1.45 }}>{p.sub}</div> : null}
+        {p.action || null}
+      </div>
+    );
+  };
+
+  var overviewKpis = [
+    { label: "Products", value: String(totalProducts), sub: fmtSumQty(totalStockUnits) + " units on hand", accent: C.blue },
+    { label: "Retail value", value: getCurrencySymbol() + " " + fmtNum(stockRetailValue), sub: "At selling price", accent: C.purple },
+    { label: "Cost value", value: getCurrencySymbol() + " " + fmtNum(stockCostValue), sub: "Inventory at cost", accent: "#6366f1" },
+    { label: "Potential profit", value: getCurrencySymbol() + " " + fmtNum(potentialProfit), sub: avgMargin == null ? "No margin data yet" : ("Avg margin " + avgMargin + "%"), accent: potentialProfit >= 0 ? C.green : C.red },
+  ];
+
+  var stockHealthRows = [
+    { label: "In stock", val: stockProducts.filter(function (p) { return (p.stock || 0) > 5; }).length, color: C.green },
+    { label: "Low stock", val: lowStock, color: C.amber },
+    { label: "Out of stock", val: outOfStock, color: C.red },
+    { label: "Has damage", val: stockProducts.filter(function (p) { return (p.damaged || 0) > 0; }).length, color: C.orange },
+  ];
+
+  var openAddProduct = function () {
+    setNewP(null);
+    setTimeout(function () {
+      setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+    }, 30);
+  };
+
+  return (
+    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+      {/* -- Toolbar: tabs + primary action -- */}
+      <div style={{
+        background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0",
+        padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+        boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
+      }}>
+        <div style={{ display: "flex", gap: 4, background: "#f1f5f9", borderRadius: 10, padding: 4, flexWrap: "wrap" }}>
+          {ITABS.map(function (t) { return invTabBtn(t[0], t[1]); })}
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+          <Btn sm col="cyan" onClick={openAddProduct}>+ Add Product</Btn>
+        </div>
+      </div>
+
+      {/* -- KPI strip on list tabs (overview has its own unified strip) -- */}
+      {itab !== "rawcount" && itab !== "overview" && (
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
         <StatCard money={false} label="Total Products" value={totalProducts} accent={C.blue} icon="Inventory" sub={fmtSumQty(totalStockUnits) + " units in stock"} />
         <StatCard label="Retail Stock Value" value={stockRetailValue} accent={C.purple} icon="Money" sub={"Cost: " + getCurrencySymbol() + " " + fmtNum(stockCostValue)} />
         <StatCard label="Potential Profit" value={potentialProfit} accent={potentialProfit >= 0 ? C.green : C.red} icon="Trend" sub={avgMargin == null ? "Avg margin: -" : ("Avg margin: " + avgMargin + "%")} />
@@ -613,72 +686,123 @@ var Inventory = React.memo(function (props) {
       </div>
       )}
 
-      {/* -- TABS -- */}
-      <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border }}>
-        {ITABS.map(function (t) {
-          return <button key={t[0]} onClick={function () { setItab(t[0]); }} style={{ padding: "10px 18px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (itab === t[0] ? C.border : "transparent"), borderBottom: itab === t[0] ? "2px solid #fff" : "none", background: itab === t[0] ? "#fff" : "transparent", color: itab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: itab === t[0] ? -2 : 0 }}>{t[1]}</button>;
-        })}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center", paddingBottom: 6 }}>
-          <Btn sm col="cyan" onClick={function () { setNewP(null); setTimeout(function () { setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: false, comment_label: "" }); }, 30); }}>+ Add Product</Btn>
-        </div>
-      </div>
-
       {/* -- OVERVIEW TAB -- */}
       {itab === "overview" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
-            {/* Stock Value Breakdown */}
-            <div style={{ background: "#fff", borderRadius: 14, padding: "20px 22px", border: "1.5px solid " + C.border, boxShadow: C.shadowCard, gridColumn: "span 2" }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16 }}>Stock Value Breakdown</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Unified KPI strip */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
+            background: "#fff",
+            borderRadius: 12,
+            border: "1px solid #e2e8f0",
+            overflow: "hidden",
+            boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
+          }}>
+            {overviewKpis.map(function (k, i) {
+              return (
+                <div key={k.label} style={{
+                  padding: "18px 20px",
+                  borderRight: i < overviewKpis.length - 1 ? "1px solid #f1f5f9" : "none",
+                  position: "relative",
+                }}>
+                  <div style={{ position: "absolute", top: 0, left: 0, width: 3, height: "100%", background: k.accent, opacity: 0.85 }} />
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 6, letterSpacing: "0.02em" }}>{k.label}</div>
+                  <div style={{ fontWeight: 800, fontSize: 22, color: "#0f172a", letterSpacing: "-0.03em", lineHeight: 1.15 }}>{k.value}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 5, fontWeight: 500 }}>{k.sub}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.6fr) minmax(260px,1fr)", gap: 16, alignItems: "stretch" }}>
+            {/* Value breakdown */}
+            <div style={{ background: "#fff", borderRadius: 12, padding: "20px 22px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)" }}>
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 16, gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>Stock valuation</div>
+                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Retail, cost, margin and damage at a glance</div>
+                </div>
+                {damagedValue > 0 ? (
+                  <span style={{ fontSize: 11, fontWeight: 700, color: C.orange, background: "#fff7ed", padding: "4px 10px", borderRadius: 20, border: "1px solid #fed7aa" }}>
+                    {getCurrencySymbol()} {fmtNum(damagedValue)} damaged
+                  </span>
+                ) : null}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
                 {[
-                  { title: "Retail value", val: stockRetailValue, color: C.blue, sub: "At current sell prices (list)" },
-                  { title: "Inventory at cost", val: stockCostValue, color: C.purple, sub: "Weighted avg / purchase cost on hand" },
-                  { title: "Margin if sold", val: potentialProfit, color: potentialProfit >= 0 ? C.green : C.red, sub: "Retail value minus cost (all stock)" },
-                  { title: "Damage at cost", val: damagedValue, color: C.orange, sub: "Damaged units valued at cost" }
+                  { title: "Retail value", val: stockRetailValue, color: C.blue },
+                  { title: "At cost", val: stockCostValue, color: "#6366f1" },
+                  { title: "Margin", val: potentialProfit, color: potentialProfit >= 0 ? C.green : C.red },
+                  { title: "Damage cost", val: damagedValue, color: C.orange },
                 ].map(function (s) {
                   return (
-                    <div key={s.title} style={{ background: "#f7f9ff", borderRadius: 10, padding: "14px 16px", borderLeft: "4px solid " + s.color }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>{s.title}</div>
-                      <div style={{ fontWeight: 900, fontSize: 20, color: s.color, letterSpacing: "-0.02em" }}>{getCurrencySymbol()} {fmtNum(s.val)}</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.35 }}>{s.sub}</div>
+                    <div key={s.title} style={{ background: "#f8fafc", borderRadius: 10, padding: "14px 16px", border: "1px solid #eef2f6" }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 6 }}>{s.title}</div>
+                      <div style={{ fontWeight: 800, fontSize: 18, color: s.color, letterSpacing: "-0.02em" }}>{getCurrencySymbol()} {fmtNum(s.val)}</div>
                     </div>
                   );
                 })}
               </div>
             </div>
 
-            {/* Stock Health */}
-            <div style={{ background: "#fff", borderRadius: 14, padding: "20px 22px", border: "1.5px solid " + C.border, boxShadow: C.shadowCard }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 16 }}>Stock Health</div>
-              {[
-                { label: "In Stock", val: stockProducts.filter(function (p) { return (p.stock || 0) > 5; }).length, color: C.green, total: stockProducts.length },
-                { label: "Low Stock (<=5)", val: lowStock, color: C.amber, total: stockProducts.length },
-                { label: "Out of Stock", val: outOfStock, color: C.red, total: stockProducts.length },
-                { label: "Has Damage", val: stockProducts.filter(function (p) { return (p.damaged || 0) > 0; }).length, color: C.orange, total: stockProducts.length }
-              ].map(function (s) {
-                var pct = s.total > 0 ? Math.round(s.val / s.total * 100) : 0;
+            {/* Stock health */}
+            <div style={{ background: "#fff", borderRadius: 12, padding: "20px 22px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)" }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>Stock health</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 16 }}>{stockProducts.length} tracked products</div>
+              {stockHealthRows.map(function (s) {
+                var pct = stockProducts.length > 0 ? Math.round(s.val / stockProducts.length * 100) : 0;
                 return (
-                  <div key={s.label} style={{ marginBottom: 12 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-                      <span style={{ color: C.textMd }}>{s.label}</span>
-                      <span style={{ color: s.color, fontWeight: 800 }}>{s.val} <span style={{ color: C.muted, fontWeight: 500 }}>({pct}%)</span></span>
+                  <div key={s.label} style={{ marginBottom: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                      <span style={{ color: "#475569" }}>{s.label}</span>
+                      <span style={{ color: s.color, fontWeight: 800 }}>{s.val}<span style={{ color: "#94a3b8", fontWeight: 500 }}> · {pct}%</span></span>
                     </div>
-                    <div style={{ height: 6, background: C.border, borderRadius: 3 }}>
-                      <div style={{ width: pct + "%", height: "100%", background: s.color, borderRadius: 3, transition: "width .4s" }}></div>
+                    <div style={{ height: 5, background: "#f1f5f9", borderRadius: 99, overflow: "hidden" }}>
+                      <div style={{ width: Math.max(pct, s.val > 0 ? 4 : 0) + "%", height: "100%", background: s.color, borderRadius: 99, transition: "width .35s ease" }} />
                     </div>
                   </div>
                 );
               })}
+              {(outOfStock > 0 || lowStock > 0) ? (
+                <button type="button" onClick={function () { setItab("products"); setStockFilter(outOfStock > 0 ? "Out of Stock" : "Low Stock"); }}
+                  style={{ marginTop: 4, width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc", color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                  View items needing attention
+                </button>
+              ) : null}
             </div>
           </div>
 
-          {/* Category Breakdown */}
-          <Card>
-            <CardTitle sub="Stock value and units per category">Category Overview</CardTitle>
+          {/* Category breakdown */}
+          <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)", overflow: "hidden" }}>
+            <div style={{ padding: "18px 22px 14px", borderBottom: "1px solid #f1f5f9" }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>By category</div>
+              <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Units, value and margin per category</div>
+            </div>
             <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead><tr><TH>Category</TH><TH>Products</TH><TH>Total Units</TH><TH>Damaged</TH><TH>Retail Value</TH><TH>Cost Value</TH><TH>Potential Profit</TH><TH>Avg Margin</TH></tr></thead>
+              {totalProducts === 0 ? (
+                <InvEmpty
+                  icon="📦"
+                  title="No products yet"
+                  sub="Add your first product to see stock value, categories and alerts here."
+                  action={<div style={{ marginTop: 14 }}><Btn sm col="cyan" onClick={openAddProduct}>+ Add Product</Btn></div>}
+                />
+              ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#f8fafc" }}>
+                    {["Category", "Products", "Units", "Damaged", "Retail", "Cost", "Profit", "Margin"].map(function (h) {
+                      return (
+                        <th key={h} style={{
+                          padding: "10px 14px", textAlign: h === "Category" ? "left" : "right",
+                          fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em",
+                          borderBottom: "1px solid #e2e8f0",
+                        }}>{h}</th>
+                      );
+                    })}
+                  </tr>
+                </thead>
                 <tbody>
                   {(function () {
                     var catMap = {};
@@ -697,61 +821,82 @@ var Inventory = React.memo(function (props) {
                       var d = catMap[cat];
                       var margin = d.retail > 0 ? Math.round((d.retail - d.cost) / d.retail * 100) : 0;
                       return (
-                        <TR key={cat} i={i}>
-                          <td style={{ padding: "10px 14px" }}><span style={{ background: C.accentSoft, color: C.accent, padding: "3px 10px", borderRadius: 20, fontWeight: 700, fontSize: 12 }}>{cat}</span></td>
-                          <TD center>{d.count}</TD>
-                          <TD bold center>{fmtSumQty(d.units)}</TD>
-                          <TD center color={d.damaged > 0 ? C.orange : C.muted}>{d.damaged}</TD>
-                          <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(d.retail)}</TD>
-                          <TD color={C.purple}>{getCurrencySymbol()} {fmtNum(d.cost)}</TD>
-                          <TD bold color={d.retail - d.cost >= 0 ? C.green : C.red}>{getCurrencySymbol()} {fmtNum(d.retail - d.cost)}</TD>
-                          <td style={{ padding: "10px 14px" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <div style={{ flex: 1, height: 6, background: C.border, borderRadius: 3, minWidth: 40 }}>
-                                <div style={{ width: Math.min(margin, 100) + "%", height: "100%", background: margin >= 30 ? C.green : margin >= 15 ? C.amber : C.red, borderRadius: 3 }}></div>
+                        <tr key={cat} style={{ background: i % 2 === 0 ? "#fff" : "#fafbfc", borderBottom: "1px solid #f1f5f9" }}>
+                          <td style={{ padding: "12px 14px" }}>
+                            <span style={{ background: "#eff6ff", color: C.accent, padding: "4px 10px", borderRadius: 6, fontWeight: 700, fontSize: 12 }}>{cat}</span>
+                          </td>
+                          <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 600, color: C.textMd }}>{d.count}</td>
+                          <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 700, color: C.text }}>{fmtSumQty(d.units)}</td>
+                          <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 600, color: d.damaged > 0 ? C.orange : C.muted }}>{d.damaged}</td>
+                          <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 700, color: C.blue }}>{getCurrencySymbol()} {fmtNum(d.retail)}</td>
+                          <td style={{ padding: "12px 14px", textAlign: "right", color: "#6366f1" }}>{getCurrencySymbol()} {fmtNum(d.cost)}</td>
+                          <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 700, color: d.retail - d.cost >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(d.retail - d.cost)}</td>
+                          <td style={{ padding: "12px 14px" }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+                              <div style={{ width: 48, height: 5, background: "#f1f5f9", borderRadius: 99, overflow: "hidden" }}>
+                                <div style={{ width: Math.min(margin, 100) + "%", height: "100%", background: margin >= 30 ? C.green : margin >= 15 ? C.amber : C.red, borderRadius: 99 }} />
                               </div>
-                              <span style={{ fontSize: 12, fontWeight: 700, color: margin >= 30 ? C.green : margin >= 15 ? C.amber : C.red }}>{margin}%</span>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: margin >= 30 ? C.green : margin >= 15 ? C.amber : C.red, minWidth: 32, textAlign: "right" }}>{margin}%</span>
                             </div>
                           </td>
-                        </TR>
+                        </tr>
                       );
                     });
                   })()}
                 </tbody>
               </table>
+              )}
             </div>
-          </Card>
+          </div>
 
-          {/* Top Products by Value */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Card>
-              <CardTitle sub="Highest retail stock value">Top 8 by Stock Value</CardTitle>
-              {stockProducts.slice().sort(function (a, b) {
+          {/* Top products + alerts */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)", overflow: "hidden" }}>
+              <div style={{ padding: "18px 22px 12px", borderBottom: "1px solid #f1f5f9" }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>Top by value</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Highest retail stock value</div>
+              </div>
+              <div style={{ padding: "4px 16px 12px" }}>
+              {stockProducts.length === 0 ? (
+                <InvEmpty icon="📊" title="No stock items" sub="Products with stock will rank here by retail value." />
+              ) : stockProducts.slice().sort(function (a, b) {
                 return (inventoryQtyForTotals(b) * inventoryRetailSellPerBase(b)) - (inventoryQtyForTotals(a) * inventoryRetailSellPerBase(a));
               }).slice(0, 8).map(function (p, i) {
                 var unitSell = inventoryRetailSellPerBase(p);
                 var val = inventoryQtyForTotals(p) * unitSell;
                 var pct = stockRetailValue > 0 ? Math.round(val / stockRetailValue * 100) : 0;
                 return (
-                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid " + C.border }}>
-                    <div style={{ width: 22, height: 22, borderRadius: "50%", background: C.accentSoft, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 11, color: C.accent, flexShrink: 0 }}>{i + 1}</div>
+                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < 7 ? "1px solid #f1f5f9" : "none" }}>
+                    <div style={{
+                      width: 26, height: 26, borderRadius: 8, flexShrink: 0,
+                      background: i < 3 ? C.accentSoft : "#f1f5f9",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontWeight: 800, fontSize: 11, color: i < 3 ? C.accent : C.muted,
+                    }}>{i + 1}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                      <div style={{ display: "flex", gap: 8, fontSize: 11, color: C.muted, marginTop: 2 }}>
-                        <span>{getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit)}</span>
-                        <span style={{ color: C.blue, fontWeight: 600 }}>{getCurrencySymbol()} {fmtNum(unitSell)}/{p.unit || "Pcs"}</span>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                        {getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit)}
+                        <span style={{ margin: "0 6px", opacity: 0.4 }}>·</span>
+                        {getCurrencySymbol()} {fmtNum(unitSell)}/{p.unit || "Pcs"}
                       </div>
                     </div>
                     <div style={{ textAlign: "right", flexShrink: 0 }}>
                       <div style={{ fontWeight: 800, fontSize: 13, color: C.blue }}>{getCurrencySymbol()} {fmtNum(val)}</div>
-                      <div style={{ fontSize: 11, color: C.muted }}>{pct}%</div>
+                      <div style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{pct}% of total</div>
                     </div>
                   </div>
                 );
               })}
-            </Card>
-            <Card>
-              <CardTitle sub="Products needing attention">Alerts &amp; Low Stock</CardTitle>
+              </div>
+            </div>
+
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)", overflow: "hidden" }}>
+              <div style={{ padding: "18px 22px 12px", borderBottom: "1px solid #f1f5f9" }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>Alerts</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Low stock, damage and expiry</div>
+              </div>
+              <div style={{ padding: "4px 16px 12px" }}>
               {(function () {
                 var now = new Date();
                 var soon = new Date(); soon.setDate(soon.getDate() + 30);
@@ -764,7 +909,18 @@ var Inventory = React.memo(function (props) {
                   }
                   return false;
                 }).sort(function (a, b) { return (a.stock || 0) - (b.stock || 0); }).slice(0, 12);
-                if (alertProds.length === 0) return <div style={{ padding: "20px 0", textAlign: "center", color: C.green, fontWeight: 700 }}>All products healthy.</div>;
+                if (stockProducts.length === 0) {
+                  return <InvEmpty icon="✓" title="Nothing to flag" sub="Alerts appear when stock runs low or items are damaged." />;
+                }
+                if (alertProds.length === 0) {
+                  return (
+                    <div style={{ padding: "28px 12px", textAlign: "center" }}>
+                      <div style={{ width: 40, height: 40, borderRadius: "50%", background: "#ecfdf5", color: C.green, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 10px", fontSize: 18, fontWeight: 800 }}>✓</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>All products healthy</div>
+                      <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>No low stock or damage alerts</div>
+                    </div>
+                  );
+                }
                 return alertProds.map(function (p, i) {
                   var isOut = (p.stock || 0) === 0;
                   var isLow = !isOut && (p.stock || 0) <= 5;
@@ -772,23 +928,24 @@ var Inventory = React.memo(function (props) {
                   var isExpired = showExpiry && p.expiryDate && new Date(p.expiryDate) < now;
                   var isExpiringSoon = showExpiry && p.expiryDate && !isExpired && new Date(p.expiryDate) <= soon;
                   return (
-                    <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: "1px solid " + C.border }}>
-                      <div>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{p.name}</div>
-                        <div style={{ fontSize: 11, color: C.muted }}>{p.category}{p.unit ? "  -  " + p.unit : ""}</div>
+                    <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i < alertProds.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{p.category}</div>
                       </div>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                        {isOut && <span style={{ background: "#fde8ed", color: C.red, padding: "2px 8px", borderRadius: 20, fontWeight: 700, fontSize: 11 }}>Out of Stock</span>}
-                        {isLow && <span style={{ background: "#fef3e2", color: C.amber, padding: "2px 8px", borderRadius: 20, fontWeight: 700, fontSize: 11 }}>Low: {getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit)}</span>}
-                        {hasDmg && <span style={{ background: "#fff3e0", color: C.orange, padding: "2px 8px", borderRadius: 20, fontWeight: 700, fontSize: 11 }}>Dmg: {p.damaged}</span>}
-                        {isExpired && <span style={{ background: "#fde8ed", color: C.red, padding: "2px 8px", borderRadius: 20, fontWeight: 700, fontSize: 11 }}>Expired</span>}
-                        {isExpiringSoon && <span style={{ background: "#fff3e0", color: C.orange, padding: "2px 8px", borderRadius: 20, fontWeight: 700, fontSize: 11 }}>Exp Soon</span>}
+                      <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
+                        {isOut && <span style={{ background: "#fef2f2", color: C.red, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Out</span>}
+                        {isLow && <span style={{ background: "#fffbeb", color: C.amber, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Low</span>}
+                        {hasDmg && <span style={{ background: "#fff7ed", color: C.orange, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Damage</span>}
+                        {isExpired && <span style={{ background: "#fef2f2", color: C.red, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Expired</span>}
+                        {isExpiringSoon && <span style={{ background: "#fff7ed", color: C.orange, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Expiring</span>}
                       </div>
                     </div>
                   );
                 });
               })()}
-            </Card>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -800,7 +957,7 @@ var Inventory = React.memo(function (props) {
             Products
           </CardTitle>
           <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-            <div style={{ flex: 2, minWidth: 200 }}><Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search by name, barcode or category..." /></div>
+            <div style={{ flex: 2, minWidth: 200 }}><Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search by name, ID, barcode, or category..." /></div>
             <div style={{ minWidth: 140 }}>
               <Sel value={catFilter} onChange={function (e) { setCatFilter(e.target.value); }}>
                 {cats.map(function (c) { return <option key={c}>{c}</option>; })}
@@ -861,26 +1018,25 @@ var Inventory = React.memo(function (props) {
                       </td>
                       <TD color={isService ? C.muted : (isRaw ? C.orange : C.purple)}>{isService ? "-" : (getCurrencySymbol() + " " + fmtNum(stockVal))}</TD>
                       <TD color={(p.damaged || 0) > 0 ? C.orange : C.muted}>{p.damaged || 0}</TD>
-                      <td style={{ padding: "8px 10px" }}>
-                        <div style={{ display: "flex", gap: 4 }}>
+                      <td style={actBtnCellStyle}>
+                        <ActBtnGroup>
                           {showInactive ? (
-                            /* FIX 8: Show Reactivate button for inactive products */
-                            <Btn sm col="green" onClick={function () { reactivateProduct(p.id); }}>Reactivate</Btn>
+                            <ActBtn tone="green" title="Reactivate product" wide onClick={function () { reactivateProduct(p.id); }}>Restore</ActBtn>
                           ) : (
-                            <>
-                          <Btn sm col="gray" onClick={function () { setViewP(p); }}>View</Btn>
-                          <Btn sm col="blue" onClick={function () { setEditP(Object.assign({}, p, { extraUnits: formExtraUnitsFromProduct(p) })); }}>Edit</Btn>
-                          <Btn sm col="orange" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>Dmg</Btn>
-                          <Btn sm col="red" onClick={function () {
-                            if ((p.stock || 0) > 0) {
-                              showAlert("X Cannot delete \"" + p.name + "\" - it has " + fmtStock(p.stock, p.unit) + " in stock.\n\nSell or remove all stock first, then delete.");
-                              return;
-                            }
-                            setActionP({ product: p, mode: "delete", deleteEntire: false }); setDmgQty("1"); setReason("");
-                          }}>Del</Btn>
-                            </>
+                            <React.Fragment>
+                              <ActBtn tone="cyan" title="View product" onClick={function () { setViewP(p); }}>🧾</ActBtn>
+                              <ActBtn tone="blue" title="Edit product" onClick={function () { setEditP(Object.assign({}, p, { extraUnits: formExtraUnitsFromProduct(p) })); }}>✎</ActBtn>
+                              <ActBtn tone="orange" title="Log damage" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>Dmg</ActBtn>
+                              <ActBtn tone="red" title="Delete product" onClick={function () {
+                                if ((p.stock || 0) > 0) {
+                                  showAlert("X Cannot delete \"" + p.name + "\" - it has " + fmtStock(p.stock, p.unit) + " in stock.\n\nSell or remove all stock first, then delete.");
+                                  return;
+                                }
+                                setActionP({ product: p, mode: "delete", deleteEntire: false }); setDmgQty("1"); setReason("");
+                              }}>✕</ActBtn>
+                            </React.Fragment>
                           )}
-                        </div>
+                        </ActBtnGroup>
                       </td>
                     </TR>
                   );
@@ -989,7 +1145,7 @@ var Inventory = React.memo(function (props) {
                 <div style={{ position: "relative" }}>
                   <input
                     type="text"
-                    placeholder="Search by ingredient name, barcode, or category…"
+                    placeholder="Search by name, ID, barcode, or category…"
                     value={rmSearch}
                     autoComplete="off"
                     onChange={function (e) { setRmSearch(e.target.value); setRmAcOpen(true); }}
@@ -1133,8 +1289,8 @@ var Inventory = React.memo(function (props) {
                         price: "",
                         stock: "",
                         extraUnits: [],
-                        require_comment: false,
-                        comment_label: "",
+                        require_comment: true,
+                        comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
                       });
                     }, 30);
                   }}
@@ -1412,9 +1568,8 @@ var Inventory = React.memo(function (props) {
               { label: "Damaged Units", val: String(viewP.damaged || 0), color: (viewP.damaged || 0) > 0 ? C.orange : C.muted },
               { label: "Damage Cost", val: getCurrencySymbol() + " " + fmtNum((viewP.damaged || 0) * inventoryRetailCostPerBase(viewP)), color: C.red },
               { label: "Category", val: viewP.category || "General", color: C.text },
-              { label: "Unit", val: viewP.unit || "Pcs", color: C.accent },
-              { label: "POS line comment", val: viewP.require_comment ? ((viewP.comment_label || "").trim() || "Comment") + " (at checkout)" : "Off", color: viewP.require_comment ? C.accent : C.muted }
-            ].concat(getBusinessProfile().modules.serial && viewP.serialNo ? [
+              { label: "Unit", val: viewP.unit || "Pcs", color: C.accent }
+            ].concat(!COMPUTER_SHOP_EDITION && getBusinessProfile().modules.serial && viewP.serialNo ? [
               { label: "Serial / IMEI", val: viewP.serialNo, color: C.cyan }
             ] : []).concat(getBusinessProfile().name === "Jewelry & Watches" ? [
               { label: "Weight", val: viewP.weightGrams ? viewP.weightGrams + " g" : "-", color: C.text },
@@ -1447,6 +1602,7 @@ var Inventory = React.memo(function (props) {
         <Modal title={"Add New Product - ID: " + nextProductId(state.products)} onClose={function () { setNewP(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <Input label="Product Name *" value={newP.name} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
+            <ProductNameDuplicateHint name={newP.name} products={state.products} C={C} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
@@ -1518,21 +1674,6 @@ var Inventory = React.memo(function (props) {
               <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
               <textarea value={newP.description || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
             </div>
-            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
-                <input type="checkbox" checked={!!newP.require_comment} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
-                Enable comment field at checkout (IMEI / serial / note)
-              </label>
-              {newP.require_comment && (
-                <div style={{ marginTop: 10 }}>
-                  <Input label="Label (optional)" value={newP.comment_label || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Shown on POS and invoice. If empty, the field is labeled &quot;Comment&quot;.</div>
-                </div>
-              )}
-            </div>
-            {getBusinessProfile().modules.serial && (
-              <Input label="Serial Number / IMEI (optional)" value={newP.serialNo || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { serialNo: e.target.value }); }); }} placeholder="e.g. 358240051111110" />
-            )}
             {getBusinessProfile().name === "Jewelry & Watches" && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <Input label="Weight (grams)" type="number" value={newP.weightGrams || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { weightGrams: e.target.value }); }); }} placeholder="e.g. 5.25" />
@@ -1546,14 +1687,14 @@ var Inventory = React.memo(function (props) {
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <Btn col="cyan" onClick={saveNew} disabled={!newP.name || !newP.price}>Save Product</Btn>
+              <Btn col="cyan" onClick={saveNew} disabled={!newP.name || !newP.price || newProductNameExactDup}>Save Product</Btn>
               <Btn col="blue" onClick={function () {
-                if (!newP.name || !newP.price) return;
+                if (!newP.name || !newP.price || newProductNameExactDup) return;
                 saveNew();
                 setTimeout(function () {
-                  setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: false, comment_label: "" });
+                  setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
                 }, 80);
-              }} disabled={!newP.name || !newP.price}>Save + Add Another</Btn>
+              }} disabled={!newP.name || !newP.price || newProductNameExactDup}>Save + Add Another</Btn>
               <Btn col="gray" onClick={function () { setNewP(null); }}>Cancel</Btn>
             </div>
           </div>
@@ -1612,7 +1753,7 @@ var Inventory = React.memo(function (props) {
                 <span>Margin: <strong style={{ color: C.accent }}>{(editP.type === "service" && !(parseFloat(editP.cost) > 0)) ? "-" : (((parseFloat(editP.price) || 0) > 0 ? Math.round(((parseFloat(editP.price) || 0) - (parseFloat(editP.cost) || 0)) / (parseFloat(editP.price) || 1) * 100) : 0) + "%")}</strong></span>
               </div>
             )}
-            {getBusinessProfile().modules.serial && (
+            {getBusinessProfile().modules.serial && !COMPUTER_SHOP_EDITION && (
               <Input label="Serial Number / IMEI (optional)" value={editP.serialNo || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { serialNo: e.target.value }); }); }} placeholder="e.g. 358240051111110" />
             )}
             {getBusinessProfile().name === "Jewelry & Watches" && (
@@ -1627,17 +1768,6 @@ var Inventory = React.memo(function (props) {
                 <Input label="Batch / Lot Number (optional)" value={editP.batchNo || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { batchNo: e.target.value }); }); }} placeholder="e.g. BATCH-2025-001" />
               </div>
             )}
-            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
-                <input type="checkbox" checked={!!editP.require_comment} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
-                Enable comment field at checkout (IMEI / serial / note)
-              </label>
-              {editP.require_comment && (
-                <div style={{ marginTop: 10 }}>
-                  <Input label="Label (optional)" value={editP.comment_label || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
-                </div>
-              )}
-            </div>
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}><Btn col="cyan" onClick={saveEdit}>Save Changes</Btn><Btn col="gray" onClick={function () { setEditP(null); }}>Cancel</Btn></div>
           </div>
         </Modal>

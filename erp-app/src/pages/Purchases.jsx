@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { purchaseReturnUiStatus, displayStatusForPurchase } from "../utils/returnDisplay.js";
+import { buildVoidPurchaseUpdates, isVoidedTxn, activePurchases, VOID_REASON_OPTIONS, voidPurchaseBlockReason } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import { validateExtraUnits, buildUnitsPersistFields, getProductUnitRows, factorForNamedUnit, isProductBaseUnitLabel } from "../units/productUnits.js";
 import {
@@ -14,6 +15,7 @@ import {
   COST_INPUT_PER_BASE,
   lineEconomicValue,
 } from "../utils/purchaseValuation.js";
+import { computeSaleTax } from "../tax/taxCompute.js";
 import {
   RAW_MATERIAL_PRICE_COST_HINT,
   isRawMaterialGuardBaseUnit,
@@ -23,10 +25,21 @@ import {
 import {
   purchaseUnitConversionMissingMessage,
   isPurchaseInputUnitMissingFactor,
+  resolvePurchaseInputUnit,
   purchaseLineBaseUnitLooksLikePackTotal,
   purchasePackTotalVsCatalogueMessage,
   catalogSellPricePerBaseFromLine as catalogSellPricePerBaseFromLineCalc,
 } from "../utils/purchaseUnitGuard.js";
+import {
+  productMatchesSearch,
+  productMatchesSearchExact,
+  findActiveProductByExactSearch,
+} from "../utils/productSearch.js";
+import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
+import ProductNameDuplicateHint from "../components/ProductNameDuplicateHint.jsx";
+import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
 var Purchases = React.memo(function (props) {
   var state = props.state;
@@ -78,6 +91,10 @@ var Purchases = React.memo(function (props) {
   var SplitPaymentModal = props.SplitPaymentModal;
   var PaymentBreakdown = props.PaymentBreakdown;
   var BarcodeLabelSheet = props.BarcodeLabelSheet;
+  var canDeleteInvoices = props.canDeleteInvoices === true;
+  var showPermissionDenied = typeof props.showPermissionDenied === "function"
+    ? props.showPermissionDenied
+    : function () { showAlert("You do not have permission for this action."); };
   var COST_KEY = props.COST_KEY;
   var BLANK = { supplier: "", invoiceNo: genPurNo(), date: today(), payMode: "unpaid", paidAmount: "", cashMethod: "Cash", items: [], chequeList: [], splitRows: [], purchaseTaxAmount: "" };
   var [purChqForm, setPurChqForm] = useState({ no: "", bank: "", amount: "", due: today() });
@@ -96,6 +113,11 @@ var Purchases = React.memo(function (props) {
     setActive("pos");
   }, [isNetworkClient, setActive]);
   var [newProdKey, setNewProdKey] = useState(0);
+  var newProductNameMatch = useMemo(function () {
+    if (!newProd || !String(newProd.name || "").trim()) return null;
+    return evaluateProductNameMatch(newProd.name, state.products, null);
+  }, [newProd, state.products]);
+  var newProductNameExactDup = !!(newProductNameMatch && newProductNameMatch.type === "exact");
 
   /* Ctrl++ shortcut — open Add New Product */
   useEffect(function () {
@@ -103,7 +125,7 @@ var Purchases = React.memo(function (props) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         if (!show) return; /* only active when New Purchase modal is open */
         e.preventDefault();
-        setNewProd(null); setTimeout(function () { setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }, 30);
+        setNewProd(null); setTimeout(function () { setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }, 30);
       }
     };
     window.addEventListener("keydown", handler);
@@ -119,10 +141,138 @@ var Purchases = React.memo(function (props) {
   /** Cost entry: per purchase unit (sack) vs per storage base unit (kg) */
   var [pCostInputMode, setPCostInputMode] = useState(COST_INPUT_PER_BASE);
   var [search, setSearch] = useState("");
-  var [filterStatus, setFilterStatus] = useState("All");
+  var [filterStatus, setFilterStatus] = useState("Active");
+  var [voidPurTarget, setVoidPurTarget] = useState(null);
+  var [voidReason, setVoidReason] = useState("");
   var purSearchRef = useRef(null);
+  var pendingPurFocusRef = useRef(null);
   var [showPurDrop, setShowPurDrop] = useState(false);
   var [purDropIdx, setPurDropIdx] = useState(-1);
+
+  useEffect(function () {
+    var pick = pPickedProduct || (ps.trim() ? findActiveProductByExactSearch(state.products, ps) : null);
+    if (!pick) return;
+    var bu = pick.unit || "Pcs";
+    setPBaseUnit(bu);
+    setPUnit(function (prev) { return resolvePurchaseInputUnit(pick, prev); });
+  }, [ps, pPickedProduct, state.products]);
+
+  var purSearchId = function (mode) { return mode === "edit" ? "pur-edit-search" : "pur-search-input"; };
+  var purAddFieldId = function (mode, field) { return (mode === "edit" ? "pur-edit-" : "pur-new-") + field; };
+
+  var focusPurSearch = useCallback(function (mode) {
+    setTimeout(function () {
+      try {
+        var el = document.getElementById(purSearchId(mode || "new"));
+        if (el) {
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        }
+      } catch (e) { /* ignore */ }
+    }, 50);
+  }, []);
+
+  var focusPurAddField = useCallback(function (mode, field) {
+    setTimeout(function () {
+      try {
+        var el = document.getElementById(purAddFieldId(mode, field));
+        if (el) {
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        }
+      } catch (e) { /* ignore */ }
+    }, 50);
+  }, []);
+
+  var focusPurLineField = useCallback(function (mode, row, col) {
+    setTimeout(function () {
+      if (col < 0) {
+        focusPurSearch(mode);
+        return;
+      }
+      var el = document.querySelector("[data-purmode='" + mode + "'][data-purrow='" + row + "'][data-purcol='" + col + "']");
+      if (el) {
+        el.focus();
+        if (typeof el.select === "function") el.select();
+        return;
+      }
+      if (col < 2) {
+        var nextCol = document.querySelector("[data-purmode='" + mode + "'][data-purrow='" + row + "'][data-purcol='" + (col + 1) + "']");
+        if (nextCol) {
+          nextCol.focus();
+          if (typeof nextCol.select === "function") nextCol.select();
+          return;
+        }
+      }
+      if (col >= 2) {
+        focusPurSearch(mode);
+        return;
+      }
+      var nextRow = document.querySelector("[data-purmode='" + mode + "'][data-purrow='" + (row + 1) + "'][data-purcol='0']");
+      if (nextRow) {
+        nextRow.focus();
+        if (typeof nextRow.select === "function") nextRow.select();
+      } else {
+        focusPurSearch(mode);
+      }
+    }, 0);
+  }, [focusPurSearch]);
+
+  var handlePurLineFieldKey = useCallback(function (e, mode, row, col) {
+    if (e.key === "ArrowUp") { e.preventDefault(); focusPurLineField(mode, row - 1, col); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); focusPurLineField(mode, row + 1, col); return; }
+    if (e.key === "ArrowLeft") { e.preventDefault(); focusPurLineField(mode, row, col - 1); return; }
+    if (e.key === "ArrowRight" || e.key === "Tab") {
+      if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); focusPurLineField(mode, row, col - 1); return; }
+      e.preventDefault();
+      focusPurLineField(mode, row, col + 1);
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (col === 0) focusPurLineField(mode, row, 1);
+      else if (col === 1) focusPurLineField(mode, row, 2);
+      else focusPurSearch(mode);
+    }
+  }, [focusPurLineField, focusPurSearch]);
+
+  useEffect(function () {
+    if (!pendingPurFocusRef.current) return;
+    var pending = pendingPurFocusRef.current;
+    pendingPurFocusRef.current = null;
+    var t = setTimeout(function () {
+      focusPurLineField(pending.mode, pending.row, pending.col);
+    }, 60);
+    return function () { clearTimeout(t); };
+  }, [f.items, editPur ? editPur.items : null, focusPurLineField]);
+
+  useEffect(function () {
+    if (!show && !editPur) return;
+    var onKey = function (e) {
+      var mode = editPur ? "edit" : "new";
+      var tag = String((e.target && e.target.tagName) || "").toLowerCase();
+      var isTextInput = tag === "input" || tag === "textarea" || (e.target && e.target.isContentEditable);
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && !isTextInput) {
+        e.preventDefault();
+        focusPurSearch(mode);
+      }
+      if (e.key === "Escape" && !isTextInput) {
+        setShowPurDrop(false);
+        setPurDropIdx(-1);
+        focusPurSearch(mode);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return function () { document.removeEventListener("keydown", onKey); };
+  }, [show, editPur, focusPurSearch]);
+
+  useEffect(function () {
+    if (show) focusPurSearch("new");
+  }, [show, focusPurSearch]);
+
+  useEffect(function () {
+    if (editPur) focusPurSearch("edit");
+  }, [editPur ? editPur.id : null, focusPurSearch]);
   var [showNewSupp, setShowNewSupp] = useState(false);
   var [newSuppF, setNewSuppF] = useState({ name: "", phone: "", email: "", address: "", note: "" });
   useEffect(function () {
@@ -207,13 +357,15 @@ var Purchases = React.memo(function (props) {
 
   var fp = state.products.filter(function (p) {
     /* FIX 8: Exclude inactive (soft-deleted) products from purchase search */
-    var pn = (p.name == null ? "" : String(p.name)).toLowerCase();
-    return p.status !== "inactive" && (pn.includes(ps.toLowerCase()) || (p.barcode || "").toLowerCase().includes(ps.toLowerCase()));
+    return p.status !== "inactive" && productMatchesSearch(p, ps);
   });
 
   var formTotal = sumPurchaseLinesStockTotal(f.items);
+  var purTaxInclusive = !!(state.settings && state.settings.taxEnabled && state.settings.taxMode === "inclusive");
   var purTaxInput = (state.settings && state.settings.taxEnabled) ? Math.round((parseFloat(f.purchaseTaxAmount) || 0) * 100) / 100 : 0;
-  var invoiceTotal = purTaxInput > 0.005 ? Math.round((formTotal + purTaxInput) * 100) / 100 : formTotal;
+  var invoiceTotal = purTaxInclusive
+    ? formTotal
+    : (purTaxInput > 0.005 ? Math.round((formTotal + purTaxInput) * 100) / 100 : formTotal);
   var formPaid = f.payMode === "paid" ? invoiceTotal : (f.payMode === "partial" ? parseFloat(f.paidAmount) || 0 : 0);
   var formBal = invoiceTotal - formPaid;
   var formStatus = formPaid >= invoiceTotal ? "Paid" : formPaid > 0 ? "Partial" : "Unpaid";
@@ -221,7 +373,8 @@ var Purchases = React.memo(function (props) {
   /* Edit purchase computed totals */
   var editLineTotal = editPur ? sumPurchaseLinesStockTotal(editPur.items || []) : 0;
   var editTaxAmt = editPur && state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editPur.totalTax) || 0) * 100) / 100 : 0;
-  var editTotal = editPur ? (editTaxAmt > 0.005 ? Math.round((editLineTotal + editTaxAmt) * 100) / 100 : editLineTotal) : 0;
+  var editPurInclusive = !!(editPur && state.settings && state.settings.taxEnabled && (editPur.taxMode === "inclusive" || (editPur.taxMode !== "exclusive" && state.settings.taxMode === "inclusive")));
+  var editTotal = editPur ? (editPurInclusive ? editLineTotal : (editTaxAmt > 0.005 ? Math.round((editLineTotal + editTaxAmt) * 100) / 100 : editLineTotal)) : 0;
   var editPaid = editPur ? (editPur.payMode === "paid" ? editTotal : (editPur.payMode === "partial" ? parseFloat(editPur.paidAmount) || 0 : 0)) : 0;
   var editBal = editTotal - editPaid;
   var editStatus = editPaid >= editTotal ? "Paid" : editPaid > 0 ? "Partial" : "Unpaid";
@@ -270,11 +423,11 @@ var Purchases = React.memo(function (props) {
   };
 
   var addEditItem = function () {
-    var match = state.products.find(function (p) { return (p.name == null ? "" : String(p.name)).toLowerCase() === ps.toLowerCase() || (p.barcode && p.barcode === ps); });
+    var match = findActiveProductByExactSearch(state.products, ps);
     if (!match) return;
     var unit = match.unit || "Pcs";
     var qtyInput = parseFloat(pq) || 1;
-    var selU = pUnit || unit;
+    var selU = resolvePurchaseInputUnit(match, pUnit);
     var inputCostPerUnit = parseFloat(pc);
     if (!isFinite(inputCostPerUnit) || inputCostPerUnit <= 0) {
       inputCostPerUnit =
@@ -293,12 +446,15 @@ var Purchases = React.memo(function (props) {
       costInputMode: econ.costInputMode,
       sellPrice: parseFloat(pSell) || match.price || 0,
     };
-    var iuEdit = pUnit || unit;
+    var iuEdit = selU;
     if (isPurchaseInputUnitMissingFactor(match, iuEdit)) {
       showAlert("X " + purchaseUnitConversionMissingMessage(iuEdit));
       return;
     }
     var pushEditLine = function () {
+    var curItems = (editPur && editPur.items) || [];
+    var existsIdx = curItems.findIndex(function (i) { return i.id === match.id; });
+    pendingPurFocusRef.current = { mode: "edit", row: existsIdx >= 0 ? existsIdx : curItems.length, col: 1 };
     setEditPur(function (x) {
       var items = x.items || [];
       var exists = items.find(function (i) { return i.id === match.id; });
@@ -333,7 +489,7 @@ var Purchases = React.memo(function (props) {
   var addItem = function (p) {
     var unit = p.unit || "Pcs";
     var qtyInput = parseFloat(pq) || 1;
-    var selU = pUnit || unit;
+    var selU = resolvePurchaseInputUnit(p, pUnit);
     var inputCostPerUnit = parseFloat(pc);
     if (!isFinite(inputCostPerUnit) || inputCostPerUnit <= 0) {
       inputCostPerUnit =
@@ -352,12 +508,15 @@ var Purchases = React.memo(function (props) {
       costInputMode: econ.costInputMode,
       sellPrice: parseFloat(pSell) || p.price || 0,
     };
-    var iuAdd = pUnit || unit;
+    var iuAdd = selU;
     if (isPurchaseInputUnitMissingFactor(p, iuAdd)) {
       showAlert("X " + purchaseUnitConversionMissingMessage(iuAdd));
       return;
     }
     var pushPurLine = function () {
+    var curItems = f.items || [];
+    var existsIdx = curItems.findIndex(function (i) { return i.id === p.id; });
+    pendingPurFocusRef.current = { mode: "new", row: existsIdx >= 0 ? existsIdx : curItems.length, col: 1 };
     setF(function (x) {
       var exists = x.items.find(function (i) { return i.id === p.id; });
       if (exists) {
@@ -389,8 +548,194 @@ var Purchases = React.memo(function (props) {
   };
 
   var addMatchedItem = function () {
-    var match = state.products.find(function (p) { return (p.name == null ? "" : String(p.name)).toLowerCase() === ps.toLowerCase() || (p.barcode && p.barcode === ps); });
+    var match = findActiveProductByExactSearch(state.products, ps);
     if (match) addItem(match);
+  };
+
+  var purLineTableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" };
+
+  var renderPurLineColgroup = function () {
+    return (
+      <colgroup>
+        <col />
+        <col style={{ width: 68 }} />
+        <col style={{ width: 80 }} />
+        <col style={{ width: 108 }} />
+        <col style={{ width: 88 }} />
+        <col style={{ width: 76 }} />
+        <col style={{ width: 34 }} />
+      </colgroup>
+    );
+  };
+
+  var renderPurAddTfoot = function (mode) {
+    var qtyId = purAddFieldId(mode, "qty");
+    var costId = purAddFieldId(mode, "cost");
+    var sellId = purAddFieldId(mode, "sell");
+    var searchId = purSearchId(mode);
+    var onAdd = mode === "edit" ? addEditItem : addMatchedItem;
+    var typedPick = pPickedProduct || findActiveProductByExactSearch(state.products, ps);
+    var selU = typedPick ? resolvePurchaseInputUnit(typedPick, pUnit || pBaseUnit) : "Pcs";
+    var bu2 = typedPick ? (typedPick.unit || "Pcs") : "Pcs";
+    var selU2 = selU;
+    var showCostToggle = typedPick && !isProductBaseUnitLabel(typedPick, selU2);
+    var unitOpts = typedPick ? getProductUnitRows(typedPick).map(function (r) { return r.name; }) : [];
+    var unitRows = typedPick ? getProductUnitRows(typedPick) : [];
+    var hint = typedPick ? purUnitConversionHint(typedPick, selU) : null;
+    var addBase = typedPick ? toProductBaseQty(parseFloat(pq) || 0, selU, typedPick) : 0;
+    var curSt = typedPick ? (typedPick.stock || 0) : 0;
+    var afterSt = curSt + addBase;
+    var lowCost = typedPick ? purCostSeemsLow(typedPick, selU, pc, pCostInputMode) : false;
+    var expCost = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : (typedPick ? getUnitCostPrice(typedPick, selU) : 0);
+    var expLbl = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
+    var inputStyle = { width: "100%", boxSizing: "border-box", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" };
+    return (
+      <tfoot>
+        <tr style={{ background: "#f7fbff" }}>
+          <td colSpan={7} style={{ padding: "6px 8px", borderTop: "1px solid " + C.borderLight }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 3, textTransform: "uppercase" }}>Add product</div>
+            <div style={{ position: "relative" }} ref={purSearchRef}>
+              <input value={ps}
+                onChange={function (e) { setPs(e.target.value); setShowPurDrop(true); setPurDropIdx(-1); }}
+                onFocus={function () { setShowPurDrop(true); }}
+                onKeyDown={function (e) {
+                  var list = fp.slice(0, 7);
+                  if (e.key === "ArrowDown") { e.preventDefault(); setPurDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
+                  if (e.key === "ArrowUp") { e.preventDefault(); setPurDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
+                  if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
+                    var pick = purDropIdx >= 0 ? list[purDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, ps); }) || list[0]);
+                    if (pick) {
+                      var bu = pick.unit || "Pcs";
+                      setPs(pick.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick);
+                      syncCostModeAndDefaultsForUnit(pick, bu); setPSell(String(getUnitSellPrice(pick, bu)));
+                      setShowPurDrop(false); setPurDropIdx(-1);
+                      e.preventDefault();
+                      focusPurAddField(mode, "qty");
+                    } else { e.preventDefault(); }
+                    return;
+                  }
+                  if (e.key === "Escape") { setShowPurDrop(false); setPurDropIdx(-1); }
+                }}
+                placeholder="Search name, ID, barcode, category... (/ or Esc to focus)" id={searchId}
+                style={Object.assign({}, inputStyle, { textAlign: "left" })} />
+              {showPurDrop && ps.trim().length > 0 && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
+                  {fp.slice(0, 7).map(function (p, pidx) {
+                    return (
+                      <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu))); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
+                        <div>
+                          <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
+                          <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 10, color: C.muted }}>Cost / Sell</div>
+                          <div style={{ fontWeight: 700, color: C.blue, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
+                  <div onClick={function () { setShowPurDrop(false); setNewProdKey(function (k) { return k + 1; }); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
+                    + Create "{ps}" as new product
+                  </div>
+                </div>
+              )}
+            </div>
+          </td>
+        </tr>
+        <tr style={{ background: "#f0f9ff", borderTop: "1.5px dashed " + C.border }}>
+          <td style={{ padding: "6px 6px 8px" }} />
+          <td style={{ padding: "6px 6px 8px", verticalAlign: "bottom" }}>
+            <input id={qtyId} type="number" value={pq} min="0"
+              step={isDecimalUnit(pUnit || pBaseUnit) ? "0.001" : "1"}
+              onChange={function (e) { setPq(e.target.value); }}
+              onKeyDown={function (e) {
+                if (e.key === "Enter") { e.preventDefault(); focusPurAddField(mode, "cost"); return; }
+                if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); focusPurAddField(mode, "cost"); }
+              }}
+              style={Object.assign({}, inputStyle, { textAlign: "right", fontWeight: 700 })} />
+          </td>
+          <td style={{ padding: "6px 6px 8px", verticalAlign: "bottom" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, alignItems: "center" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 2, padding: "2px 3px", background: "#f1f5f9", borderRadius: 6, border: "1px solid " + C.borderLight, maxWidth: "100%" }}>
+                {(unitOpts.length ? unitOpts : [pBaseUnit || "Pcs"]).map(function (uOpt) {
+                  var activeUnit = (pUnit || pBaseUnit) === uOpt;
+                  return (
+                    <button key={uOpt} type="button"
+                      onClick={function () {
+                        if (!typedPick) return;
+                        setPUnit(uOpt); setPPickedProduct(typedPick);
+                        syncCostModeAndDefaultsForUnit(typedPick, uOpt);
+                        setPSell(String(getUnitSellPrice(typedPick, uOpt)));
+                      }}
+                      style={{ fontSize: 10, padding: "3px 7px", borderRadius: 5, border: "none", cursor: typedPick ? "pointer" : "default", fontFamily: "inherit", fontWeight: 700, background: activeUnit ? C.accent : "transparent", color: activeUnit ? "#fff" : C.textMd }}>
+                      {uOpt}
+                    </button>
+                  );
+                })}
+              </div>
+              {typedPick && unitRows.filter(function (r) { return r.factor > 1; }).map(function (r) {
+                return (
+                  <button key={"q-" + mode + "-" + r.name} type="button"
+                    onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); syncCostModeAndDefaultsForUnit(typedPick, r.name); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
+                    style={{ fontSize: 9, padding: "2px 6px", borderRadius: 5, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}>
+                    +1 {r.name}
+                  </button>
+                );
+              })}
+            </div>
+          </td>
+          <td style={{ padding: "6px 6px 8px", verticalAlign: "bottom" }}>
+            {showCostToggle ? (
+              <div style={{ display: "flex", gap: 3, marginBottom: 4, flexWrap: "wrap" }}>
+                <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_INPUT); }}
+                  style={{ fontSize: 9, padding: "2px 6px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_INPUT ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                  /{selU2}
+                </button>
+                <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_BASE); }}
+                  style={{ fontSize: 9, padding: "2px 6px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_BASE ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                  /{bu2}
+                </button>
+              </div>
+            ) : null}
+            <input id={costId} type="number" value={pc}
+              onChange={function (e) { setPc(e.target.value); }}
+              onKeyDown={function (e) {
+                if (e.key === "Enter") { e.preventDefault(); focusPurAddField(mode, "sell"); return; }
+                if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); focusPurAddField(mode, "sell"); }
+              }}
+              placeholder="Cost"
+              style={Object.assign({}, inputStyle, { textAlign: "right" })} />
+          </td>
+          <td style={{ padding: "6px 6px 8px", verticalAlign: "bottom" }}>
+            <input id={sellId} type="number" value={pSell}
+              onChange={function (e) { setPSell(e.target.value); }}
+              onKeyDown={function (e) {
+                if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
+                  e.preventDefault();
+                  if (ps.trim()) onAdd();
+                }
+              }}
+              placeholder="Sell"
+              style={Object.assign({}, inputStyle, { textAlign: "right" })} />
+          </td>
+          <td style={{ padding: "6px 6px 8px" }} />
+          <td style={{ padding: "6px 4px 8px", verticalAlign: "bottom" }}>
+            <button type="button" onClick={function () { onAdd(); }} disabled={!ps.trim()}
+              style={{ width: 30, height: 30, borderRadius: 6, border: "none", background: ps.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 15, cursor: ps.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+          </td>
+        </tr>
+        {typedPick ? (
+          <tr style={{ background: "#f0f9ff" }}>
+            <td colSpan={7} style={{ padding: "0 8px 8px", fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+              {hint ? <div>{hint}</div> : null}
+              <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
+              {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>(!) Cost seems low vs catalogue (expected ~{getCurrencySymbol()} {fmtNum(expCost)} per {expLbl})</div> : null}
+            </td>
+          </tr>
+        ) : null}
+      </tfoot>
+    );
   };
 
   var doSavePurchase = function (withBarcode, forceSave, skipPackWarn) {
@@ -433,8 +778,19 @@ var Purchases = React.memo(function (props) {
       return pr ? normalizePurchaseLineItem(it, pr, toProductBaseQty) : it;
     });
     var stockLineTotal = sumPurchaseLinesStockTotal(normalizedSaveItems);
+    var taxModeSave = (state.settings && state.settings.taxEnabled)
+      ? (state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive")
+      : undefined;
     var purTaxSave = (state.settings && state.settings.taxEnabled) ? Math.round((parseFloat(f.purchaseTaxAmount) || 0) * 100) / 100 : 0;
-    var invoiceTotalSave = purTaxSave > 0.005 ? Math.round((stockLineTotal + purTaxSave) * 100) / 100 : stockLineTotal;
+    if (taxModeSave === "inclusive" && purTaxSave <= 0.005 && stockLineTotal > 0) {
+      purTaxSave = Math.round((computeSaleTax(state.settings, stockLineTotal).totalTax || 0) * 100) / 100;
+    }
+    var invoiceTotalSave = taxModeSave === "inclusive"
+      ? stockLineTotal
+      : (purTaxSave > 0.005 ? Math.round((stockLineTotal + purTaxSave) * 100) / 100 : stockLineTotal);
+    var purNetFactor = (taxModeSave === "inclusive" && stockLineTotal > 0 && purTaxSave > 0)
+      ? (stockLineTotal - purTaxSave) / stockLineTotal
+      : 1;
     if (splitRows) {
       var nonChequePaid = splitRows.reduce(function (a, r) { return r.method !== "Cheque" ? a + (parseFloat(r.amount) || 0) : a; }, 0);
       var totalSplit = splitRows.reduce(function (a, r) { return a + (parseFloat(r.amount) || 0); }, 0);
@@ -458,7 +814,7 @@ var Purchases = React.memo(function (props) {
     }
     var purAmtErr = validateTxnAmounts("Purchase invoice", invoiceTotalSave, effPaid, effBal);
     if (purAmtErr) { showAlert("X " + purAmtErr); return; }
-    var purObj = { id: uid(), supplier: f.supplier, invoiceNo: f.invoiceNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave };
+    var purObj = { id: uid(), supplier: f.supplier, invoiceNo: f.invoiceNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave, taxMode: taxModeSave, createdAt: new Date().toISOString() };
     var np = state.products.slice();
     normalizedSaveItems.forEach(function (it) {
       var idx = np.findIndex(function (p) { return p.id === it.id; });
@@ -466,18 +822,19 @@ var Purchases = React.memo(function (props) {
           var oldStock = np[idx].stock || 0;
           var oldCost  = np[idx].cost  || 0;
           var newStock = oldStock + it.qty;
+          var lineCostForWac = Math.round((it.cost || 0) * purNetFactor * 100) / 100;
           /* FIX 3: WAC safety — if stock was zero/negative before, or result is zero/negative,
              reset cost to the latest purchase price instead of computing invalid WAC */
           var newAvgCost;
           if (newStock <= 0) {
             /* Stock still zero or negative after purchase — use latest purchase price */
-            newAvgCost = it.cost;
+            newAvgCost = lineCostForWac;
           } else if (oldStock <= 0) {
             /* Stock was zero or negative; now positive — reset WAC to this purchase price */
-            newAvgCost = it.cost;
+            newAvgCost = lineCostForWac;
           } else {
             /* Normal WAC: both old and new stock are positive */
-            newAvgCost = ((oldStock * oldCost) + (it.qty * it.cost)) / newStock;
+            newAvgCost = ((oldStock * oldCost) + (it.qty * lineCostForWac)) / newStock;
           }
           var catSell = catalogSellPricePerBaseFromLine(it, np[idx]);
           np[idx] = Object.assign({}, np[idx], {
@@ -543,6 +900,46 @@ var Purchases = React.memo(function (props) {
     if (typeof setActive === "function") setActive("returns");
   };
 
+  var voidPurchaseInvoice = function (purchaseId, reason) {
+    if (!canDeleteInvoices) {
+      showPermissionDenied("void purchases");
+      return;
+    }
+    var result = buildVoidPurchaseUpdates(state, purchaseId, reason);
+    if (!result.ok) {
+      showAlert(result.error);
+      return;
+    }
+    S.set("tc3_products", result.products);
+    S.set("tc3_purchases", result.purchases);
+    S.set("tc3_cheques", result.cheques);
+    setState(function (st) {
+      return Object.assign({}, st, {
+        products: result.products,
+        purchases: result.purchases,
+        cheques: result.cheques,
+      });
+    });
+    addAudit("Voided Purchase Invoice", (result.voidedPurchase.invoiceNo || purchaseId.slice(0, 8)) + (reason ? " — " + reason : ""));
+    setVoidPurTarget(null);
+    setVoidReason("");
+    if (viewPur && viewPur.id === purchaseId) setViewPur(null);
+  };
+
+  var promptVoidPurchase = function (pur) {
+    if (!canDeleteInvoices) {
+      showPermissionDenied("void purchases");
+      return;
+    }
+    var block = voidPurchaseBlockReason(pur, state);
+    if (block) {
+      showAlert(block);
+      return;
+    }
+    setVoidReason("");
+    setVoidPurTarget(pur);
+  };
+
   var saveEditPur = function (skipPackWarn) {
     if (!editPur) return;
     /* Recalculate totals from current items/payment state before saving */
@@ -572,12 +969,21 @@ var Purchases = React.memo(function (props) {
       }
     }
     var eLine = sumPurchaseLinesStockTotal(normalizedEditItems);
+    var eTaxMode = (state.settings && state.settings.taxEnabled)
+      ? (editPur.taxMode || (state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive"))
+      : undefined;
     var eTax = state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editPur.totalTax) || 0) * 100) / 100 : 0;
-    var eTot = eTax > 0.005 ? Math.round((eLine + eTax) * 100) / 100 : eLine;
+    if (eTaxMode === "inclusive" && eTax <= 0.005 && eLine > 0) {
+      eTax = Math.round((computeSaleTax(state.settings, eLine).totalTax || 0) * 100) / 100;
+    }
+    var eTot = eTaxMode === "inclusive"
+      ? eLine
+      : (eTax > 0.005 ? Math.round((eLine + eTax) * 100) / 100 : eLine);
+    var ePurNetFactor = (eTaxMode === "inclusive" && eLine > 0 && eTax > 0) ? (eLine - eTax) / eLine : 1;
     var ePaid = editPur.payMode === "paid" ? eTot : (editPur.payMode === "partial" ? parseFloat(editPur.paidAmount) || 0 : 0);
     var eBal = eTot - ePaid;
     var eStat = ePaid >= eTot ? "Paid" : ePaid > 0 ? "Partial" : "Unpaid";
-    var purToSave = Object.assign({}, editPur, { items: normalizedEditItems, total: eTot, totalTax: eTax, paidAmount: ePaid, balance: eBal, status: eStat });
+    var purToSave = Object.assign({}, editPur, { items: normalizedEditItems, total: eTot, totalTax: eTax, taxMode: eTaxMode, paidAmount: ePaid, balance: eBal, status: eStat, updatedAt: new Date().toISOString() });
     var editPurAmtErr = validateTxnAmounts("Edited purchase invoice", eTot, ePaid, eBal);
     if (editPurAmtErr) { showAlert("X " + editPurAmtErr); return; }
     var orig = state.purchases.find(function (p) { return p.id === purToSave.id; });
@@ -757,8 +1163,8 @@ var Purchases = React.memo(function (props) {
           price: parseFloat(newProd.price) || 0,
           stock: 0,
           damaged: 0,
-          require_comment: !!newProd.require_comment,
-          comment_label: String(newProd.comment_label || "").trim(),
+          require_comment: true,
+          comment_label: String(newProd.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         },
         unitFields
       );
@@ -786,23 +1192,30 @@ var Purchases = React.memo(function (props) {
       }
       performPurNewSave();
     };
-    if (nameCheck && nameCheck.type === "similar") {
-      showConfirm("Similar product already exists:\n\"" + nameCheck.match + "\"\n\nAre you sure you want to create \"" + nameStr + "\" as a new product?", maybeGuardThenPurSave);
+    if (nameCheck && (nameCheck.type === "likely_same" || nameCheck.type === "reordered")) {
+      var dupNamesPur = (nameCheck.matches || []).map(function (m) { return "\"" + m.name + "\""; }).join(", ");
+      showConfirm("This looks like a product you already have:\n" + dupNamesPur + "\n\nCreate \"" + nameStr + "\" as a new product anyway?", maybeGuardThenPurSave);
     } else {
       maybeGuardThenPurSave();
     }
   };
 
-  var totalPaid = state.purchases.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);
-  var totalBal = state.purchases.reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
-  var filtered = state.purchases.slice().reverse().filter(function (p) {
+  var totalPaid = activePurchases(state.purchases).reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);
+  var totalBal = activePurchases(state.purchases).reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
+  var filtered = sortNewestFirst(state.purchases).filter(function (p) {
     var q = search.toLowerCase();
     var mQ = !q || String(p.supplier == null ? "" : p.supplier).toLowerCase().includes(q) || (p.invoiceNo || "").toLowerCase().includes(q);
-    var mS = filterStatus === "All" || p.status === filterStatus;
-    return mQ && mS;
+    var voided = isVoidedTxn(p);
+    if (filterStatus === "Active" && voided) return false;
+    if (filterStatus === "Voided" && !voided) return false;
+    if (filterStatus === "Paid" || filterStatus === "Partial" || filterStatus === "Unpaid") {
+      if (voided) return false;
+      if (p.status !== filterStatus) return false;
+    }
+    return mQ;
   });
 
-  var purPager = usePager(filtered, 50);
+  var purPager = usePager(filtered, LIST_PAGE_SIZE);
   /* CATS is getCats() — see global */;
 
   return (
@@ -818,40 +1231,48 @@ var Purchases = React.memo(function (props) {
           <div style={{ flex: 2 }}><Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search supplier or invoice #..." /></div>
           <div style={{ flex: 1 }}>
             <Sel value={filterStatus} onChange={function (e) { setFilterStatus(e.target.value); }}>
-              <option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
+              <option>Active</option><option>Voided</option><option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
             </Sel>
           </div>
         </div>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr style={{ background: "#f8fafc" }}><TH>Date</TH><TH>Supplier</TH><TH>Invoice #</TH><TH>Items</TH><TH>Total</TH><TH>Paid</TH><TH>Balance</TH><TH>Status</TH><TH>Actions</TH></tr></thead>
+          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", minWidth: 960 }}>
+            <thead><tr style={{ background: "#f8fafc" }}>
+              <TH style={{ width: "8%" }}>Date</TH>
+              <TH style={{ width: "14%" }}>Supplier</TH>
+              <TH style={{ width: "14%" }}>Invoice #</TH>
+              <TH center style={{ width: "5%" }}>Items</TH>
+              <TH right style={{ width: "10%" }}>Total</TH>
+              <TH right style={{ width: "10%" }}>Paid</TH>
+              <TH right style={{ width: "10%" }}>Balance</TH>
+              <TH style={{ width: "11%" }}>Status</TH>
+              <TH right style={{ width: "18%" }}>Actions</TH>
+            </tr></thead>
             <tbody>
               {filtered.length === 0 && <tr><td colSpan={9} style={{ padding: 20, textAlign: "center", color: C.muted }}>No purchases yet</td></tr>}
               {purPager.slice.map(function (p, i) {
                 var purRet = purchaseReturnUiStatus(p, state.purchaseReturns);
                 var statusLabel = displayStatusForPurchase(p, state.purchaseReturns);
-                var rowBg = purRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
+                var rowBg = isVoidedTxn(p) ? "#fff5f5" : purRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
                 return (
                   <tr key={p.id} className="table-row-hover" style={{ background: rowBg, borderBottom: "1px solid " + C.borderLight }} title={purRet.hasReturns ? "This invoice has return activity" : undefined}>
                     <TD>{fmtDate(p.date)}</TD>
-                    <TD bold>{p.supplier}</TD>
-                    <td style={{ padding: "9px 12px" }}><span style={{ fontFamily: "monospace", fontSize: 12, color: C.cyan }}>{p.invoiceNo || p.id.slice(0, 8)}</span></td>
+                    <TD bold style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{p.supplier}</TD>
+                    <td style={{ padding: "9px 12px", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.invoiceNo || p.id.slice(0, 8)}><span style={{ fontFamily: "monospace", fontSize: 12, color: C.cyan }}>{p.invoiceNo || p.id.slice(0, 8)}</span></td>
                     <TD center>{(p.items || []).length}</TD>
-                    <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(p.total)}</TD>
-                    <TD color={C.green}>{getCurrencySymbol()} {fmtNum(p.paidAmount || 0)}</TD>
-                    <TD color={Math.max(0, (p.total || 0) - (p.paidAmount || 0)) > 0 ? C.red : C.muted}>{getCurrencySymbol()} {fmtNum(Math.max(0, (p.total || 0) - (p.paidAmount || 0)))}</TD>
-                    <td style={{ padding: "9px 12px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <Badge status={statusLabel} />
-                        {purRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 800, color: "#c2410c", background: "#ffedd5", border: "1px solid #fdba74", borderRadius: 6, padding: "2px 6px" }}>↩ Return</span> : null}
-                      </div>
+                    <TD bold color={C.blue} right>{getCurrencySymbol()} {fmtNum(p.total)}</TD>
+                    <TD color={C.green} right>{getCurrencySymbol()} {fmtNum(p.paidAmount || 0)}</TD>
+                    <TD color={Math.max(0, (p.total || 0) - (p.paidAmount || 0)) > 0 ? C.red : C.muted} right>{getCurrencySymbol()} {fmtNum(Math.max(0, (p.total || 0) - (p.paidAmount || 0)))}</TD>
+                    <td style={{ padding: "9px 12px", overflow: "hidden", maxWidth: 0 }}>
+                      <Badge status={statusLabel} />
                     </td>
-                    <td style={{ padding: "9px 12px" }}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <Btn sm col="gray" onClick={function () { setViewPur(p); }}>View</Btn>
-                        <Btn sm col="blue" onClick={function () { setEditPur(Object.assign({}, p)); }}>Edit</Btn>
-                        <Btn sm col="orange" onClick={goPurchaseReturn} title="Use Purchase Return to reverse stock">Return</Btn>
-                      </div>
+                    <td style={actBtnCellStyle}>
+                      <ActBtnGroup>
+                        <ActBtn tone="cyan" title="View purchase" onClick={function () { setViewPur(p); }}>🧾</ActBtn>
+                        {!isVoidedTxn(p) ? <ActBtn tone="blue" title="Edit purchase" onClick={function () { setEditPur(Object.assign({}, p)); }}>✎</ActBtn> : null}
+                        {!isVoidedTxn(p) ? <ActBtn tone="orange" title="Use Purchase Return to reverse stock" onClick={goPurchaseReturn}>↩</ActBtn> : null}
+                        {!isVoidedTxn(p) && canDeleteInvoices ? <ActBtn tone="red" title="Void mistaken purchase" onClick={function () { promptVoidPurchase(p); }}>✕</ActBtn> : null}
+                      </ActBtnGroup>
                     </td>
                   </tr>
                 );
@@ -888,14 +1309,15 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
 
               {/* ── Product lines + add row (compact table) ── */}
               <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "hidden" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <table style={purLineTableStyle}>
+                  {renderPurLineColgroup()}
                   <thead>
                     <tr style={{ background: "#f1f5f9" }}>
                       {["Product", "Qty", "Unit", "Cost", "Sell", "Total", ""].map(function (h, hi) {
@@ -916,6 +1338,9 @@ var Purchases = React.memo(function (props) {
                           <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
                           <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
                             <input type="number" value={it.qty} min="0" step="any"
+                              data-purmode="new"
+                              data-purrow={idx}
+                              data-purcol={0}
                               onChange={function (e) {
                                 var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
                                 setF(function (x) {
@@ -933,12 +1358,16 @@ var Purchases = React.memo(function (props) {
                                   });
                                 });
                               }}
+                              onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 0); }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
                           <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }} title="Storage base unit qty">{lineU}</td>
                           <td style={{ padding: "4px 6px" }}>
                             <input type="number" value={costField}
+                              data-purmode="new"
+                              data-purrow={idx}
+                              data-purcol={1}
                               onChange={function (e) {
                                 var raw = parseFloat(e.target.value) || 0;
                                 setF(function (x) {
@@ -964,12 +1393,17 @@ var Purchases = React.memo(function (props) {
                                   });
                                 });
                               }}
+                              onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 1); }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
                           <td style={{ padding: "4px 6px" }}>
                             <input type="number" value={it.sellPrice}
+                              data-purmode="new"
+                              data-purrow={idx}
+                              data-purcol={2}
                               onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                              onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 2); }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
@@ -981,201 +1415,13 @@ var Purchases = React.memo(function (props) {
                       );
                     })}
                   </tbody>
+                  {renderPurAddTfoot("new")}
                 </table>
-                <div style={{ padding: "6px 8px", borderTop: "1px solid " + C.borderLight, background: "#f7fbff" }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 3, textTransform: "uppercase" }}>Add product</div>
-                  <div style={{ position: "relative" }} ref={purSearchRef}>
-                    <input value={ps}
-                      onChange={function (e) { setPs(e.target.value); setShowPurDrop(true); setPurDropIdx(-1); }}
-                      onFocus={function () { setShowPurDrop(true); }}
-                      onKeyDown={function (e) {
-                        var list = fp.slice(0, 7);
-                        if (e.key === "ArrowDown") { e.preventDefault(); setPurDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
-                        if (e.key === "ArrowUp") { e.preventDefault(); setPurDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
-                        if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
-                          var pick = purDropIdx >= 0 ? list[purDropIdx] : (list.find(function (p) { return (p.barcode || "").toLowerCase() === ps.toLowerCase(); }) || list[0]);
-                          if (pick) { var bu = pick.unit || "Pcs"; setPs(pick.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick); syncCostModeAndDefaultsForUnit(pick, bu); setPSell(String(getUnitSellPrice(pick, bu))); setShowPurDrop(false); setPurDropIdx(-1);
-                            e.preventDefault();
-                            setTimeout(function () { var qi = document.getElementById("pur-new-qty"); if (qi) qi.focus(); }, 50);
-                          } else { e.preventDefault(); return; }
-                          return;
-                        }
-                        if (e.key === "Escape") { setShowPurDrop(false); setPurDropIdx(-1); }
-                      }}
-                      placeholder="Search product..." id="pur-search-input"
-                      style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 8px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                    {showPurDrop && ps.trim().length > 0 && (
-                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
-                        {fp.slice(0, 7).map(function (p, pidx) {
-                          return (
-                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu))); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
-                              <div>
-                                <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
-                                <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
-                              </div>
-                              <div style={{ textAlign: "right" }}>
-                                <div style={{ fontSize: 10, color: C.muted }}>Cost / Sell</div>
-                                <div style={{ fontWeight: 700, color: C.blue, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
-                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
-                          + Create "{ps}" as new product
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div style={{ padding: "6px 8px 8px", borderTop: "1.5px dashed " + C.border, background: "#f0f9ff" }}>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Qty</div>
-                      <input id="pur-new-qty" type="number" value={pq} min="0"
-                        step={isDecimalUnit(pUnit || pBaseUnit) ? "0.001" : "1"}
-                        onChange={function (e) { setPq(e.target.value); }}
-                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var ci = document.getElementById("pur-new-cost"); if (ci) ci.focus(); } }}
-                        style={{ width: 64, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit", background: "#fff", fontWeight: 700 }} />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 140 }}>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Unit</div>
-                      {(function () {
-                        var typedPick = pPickedProduct
-                          || state.products.find(function (p) {
-                            return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                          })
-                          || state.products.find(function (p) {
-                            return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                          });
-                        var unitOpts = typedPick ? getProductUnitRows(typedPick).map(function (r) { return r.name; }) : [];
-                        var rows = typedPick ? getProductUnitRows(typedPick) : [];
-                        return (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
-                              {(unitOpts.length ? unitOpts : [pBaseUnit || "Pcs"]).map(function (uOpt) {
-                                var activeUnit = (pUnit || pBaseUnit) === uOpt;
-                                return (
-                                  <button
-                                    key={uOpt}
-                                    type="button"
-                                    onClick={function () {
-                                      if (!typedPick) return;
-                                      setPUnit(uOpt);
-                                      setPPickedProduct(typedPick);
-                                      syncCostModeAndDefaultsForUnit(typedPick, uOpt);
-                                      setPSell(String(getUnitSellPrice(typedPick, uOpt)));
-                                    }}
-                                    style={{
-                                      fontSize: 11, padding: "4px 10px", borderRadius: 6, border: "none", cursor: typedPick ? "pointer" : "default", fontFamily: "inherit", fontWeight: 700,
-                                      background: activeUnit ? C.accent : "transparent", color: activeUnit ? "#fff" : C.textMd
-                                    }}
-                                  >
-                                    {uOpt}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            {typedPick && rows.filter(function (r) { return r.factor > 1; }).map(function (r) {
-                              return (
-                                <button
-                                  key={"q-" + r.name}
-                                  type="button"
-                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); syncCostModeAndDefaultsForUnit(typedPick, r.name); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
-                                  style={{ fontSize: 10, padding: "3px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-                                >
-                                  +1 {r.name}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                    {(function () {
-                      var typedPick2 = pPickedProduct
-                        || state.products.find(function (p) {
-                          return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                        })
-                        || state.products.find(function (p) {
-                          return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                        });
-                      var bu2 = typedPick2 ? (typedPick2.unit || "Pcs") : "Pcs";
-                      var selU2 = typedPick2 ? (pUnit || pBaseUnit || typedPick2.unit || "Pcs") : "Pcs";
-                      var showCostToggle = typedPick2 && !isProductBaseUnitLabel(typedPick2, selU2);
-                      var costLab = typedPick2
-                        ? (isProductBaseUnitLabel(typedPick2, selU2) ? ("Cost (per " + bu2 + ")") : ("Cost (per " + selU2 + ")"))
-                        : "Cost";
-                      return (
-                        <div>
-                          <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>{costLab}</div>
-                          {showCostToggle ? (
-                            <div style={{ display: "flex", gap: 4, marginBottom: 4, flexWrap: "wrap", alignItems: "center" }}>
-                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_INPUT); }}
-                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_INPUT ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                                Per {selU2}
-                              </button>
-                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_BASE); }}
-                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_BASE ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                                Per {bu2}
-                              </button>
-                            </div>
-                          ) : null}
-                          <input id="pur-new-cost" type="number" value={pc}
-                            onChange={function (e) { setPc(e.target.value); }}
-                            onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-new-sell"); if (si) si.focus(); } }}
-                            placeholder="Cost"
-                            style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                        </div>
-                      );
-                    })()}
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Sell</div>
-                      <input id="pur-new-sell" type="number" value={pSell}
-                        onChange={function (e) { setPSell(e.target.value); }}
-                        onKeyDown={function (e) {
-                          if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
-                            e.preventDefault();
-                            if (ps.trim()) { addMatchedItem(); setTimeout(function () { var si = document.getElementById("pur-search-input"); if (si) si.focus(); }, 50); }
-                          }
-                        }}
-                        placeholder="Sell"
-                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                    </div>
-                    <button type="button" onClick={function () { addMatchedItem(); setTimeout(function () { var si = document.getElementById("pur-search-input"); if (si) si.focus(); }, 50); }} disabled={!ps.trim()}
-                      style={{ width: 30, height: 30, borderRadius: 6, border: "none", background: ps.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 15, cursor: ps.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 1 }}>+</button>
-                  </div>
-                  {(function () {
-                    var typedPick = pPickedProduct
-                      || state.products.find(function (p) {
-                        return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                      })
-                      || state.products.find(function (p) {
-                        return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                      });
-                    if (!typedPick) return null;
-                    var selU = pUnit || pBaseUnit || typedPick.unit || "Pcs";
-                    var hint = purUnitConversionHint(typedPick, selU);
-                    var addBase = toProductBaseQty(parseFloat(pq) || 0, selU, typedPick);
-                    var curSt = typedPick.stock || 0;
-                    var afterSt = curSt + addBase;
-                    var lowCost = purCostSeemsLow(typedPick, selU, pc, pCostInputMode);
-                    var expCost = pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : getUnitCostPrice(typedPick, selU);
-                    var expLbl = pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
-                    return (
-                      <div style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
-                        {hint ? <div>{hint}</div> : null}
-                        <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
-                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>(!) Cost seems low vs catalogue (expected ~{getCurrencySymbol()} {fmtNum(expCost)} per {expLbl})</div> : null}
-                      </div>
-                    );
-                  })()}
-                </div>
               </div>
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -1346,6 +1592,12 @@ var Purchases = React.memo(function (props) {
               })}
             </tbody>
           </table>
+          <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+            {!isVoidedTxn(viewPur) && canDeleteInvoices ? (
+              <Btn col="red" onClick={function () { promptVoidPurchase(viewPur); }}>Void Purchase</Btn>
+            ) : null}
+            <Btn col="gray" onClick={function () { setViewPur(null); }}>Close</Btn>
+          </div>
         </Modal>
         );
       })()}
@@ -1375,14 +1627,15 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
 
               {/* ── Product lines + add row (Edit — same layout as new purchase) ── */}
               <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "hidden" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <table style={purLineTableStyle}>
+                  {renderPurLineColgroup()}
                   <thead>
                     <tr style={{ background: "#f1f5f9" }}>
                       {["Product", "Qty", "Unit", "Cost", "Sell", "Total", ""].map(function (h, hi) {
@@ -1403,6 +1656,9 @@ var Purchases = React.memo(function (props) {
                           <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
                           <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
                             <input type="number" value={it.qty} min="0" step="any"
+                              data-purmode="edit"
+                              data-purrow={idx}
+                              data-purcol={0}
                               onChange={function (e) {
                                 var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
                                 setEditPur(function (x) {
@@ -1420,12 +1676,16 @@ var Purchases = React.memo(function (props) {
                                   });
                                 });
                               }}
+                              onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 0); }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
                           <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }} title="Purchase unit">{lineUEd}</td>
                           <td style={{ padding: "4px 6px" }}>
                             <input type="number" value={costFieldEd}
+                              data-purmode="edit"
+                              data-purrow={idx}
+                              data-purcol={1}
                               onChange={function (e) {
                                 var raw = parseFloat(e.target.value) || 0;
                                 setEditPur(function (x) {
@@ -1451,12 +1711,17 @@ var Purchases = React.memo(function (props) {
                                   });
                                 });
                               }}
+                              onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 1); }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
                           <td style={{ padding: "4px 6px" }}>
                             <input type="number" value={it.sellPrice}
+                              data-purmode="edit"
+                              data-purrow={idx}
+                              data-purcol={2}
                               onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                              onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 2); }}
                               onFocus={function (e) { e.target.select(); }}
                               style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
                           </td>
@@ -1468,201 +1733,13 @@ var Purchases = React.memo(function (props) {
                       );
                     })}
                   </tbody>
+                  {renderPurAddTfoot("edit")}
                 </table>
-                <div style={{ padding: "6px 8px", borderTop: "1px solid " + C.borderLight, background: "#f7fbff" }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 3, textTransform: "uppercase" }}>Add product</div>
-                  <div style={{ position: "relative" }} ref={purSearchRef}>
-                    <input value={ps}
-                      onChange={function (e) { setPs(e.target.value); setShowPurDrop(true); setPurDropIdx(-1); }}
-                      onFocus={function () { setShowPurDrop(true); }}
-                      onKeyDown={function (e) {
-                        var list = fp.slice(0, 7);
-                        if (e.key === "ArrowDown") { e.preventDefault(); setPurDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
-                        if (e.key === "ArrowUp") { e.preventDefault(); setPurDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
-                        if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
-                          var pick = purDropIdx >= 0 ? list[purDropIdx] : (list.find(function (p) { return (p.barcode || "").toLowerCase() === ps.toLowerCase(); }) || list[0]);
-                          if (pick) { var bu = pick.unit || "Pcs"; setPs(pick.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick); syncCostModeAndDefaultsForUnit(pick, bu); setPSell(String(getUnitSellPrice(pick, bu))); setShowPurDrop(false); setPurDropIdx(-1);
-                            e.preventDefault();
-                            setTimeout(function () { var qi = document.getElementById("pur-edit-qty"); if (qi) qi.focus(); }, 50);
-                          } else { e.preventDefault(); return; }
-                          return;
-                        }
-                        if (e.key === "Escape") { setShowPurDrop(false); setPurDropIdx(-1); }
-                      }}
-                      placeholder="Search product..." id="pur-edit-search"
-                      style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 8px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                    {showPurDrop && ps.trim().length > 0 && (
-                      <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
-                        {fp.slice(0, 7).map(function (p, pidx) {
-                          return (
-                            <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu))); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
-                              <div>
-                                <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
-                                <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
-                              </div>
-                              <div style={{ textAlign: "right" }}>
-                                <div style={{ fontSize: 10, color: C.muted }}>Cost / Sell</div>
-                                <div style={{ fontWeight: 700, color: C.blue, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
-                        <div onClick={function () { setShowPurDrop(false); setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
-                          + Create "{ps}" as new product
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div style={{ padding: "6px 8px 8px", borderTop: "1.5px dashed " + C.border, background: "#f0f9ff" }}>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Qty</div>
-                      <input id="pur-edit-qty" type="number" value={pq} min="0"
-                        step={isDecimalUnit(pUnit || pBaseUnit) ? "0.001" : "1"}
-                        onChange={function (e) { setPq(e.target.value); }}
-                        onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var ci = document.getElementById("pur-edit-cost"); if (ci) ci.focus(); } }}
-                        style={{ width: 64, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "center", outline: "none", fontFamily: "inherit", background: "#fff", fontWeight: 700 }} />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 140 }}>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Unit</div>
-                      {(function () {
-                        var typedPick = pPickedProduct
-                          || state.products.find(function (p) {
-                            return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                          })
-                          || state.products.find(function (p) {
-                            return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                          });
-                        var unitOpts = typedPick ? getProductUnitRows(typedPick).map(function (r) { return r.name; }) : [];
-                        var rows = typedPick ? getProductUnitRows(typedPick) : [];
-                        return (
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
-                              {(unitOpts.length ? unitOpts : [pBaseUnit || "Pcs"]).map(function (uOpt) {
-                                var activeUnit = (pUnit || pBaseUnit) === uOpt;
-                                return (
-                                  <button
-                                    key={uOpt}
-                                    type="button"
-                                    onClick={function () {
-                                      if (!typedPick) return;
-                                      setPUnit(uOpt);
-                                      setPPickedProduct(typedPick);
-                                      syncCostModeAndDefaultsForUnit(typedPick, uOpt);
-                                      setPSell(String(getUnitSellPrice(typedPick, uOpt)));
-                                    }}
-                                    style={{
-                                      fontSize: 11, padding: "4px 10px", borderRadius: 6, border: "none", cursor: typedPick ? "pointer" : "default", fontFamily: "inherit", fontWeight: 700,
-                                      background: activeUnit ? C.accent : "transparent", color: activeUnit ? "#fff" : C.textMd
-                                    }}
-                                  >
-                                    {uOpt}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            {typedPick && rows.filter(function (r) { return r.factor > 1; }).map(function (r) {
-                              return (
-                                <button
-                                  key={"qe-" + r.name}
-                                  type="button"
-                                  onClick={function () { setPUnit(r.name); setPPickedProduct(typedPick); syncCostModeAndDefaultsForUnit(typedPick, r.name); setPSell(String(getUnitSellPrice(typedPick, r.name))); setPq(String((parseFloat(pq) || 0) + 1)); }}
-                                  style={{ fontSize: 10, padding: "3px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-                                >
-                                  +1 {r.name}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                    {(function () {
-                      var typedPick2 = pPickedProduct
-                        || state.products.find(function (p) {
-                          return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                        })
-                        || state.products.find(function (p) {
-                          return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                        });
-                      var bu2 = typedPick2 ? (typedPick2.unit || "Pcs") : "Pcs";
-                      var selU2 = typedPick2 ? (pUnit || pBaseUnit || typedPick2.unit || "Pcs") : "Pcs";
-                      var showCostToggle = typedPick2 && !isProductBaseUnitLabel(typedPick2, selU2);
-                      var costLab = typedPick2
-                        ? (isProductBaseUnitLabel(typedPick2, selU2) ? ("Cost (per " + bu2 + ")") : ("Cost (per " + selU2 + ")"))
-                        : "Cost";
-                      return (
-                        <div>
-                          <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>{costLab}</div>
-                          {showCostToggle ? (
-                            <div style={{ display: "flex", gap: 4, marginBottom: 4, flexWrap: "wrap", alignItems: "center" }}>
-                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_INPUT); }}
-                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_INPUT ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                                Per {selU2}
-                              </button>
-                              <button type="button" onClick={function () { setPCostInputMode(COST_INPUT_PER_BASE); }}
-                                style={{ fontSize: 10, padding: "2px 8px", borderRadius: 5, border: "1px solid " + C.border, background: pCostInputMode === COST_INPUT_PER_BASE ? C.accentSoft : "#fff", color: C.text, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-                                Per {bu2}
-                              </button>
-                            </div>
-                          ) : null}
-                          <input id="pur-edit-cost" type="number" value={pc}
-                            onChange={function (e) { setPc(e.target.value); }}
-                            onKeyDown={function (e) { if (e.key === "Tab") { e.preventDefault(); var si = document.getElementById("pur-edit-sell"); if (si) si.focus(); } }}
-                            placeholder="Cost"
-                            style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                        </div>
-                      );
-                    })()}
-                    <div>
-                      <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, marginBottom: 2 }}>Sell</div>
-                      <input id="pur-edit-sell" type="number" value={pSell}
-                        onChange={function (e) { setPSell(e.target.value); }}
-                        onKeyDown={function (e) {
-                          if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
-                            e.preventDefault();
-                            if (ps.trim()) { addEditItem(); setTimeout(function () { var si = document.getElementById("pur-edit-search"); if (si) si.focus(); }, 50); }
-                          }
-                        }}
-                        placeholder="Sell"
-                        style={{ width: 88, border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                    </div>
-                    <button type="button" onClick={function () { addEditItem(); setTimeout(function () { var si = document.getElementById("pur-edit-search"); if (si) si.focus(); }, 50); }} disabled={!ps.trim()}
-                      style={{ width: 30, height: 30, borderRadius: 6, border: "none", background: ps.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 15, cursor: ps.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 1 }}>+</button>
-                  </div>
-                  {(function () {
-                    var typedPick = pPickedProduct
-                      || state.products.find(function (p) {
-                        return p.status !== "inactive" && (p.name || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                      })
-                      || state.products.find(function (p) {
-                        return p.status !== "inactive" && (p.barcode || "").toLowerCase() === (ps || "").trim().toLowerCase();
-                      });
-                    if (!typedPick) return null;
-                    var selU = pUnit || pBaseUnit || typedPick.unit || "Pcs";
-                    var hint = purUnitConversionHint(typedPick, selU);
-                    var addBase = toProductBaseQty(parseFloat(pq) || 0, selU, typedPick);
-                    var curSt = typedPick.stock || 0;
-                    var afterSt = curSt + addBase;
-                    var lowCost = purCostSeemsLow(typedPick, selU, pc, pCostInputMode);
-                    var expCost = pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : getUnitCostPrice(typedPick, selU);
-                    var expLbl = pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
-                    return (
-                      <div style={{ marginTop: 6, fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
-                        {hint ? <div>{hint}</div> : null}
-                        <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
-                        {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>(!) Cost seems low vs catalogue (expected ~{getCurrencySymbol()} {fmtNum(expCost)} per {expLbl})</div> : null}
-                      </div>
-                    );
-                  })()}
-                </div>
               </div>
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: false, comment_label: "" }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -1851,6 +1928,7 @@ var Purchases = React.memo(function (props) {
           <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>Product will be added to inventory. Stock will be updated when the purchase is saved.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <Input label="Product Name *" value={newProd.name} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
+            <ProductNameDuplicateHint name={newProd.name} products={state.products} C={C} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
@@ -1902,21 +1980,6 @@ var Purchases = React.memo(function (props) {
               <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
               <textarea value={newProd.description || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
             </div>
-            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
-                <input type="checkbox" checked={!!newProd.require_comment} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
-                Enable comment field at checkout (IMEI / serial / note)
-              </label>
-              {newProd.require_comment && (
-                <div style={{ marginTop: 10 }}>
-                  <Input label="Label (optional)" value={newProd.comment_label || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Shown on POS and invoice. If empty, the field is labeled &quot;Comment&quot;.</div>
-                </div>
-              )}
-            </div>
-            {getBusinessProfile().modules.serial && (
-              <Input label="Serial Number / IMEI (optional)" value={newProd.serialNo || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { serialNo: e.target.value }); }); }} placeholder="e.g. 358240051111110" />
-            )}
             {getBusinessProfile().name === "Jewelry & Watches" && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <Input label="Weight (grams)" type="number" value={newProd.weightGrams || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { weightGrams: e.target.value }); }); }} placeholder="e.g. 5.25" />
@@ -1930,7 +1993,7 @@ var Purchases = React.memo(function (props) {
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <Btn col="cyan" onClick={saveNewProduct} disabled={!newProd.name || !newProd.price}>Save Product</Btn>
+              <Btn col="cyan" onClick={saveNewProduct} disabled={!newProd.name || !newProd.price || newProductNameExactDup}>Save Product</Btn>
               <Btn col="gray" onClick={function () { setNewProd(null); }}>Cancel</Btn>
             </div>
           </div>
@@ -1953,6 +2016,21 @@ var Purchases = React.memo(function (props) {
               <Btn col="green" onClick={saveNewSupplier} disabled={!newSuppF.name}>Save Supplier</Btn>
               <Btn col="gray" onClick={function () { setShowNewSupp(false); }}>Cancel</Btn>
             </div>
+          </div>
+        </Modal>
+      )}
+      {voidPurTarget && (
+        <Modal title={"Void Purchase — " + (voidPurTarget.invoiceNo || voidPurTarget.id.slice(0, 8))} onClose={function () { setVoidPurTarget(null); setVoidReason(""); }}>
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "12px 14px", marginBottom: 14, fontSize: 13, color: "#991b1b", lineHeight: 1.5 }}>
+            This will remove stock added by this purchase and reverse payments. The record stays as <strong>Voided</strong>. Cannot void if units were already sold.
+          </div>
+          <Sel label="Reason" value={voidReason} onChange={function (e) { setVoidReason(e.target.value); }}>
+            <option value="">Select reason…</option>
+            {VOID_REASON_OPTIONS.map(function (opt) { return <option key={opt} value={opt}>{opt}</option>; })}
+          </Sel>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <Btn col="red" disabled={!voidReason} onClick={function () { voidPurchaseInvoice(voidPurTarget.id, voidReason); }}>Void Purchase</Btn>
+            <Btn col="gray" onClick={function () { setVoidPurTarget(null); setVoidReason(""); }}>Cancel</Btn>
           </div>
         </Modal>
       )}

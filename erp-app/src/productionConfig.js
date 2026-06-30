@@ -4,6 +4,15 @@
  */
 export var IS_PRODUCTION = true;
 
+/**
+ * Computer-shop standalone edition: one installer, tech profile, no network/mode wizard,
+ * always full admin navigation (no Sales/Admin mode toggle).
+ */
+export var COMPUTER_SHOP_EDITION = true;
+
+/** Default POS line comment label (generic — serial/IMEI entered at checkout). */
+export var DEFAULT_PRODUCT_COMMENT_LABEL = "Comment";
+
 /** Vite production bundle (npm run build). */
 export function isProductionViteBuild() {
   try {

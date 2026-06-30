@@ -3,11 +3,14 @@ import { round2 } from "../accounting/generalLedger.js";
 import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
 import { buildReconciliationReport } from "../accounting/reconciliationReport.js";
 import { validateJournalBalanced, DEFAULT_GL_CHART } from "../accounting/generalLedger.js";
-import { deriveInventoryEconomics, reconcileInventoryToLedger } from "../accounting/inventoryEngine.js";
+import { deriveInventoryEconomics, reconcileInventoryToLedger, isInventoryReconcileOk } from "../accounting/inventoryEngine.js";
 import { SnapshotIntegrityBadge } from "../ui/SnapshotIntegrityBadge.jsx";
 import { validateExtraUnits, buildUnitsPersistFields } from "../units/productUnits.js";
 import { diffTrialBalanceSnapshotVsLive } from "../accounting/snapshotTbDiff.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
+import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
+import { DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 
 /** Group GL lines by transactionId / entryGroupId for developer debug view only */
 function tcGroupJournalByTransaction(lines) {
@@ -166,7 +169,7 @@ var Accounts = function (props) {
         setShowObStockDrop(false);
         setObStockSearch("");
         setObStockModal(true);
-        setObStockForm(function (prev) { return Object.assign({}, prev, { name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", qty: "1", require_comment: false, comment_label: "" }); });
+        setObStockForm(function (prev) { return Object.assign({}, prev, { name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", qty: "1", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); });
       }
     };
     window.addEventListener("keydown", handler);
@@ -189,12 +192,12 @@ var Accounts = function (props) {
     if (p.status === "inactive") return false;
     var q = obStockSearch.toLowerCase();
     if (!q) return false;
-    return (p.name || "").toLowerCase().includes(q) || (p.productId || "").toLowerCase().includes(q) || (p.barcode || "").toLowerCase().includes(q);
+    return productMatchesSearch(p, q);
   }).slice(0, 8);
   var [obAssetModal, setObAssetModal] = useState(false);
   var [obRecvForm, setObRecvForm] = useState({ person: "", amount: "", note: "" });
   var [obPayForm, setObPayForm] = useState({ source: "", amount: "", note: "" });
-  var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: false, comment_label: "" });
+  var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
   var [obAssetForm, setObAssetForm] = useState({ name: "", category: "Equipment / Machinery", value: "", note: "" });
 
   var obCalcCapital = function (d) {
@@ -250,7 +253,7 @@ var Accounts = function (props) {
         }
       } else {
         // New product - create it
-        var npBase = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true, require_comment: !!s.require_comment, comment_label: String(s.comment_label || "").trim() };
+        var npBase = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true, require_comment: true, comment_label: String(s.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL };
         var np = Array.isArray(s.units) && s.units.length > 0
           ? Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", units: s.units, bulkEnabled: false, bulkUnit: "", bulkConversion: 0, bulkPrice: 0, bulkCost: 0 })
           : Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", bulkEnabled: !!(s.bulkUnit && (parseFloat(s.bulkConversion) || 0) > 0), bulkUnit: s.bulkUnit || "", bulkConversion: parseFloat(s.bulkConversion) || 0, bulkCost: parseFloat(s.bulkCost) || 0, bulkPrice: parseFloat(s.bulkPrice) || 0 });
@@ -946,7 +949,7 @@ var Accounts = function (props) {
                   Last journal error: {typeof glErr.message === "string" ? glErr.message : JSON.stringify(glErr)}
                 </div>
               )}
-              {invRec && !invRec.ok && (
+              {invRec && !isInventoryReconcileOk(invRec, state.settings || {}) && (
                 <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#92400e", marginBottom: 10 }}>
                   <strong>Inventory vs ledger:</strong> GL inventory balance {getCurrencySymbol()} {fmtNum(invRec.glInventoryBalance)} vs layer valuation {getCurrencySymbol()} {fmtNum(invRec.physicalValue)}
                   {typeof invRec.difference === "number" ? <span> — off by {getCurrencySymbol()} {fmtNum(Math.abs(invRec.difference))}</span> : null}
@@ -1342,11 +1345,11 @@ var Accounts = function (props) {
                               <TD color={C.muted}>{e.ref || "—"}</TD>
                               <TD>{e.note || "—"}</TD>
                               <td style={{ padding: "10px 12px", fontWeight: 700, color: row.run >= 0 ? C.blue : C.red }}>{getCurrencySymbol()} {fmtNum(row.run)}</td>
-                              <td style={{ padding: "8px 10px" }}>
-                                <div style={{ display: "flex", gap: 5 }}>
-                                  <button onClick={function () { setCapEditForm(Object.assign({}, e)); setCapEditModal("edit"); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }} style={{ padding: "5px 10px", background: C.accentSoft, color: C.accent, border: "1.5px solid " + C.accent, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Edit</button>
-                                  <button onClick={function () { setCapDeleteTarget(Object.assign({}, e)); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }} style={{ padding: "5px 10px", background: C.dangerSoft, color: C.red, border: "1.5px solid " + C.red, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Del</button>
-                                </div>
+                              <td style={actBtnCellStyle}>
+                                <ActBtnGroup>
+                                  <ActBtn tone="blue" title="Edit capital entry" onClick={function () { setCapEditForm(Object.assign({}, e)); setCapEditModal("edit"); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }}>✎</ActBtn>
+                                  <ActBtn tone="red" title="Delete capital entry" onClick={function () { setCapDeleteTarget(Object.assign({}, e)); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }}>✕</ActBtn>
+                                </ActBtnGroup>
                               </td>
                             </TR>
                           );
@@ -1473,11 +1476,11 @@ var Accounts = function (props) {
                               <TD bold color={C.purple}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
                               <TD color={C.muted}>{e.paymentMethod || "Cash"}</TD>
                               <TD>{e.note || "—"}</TD>
-                              <td style={{ padding: "8px 10px" }}>
-                                <div style={{ display: "flex", gap: 5 }}>
-                                  <button onClick={function () { setPdEdit(Object.assign({}, e)); }} style={{ padding: "5px 10px", background: C.accentSoft, color: C.accent, border: "1.5px solid " + C.accent, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Edit</button>
-                                  <button onClick={function () { deletePd(e.id); }} style={{ padding: "5px 10px", background: C.dangerSoft, color: C.red, border: "1.5px solid " + C.red, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Del</button>
-                                </div>
+                              <td style={actBtnCellStyle}>
+                                <ActBtnGroup>
+                                  <ActBtn tone="blue" title="Edit distribution" onClick={function () { setPdEdit(Object.assign({}, e)); }}>✎</ActBtn>
+                                  <ActBtn tone="red" title="Delete distribution" onClick={function () { deletePd(e.id); }}>✕</ActBtn>
+                                </ActBtnGroup>
                               </td>
                             </TR>
                           );
@@ -1571,11 +1574,11 @@ var Accounts = function (props) {
                             <TD bold color={C.purple}>{getCurrencySymbol()} {fmtNum(a.amount)}</TD>
                             <TD color={C.muted}>{a.cashMethod || "Cash"}</TD>
                             <TD>{a.note || "—"}</TD>
-                            <td style={{ padding: "8px 10px" }}>
-                              <div style={{ display: "flex", gap: 5 }}>
-                                <button onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("edit"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }} style={{ padding: "5px 10px", background: C.accentSoft, color: C.accent, border: "1.5px solid " + C.accent, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Edit</button>
-                                <button onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("delete"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }} style={{ padding: "5px 10px", background: C.dangerSoft, color: C.red, border: "1.5px solid " + C.red, borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Del</button>
-                              </div>
+                            <td style={actBtnCellStyle}>
+                              <ActBtnGroup>
+                                <ActBtn tone="blue" title="Edit asset" onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("edit"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }}>✎</ActBtn>
+                                <ActBtn tone="red" title="Delete asset" onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("delete"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }}>✕</ActBtn>
+                              </ActBtnGroup>
                             </td>
                           </TR>
                         );
@@ -1706,7 +1709,7 @@ var Accounts = function (props) {
               var existNonOB = (state.products || []).filter(function (p) { return !p._isOpening; });
               var obNextId = nextProductId(existNonOB);
               return (
-                <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: false, comment_label: "" }); }} wide>
+                <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} wide>
                   <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>New product will be added to your Inventory with opening stock quantity.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     <Input label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
@@ -1756,18 +1759,6 @@ var Accounts = function (props) {
                       <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
                       <textarea value={obStockForm.description || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
                     </div>
-                    <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#fafafa" }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
-                        <input type="checkbox" checked={!!obStockForm.require_comment} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { require_comment: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
-                        Enable comment field at checkout (IMEI / serial / note)
-                      </label>
-                      {obStockForm.require_comment && (
-                        <div style={{ marginTop: 10 }}>
-                          <Input label="Label (optional)" value={obStockForm.comment_label || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { comment_label: e.target.value }); }); }} placeholder="e.g. IMEI / Serial Number" />
-                          <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Shown on POS and invoice. If empty, the field is labeled &quot;Comment&quot;.</div>
-                        </div>
-                      )}
-                    </div>
                     <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                       <Btn col="cyan" onClick={function () {
                         if (!obStockForm.name.trim()) { showAlert("Please enter a product name."); return; }
@@ -1792,10 +1783,10 @@ var Accounts = function (props) {
                           price: parseFloat(obStockForm.price) || parseFloat(obStockForm.cost),
                           qty: obQtyToUse,
                           _isNew: true,
-                          require_comment: !!obStockForm.require_comment,
-                          comment_label: String(obStockForm.comment_label || "").trim(),
+                          require_comment: true,
+                          comment_label: String(obStockForm.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
                         }, unitFieldsOb)]) });
-                        setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: false, comment_label: "" });
+                        setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
                         setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
                       }} disabled={!obStockForm.name || !obStockForm.price || !obStockForm.cost}>Save Product</Btn>
                       <Btn col="gray" onClick={function () { setObStockModal(false); }}>Cancel</Btn>
@@ -1811,7 +1802,7 @@ var Accounts = function (props) {
                 if (p._isOpening) return false;
                 var q = obStockExistSearch.toLowerCase();
                 if (!q) return true;
-                return (p.name || "").toLowerCase().includes(q) || (p.productId || "").includes(q) || (p.barcode || "").toLowerCase().includes(q) || (p.category || "").toLowerCase().includes(q);
+                return productMatchesSearch(p, q);
               });
               return (
                 <Modal title="Add Existing Product to Opening Stock" onClose={function () { setObStockExistModal(false); setObStockExistSearch(""); }}>
@@ -2218,7 +2209,7 @@ var Accounts = function (props) {
                                 {obStockSearch.trim() && (
                                   <div onClick={function () {
                                     setObStockModal(true);
-                                    setObStockForm({ name: obStockSearch, barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: obStockCost, price: obStockSell, qty: obStockQty, require_comment: false, comment_label: "" });
+                                    setObStockForm({ name: obStockSearch, barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: obStockCost, price: obStockSell, qty: obStockQty, require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
                                     setShowObStockDrop(false);
                                   }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, color: C.green, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
                                     + Create "{obStockSearch}" as new product
@@ -2247,15 +2238,14 @@ var Accounts = function (props) {
                                 var sell = parseFloat(obStockSell) || 0;
                                 /* Find existing product */
                                 var existProd = filtObProds[0] || (state.products || []).find(function (p) {
-                                  var q = obStockSearch.toLowerCase();
-                                  return (p.name || "").toLowerCase() === q || (p.productId || "") === q || (p.barcode || "").toLowerCase() === q;
+                                  return productMatchesSearchExact(p, obStockSearch);
                                 });
                                 if (existProd) {
                                   var obRow2 = { name: existProd.name, barcode: existProd.barcode, category: existProd.category, unit: existProd.unit || "Pcs", bulkUnit: existProd.bulkUnit || "", bulkConversion: existProd.bulkConversion || 0, bulkCost: existProd.bulkCost || 0, bulkPrice: existProd.bulkPrice || 0, description: existProd.description || "", cost: cost || existProd.cost, price: sell || existProd.price, qty: qty, _srcProdId: existProd.id, _existingProduct: true };
                                   if (Array.isArray(existProd.units) && existProd.units.length > 0) obRow2.units = existProd.units;
                                   setD({ stock: (d.stock || []).concat([obRow2]) });
                                 } else {
-                                  setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: false, comment_label: "" }]) });
+                                  setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }]) });
                                 }
                                 setObStockSearch(""); setObStockQty("1"); setObStockCost(""); setObStockSell("");
                                 setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
@@ -2269,15 +2259,14 @@ var Accounts = function (props) {
                             var cost = parseFloat(obStockCost) || 0;
                             var sell = parseFloat(obStockSell) || 0;
                             var existProd = filtObProds[0] || (state.products || []).find(function (p) {
-                              var q = obStockSearch.toLowerCase();
-                              return (p.name || "").toLowerCase() === q || (p.productId || "") === q || (p.barcode || "").toLowerCase() === q;
+                              return productMatchesSearchExact(p, obStockSearch);
                             });
                             if (existProd) {
                               var obRow3 = { name: existProd.name, barcode: existProd.barcode, category: existProd.category, unit: existProd.unit || "Pcs", bulkUnit: existProd.bulkUnit || "", bulkConversion: existProd.bulkConversion || 0, bulkCost: existProd.bulkCost || 0, bulkPrice: existProd.bulkPrice || 0, description: existProd.description || "", cost: cost || existProd.cost, price: sell || existProd.price, qty: qty, _srcProdId: existProd.id, _existingProduct: true };
                               if (Array.isArray(existProd.units) && existProd.units.length > 0) obRow3.units = existProd.units;
                               setD({ stock: (d.stock || []).concat([obRow3]) });
                             } else {
-                              setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: false, comment_label: "" }]) });
+                              setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }]) });
                             }
                             setObStockSearch(""); setObStockQty("1"); setObStockCost(""); setObStockSell("");
                             setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);

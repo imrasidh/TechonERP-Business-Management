@@ -1,15 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
-  INVOICE_LANG_KEYS,
-  INVOICE_LANG_NAMES,
-  ALL_LANGUAGES,
-  normalizeOptionalInvoiceLangs,
-} from "../config/invoicePrintLabels.js";
-import {
   CURATED_COUNTRIES,
-  getSuggestedOptionalLangsForCountry,
-  mergeOptionalForCountryChange,
-  sanitizePersistedInvoiceLangs,
 } from "../config/countryLanguageData.js";
 import { getCountryMeta, getPrimaryCountryForCurrency, APP_CURRENCY_OPTIONS } from "../countryMeta";
 import { mergeTaxesOnCountryChange, normalizeTaxList } from "../tax/countryTaxMeta.js";
@@ -21,6 +12,8 @@ import {
   applyRawMaterialPricingPlanToProducts,
 } from "../utils/rawMaterialPricingBackfill.js";
 import { ROLE_ADMIN, ROLE_LABELS, normalizeRole } from "../security/rbac.js";
+import { COMPUTER_SHOP_EDITION, validateJsonBackupPayload } from "../productionConfig.js";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
 
@@ -49,6 +42,7 @@ var Settings = function (props) {
   var showConfirm = props.showConfirm;
   var pwMatchesAsync = props.pwMatchesAsync;
   var hashPw = props.hashPw;
+  var setLoginPassword = props.setLoginPassword;
   var getCurrencySymbol = props.getCurrencySymbol;
   var updateCurrencySymbol = props.updateCurrencySymbol;
   var fmtNum = props.fmtNum;
@@ -57,12 +51,18 @@ var Settings = function (props) {
   var validateCoreStartupIdentity = props.validateCoreStartupIdentity;
   var getCoreStartupIdentityAlertMessage = props.getCoreStartupIdentityAlertMessage;
   var getBusinessProfile = props.getBusinessProfile;
+  var businessType = props.businessType || S.get("tc3_businessType", "tech") || "tech";
+  var setBusinessType = props.setBusinessType;
+  var BUSINESS_PROFILES = props.BUSINESS_PROFILES || {};
+  var setActive = props.setActive;
+  var INDUSTRY_ORDER = ["tech", "grocery", "fashion", "hardware", "glass", "pharmacy", "jewelry", "automotive", "agriculture", "restaurant", "general"];
   var buildCloudSyncPayload = props.buildCloudSyncPayload;
   var cloudSyncBump = props.cloudSyncBump || 0;
   var currentUser = props.currentUser || null;
   var canManageUsers = props.canManageUsers === true;
   var _idbCache = props._idbCache;
   var _idbWrite = props._idbWrite;
+  var applyBackupRestore = typeof props.applyBackupRestore === "function" ? props.applyBackupRestore : null;
   var AboutTab = props.AboutTab;
   var InvoiceThermal = props.InvoiceThermal;
   var InvoiceA4 = props.InvoiceA4;
@@ -85,6 +85,10 @@ var Settings = function (props) {
   var [showSupportPinResetHint, setShowSupportPinResetHint] = useState(false);
   var [rmBfPreview, setRmBfPreview] = useState(null);
   var [showAppPasswordResetHint, setShowAppPasswordResetHint] = useState(false);
+  var [pendingIndustry, setPendingIndustry] = useState(businessType);
+  var [industryPwOpen, setIndustryPwOpen] = useState(false);
+  var [industryPw, setIndustryPw] = useState("");
+  var [industryPwMsg, setIndustryPwMsg] = useState("");
   var [invFmt, setInvFmt] = useState("a4a5"); /* A4/A5 vs Thermal tab in Invoice Design */
   var [countrySearchOpen, setCountrySearchOpen] = useState(false);
   var [countrySearchQ, setCountrySearchQ] = useState("");
@@ -128,7 +132,7 @@ var Settings = function (props) {
     invoicePdfFolder: state.settings.invoicePdfFolder || "",
     shopCountry: state.settings.shopCountry || "",
     defaultInvoiceLang: state.settings.defaultInvoiceLang || "en",
-    optionalInvoiceLangs: Array.isArray(state.settings.optionalInvoiceLangs) ? state.settings.optionalInvoiceLangs : ["ta", "si"],
+    optionalInvoiceLangs: [],
     customInvoiceLangs: Array.isArray(state.settings.customInvoiceLangs) ? state.settings.customInvoiceLangs : [],
     taxEnabled: state.settings.taxEnabled === true,
     taxMode: state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive",
@@ -141,7 +145,6 @@ var Settings = function (props) {
     preventNegativeStock: state.settings.preventNegativeStock !== false,
     allowCostFallback: state.settings.allowCostFallback === true,
     glVatPostingEnabled: state.settings.glVatPostingEnabled !== false,
-    sessionTimeoutMinutes: state.settings.sessionTimeoutMinutes || 15,
   }));
   var [newAsset, setNewAsset] = useState(null);
   var [editAsset, setEditAsset] = useState(null);
@@ -194,7 +197,7 @@ var Settings = function (props) {
   var [newUserRole, setNewUserRole] = useState("cashier");
   var [newUserPassword, setNewUserPassword] = useState("");
   var [userMsg, setUserMsg] = useState(null);
-  var isRestaurantBusiness = S.get("tc3_businessType", "") === "restaurant";
+  var isRestaurantBusiness = businessType === "restaurant";
   var normalizeRestaurantTableName = function (name) {
     return String(name || "").replace(/\s+/g, " ").trim();
   };
@@ -272,6 +275,9 @@ var Settings = function (props) {
     hashPw(String(p)).then(function (hashed) {
       var next = users.map(function (x) { return x.id === u.id ? Object.assign({}, x, { passwordHash: hashed }) : x; });
       saveUsers(next, { type: "success", text: "Password reset for " + (u.username || u.name) + "." });
+      if (typeof setLoginPassword === "function" && (u.role === "admin" || normalizeUsername(u.username) === "admin")) {
+        setLoginPassword(hashed, { userId: u.id, username: u.username });
+      }
     });
   };
 
@@ -366,7 +372,7 @@ var Settings = function (props) {
     }
   }, [cloudSyncBump]);
 
-  var ALL_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+  var ALL_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_businessType"];
 
   var buildBackupObject = function () {
     var backup = { version: 2, timestamp: new Date().toISOString(), shopName: state.settings.shopName || "Techon", data: {} };
@@ -465,22 +471,37 @@ var Settings = function (props) {
     reader.onload = function (ev) {
       try {
         var backup = JSON.parse(ev.target.result);
-        if (!backup.data || !backup.version) { setBakMsg({ type: "error", text: "Invalid backup file format." }); return; }
+        if (!validateJsonBackupPayload(backup)) {
+          setBakMsg({ type: "error", text: "Invalid backup file format." });
+          return;
+        }
         showConfirm("Restore from backup dated " + (backup.timestamp ? new Date(backup.timestamp).toLocaleString() : "unknown") + "?\n\nThis will first download a SAFETY BACKUP of your current data, then restore. Continue?", function () {
           doSafetyBackup();
-          setTimeout(function () {
-            /* Write restored data directly into IDB cache AND IndexedDB.
-               This ensures initAndLoadIDB finds the restored data on reload,
-               even though IndexedDB is not empty (so migration won't re-run). */
-            ALL_KEYS.forEach(function (k) {
-              if (backup.data[k] !== undefined) {
-                _idbCache[k] = backup.data[k];
-                _idbWrite(k, backup.data[k]);
-              }
+          var salesCount = (backup.data && backup.data.tc3_sales && backup.data.tc3_sales.length) || 0;
+          var restoreFn = applyBackupRestore || function (data) {
+            return new Promise(function (resolve, reject) {
+              try {
+                ALL_KEYS.forEach(function (k) {
+                  if (data[k] !== undefined) {
+                    _idbCache[k] = data[k];
+                    _idbWrite(k, data[k]);
+                    try { localStorage.setItem(k, JSON.stringify(data[k])); } catch (e2) { /* quota */ }
+                  }
+                });
+                if (data.tc3_businessType !== undefined) {
+                  _idbCache.tc3_businessType = data.tc3_businessType;
+                  try { localStorage.setItem("tc3_businessType", JSON.stringify(data.tc3_businessType)); } catch (e3) { /* ignore */ }
+                }
+                resolve();
+              } catch (err) { reject(err); }
             });
-            setBakMsg({ type: "success", text: "Restore complete! Reloading in 2 seconds..." });
+          };
+          restoreFn(backup.data).then(function () {
+            setBakMsg({ type: "success", text: "Restore complete (" + salesCount + " sales). Reloading in 2 seconds..." });
             setTimeout(function () { window.location.reload(); }, 2000);
-          }, 800);
+          }).catch(function (err) {
+            setBakMsg({ type: "error", text: "Restore failed: " + (err && err.message ? err.message : String(err)) });
+          });
         });
       } catch (err) { setBakMsg({ type: "error", text: "Restore failed: " + err.message }); }
     };
@@ -544,9 +565,9 @@ var Settings = function (props) {
     ns.strictPeriodLock = ns.strictPeriodLock === true;
     ns.purchaseReturnCostMode = ns.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac";
     ns.taxApplyBase = ns.taxApplyBase === "before_discount" ? "before_discount" : "after_discount";
-    var sl = sanitizePersistedInvoiceLangs(ns.defaultInvoiceLang || "en", ns.optionalInvoiceLangs, ns.customInvoiceLangs);
-    ns.optionalInvoiceLangs = sl.optionalInvoiceLangs;
-    ns.customInvoiceLangs = sl.customInvoiceLangs;
+    ns.defaultInvoiceLang = "en";
+    ns.optionalInvoiceLangs = [];
+    ns.customInvoiceLangs = [];
     updateCurrencySymbol(ns.currency); // Update live currency symbol
     S.set("tc3_settings", ns);
     setState(function (st) { return Object.assign({}, st, { settings: ns }); });
@@ -615,7 +636,11 @@ var Settings = function (props) {
     pwMatchesAsync(pwOld, current).then(function (oldOk) {
       if (current && !oldOk) { setPwMsg({ type: "error", text: "Current password incorrect." }); return; }
       hashPw(pwNew).then(function (hashed) {
-        S.set("tc3_apppass", hashed);
+        if (typeof setLoginPassword === "function") {
+          setLoginPassword(hashed, { username: "admin" });
+        } else {
+          S.set("tc3_apppass", hashed);
+        }
         setPwMsg({ type: "success", text: "Password changed successfully!" });
         setPwOld(""); setPwNew(""); setPwNew2("");
       });
@@ -770,31 +795,152 @@ var Settings = function (props) {
     );
   };
 
-  var TABS = [["shop", "Shop Info"], ["langcurrency", "Language & Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["security", "Security"]];
+  useEffect(function () {
+    setPendingIndustry(businessType);
+  }, [businessType]);
+
+  var applyIndustryChange = function () {
+    var newBt = pendingIndustry;
+    if (!newBt || newBt === businessType) return;
+    var storedPw = S.get("tc3_apppass", "");
+    if (!storedPw) {
+      showAlert("Set a login password in Settings → Security before changing industry.");
+      return;
+    }
+    setIndustryPw("");
+    setIndustryPwMsg("");
+    setIndustryPwOpen(true);
+  };
+
+  var confirmIndustryChangeWithPassword = function () {
+    if (!industryPw) { setIndustryPwMsg("Password required."); return; }
+    var storedPw = S.get("tc3_apppass", "");
+    pwMatchesAsync(industryPw, storedPw).then(function (ok) {
+      if (!ok) { setIndustryPwMsg("Incorrect password."); return; }
+      setIndustryPwOpen(false);
+      setIndustryPw("");
+      setIndustryPwMsg("");
+      var newBt = pendingIndustry;
+      if (!newBt || newBt === businessType) return;
+      var oldBt = businessType;
+      var oldName = (BUSINESS_PROFILES[oldBt] && BUSINESS_PROFILES[oldBt].name) || oldBt;
+      var newName = (BUSINESS_PROFILES[newBt] && BUSINESS_PROFILES[newBt].name) || newBt;
+      var restaurantSwitch = oldBt === "restaurant" || newBt === "restaurant";
+      var doApply = function () {
+        S.set("tc3_businessType", newBt);
+        if (typeof setBusinessType === "function") setBusinessType(newBt);
+        addAudit("Industry: " + oldName + " → " + newName);
+        if (restaurantSwitch && typeof setActive === "function") setActive("dashboard");
+        showAlert("Industry set to " + newName + ". Menus and product defaults now follow this profile.");
+      };
+      var msg = restaurantSwitch
+        ? ("Switching " + (newBt === "restaurant" ? "to Restaurant" : "from Restaurant") + " changes how Sales works (tables & kitchen vs normal retail POS). Your products, sales, and stock are kept.\n\nChange to " + newName + "?")
+        : ("Change industry to " + newName + "? Menus and default categories/units will update. Your existing data is kept.");
+      showConfirm(msg, doApply);
+    });
+  };
+
+  var industryProfileKeys = INDUSTRY_ORDER.filter(function (k) { return BUSINESS_PROFILES[k]; });
+  var industryModuleChips = function (profKey) {
+    var prof = BUSINESS_PROFILES[profKey] || BUSINESS_PROFILES.tech || {};
+    var mods = prof.modules || {};
+    var chips = [];
+    if (mods.repairs) chips.push("Repairs");
+    if (mods.barcode !== false) chips.push("Barcode labels");
+    if (mods.serial) chips.push("Serial / IMEI");
+    if (mods.expiry) chips.push("Expiry dates");
+    if (profKey === "restaurant") chips.push("Restaurant POS");
+    if (profKey === "jewelry") chips.push("Weight & making charge");
+    return chips;
+  };
+  var renderIndustryBlock = function (editable, compact) {
+    if (!getBusinessProfile && !industryProfileKeys.length) return null;
+    var bp = getBusinessProfile ? getBusinessProfile() : (BUSINESS_PROFILES[businessType] || {});
+    var chipKey = editable ? pendingIndustry : businessType;
+    var chips = industryModuleChips(chipKey);
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: compact ? 8 : 10 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: compact ? 10 : 12, background: "linear-gradient(135deg," + bp.color + "14," + bp.color + "08)", border: "1.5px solid " + bp.color + "40", borderRadius: 10, padding: compact ? "8px 12px" : "12px 16px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: compact ? 20 : 24 }}>{bp.emoji}</span>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ fontSize: compact ? 11 : 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Business Type</div>
+            <div style={{ fontSize: compact ? 13 : 14, fontWeight: 800, color: bp.color }}>{bp.name}</div>
+            <div style={{ fontSize: compact ? 10 : 11, color: C.muted, marginTop: 2 }}>{bp.units.length} units · {bp.categories.length} categories{bp.modules && bp.modules.repairs ? " · Repairs enabled" : ""}</div>
+            {!editable && (
+              <div style={{ fontSize: compact ? 10 : 11, color: C.muted, marginTop: 6 }}>Default on install — you can change this anytime in Settings after setup.</div>
+            )}
+          </div>
+        </div>
+        {editable && industryProfileKeys.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 520 }}>
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
+              Change industry to switch menus, category suggestions, units, and Sales layout. Your products and transactions are kept.
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Industry profile</label>
+              <select
+                value={pendingIndustry}
+                onChange={function (e) { setPendingIndustry(e.target.value); }}
+                style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none", fontFamily: "inherit", cursor: "pointer" }}
+              >
+                {industryProfileKeys.map(function (k) {
+                  var p = BUSINESS_PROFILES[k];
+                  return <option key={k} value={k}>{(p.emoji ? p.emoji + " " : "") + p.name}</option>;
+                })}
+              </select>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {chips.map(function (c) {
+                return <span key={c} style={{ fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 999, background: C.accentSoft, color: C.accent, border: "1px solid " + C.borderLight }}>{c}</span>;
+              })}
+            </div>
+            {pendingIndustry === "restaurant" && businessType !== "restaurant" && (
+              <div style={{ padding: "10px 12px", borderRadius: 8, background: "#fff7ed", border: "1px solid #fed7aa", fontSize: 12, color: "#9a3412" }}>
+                Switching to Restaurant enables table service and kitchen workflow in Sales. Existing data is kept.
+              </div>
+            )}
+            {businessType === "restaurant" && pendingIndustry !== "restaurant" && (
+              <div style={{ padding: "10px 12px", borderRadius: 8, background: "#fff7ed", border: "1px solid #fed7aa", fontSize: 12, color: "#9a3412" }}>
+                Leaving Restaurant switches Sales back to standard retail POS. Table/kitchen data is kept but hidden until you return to Restaurant.
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <Btn col="cyan" onClick={applyIndustryChange} disabled={!pendingIndustry || pendingIndustry === businessType}>Apply industry</Btn>
+              {pendingIndustry !== businessType ? (
+                <span style={{ fontSize: 12, color: C.muted }}>Current: <strong style={{ color: C.text }}>{(BUSINESS_PROFILES[businessType] && BUSINESS_PROFILES[businessType].name) || businessType}</strong></span>
+              ) : (
+                <span style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>✓ Active profile</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  var TABS = [["shop", "Shop Info"], ["langcurrency", "Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["security", "Security"]];
   if (isRestaurantBusiness) TABS.splice(1, 0, ["restaurantsetup", "Restaurant Setup"]);
   if (canManageUsers) TABS.push(["users", "Users"]);
   TABS.push(["activity", "Activity Log"]);
-  if (isNetworkMode) TABS.push(["network", "Network"]);
+  if (isNetworkMode && !COMPUTER_SHOP_EDITION) TABS.push(["network", "Network"]);
   TABS.push(["about", "About"]);
   if (isNetworkClient) {
     TABS = [["network", "Network"]];
   }
 
   var applyShopCountry = function (v) {
+    var meta = getCountryMeta(v);
     setF(function (x) {
-      var cust = Array.isArray(x.customInvoiceLangs) ? x.customInvoiceLangs.slice() : [];
-      var meta = getCountryMeta(v);
       var patch = {
         shopCountry: v,
         defaultInvoiceLang: "en",
-        optionalInvoiceLangs: mergeOptionalForCountryChange("en", v, cust),
-        customInvoiceLangs: cust,
+        optionalInvoiceLangs: [],
+        customInvoiceLangs: [],
         selectedTaxes: mergeTaxesOnCountryChange(v, x.selectedTaxes),
       };
       if (meta && meta.currency) patch.currency = meta.currency;
       return Object.assign({}, x, patch);
     });
-    var meta = getCountryMeta(v);
     if (meta && meta.currency) updateCurrencySymbol(meta.currency);
   };
 
@@ -828,6 +974,11 @@ var Settings = function (props) {
         sessionStorage.removeItem("tc3_open_app_password_reset");
         setStab("security");
         setShowAppPasswordResetHint(true);
+      }
+      var openShop = sessionStorage.getItem("tc3_open_settings_shop_tab") === "1";
+      if (openShop) {
+        sessionStorage.removeItem("tc3_open_settings_shop_tab");
+        setStab("shop");
       }
     } catch (e) { /* ignore */ }
   }, [props.embeddedWizard, isNetworkClient]);
@@ -991,7 +1142,7 @@ var Settings = function (props) {
       {!hideWizardTabs && (
       <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border, marginBottom: 16, flexWrap: "wrap" }}>
         {TABS.map(function (t) {
-          var icons = { shop: "🏪", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", security: "🔐", users: "👤", activity: "📋", network: "🌐", about: "ℹ" };
+          var icons = { shop: "🏪", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", about: "ℹ" };
           return <button key={t[0]} onClick={function () { setStab(t[0]); }} style={{ padding: "10px 20px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (stab === t[0] ? C.border : "transparent"), borderBottom: stab === t[0] ? "2px solid #fff" : "none", background: stab === t[0] ? "#fff" : "transparent", color: stab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: stab === t[0] ? -2 : 0 }}>{icons[t[0]]} {t[1]}</button>;
         })}
       </div>
@@ -1004,20 +1155,7 @@ var Settings = function (props) {
               <div style={wizPanelStyle}>
                 {wizHeading("Basic information")}
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {(function () {
-                    var bp = getBusinessProfile();
-                    return (
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, background: "linear-gradient(135deg," + bp.color + "14," + bp.color + "08)", border: "1.5px solid " + bp.color + "40", borderRadius: 10, padding: "8px 12px" }}>
-                        <span style={{ fontSize: 20 }}>{bp.emoji}</span>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Business Type</div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: bp.color }}>{bp.name}</div>
-                          <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{bp.units.length} units · {bp.categories.length} categories{bp.modules.repairs ? " · Repairs enabled" : ""}</div>
-                        </div>
-                        <div style={{ fontSize: 9, background: bp.color + "20", color: bp.color, borderRadius: 6, padding: "3px 8px", fontWeight: 600, letterSpacing: "0.04em" }}>FIXED</div>
-                      </div>
-                    );
-                  })()}
+                  {renderIndustryBlock(false, true)}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <div>
                       <Input compact={denseWiz} id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
@@ -1066,21 +1204,7 @@ var Settings = function (props) {
           <Card>
             <CardTitle sub="Your shop contact and display information">Shop Information</CardTitle>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {/* Business Type — read only */}
-              {(function () {
-                var bp = getBusinessProfile();
-                return (
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, background: "linear-gradient(135deg," + bp.color + "14," + bp.color + "08)", border: "1.5px solid " + bp.color + "40", borderRadius: 10, padding: "12px 16px" }}>
-                    <span style={{ fontSize: 24 }}>{bp.emoji}</span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Business Type</div>
-                      <div style={{ fontSize: 14, fontWeight: 800, color: bp.color }}>{bp.name}</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{bp.units.length} units · {bp.categories.length} categories{bp.modules.repairs ? " · Repairs enabled" : ""}</div>
-                    </div>
-                    <div style={{ fontSize: 10, background: bp.color + "20", color: bp.color, borderRadius: 6, padding: "4px 10px", fontWeight: 800, letterSpacing: "0.04em" }}>FIXED</div>
-                  </div>
-                );
-              })()}
+              {renderIndustryBlock(true, false)}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <div>
                   <Input compact={denseWiz} id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
@@ -1116,338 +1240,22 @@ var Settings = function (props) {
           )}
 
           {!props.embeddedWizard && (
-            <React.Fragment>
-              <Card>
-                <CardTitle sub="Warn when editing records before this date">📅 Period Close Date</CardTitle>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 420 }}>
-                  <div style={{ background: C.accentSoft, borderRadius: 9, padding: "10px 14px", fontSize: 12, color: C.accent }}>
-                    Set a &quot;Books Closed&quot; date. Any edit to records dated before this date will show a warning to protect historical data.
+            <Card>
+              <CardTitle sub="Shown on invoices when warranty is enabled">Warranty Policy</CardTitle>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 14px", borderRadius: 9, border: "1.5px solid " + (f.warrantyEnabled ? C.accent : C.border), background: f.warrantyEnabled ? C.accentSoft : "#fff" }}>
+                  <input type="checkbox" checked={f.warrantyEnabled} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyEnabled: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
+                  <span style={{ fontWeight: 700, fontSize: 13, color: f.warrantyEnabled ? C.accent : C.textMd }}>Enable warranty text on invoices</span>
+                </label>
+                {f.warrantyEnabled && (
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 6 }}>Warranty Text</label>
+                    <textarea value={f.warrantyText || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyText: e.target.value }); }); }} rows={8} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
                   </div>
-                  <Input compact={denseWiz} label="Books Closed Date" type="date" value={f.booksClosedDate || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { booksClosedDate: e.target.value }); }); }} />
-                  {f.booksClosedDate && <div style={{ fontSize: 11, color: C.muted }}>⚠ Edits to records before <strong>{fmtDate(f.booksClosedDate)}</strong> will require confirmation.</div>}
-                  {f.booksClosedDate && <button onClick={function () { setF(function (x) { return Object.assign({}, x, { booksClosedDate: "" }); }); }} style={{ background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", textAlign: "left", fontWeight: 600 }}>✕ Clear date</button>}
-                </div>
-              </Card>
-
-              <Card>
-                <CardTitle sub="Double-entry journal mode, inventory costing, and hard period lock">⚖ Accounting &amp; GL</CardTitle>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
-                    gap: 16,
-                    width: "100%",
-                    boxSizing: "border-box",
-                  }}
-                >
-                  <div style={{ gridColumn: "1 / -1", width: "100%", marginBottom: 12, boxSizing: "border-box" }}>
-                    <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#0369a1", width: "100%", boxSizing: "border-box" }}>
-                      <strong>Live</strong> updates the journal on each transaction. <strong>Repair</strong> only rebuilds when you use Rebuild in Accounts or when data changes in this mode (fallback for large imports).
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      gridColumn: "1 / -1",
-                      display: "grid",
-                      gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))",
-                      gap: 16,
-                      width: "100%",
-                      boxSizing: "border-box",
-                    }}
-                  >
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                      <label htmlFor="tc-settings-gl-mode" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Journal mode</label>
-                      <select
-                        id="tc-settings-gl-mode"
-                        value={S.get("tc3_gl_mode", "live")}
-                        onChange={function (e) {
-                          S.set("tc3_gl_mode", e.target.value);
-                          setState(function (st) { return Object.assign({}, st); });
-                        }}
-                        style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
-                      >
-                        <option value="live">Live — journal is authoritative (recommended)</option>
-                        <option value="rebuild">Repair — rebuild journal on schedule / manual only</option>
-                      </select>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                      <label htmlFor="tc-settings-inv-costing" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Inventory costing</label>
-                      <select
-                        id="tc-settings-inv-costing"
-                        value={f.inventoryCostingMethod || "wac"}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { inventoryCostingMethod: e.target.value }); }); }}
-                        style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
-                      >
-                        <option value="wac">Weighted average (line / product cost)</option>
-                        <option value="fifo">FIFO (uses product fifoBatches when set)</option>
-                      </select>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                      <label htmlFor="tc-settings-pr-cost-mode" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Purchase return cost</label>
-                      <select
-                        id="tc-settings-pr-cost-mode"
-                        value={f.purchaseReturnCostMode || "current_wac"}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { purchaseReturnCostMode: e.target.value }); }); }}
-                        title="Cost basis for supplier returns: current policy uses unit cost captured on the purchase line (aligned with inventory). original_cost is reserved for a future FIFO layer match."
-                        style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
-                      >
-                        <option value="current_wac">Current policy (line / WAC snapshot on purchase)</option>
-                        <option value="original_cost">Original receipt cost (reserved — uses line cost for now)</option>
-                      </select>
-                      <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>GL posting uses stored line unit cost; product WAC is not recomputed on return.</span>
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                      <label htmlFor="tc-settings-lock-date" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Lock date</label>
-                      <input
-                        id="tc-settings-lock-date"
-                        type="date"
-                        value={f.lockedUntilDate || ""}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { lockedUntilDate: e.target.value }); }); }}
-                        style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text }}
-                      />
-                      <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>Hard lock — no posts on or before this date</span>
-                    </div>
-                  </div>
-
-                  {f.lockedUntilDate && (
-                    <div style={{ gridColumn: "1 / -1", fontSize: 11, color: C.muted, marginTop: -4 }}>
-                      Transactions dated on or before <strong>{fmtDate(f.lockedUntilDate)}</strong> are blocked unless Admin (PIN) is unlocked.
-                    </div>
-                  )}
-
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.45 }}>
-                      <input
-                        type="checkbox"
-                        checked={f.strictPeriodLock === true}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { strictPeriodLock: e.target.checked }); }); }}
-                        style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent, marginTop: 2 }}
-                      />
-                      <span>
-                        <strong>Strict period lock</strong> (recommended for audit): transactions dated on or before the lock date cannot be edited, deleted, or have line items changed — only when this is on and a lock date is set. Admin (PIN) unlock still bypasses.
-                      </span>
-                    </label>
-                  </div>
-
-                  <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
-                      <input
-                        type="checkbox"
-                        checked={!f.preventNegativeStock}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { preventNegativeStock: !e.target.checked }); }); }}
-                        style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
-                      />
-                      <span>Allow negative stock (disables hard block on save)</span>
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
-                      <input
-                        type="checkbox"
-                        checked={f.allowCostFallback === true}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { allowCostFallback: e.target.checked }); }); }}
-                        style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
-                      />
-                      <span>FIFO: allow line-cost fallback when no layers (default off — stricter audit)</span>
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
-                      <input
-                        type="checkbox"
-                        checked={f.glVatPostingEnabled !== false}
-                        onChange={function (e) { setF(function (x) { return Object.assign({}, x, { glVatPostingEnabled: e.target.checked }); }); }}
-                        style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
-                      />
-                      <span>Post VAT to GL (VAT Payable / Receivable) when tax is enabled</span>
-                    </label>
-                  </div>
-
-                  <div style={{ gridColumn: "1 / -1", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 12 }}>
-                    {typeof props.createFinancialSnapshot === "function" && (
-                      <Btn col="gray" onClick={function () {
-                        props.createFinancialSnapshot({ label: "Manual snapshot (Settings)" });
-                      }}>Save financial snapshot</Btn>
-                    )}
-                    {typeof props.repairInventoryLayersFromReplay === "function" && (
-                      <Btn col="cyan" onClick={props.repairInventoryLayersFromReplay}>Repair inventory layers (replay)</Btn>
-                    )}
-                    {glDeveloperToolsSettings && exportSupportBundle && downloadSupportBundleJson && (
-                      <Btn
-                        col="gray"
-                        onClick={function () {
-                          try {
-                            var bundle = exportSupportBundle({
-                              periodFrom: supBndFrom,
-                              periodTo: supBndTo,
-                              anonymize: supBndAnon,
-                              includeReplay: supBndReplay,
-                              replayProductId: supBndPid || "",
-                            });
-                            downloadSupportBundleJson(bundle, "techon-support-bundle.json");
-                          } catch (e) {
-                            showAlert("Could not build support bundle.");
-                          }
-                        }}
-                      >
-                        Export support bundle (JSON)
-                      </Btn>
-                    )}
-                    <Btn col="cyan" onClick={saveAccountingSettings}>Save accounting settings</Btn>
-                  </div>
-                  {glDeveloperToolsSettings && exportSupportBundle && (
-                    <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginTop: 8 }}>
-                      <Input type="date" label="Bundle period from" value={supBndFrom} onChange={function (e) { setSupBndFrom(e.target.value); }} compact />
-                      <Input type="date" label="Bundle period to" value={supBndTo} onChange={function (e) { setSupBndTo(e.target.value); }} compact />
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                        <input type="checkbox" checked={supBndAnon} onChange={function (e) { setSupBndAnon(e.target.checked); }} /> Anonymize customers in bundle subset
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                        <input type="checkbox" checked={supBndReplay} onChange={function (e) { setSupBndReplay(e.target.checked); }} /> Include replay sample
-                      </label>
-                      <Input label="Replay product ID (optional)" value={supBndPid} onChange={function (e) { setSupBndPid(e.target.value); }} placeholder="SKU id" compact style={{ minWidth: 160 }} />
-                    </div>
-                  )}
-
-                  {typeof props.createFinancialSnapshot === "function" && (
-                    <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 8, width: "100%", marginTop: 2 }}>
-                      {(function () {
-                        var snaps = S.get("tc3_financial_snapshots", []);
-                        var last = Array.isArray(snaps) && snaps.length ? snaps[snaps.length - 1] : null;
-                        if (!last) {
-                          return (
-                            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 11 }}>
-                              <span style={{ color: C.muted }}>No snapshots yet. New saves will show as</span>
-                              <SnapshotIntegrityBadge variant="sealed" />
-                              <span style={{ color: C.muted }}>when you save.</span>
-                            </div>
-                          );
-                        }
-                        var sealed = !!(last.contentHash && validateSnapshotIntegrity(last));
-                        var legacy = !last.contentHash;
-                        return (
-                          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 11, minWidth: 0 }}>
-                            <span style={{ color: C.muted }}>Latest snapshot:</span>
-                            {sealed ? (
-                              <SnapshotIntegrityBadge variant="sealed" liveStatus />
-                            ) : legacy ? (
-                              <SnapshotIntegrityBadge variant="legacy" liveStatus />
-                            ) : (
-                              <SnapshotIntegrityBadge variant="failed" liveStatus />
-                            )}
-                            {last.label && <span style={{ color: C.muted }}>{last.label}</span>}
-                          </div>
-                        );
-                      })()}
-                      {(function () {
-                        var snaps = S.get("tc3_financial_snapshots", []);
-                        if (!Array.isArray(snaps) || snaps.length === 0) return null;
-                        var idx = Math.max(0, Math.min(snapValIdx || 0, snaps.length - 1));
-                        return (
-                          <div style={{ marginTop: 10, paddingTop: 12, borderTop: "1px solid " + C.borderLight, display: "flex", flexDirection: "column", gap: 8 }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Validate snapshot (hash + HMAC)</div>
-                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                              <select
-                                value={idx}
-                                onChange={function (e) { setSnapValIdx(parseInt(e.target.value, 10) || 0); setSnapValResult(null); }}
-                                style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, maxWidth: "100%" }}
-                              >
-                                {snaps.map(function (s, i) {
-                                  var lab = (s.label || s.id || "snapshot").slice(0, 48);
-                                  var when = (s.createdAt || "").slice(0, 19);
-                                  return (
-                                    <option key={(s.id || i) + "_" + i} value={i}>{when + " — " + lab}</option>
-                                  );
-                                })}
-                              </select>
-                              <Btn
-                                col="gray"
-                                disabled={snapValBusy}
-                                onClick={function () {
-                                  var list = S.get("tc3_financial_snapshots", []);
-                                  var pick = list[idx];
-                                  if (!pick) return;
-                                  setSnapValBusy(true);
-                                  setSnapValResult(null);
-                                  validateSnapshotIntegrityFull(pick).then(function (r) {
-                                    setSnapValBusy(false);
-                                    setSnapValResult(r);
-                                  }).catch(function () {
-                                    setSnapValBusy(false);
-                                    setSnapValResult({ ok: false, tampered: true, reason: "validate_error" });
-                                  });
-                                }}
-                              >
-                                {snapValBusy ? "Checking…" : "Validate integrity"}
-                              </Btn>
-                            </div>
-                            {snapValResult && (
-                              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                <div style={{
-                                  fontSize: 12,
-                                  padding: "10px 12px",
-                                  borderRadius: 8,
-                                  border: "1.5px solid " + (snapValResult.tampered ? "#fecaca" : "#a7f3d0"),
-                                  background: snapValResult.tampered ? "#fef2f2" : "#ecfdf5",
-                                  color: snapValResult.tampered ? "#991b1b" : "#065f46",
-                                  whiteSpace: "pre-wrap",
-                                  wordBreak: "break-word",
-                                }}>
-                                  <div style={{ fontWeight: 700, marginBottom: 4 }}>{(snapValResult.tampered ? "Tampered or invalid — " : "Valid — ") + (snapValResult.reason || "")}</div>
-                                  {(snapValResult.snapshotCreatedAt ? <div>Snapshot time: {snapValResult.snapshotCreatedAt}</div> : null)}
-                                  {(snapValResult.snapshotPeriodDate ? <div>Period / as-of: {snapValResult.snapshotPeriodDate}</div> : null)}
-                                  {(snapValResult.recomputedContentHashShort ? <div>Content hash (recomputed): {snapValResult.recomputedContentHashShort}</div> : null)}
-                                  {(snapValResult.storedContentHashShort ? <div>Content hash (stored): {snapValResult.storedContentHashShort}</div> : null)}
-                                  {(snapValResult.storedIntegrityHmacShort ? <div>HMAC (stored): {snapValResult.storedIntegrityHmacShort}</div> : null)}
-                                  {(snapValResult.canonicalBodyLength != null ? <div>Canonical body length: {snapValResult.canonicalBodyLength}</div> : null)}
-                                  {(snapValResult.matched ? <div>Matched: {snapValResult.matched}</div> : null)}
-                                  {(snapValResult.legacy ? <div>(Legacy snapshot — hash-only seal)</div> : null)}
-                                </div>
-                                <Btn sm col="gray" onClick={function () {
-                                  var r = snapValResult;
-                                  var lines = [
-                                    "TechonERP snapshot validation",
-                                    "reason: " + (r.reason || ""),
-                                    "tampered: " + !!r.tampered,
-                                    "snapshotId: " + (r.snapshotId || ""),
-                                    "createdAt: " + (r.snapshotCreatedAt || ""),
-                                    "periodDate: " + (r.snapshotPeriodDate || ""),
-                                    "recomputedHash: " + (r.expectedContentHash || r.recomputedContentHashShort || ""),
-                                    "storedHash: " + (r.storedContentHashValue || r.storedContentHash || ""),
-                                    "storedHmac: " + (r.storedIntegrityHmac || ""),
-                                    "canonicalLen: " + (r.canonicalBodyLength != null ? r.canonicalBodyLength : ""),
-                                  ];
-                                  var t = lines.join("\n");
-                                  try {
-                                    navigator.clipboard.writeText(t).then(function () { showAlert("Copied validation details to clipboard."); }).catch(function () { showAlert(t); });
-                                  } catch (e) {
-                                    showAlert(t);
-                                  }
-                                }}>Copy debug details</Btn>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  )}
-                </div>
-              </Card>
-
-              <Card>
-                <CardTitle sub="Shown on invoices when warranty is enabled">Warranty Policy</CardTitle>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 14px", borderRadius: 9, border: "1.5px solid " + (f.warrantyEnabled ? C.accent : C.border), background: f.warrantyEnabled ? C.accentSoft : "#fff" }}>
-                    <input type="checkbox" checked={f.warrantyEnabled} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyEnabled: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
-                    <span style={{ fontWeight: 700, fontSize: 13, color: f.warrantyEnabled ? C.accent : C.textMd }}>Enable warranty text on invoices</span>
-                  </label>
-                  {f.warrantyEnabled && (
-                    <div>
-                      <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 6 }}>Warranty Text</label>
-                      <textarea value={f.warrantyText || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyText: e.target.value }); }); }} rows={8} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
-                    </div>
-                  )}
-                  <Btn col="cyan" onClick={save}>Save Warranty</Btn>
-                </div>
-              </Card>
-            </React.Fragment>
+                )}
+                <Btn col="cyan" onClick={save}>Save Warranty</Btn>
+              </div>
+            </Card>
           )}
         </div>
       )}
@@ -1577,14 +1385,13 @@ var Settings = function (props) {
                     updateCurrencySymbol(sym);
                     var iso = getPrimaryCountryForCurrency(sym);
                     setF(function (x) {
-                      var cust = Array.isArray(x.customInvoiceLangs) ? x.customInvoiceLangs.slice() : [];
                       var next = Object.assign({}, x, { currency: sym });
                       if (!iso) return next;
                       return Object.assign({}, next, {
                         shopCountry: iso,
                         defaultInvoiceLang: "en",
-                        optionalInvoiceLangs: mergeOptionalForCountryChange("en", iso, cust),
-                        customInvoiceLangs: cust,
+                        optionalInvoiceLangs: [],
+                        customInvoiceLangs: [],
                         selectedTaxes: mergeTaxesOnCountryChange(iso, x.selectedTaxes),
                       });
                     });
@@ -1610,157 +1417,12 @@ var Settings = function (props) {
 
           <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20}>
             {langWizShell ? (
-              <CardTitle variant="wizard" sub="Default is English. Suggested languages follow your country; you can change them anytime.">
-                Invoice language
-              </CardTitle>
-            ) : (
-              <CardTitle sub="Default is English. Suggested languages are based on your selected country. You can still add or remove languages anytime. Custom languages you add are kept when you change country or currency.">🌐 2. Invoice languages</CardTitle>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 10 : 16 }}>
-              <div style={{ maxWidth: 420 }}>
-                <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Default print language</div>
-                <select
-                  value={f.defaultInvoiceLang || "en"}
-                  onChange={function (e) {
-                    var nv = e.target.value;
-                    setF(function (x) {
-                      var cust = (x.customInvoiceLangs || []).filter(function (c) { return c !== nv; });
-                      return Object.assign({}, x, {
-                        defaultInvoiceLang: nv,
-                        optionalInvoiceLangs: normalizeOptionalInvoiceLangs(nv, x.optionalInvoiceLangs || []),
-                        customInvoiceLangs: cust,
-                      });
-                    });
-                  }}
-                  style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: langWizShell ? "7px 10px" : "9px 12px", fontSize: langWizShell ? 12 : 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
-                >
-                  {INVOICE_LANG_KEYS.map(function (k) {
-                    return <option key={k} value={k}>{INVOICE_LANG_NAMES[k] || k}</option>;
-                  })}
-                </select>
-              </div>
-
-              {(function () {
-                var def = f.defaultInvoiceLang || "en";
-                var sugg = getSuggestedOptionalLangsForCountry(f.shopCountry || "");
-                var cust = f.customInvoiceLangs || [];
-                var suggestedForUi = sugg.filter(function (k) { return k !== def && cust.indexOf(k) < 0; });
-                return (
-                  <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 8 : 14 }}>
-                    <div>
-                      <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>A) Suggested for this country</div>
-                      {!f.shopCountry ? (
-                        <div style={{ fontSize: 12, color: C.muted }}>Select a country to see suggested languages (e.g. Sri Lanka → Sinhala, Tamil). You can still add any language below.</div>
-                      ) : suggestedForUi.length === 0 ? (
-                        <div style={{ fontSize: 12, color: C.muted }}>No extra suggested languages for this country, or they are already added as custom.</div>
-                      ) : (
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-                          {suggestedForUi.map(function (k) {
-                            var checked = (f.optionalInvoiceLangs || []).indexOf(k) >= 0;
-                            return (
-                              <label key={k} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.textMd }}>
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={function (e) {
-                                    var on = e.target.checked;
-                                    setF(function (x) {
-                                      var cur = (x.optionalInvoiceLangs || []).slice();
-                                      if (on) {
-                                        if (cur.indexOf(k) < 0) cur.push(k);
-                                      } else {
-                                        cur = cur.filter(function (c) { return c !== k; });
-                                      }
-                                      return Object.assign({}, x, { optionalInvoiceLangs: cur });
-                                    });
-                                  }}
-                                  style={{ width: 16, height: 16, accentColor: C.accent }}
-                                />
-                                {INVOICE_LANG_NAMES[k] || k}
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-
-                    <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: langWizShell ? 8 : 12 }}>
-                      <div style={{ fontSize: 10, fontWeight: 600, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>B) Add more languages</div>
-                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: C.textMd }}>+ Add language</span>
-                        <select
-                          defaultValue=""
-                          key={"add-lang-" + ((f.optionalInvoiceLangs || []).join(",") + "|" + (f.customInvoiceLangs || []).join(","))}
-                          onChange={function (e) {
-                            var k = e.target.value;
-                            if (!k) return;
-                            setF(function (x) {
-                              var d = x.defaultInvoiceLang || "en";
-                              if (k === d) return x;
-                              var cList = (x.customInvoiceLangs || []).slice();
-                              var oList = (x.optionalInvoiceLangs || []).slice();
-                              if (cList.indexOf(k) >= 0) return x;
-                              cList.push(k);
-                              if (oList.indexOf(k) < 0) oList.push(k);
-                              return Object.assign({}, x, { customInvoiceLangs: cList, optionalInvoiceLangs: oList });
-                            });
-                            e.target.value = "";
-                          }}
-                          style={{ minWidth: 200, border: "1.5px solid " + C.border, borderRadius: 8, padding: langWizShell ? "6px 8px" : "8px 10px", fontSize: langWizShell ? 12 : 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
-                        >
-                          <option value="">Choose language…</option>
-                          {ALL_LANGUAGES.filter(function (L) {
-                            if (L.code === def) return false;
-                            return (f.customInvoiceLangs || []).indexOf(L.code) < 0;
-                          }).map(function (L) {
-                            return <option key={L.code} value={L.code}>{L.name}</option>;
-                          })}
-                        </select>
-                      </div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Lists every supported print language. Adding here pins the language when you change country.</div>
-                    </div>
-
-                    {(cust || []).filter(function (k) { return k && k !== def; }).length > 0 && (
-                      <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Your added languages</div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                          {cust.filter(function (k) { return k && k !== def; }).map(function (k) {
-                            return (
-                              <div key={k} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "6px 10px", borderRadius: 8, border: "1.5px solid " + C.border, background: "#fafbff" }}>
-                                <span style={{ fontSize: 13, fontWeight: 600, color: C.textMd }}>{INVOICE_LANG_NAMES[k] || k}</span>
-                                <button
-                                  type="button"
-                                  onClick={function () {
-                                    setF(function (x) {
-                                      var c2 = (x.customInvoiceLangs || []).filter(function (c) { return c !== k; });
-                                      var o2 = (x.optionalInvoiceLangs || []).filter(function (c) { return c !== k; });
-                                      return Object.assign({}, x, { customInvoiceLangs: c2, optionalInvoiceLangs: o2 });
-                                    });
-                                  }}
-                                  style={{ background: "none", border: "none", color: C.red, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
-                                >
-                                  Remove
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          </Card>
-
-          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20}>
-            {langWizShell ? (
               <CardTitle variant="wizard" sub="Optional. Suggested rates match your country; you can edit or add custom taxes.">
                 Tax
               </CardTitle>
             ) : (
               <CardTitle sub="Optional — enable taxes for your region. Suggested rates load from your selected country; you can edit percentages and add custom taxes.">
-                💰 3. Tax
+                💰 2. Tax
               </CardTitle>
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 8 : 14 }}>
@@ -1801,7 +1463,7 @@ var Settings = function (props) {
                             key={"tax-" + idx + "-" + (t.name || "")}
                             style={{
                               display: "grid",
-                              gridTemplateColumns: "28px minmax(0, 1fr) 88px",
+                              gridTemplateColumns: f.taxCompoundMode === "cascade" ? "28px minmax(0, 1fr) 88px 120px" : "28px minmax(0, 1fr) 88px",
                               alignItems: "center",
                               gap: 10,
                               padding: "8px 10px",
@@ -1857,6 +1519,24 @@ var Settings = function (props) {
                               />
                               <span style={{ fontSize: 12, fontWeight: 700, color: C.muted, width: 14 }}>%</span>
                             </div>
+                            {f.taxCompoundMode === "cascade" && (
+                              <select
+                                value={t.appliesOn === "running" ? "running" : "net"}
+                                onChange={function (e) {
+                                  setF(function (x) {
+                                    var list = (x.selectedTaxes || []).map(function (row, i) {
+                                      if (i !== idx) return row;
+                                      return Object.assign({}, row, { appliesOn: e.target.value, order: row.order != null ? row.order : idx + 1 });
+                                    });
+                                    return Object.assign({}, x, { selectedTaxes: list });
+                                  });
+                                }}
+                                style={{ border: "1.5px solid " + C.border, borderRadius: 6, padding: "6px 8px", fontSize: 11, background: "#fff" }}
+                              >
+                                <option value="net">On net</option>
+                                <option value="running">On running</option>
+                              </select>
+                            )}
                           </div>
                         );
                       })
@@ -1932,6 +1612,25 @@ var Settings = function (props) {
                       <option value="exclusive">Exclusive</option>
                       <option value="inclusive">Inclusive</option>
                     </select>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Multiple taxes</span>
+                    <select
+                      value={f.taxCompoundMode === "cascade" ? "cascade" : "parallel"}
+                      onChange={function (e) {
+                        setF(function (x) { return Object.assign({}, x, { taxCompoundMode: e.target.value }); });
+                      }}
+                      style={{ maxWidth: 420, border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 12px", fontSize: 13, outline: "none", cursor: "pointer", background: "#fff", color: C.text }}
+                    >
+                      <option value="parallel">Parallel — each tax on the same net amount</option>
+                      <option value="cascade">Cascade — later taxes on net + earlier taxes (e.g. SSCL then VAT)</option>
+                    </select>
+                    {f.taxCompoundMode === "cascade" && (
+                      <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+                        Use tax order in the list above. Taxes marked “on running” apply after prior taxes (Sri Lanka SSCL → VAT style).
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -2037,7 +1736,7 @@ var Settings = function (props) {
                       <Btn col="cyan" onClick={function () { runWizardCoreIdentityStep(function () { save({ silent: true }); if (props.onWizardComplete) props.onWizardComplete(); }); }}>Finish setup →</Btn>
                     </div>
                   </div>
-                  <span style={{ fontSize: 11, color: C.muted, maxWidth: 420, lineHeight: 1.4 }}>Shop name and a phone or address are still required. Other language and tax options stay at defaults.</span>
+                  <span style={{ fontSize: 11, color: C.muted, maxWidth: 420, lineHeight: 1.4 }}>Shop name and a phone or address are still required. Other tax options stay at defaults.</span>
                 </div>
               ) : (
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
@@ -2059,11 +1758,11 @@ var Settings = function (props) {
                   >
                     Skip for now
                   </button>
-                  <span style={{ fontSize: 11, color: C.muted, maxWidth: 280, lineHeight: 1.4 }}>Shop name and a phone or address are still required. Other language and tax options stay at defaults.</span>
+                  <span style={{ fontSize: 11, color: C.muted, maxWidth: 280, lineHeight: 1.4 }}>Shop name and a phone or address are still required. Other tax options stay at defaults.</span>
                 </div>
               )
             ) : (
-              <Btn col="cyan" onClick={save}>Save Language &amp; Currency</Btn>
+              <Btn col="cyan" onClick={save}>Save Currency</Btn>
             )}
           </div>
         </div>
@@ -2727,6 +2426,329 @@ var Settings = function (props) {
         </div>
       )}
 
+      {stab === "accounting" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 16px", fontSize: 13, color: C.textMd, lineHeight: 1.55 }}>
+            Bookkeeping and ledger options for accountants and advanced users. Everyday shop setup stays on <strong>Shop Info</strong> — you can leave these at defaults unless your accountant asks you to change them.
+          </div>
+
+          <Card>
+            <CardTitle sub="Soft warning when editing old records">📅 Period Close Date</CardTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 420 }}>
+              <div style={{ background: C.accentSoft, borderRadius: 9, padding: "10px 14px", fontSize: 12, color: C.accent }}>
+                Set a &quot;Books Closed&quot; date. Any edit to records dated before this date will show a warning to protect historical data.
+              </div>
+              <Input compact={denseWiz} label="Books Closed Date" type="date" value={f.booksClosedDate || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { booksClosedDate: e.target.value }); }); }} />
+              {f.booksClosedDate && <div style={{ fontSize: 11, color: C.muted }}>⚠ Edits to records before <strong>{fmtDate(f.booksClosedDate)}</strong> will require confirmation.</div>}
+              {f.booksClosedDate && <button onClick={function () { setF(function (x) { return Object.assign({}, x, { booksClosedDate: "" }); }); }} style={{ background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", textAlign: "left", fontWeight: 600 }}>✕ Clear date</button>}
+              <Btn col="cyan" onClick={save}>Save period close</Btn>
+            </div>
+          </Card>
+
+          <Card>
+            <CardTitle sub="Double-entry journal mode, inventory costing, and hard period lock">⚖ Accounting &amp; GL</CardTitle>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
+                gap: 16,
+                width: "100%",
+                boxSizing: "border-box",
+              }}
+            >
+              <div style={{ gridColumn: "1 / -1", width: "100%", marginBottom: 12, boxSizing: "border-box" }}>
+                <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#0369a1", width: "100%", boxSizing: "border-box" }}>
+                  <strong>Live</strong> updates the journal on each transaction. <strong>Repair</strong> only rebuilds when you use Rebuild in Accounts or when data changes in this mode (fallback for large imports).
+                </div>
+              </div>
+
+              <div
+                style={{
+                  gridColumn: "1 / -1",
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))",
+                  gap: 16,
+                  width: "100%",
+                  boxSizing: "border-box",
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                  <label htmlFor="tc-settings-gl-mode" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Journal mode</label>
+                  <select
+                    id="tc-settings-gl-mode"
+                    value={S.get("tc3_gl_mode", "live")}
+                    onChange={function (e) {
+                      S.set("tc3_gl_mode", e.target.value);
+                      setState(function (st) { return Object.assign({}, st); });
+                    }}
+                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
+                  >
+                    <option value="live">Live — journal is authoritative (recommended)</option>
+                    <option value="rebuild">Repair — rebuild journal on schedule / manual only</option>
+                  </select>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                  <label htmlFor="tc-settings-inv-costing" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Inventory costing</label>
+                  <select
+                    id="tc-settings-inv-costing"
+                    value={f.inventoryCostingMethod || "wac"}
+                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { inventoryCostingMethod: e.target.value }); }); }}
+                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
+                  >
+                    <option value="wac">Weighted average (line / product cost)</option>
+                    <option value="fifo">FIFO (uses product fifoBatches when set)</option>
+                  </select>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                  <label htmlFor="tc-settings-pr-cost-mode" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Purchase return cost</label>
+                  <select
+                    id="tc-settings-pr-cost-mode"
+                    value={f.purchaseReturnCostMode || "current_wac"}
+                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { purchaseReturnCostMode: e.target.value }); }); }}
+                    title="Cost basis for supplier returns: current policy uses unit cost captured on the purchase line (aligned with inventory). original_cost is reserved for a future FIFO layer match."
+                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
+                  >
+                    <option value="current_wac">Current policy (line / WAC snapshot on purchase)</option>
+                    <option value="original_cost">Original receipt cost (reserved — uses line cost for now)</option>
+                  </select>
+                  <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>GL posting uses stored line unit cost; product WAC is not recomputed on return.</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+                  <label htmlFor="tc-settings-lock-date" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Lock date</label>
+                  <input
+                    id="tc-settings-lock-date"
+                    type="date"
+                    value={f.lockedUntilDate || ""}
+                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { lockedUntilDate: e.target.value }); }); }}
+                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text }}
+                  />
+                  <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>Hard lock — no posts on or before this date</span>
+                </div>
+              </div>
+
+              {f.lockedUntilDate && (
+                <div style={{ gridColumn: "1 / -1", fontSize: 11, color: C.muted, marginTop: -4 }}>
+                  Transactions dated on or before <strong>{fmtDate(f.lockedUntilDate)}</strong> are blocked unless Admin (PIN) is unlocked.
+                </div>
+              )}
+
+              <div style={{ gridColumn: "1 / -1" }}>
+                <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.45 }}>
+                  <input
+                    type="checkbox"
+                    checked={f.strictPeriodLock === true}
+                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { strictPeriodLock: e.target.checked }); }); }}
+                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent, marginTop: 2 }}
+                  />
+                  <span>
+                    <strong>Strict period lock</strong> (recommended for audit): transactions dated on or before the lock date cannot be edited, deleted, or have line items changed — only when this is on and a lock date is set. Admin (PIN) unlock still bypasses.
+                  </span>
+                </label>
+              </div>
+
+              <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
+                  <input
+                    type="checkbox"
+                    checked={!f.preventNegativeStock}
+                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { preventNegativeStock: !e.target.checked }); }); }}
+                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
+                  />
+                  <span>Allow negative stock (disables hard block on save)</span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
+                  <input
+                    type="checkbox"
+                    checked={f.allowCostFallback === true}
+                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { allowCostFallback: e.target.checked }); }); }}
+                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
+                  />
+                  <span>FIFO: allow line-cost fallback when no layers (default off — stricter audit)</span>
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
+                  <input
+                    type="checkbox"
+                    checked={f.glVatPostingEnabled !== false}
+                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { glVatPostingEnabled: e.target.checked }); }); }}
+                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
+                  />
+                  <span>Post VAT to GL (VAT Payable / Receivable) when tax is enabled</span>
+                </label>
+              </div>
+
+              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 12 }}>
+                {typeof props.createFinancialSnapshot === "function" && (
+                  <Btn col="gray" onClick={function () {
+                    props.createFinancialSnapshot({ label: "Manual snapshot (Settings)" });
+                  }}>Save financial snapshot</Btn>
+                )}
+                {typeof props.repairInventoryLayersFromReplay === "function" && (
+                  <Btn col="cyan" onClick={props.repairInventoryLayersFromReplay}>Repair inventory layers (replay)</Btn>
+                )}
+                {glDeveloperToolsSettings && exportSupportBundle && downloadSupportBundleJson && (
+                  <Btn
+                    col="gray"
+                    onClick={function () {
+                      try {
+                        var bundle = exportSupportBundle({
+                          periodFrom: supBndFrom,
+                          periodTo: supBndTo,
+                          anonymize: supBndAnon,
+                          includeReplay: supBndReplay,
+                          replayProductId: supBndPid || "",
+                        });
+                        downloadSupportBundleJson(bundle, "techon-support-bundle.json");
+                      } catch (e) {
+                        showAlert("Could not build support bundle.");
+                      }
+                    }}
+                  >
+                    Export support bundle (JSON)
+                  </Btn>
+                )}
+                <Btn col="cyan" onClick={saveAccountingSettings}>Save accounting settings</Btn>
+              </div>
+              {glDeveloperToolsSettings && exportSupportBundle && (
+                <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginTop: 8 }}>
+                  <Input type="date" label="Bundle period from" value={supBndFrom} onChange={function (e) { setSupBndFrom(e.target.value); }} compact />
+                  <Input type="date" label="Bundle period to" value={supBndTo} onChange={function (e) { setSupBndTo(e.target.value); }} compact />
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                    <input type="checkbox" checked={supBndAnon} onChange={function (e) { setSupBndAnon(e.target.checked); }} /> Anonymize customers in bundle subset
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                    <input type="checkbox" checked={supBndReplay} onChange={function (e) { setSupBndReplay(e.target.checked); }} /> Include replay sample
+                  </label>
+                  <Input label="Replay product ID (optional)" value={supBndPid} onChange={function (e) { setSupBndPid(e.target.value); }} placeholder="SKU id" compact style={{ minWidth: 160 }} />
+                </div>
+              )}
+
+              {typeof props.createFinancialSnapshot === "function" && (
+                <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 8, width: "100%", marginTop: 2 }}>
+                  {(function () {
+                    var snaps = S.get("tc3_financial_snapshots", []);
+                    var last = Array.isArray(snaps) && snaps.length ? snaps[snaps.length - 1] : null;
+                    if (!last) {
+                      return (
+                        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 11 }}>
+                          <span style={{ color: C.muted }}>No snapshots yet. New saves will show as</span>
+                          <SnapshotIntegrityBadge variant="sealed" />
+                          <span style={{ color: C.muted }}>when you save.</span>
+                        </div>
+                      );
+                    }
+                    var sealed = !!(last.contentHash && validateSnapshotIntegrity(last));
+                    var legacy = !last.contentHash;
+                    return (
+                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 11, minWidth: 0 }}>
+                        <span style={{ color: C.muted }}>Latest snapshot:</span>
+                        {sealed ? (
+                          <SnapshotIntegrityBadge variant="sealed" liveStatus />
+                        ) : legacy ? (
+                          <SnapshotIntegrityBadge variant="legacy" liveStatus />
+                        ) : (
+                          <SnapshotIntegrityBadge variant="failed" liveStatus />
+                        )}
+                        {last.label && <span style={{ color: C.muted }}>{last.label}</span>}
+                      </div>
+                    );
+                  })()}
+                  {(function () {
+                    var snaps = S.get("tc3_financial_snapshots", []);
+                    if (!Array.isArray(snaps) || snaps.length === 0) return null;
+                    var idx = Math.max(0, Math.min(snapValIdx || 0, snaps.length - 1));
+                    return (
+                      <div style={{ marginTop: 10, paddingTop: 12, borderTop: "1px solid " + C.borderLight, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Validate snapshot (hash + HMAC)</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                          <select
+                            value={idx}
+                            onChange={function (e) { setSnapValIdx(parseInt(e.target.value, 10) || 0); setSnapValResult(null); }}
+                            style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, maxWidth: "100%" }}
+                          >
+                            {snaps.map(function (s, i) {
+                              var lab = (s.label || s.id || "snapshot").slice(0, 48);
+                              var when = (s.createdAt || "").slice(0, 19);
+                              return (
+                                <option key={(s.id || i) + "_" + i} value={i}>{when + " — " + lab}</option>
+                              );
+                            })}
+                          </select>
+                          <Btn
+                            col="gray"
+                            disabled={snapValBusy}
+                            onClick={function () {
+                              var list = S.get("tc3_financial_snapshots", []);
+                              var pick = list[idx];
+                              if (!pick) return;
+                              setSnapValBusy(true);
+                              setSnapValResult(null);
+                              validateSnapshotIntegrityFull(pick).then(function (r) {
+                                setSnapValBusy(false);
+                                setSnapValResult(r);
+                              }).catch(function () {
+                                setSnapValBusy(false);
+                                setSnapValResult({ ok: false, tampered: true, reason: "validate_error" });
+                              });
+                            }}
+                          >
+                            {snapValBusy ? "Checking…" : "Validate integrity"}
+                          </Btn>
+                        </div>
+                        {snapValResult && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            <div style={{
+                              fontSize: 12,
+                              padding: "10px 12px",
+                              borderRadius: 8,
+                              border: "1.5px solid " + (snapValResult.tampered ? "#fecaca" : "#a7f3d0"),
+                              background: snapValResult.tampered ? "#fef2f2" : "#ecfdf5",
+                              color: snapValResult.tampered ? "#991b1b" : "#065f46",
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}>
+                              <div style={{ fontWeight: 700, marginBottom: 4 }}>{(snapValResult.tampered ? "Tampered or invalid — " : "Valid — ") + (snapValResult.reason || "")}</div>
+                              {(snapValResult.snapshotCreatedAt ? <div>Snapshot time: {snapValResult.snapshotCreatedAt}</div> : null)}
+                              {(snapValResult.snapshotPeriodDate ? <div>Period / as-of: {snapValResult.snapshotPeriodDate}</div> : null)}
+                              {(snapValResult.recomputedContentHashShort ? <div>Content hash (recomputed): {snapValResult.recomputedContentHashShort}</div> : null)}
+                              {(snapValResult.storedContentHashShort ? <div>Content hash (stored): {snapValResult.storedContentHashShort}</div> : null)}
+                              {(snapValResult.storedIntegrityHmacShort ? <div>HMAC (stored): {snapValResult.storedIntegrityHmacShort}</div> : null)}
+                              {(snapValResult.canonicalBodyLength != null ? <div>Canonical body length: {snapValResult.canonicalBodyLength}</div> : null)}
+                              {(snapValResult.matched ? <div>Matched: {snapValResult.matched}</div> : null)}
+                              {(snapValResult.legacy ? <div>(Legacy snapshot — hash-only seal)</div> : null)}
+                            </div>
+                            <Btn sm col="gray" onClick={function () {
+                              var r = snapValResult;
+                              var lines = [
+                                "TechonERP snapshot validation",
+                                "reason: " + (r.reason || ""),
+                                "tampered: " + !!r.tampered,
+                                "snapshotId: " + (r.snapshotId || ""),
+                                "createdAt: " + (r.snapshotCreatedAt || ""),
+                                "periodDate: " + (r.snapshotPeriodDate || ""),
+                                "recomputedHash: " + (r.expectedContentHash || r.recomputedContentHashShort || ""),
+                                "storedHash: " + (r.storedContentHashValue || r.storedContentHash || ""),
+                                "storedHmac: " + (r.storedIntegrityHmac || ""),
+                                "canonicalLen: " + (r.canonicalBodyLength != null ? r.canonicalBodyLength : ""),
+                              ];
+                              var t = lines.join("\n");
+                              try {
+                                navigator.clipboard.writeText(t).then(function () { showAlert("Copied validation details to clipboard."); }).catch(function () { showAlert(t); });
+                              } catch (e) {
+                                showAlert(t);
+                              }
+                            }}>Copy debug details</Btn>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+
       {rmBfPreview && (
         <Modal title="Raw material pricing — dry-run" onClose={function () { setRmBfPreview(null); }} wide>
           <div style={{ fontSize: 13, marginBottom: 12 }}>
@@ -2878,6 +2900,8 @@ var Settings = function (props) {
 
               <div style={{ borderTop: "1px solid " + C.border }} />
 
+              {!COMPUTER_SHOP_EDITION ? (
+              <React.Fragment>
               {/* Admin PIN */}
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Admin PIN</div>
@@ -2915,15 +2939,11 @@ var Settings = function (props) {
                     <span style={{ fontSize: 13, color: C.muted, fontWeight: 600 }}>minutes of inactivity (1 – 120)</span>
                   </div>
                 )}
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
-                  <input type="number" min="1" max="240" value={f.sessionTimeoutMinutes || 15}
-                    onChange={function (e) { var v2 = Math.max(1, Math.min(240, parseInt(e.target.value, 10) || 15)); setF(function (x) { return Object.assign({}, x, { sessionTimeoutMinutes: v2 }); }); }}
-                    style={{ width: 90, border: "1.5px solid " + C.border, borderRadius: 9, padding: "9px 14px", fontSize: 16, fontWeight: 700, outline: "none", fontFamily: "inherit", color: C.text, textAlign: "center" }} />
-                  <span style={{ fontSize: 13, color: C.muted, fontWeight: 600 }}>session timeout (auto sign-out, default 15)</span>
-                </div>
               </div>
 
               <div style={{ borderTop: "1px solid " + C.border }} />
+              </React.Fragment>
+              ) : null}
 
               {/* Change password */}
               <div>
@@ -2960,7 +2980,11 @@ var Settings = function (props) {
                   if (pwNew !== pwNew2) { setPwMsg({ type: "error", text: "Passwords do not match." }); return; }
                   if (allowNoOld) {
                     hashPw(pwNew).then(function (hashed) {
-                      S.set("tc3_apppass", hashed);
+                      if (typeof setLoginPassword === "function") {
+                        setLoginPassword(hashed, { username: "admin" });
+                      } else {
+                        S.set("tc3_apppass", hashed);
+                      }
                       try { sessionStorage.removeItem("tc3_allow_login_pw_reset_without_old"); } catch (e2) {}
                       setPwOld(""); setPwNew(""); setPwNew2("");
                       setShowAppPasswordResetHint(false);
@@ -2972,7 +2996,11 @@ var Settings = function (props) {
                   pwMatchesAsync(pwOld, current).then(function (oldOk) {
                     if (current && !oldOk) { setPwMsg({ type: "error", text: "Current password incorrect." }); return; }
                     hashPw(pwNew).then(function (hashed) {
-                      S.set("tc3_apppass", hashed);
+                      if (typeof setLoginPassword === "function") {
+                        setLoginPassword(hashed, { username: "admin" });
+                      } else {
+                        S.set("tc3_apppass", hashed);
+                      }
                       setPwOld(""); setPwNew(""); setPwNew2("");
                       setPwMsg({ type: "success", text: "Password changed!" });
                     });
@@ -2989,7 +3017,6 @@ var Settings = function (props) {
                     adminPin: pinToSave,
                     autoLockEnabled: f.autoLockEnabled !== false,
                     autoLockMinutes: f.autoLockMinutes || 10,
-                    sessionTimeoutMinutes: f.sessionTimeoutMinutes || 15,
                     requirePasswordOnLogin: f.requirePasswordOnLogin !== false
                   });
                   S.set("tc3_settings", ns);
@@ -3340,7 +3367,8 @@ var Settings = function (props) {
             </div>
           </Card>
 
-          {/* ── Reset Wizard ── */}
+          {/* ── Reset Wizard (full edition only) ── */}
+          {!COMPUTER_SHOP_EDITION ? (
           <Card>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
               <div>
@@ -3362,6 +3390,7 @@ var Settings = function (props) {
               }}>⚙️ Reset Setup Wizard</Btn>
             </div>
           </Card>
+          ) : null}
 
         </div>
       )}
@@ -3399,11 +3428,11 @@ var Settings = function (props) {
                         <td style={{ padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace" }}>{u.username || "—"}</td>
                         <td style={{ padding: "8px 6px" }}>{ROLE_LABELS[normalizeRole(u.role)] || "Cashier"}</td>
                         <td style={{ padding: "8px 6px", color: C.muted }}>{u.createdAt ? new Date(u.createdAt).toLocaleString() : "—"}</td>
-                        <td style={{ padding: "8px 6px", textAlign: "right" }}>
-                          <div style={{ display: "inline-flex", gap: 6 }}>
-                            <Btn sm col="gray" onClick={function () { resetUserPassword(u); }}>Reset Password</Btn>
-                            <Btn sm col="red" onClick={function () { removeUser(u); }} disabled={normalizeUsername(u.username) === "admin"}>Remove</Btn>
-                          </div>
+                        <td style={Object.assign({}, actBtnCellStyle, { padding: "8px 6px" })}>
+                          <ActBtnGroup>
+                            <ActBtn tone="gray" title="Reset password" wide onClick={function () { resetUserPassword(u); }}>Reset</ActBtn>
+                            <ActBtn tone="red" title="Remove user" onClick={function () { removeUser(u); }} disabled={normalizeUsername(u.username) === "admin"}>✕</ActBtn>
+                          </ActBtnGroup>
                         </td>
                       </tr>
                     );
@@ -3523,6 +3552,24 @@ var Settings = function (props) {
             </div>
           </div>
         </div>
+      )}
+
+      {industryPwOpen && (
+        <Modal title="Confirm industry change" onClose={function () { setIndustryPwOpen(false); setIndustryPw(""); setIndustryPwMsg(""); }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 13, color: C.textMd, lineHeight: 1.5 }}>
+              Enter your <strong>admin login password</strong> to change the business industry profile.
+            </div>
+            {industryPwMsg && (
+              <div style={{ background: C.dangerSoft, color: C.red, borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600 }}>{industryPwMsg}</div>
+            )}
+            <Input compact={denseWiz} label="Login password" type="password" value={industryPw} onChange={function (e) { setIndustryPw(e.target.value); setIndustryPwMsg(""); }} placeholder="Enter your password..." onKeyDown={function (e) { if (e.key === "Enter") confirmIndustryChangeWithPassword(); }} />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <Btn col="gray" onClick={function () { setIndustryPwOpen(false); setIndustryPw(""); setIndustryPwMsg(""); }}>Cancel</Btn>
+              <Btn col="cyan" onClick={confirmIndustryChangeWithPassword}>Continue</Btn>
+            </div>
+          </div>
+        </Modal>
       )}
 
     </div>

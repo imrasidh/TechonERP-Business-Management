@@ -9,7 +9,7 @@ import {
   DEFAULT_GL_CHART,
   round2,
 } from "./generalLedger.js";
-import { reconcileInventoryToLedger } from "./inventoryEngine.js";
+import { reconcileInventoryToLedger, isInventoryReconcileOk } from "./inventoryEngine.js";
 import { evaluateArApPolicy } from "./arApPolicy.js";
 
 function badNumber(x) {
@@ -65,7 +65,7 @@ export function validateAccountingCommitInvariants(ctx) {
 
   if (invDer) {
     var rec = reconcileInventoryToLedger(lines, invDer, chart);
-    if (!rec.ok) {
+    if (!isInventoryReconcileOk(rec, settings)) {
       errors.push({ code: "inventory_vs_gl", detail: rec });
     }
   }

@@ -6,6 +6,7 @@
 
 import { getOrCreateDeviceId, stableJournalTransactionId } from "./ids.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
+import { computeReturnLineTax, computePurchaseReturnTax, computePurchaseInventoryPosting } from "../tax/taxCompute.js";
 
 export var GL = {
   CASH: "1000",
@@ -351,6 +352,7 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
   var taxSettings = state.settings || {};
   var glVatPosting = taxSettings.glVatPostingEnabled !== false;
   (state.sales || []).forEach(function (s) {
+    if (s.status === "Voided" || s.status === "Cancelled") return;
     var dt = s.date || "";
     var inv = cogsForSale(s);
     var tot = round2(s.total || 0);
@@ -396,17 +398,20 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
 
   /* ── Purchases: inventory + AP (+ input VAT when recorded), then payments ── */
   (state.purchases || []).forEach(function (p, idx) {
+    if (p.status === "Voided" || p.status === "Cancelled") return;
     var dt = p.date || "";
     var invVal = purchaseInventoryVal(p);
     var apTot = round2(p.total || 0);
-    var taxIn = round2(p.totalTax || 0);
+    var posting = computePurchaseInventoryPosting(p, taxSettings);
+    var taxIn = round2(posting.taxIn || 0);
+    var invNet = round2(posting.invNet != null ? posting.invNet : invVal);
     var pp;
     var diff;
     if (glVatPosting && taxSettings.taxEnabled && taxIn > 0.005) {
-      var baseSum = round2(invVal + taxIn);
+      var baseSum = round2(invNet + taxIn);
       diff = round2(apTot - baseSum);
       pp = [
-        { accountId: GL.INV, debit: invVal, credit: 0 },
+        { accountId: GL.INV, debit: invNet, credit: 0 },
         { accountId: GL.VAT_REC, debit: taxIn, credit: 0, memo: "Input VAT" },
         { accountId: GL.AP, debit: 0, credit: apTot },
       ];
@@ -520,15 +525,38 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     });
   });
 
-  /* ── Sales returns (contra revenue + AR and/or cash/bank; COGS reversal) ── */
+  var salesById = {};
+  (state.sales || []).forEach(function (s) {
+    if (s && s.id != null) salesById[s.id] = s;
+  });
+  var purchasesById = {};
+  (state.purchases || []).forEach(function (p) {
+    if (p && p.id != null) purchasesById[p.id] = p;
+  });
+
+  /* ── Sales returns (contra revenue + output VAT reversal + AR/cash; COGS reversal) ── */
   (state.salesReturns || []).forEach(function (r) {
     var dt = r.date || "";
-    var retail = round2(r.amount || 0);
+    var rowNet = round2(r.amount || 0);
     var rf = round2(r.refundAmount || 0);
     var cost = round2((r.cost || 0) * (r.qty || 0));
-    if (retail > 0) {
-      var arCr = round2(retail - rf);
-      var parts = [{ accountId: GL.SRET, debit: retail, credit: 0, memo: "Return" }];
+    if (rowNet > 0 || (r.returnGross != null && Number(r.returnGross) > 0)) {
+      var sale = r.invoiceId != null ? salesById[r.invoiceId] : null;
+      var rt = computeReturnLineTax(sale, taxSettings, rowNet, {
+        returnTax: r.returnTax,
+        returnGross: r.returnGross,
+        amountIsNet: r.returnGross != null && r.returnGross !== "",
+        selectedTaxes: r.selectedTaxes,
+        taxMode: r.taxMode,
+      });
+      rowNet = round2(rt.net);
+      var taxOnReturn = round2(rt.totalTax);
+      var grossReturn = round2(rt.gross);
+      var arCr = round2(grossReturn - rf);
+      var parts = [{ accountId: GL.SRET, debit: rowNet, credit: 0, memo: "Return" }];
+      if (glVatPosting && taxSettings.taxEnabled && taxOnReturn > 0.005) {
+        parts.push({ accountId: GL.VAT_PAY, debit: taxOnReturn, credit: 0, memo: "Output VAT reversal" });
+      }
       if (arCr > 0.005) {
         parts.push({ accountId: GL.AR, debit: 0, credit: arCr, memo: "Reduce receivable / on account" });
       }
@@ -552,10 +580,35 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     var dt = r.date || "";
     var cost = round2((r.cost || 0) * (r.qty || 0));
     if (cost > 0) {
-      add(dt, "purchase_return", r.id, [
-        { accountId: GL.AP, debit: cost, credit: 0 },
-        { accountId: GL.INV, debit: 0, credit: cost },
-      ], "PR");
+      var purchase = r.purchaseId != null ? purchasesById[r.purchaseId] : null;
+      var taxRev = 0;
+      var apGross = cost;
+      var invCredit = cost;
+      if (glVatPosting && taxSettings.taxEnabled) {
+        if (r.returnGross != null && r.returnGross !== "" && !isNaN(Number(r.returnGross))) {
+          apGross = round2(Number(r.returnGross));
+          taxRev = r.returnTax != null && r.returnTax !== "" && !isNaN(Number(r.returnTax))
+            ? round2(Number(r.returnTax))
+            : 0;
+          invCredit = round2(apGross - taxRev);
+        } else if (r.returnTax != null && r.returnTax !== "" && !isNaN(Number(r.returnTax))) {
+          taxRev = round2(Number(r.returnTax));
+          apGross = round2(cost + taxRev);
+        } else {
+          var prt = computePurchaseReturnTax(purchase, cost, taxSettings);
+          taxRev = round2(prt.taxReversal);
+          apGross = round2(prt.apGross);
+          invCredit = round2(prt.stockCost);
+        }
+      }
+      var prParts = [
+        { accountId: GL.AP, debit: apGross, credit: 0 },
+        { accountId: GL.INV, debit: 0, credit: invCredit },
+      ];
+      if (taxRev > 0.005) {
+        prParts.push({ accountId: GL.VAT_REC, debit: 0, credit: taxRev, memo: "Input VAT reversal" });
+      }
+      add(dt, "purchase_return", r.id, prParts, "PR");
     }
     if (r.isRefund && r.refundAmount > 0) {
       var rf = round2(r.refundAmount);

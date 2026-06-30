@@ -4,6 +4,7 @@
 
 import { GL, round2 } from "./generalLedger.js";
 import { stableJournalTransactionId } from "./ids.js";
+import { purchaseInventoryNetFactor } from "../tax/taxCompute.js";
 
 /** Persistable snapshot of layer stacks (productId → layers). */
 export function serializeInventoryLayers(layersByProduct) {
@@ -22,10 +23,31 @@ export function serializeInventoryLayers(layersByProduct) {
   return out;
 }
 
+var _sortSeqWarned = false;
+
+function resolveRecordIsoDateTime(record, lineIdx) {
+  if (!record) return "";
+  var ts = record.isoDateTime || record.createdAt || record.billedAt || record.updatedAt || "";
+  if (ts && String(ts).length >= 10) return String(ts);
+  var d = String(record.date || "");
+  if (!d) return "";
+  var seqPad = String(lineIdx != null ? lineIdx : 0).padStart(6, "0");
+  return d + "T12:00:00." + seqPad + "Z";
+}
+
 function sortEvents(a, b) {
   var da = String(a.date || "");
   var db = String(b.date || "");
   if (da !== db) return da.localeCompare(db);
+  var ta = a.isoDateTime ? String(a.isoDateTime) : "";
+  var tb = b.isoDateTime ? String(b.isoDateTime) : "";
+  if (ta && tb && ta !== tb) return ta.localeCompare(tb);
+  if (!ta && !tb && !_sortSeqWarned) {
+    _sortSeqWarned = true;
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("[inventoryEngine] Same-day events missing isoDateTime — falling back to _seq order.");
+    }
+  }
   return (a._seq || 0) - (b._seq || 0);
 }
 
@@ -96,6 +118,7 @@ export function deriveInventoryEconomics(state, S, opts) {
   var seq = 0;
   var warnings = [];
   var blockingErrors = [];
+  var runningInventoryValue = 0;
 
   var events = [];
   var productsById = {};
@@ -140,6 +163,8 @@ export function deriveInventoryEconomics(state, S, opts) {
 
   (state.purchases || []).forEach(function (p) {
     if (asOfDate && String(p.date || "") > asOfDate) return;
+    var purNetFactor = purchaseInventoryNetFactor(p, settings);
+    var purIso = resolveRecordIsoDateTime(p);
     (p.items || []).forEach(function (it, j) {
       /* Stock and unit cost are always in base (storage) units on purchase lines */
       var q = Number(it.qty) || 0;
@@ -147,10 +172,11 @@ export function deriveInventoryEconomics(state, S, opts) {
       events.push({
         _seq: seq++,
         date: p.date || "",
+        isoDateTime: resolveRecordIsoDateTime(p, j) || purIso,
         type: "pur_in",
         productId: it.id,
         qty: q,
-        unitCost: round2(it.cost || 0),
+        unitCost: round2((it.cost || 0) * purNetFactor),
         referenceType: "purchase",
         referenceId: p.id,
         lineIdx: j,
@@ -160,12 +186,14 @@ export function deriveInventoryEconomics(state, S, opts) {
 
   (state.sales || []).forEach(function (s) {
     if (asOfDate && String(s.date || "") > asOfDate) return;
+    var saleIso = resolveRecordIsoDateTime(s);
     (s.items || []).forEach(function (it, j) {
       var q = Number(it.qty) || 0;
       if (q <= 0) return;
       events.push({
         _seq: seq++,
         date: s.date || "",
+        isoDateTime: resolveRecordIsoDateTime(s, j) || saleIso,
         type: "sale_out",
         productId: it.id,
         qty: q,
@@ -184,6 +212,7 @@ export function deriveInventoryEconomics(state, S, opts) {
     events.push({
       _seq: seq++,
       date: r.date || "",
+      isoDateTime: resolveRecordIsoDateTime(r),
       type: "sale_in",
       productId: r.productId,
       qty: q,
@@ -198,13 +227,16 @@ export function deriveInventoryEconomics(state, S, opts) {
     if (asOfDate && String(r.date || "") > asOfDate) return;
     var q = Number(r.qty) || 0;
     if (q <= 0) return;
+    var purchase = (state.purchases || []).find(function (p) { return p && p.id === r.purchaseId; });
+    var purNetFactor = purchase ? purchaseInventoryNetFactor(purchase, settings) : 1;
     events.push({
       _seq: seq++,
       date: r.date || "",
+      isoDateTime: resolveRecordIsoDateTime(r),
       type: "pur_out",
       productId: r.productId,
       qty: q,
-      unitCost: round2(r.cost || 0),
+      unitCost: round2((r.cost || 0) * purNetFactor),
       referenceType: "purchase_return",
       referenceId: r.id,
       lineIdx: 0,
@@ -251,12 +283,14 @@ export function deriveInventoryEconomics(state, S, opts) {
       } else {
         layersByProduct[pid] = blendWac(layersByProduct[pid], ev.qty, round2(ev.qty * ev.unitCost));
       }
+      runningInventoryValue = round2(runningInventoryValue + round2(ev.qty * ev.unitCost));
       movements.push({
         id: stableJournalTransactionId("stk", ev.referenceId, "open_in_" + ev.lineIdx),
         productId: pid,
         qtyIn: ev.qty,
         qtyOut: 0,
         unitCost: ev.unitCost,
+        totalCost: round2(ev.qty * ev.unitCost),
         referenceType: ev.referenceType,
         referenceId: ev.referenceId,
         date: ev.date,
@@ -275,12 +309,14 @@ export function deriveInventoryEconomics(state, S, opts) {
       } else {
         layersByProduct[pid] = blendWac(layersByProduct[pid], ev.qty, round2(ev.qty * ev.unitCost));
       }
+      runningInventoryValue = round2(runningInventoryValue + round2(ev.qty * ev.unitCost));
       movements.push({
         id: stableJournalTransactionId("stk", ev.referenceId, "in_" + ev.lineIdx),
         productId: pid,
         qtyIn: ev.qty,
         qtyOut: 0,
         unitCost: ev.unitCost,
+        totalCost: round2(ev.qty * ev.unitCost),
         referenceType: ev.referenceType,
         referenceId: ev.referenceId,
         date: ev.date,
@@ -316,6 +352,7 @@ export function deriveInventoryEconomics(state, S, opts) {
       }
       cogsBySaleLineKey[lineKey] = round2((cogsBySaleLineKey[lineKey] || 0) + lineCost);
       cogsBySaleId[ev.referenceId] = round2((cogsBySaleId[ev.referenceId] || 0) + lineCost);
+      runningInventoryValue = round2(runningInventoryValue - lineCost);
       movements.push({
         id: stableJournalTransactionId("stk", ev.referenceId, "out_" + ev.lineIdx),
         productId: pid,
@@ -356,6 +393,7 @@ export function deriveInventoryEconomics(state, S, opts) {
           }
         }
       }
+      runningInventoryValue = round2(runningInventoryValue - lineCostRm);
       movements.push({
         id: stableJournalTransactionId("stk", "rmu_" + String(ev.referenceId || ""), "out"),
         productId: pid,
@@ -396,12 +434,15 @@ export function deriveInventoryEconomics(state, S, opts) {
       } else {
         layersByProduct[pid] = blendWac(layersByProduct[pid], ev.qty, round2(ev.qty * ucRet));
       }
+      var retVal = round2(ev.qty * ucRet);
+      runningInventoryValue = round2(runningInventoryValue + retVal);
       movements.push({
         id: stableJournalTransactionId("stk", ev.referenceId, "ret_in"),
         productId: pid,
         qtyIn: ev.qty,
         qtyOut: 0,
         unitCost: ev.unitCost,
+        totalCost: retVal,
         referenceType: ev.referenceType,
         referenceId: ev.referenceId,
         date: ev.date,
@@ -426,12 +467,15 @@ export function deriveInventoryEconomics(state, S, opts) {
         if (L.remainingQty <= 0.0001) i++;
       }
       layersByProduct[pid] = L2.filter(function (x) { return (x.remainingQty || 0) > 0.0001; });
+      var prVal = round2(ev.qty * round2(ev.unitCost || 0));
+      runningInventoryValue = round2(runningInventoryValue - prVal);
       movements.push({
         id: stableJournalTransactionId("stk", ev.referenceId, "pr_out"),
         productId: pid,
         qtyIn: 0,
         qtyOut: ev.qty,
         unitCost: ev.unitCost,
+        totalCost: prVal,
         referenceType: ev.referenceType,
         referenceId: ev.referenceId,
         date: ev.date,
@@ -439,21 +483,15 @@ export function deriveInventoryEconomics(state, S, opts) {
     }
   });
 
-  var physicalValue = 0;
-  Object.keys(layersByProduct).forEach(function (pid) {
-    (layersByProduct[pid] || []).forEach(function (L) {
-      var q = L.remainingQty != null ? L.remainingQty : L.qty || 0;
-      var uc = round2(L.unitCost != null ? L.unitCost : L.cost || 0);
-      physicalValue += round2(q * uc);
-    });
-  });
+  /* Ledger balance matches GL postings; layer qty×WAC can drift by pennies after many rounded sales. */
+  var physicalValue = round2(runningInventoryValue);
 
   return {
     movements: movements,
     cogsBySaleId: cogsBySaleId,
     cogsBySaleLineKey: cogsBySaleLineKey,
     layersByProduct: layersByProduct,
-    physicalInventoryValue: round2(physicalValue),
+    physicalInventoryValue: physicalValue,
     warnings: warnings,
     blockingErrors: blockingErrors,
     allowCostFallback: allowCostFallback,
@@ -511,4 +549,22 @@ export function reconcileInventoryToLedger(lines, invDer, chart) {
     physicalValue: phys,
     difference: diff,
   };
+}
+
+/** WAC rounding tolerance for inventory vs GL (Rs). Override via settings.glInventoryReconcileTolerance. */
+export function getInventoryReconcileTolerance(settings, physicalValue) {
+  settings = settings || {};
+  var custom = settings.glInventoryReconcileTolerance;
+  if (custom != null && custom !== "" && !isNaN(Number(custom))) {
+    return Math.max(0, round2(Number(custom)));
+  }
+  var phys = Math.abs(Number(physicalValue) || 0);
+  return Math.max(50, round2(phys * 0.002));
+}
+
+export function isInventoryReconcileOk(rec, settings) {
+  if (!rec) return false;
+  if (rec.ok) return true;
+  var tol = getInventoryReconcileTolerance(settings, rec.physicalValue);
+  return Math.abs(rec.difference) <= tol;
 }

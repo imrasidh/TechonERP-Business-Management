@@ -3,7 +3,7 @@
  */
 
 import { trialBalance, DEFAULT_GL_CHART, round2 } from "./generalLedger.js";
-import { reconcileInventoryToLedger } from "./inventoryEngine.js";
+import { reconcileInventoryToLedger, isInventoryReconcileOk } from "./inventoryEngine.js";
 import { getOrCreateDeviceId } from "./ids.js";
 import { evaluateArApPolicy } from "./arApPolicy.js";
 
@@ -47,11 +47,12 @@ export function buildReconciliationReport(o) {
   });
   if (invDer) {
     var rec = reconcileInventoryToLedger(lines, invDer, chart);
+    var invOk = isInventoryReconcileOk(rec, settings);
     rows.push({
       id: "inv_vs_gl",
       label: "Inventory valuation vs GL inventory account",
-      ok: !!rec.ok,
-      detail: rec.ok ? "OK" : "❌ Mismatch",
+      ok: invOk,
+      detail: invOk ? (rec.ok ? "OK" : "OK (within WAC tolerance)") : "❌ Mismatch",
       amounts: { glInventoryBalance: rec.glInventoryBalance, physicalValue: rec.physicalValue, difference: rec.difference },
     });
   } else {

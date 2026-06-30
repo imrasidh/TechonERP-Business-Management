@@ -9,6 +9,7 @@ import {
   DEFAULT_GL_CHART,
   validateJournalBalanced,
   validateAccountingCommitInvariants,
+  profitAndLossFromLedger,
   mergeJournalLinesByTransactionId,
   collectStrictPeriodLockOverrideIds,
   evaluateArApPolicy,
@@ -16,6 +17,8 @@ import {
   deriveInventoryEconomics,
   GL,
   round2,
+  sumAccount,
+  signedBalanceForAccount,
 } from "./lib/harness.mjs";
 import { explainInventoryDifference } from "../../src/accounting/inventoryReconExplain.js";
 import { buildInventoryReplayWindow } from "../../src/utils/inventoryReplayDebug.js";
@@ -577,5 +580,298 @@ export function runScenarioTests(ctx) {
     if (Math.abs(round2(rec.glInventoryBalance) - 1000) > 0.02) return fail("Opening stock reconcile: expected GL INV 1000", rec);
     if (Math.abs(round2(rec.physicalValue) - 1000) > 0.02) return fail("Opening stock reconcile: expected physical 1000", rec);
     pass("Opening stock included in inventory replay reconciliation");
+  })();
+
+  function acctBal(lines, acctId) {
+    var meta = DEFAULT_GL_CHART.find(function (a) { return a.id === acctId; }) || { normal: "debit" };
+    var s = sumAccount(lines, acctId);
+    return signedBalanceForAccount(meta, s.debit, s.credit);
+  }
+
+  /* ── Tax: exclusive VAT — full sales return reverses output tax ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "exclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_tax_sr";
+    st.products = [{ id: pid, name: "Taxed", stock: 10, cost: 50, sellPrice: 100 }];
+    st.purchases = [{
+      id: "pur_tax_sr", date: "2026-02-01", total: 500, totalTax: 0,
+      items: [{ id: pid, qty: 10, cost: 50 }],
+      paymentHistory: [],
+    }];
+    st.sales = [{
+      id: "sale_tax_sr", date: "2026-02-05", invoiceNo: "INV-TAX-1",
+      total: 220, totalTax: 20, taxMode: "exclusive",
+      selectedTaxes: [{ name: "VAT", rate: 10, amount: 20 }],
+      paid: 220,
+      items: [{ id: pid, qty: 2, price: 100, cost: 50 }],
+      paymentHistory: [{ id: "ph1", date: "2026-02-05", amount: 220, cashMethod: "Cash" }],
+    }];
+    st.salesReturns = [{
+      id: "sr_tax_1", invoiceId: "sale_tax_sr", date: "2026-02-06",
+      amount: 200, returnTax: 20, qty: 2, cost: 50, refundAmount: 220, refundMethod: "Cash",
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Taxed sales return: rebuild validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_PAY)) > 0.02) return fail("Taxed sales return: VAT_PAY should be 0", acctBal(x.r.lines, GL.VAT_PAY));
+    if (Math.abs(acctBal(x.r.lines, GL.SRET) - 200) > 0.02) return fail("Taxed sales return: SRET net", acctBal(x.r.lines, GL.SRET));
+    pass("Taxed sales return — output VAT reversed");
+  })();
+
+  /* ── Tax: exclusive VAT — partial sales return ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "exclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_tax_sr_p";
+    st.products = [{ id: pid, name: "Taxed", stock: 10, cost: 50, sellPrice: 100 }];
+    st.purchases = [{
+      id: "pur_tax_sr_p", date: "2026-02-01", total: 500, totalTax: 0,
+      items: [{ id: pid, qty: 10, cost: 50 }],
+      paymentHistory: [],
+    }];
+    st.sales = [{
+      id: "sale_tax_sr_p", date: "2026-02-05", invoiceNo: "INV-TAX-2",
+      total: 220, totalTax: 20, taxMode: "exclusive",
+      selectedTaxes: [{ name: "VAT", rate: 10, amount: 20 }],
+      paid: 0,
+      items: [{ id: pid, qty: 2, price: 100, cost: 50 }],
+      paymentHistory: [],
+    }];
+    st.salesReturns = [{
+      id: "sr_tax_p", invoiceId: "sale_tax_sr_p", date: "2026-02-06",
+      amount: 100, returnTax: 10, qty: 1, cost: 50, refundAmount: 0,
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Taxed partial sales return: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_PAY) - 10) > 0.02) return fail("Taxed partial sales return: VAT_PAY remainder", acctBal(x.r.lines, GL.VAT_PAY));
+    pass("Taxed partial sales return — output VAT pro-rata");
+  })();
+
+  /* ── Tax: purchase return reverses input VAT and AP gross ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "exclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_tax_pr";
+    st.products = [{ id: pid, name: "Taxed", stock: 10, cost: 50, sellPrice: 100 }];
+    st.purchases = [{
+      id: "pur_tax_pr", date: "2026-02-01", invoiceNo: "P-TAX-1",
+      total: 110, totalTax: 10, taxMode: "exclusive",
+      items: [{ id: pid, qty: 2, cost: 50, lineStockValue: 100 }],
+      paidAmount: 110,
+      paymentHistory: [{ id: "ph_p1", date: "2026-02-01", amount: 110, cashMethod: "Bank" }],
+    }];
+    st.purchaseReturns = [{
+      id: "pr_tax_1", purchaseId: "pur_tax_pr", date: "2026-02-08",
+      qty: 2, cost: 50, amount: 100, returnTax: 10, returnGross: 110,
+      isRefund: true, refundAmount: 110, refundMethod: "Bank",
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Taxed purchase return: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_REC)) > 0.02) return fail("Taxed purchase return: VAT_REC should be 0", acctBal(x.r.lines, GL.VAT_REC));
+    if (Math.abs(acctBal(x.r.lines, GL.AP)) > 0.02) return fail("Taxed purchase return: AP should be 0", acctBal(x.r.lines, GL.AP));
+    pass("Taxed purchase return — input VAT and AP reversed");
+  })();
+
+  /* ── Tax: partial purchase return ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "exclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_tax_pr_p";
+    st.products = [{ id: pid, name: "Taxed", stock: 10, cost: 50, sellPrice: 100 }];
+    st.purchases = [{
+      id: "pur_tax_pr_p", date: "2026-02-01", invoiceNo: "P-TAX-2",
+      total: 110, totalTax: 10,
+      items: [{ id: pid, qty: 2, cost: 50, lineStockValue: 100 }],
+      paidAmount: 0,
+      paymentHistory: [],
+    }];
+    st.purchaseReturns = [{
+      id: "pr_tax_p", purchaseId: "pur_tax_pr_p", date: "2026-02-08",
+      qty: 1, cost: 50, amount: 50, returnTax: 5, returnGross: 55,
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Taxed partial purchase return: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_REC) - 5) > 0.02) return fail("Taxed partial purchase return: VAT_REC", acctBal(x.r.lines, GL.VAT_REC));
+    if (Math.abs(acctBal(x.r.lines, GL.AP) - 55) > 0.02) return fail("Taxed partial purchase return: AP", acctBal(x.r.lines, GL.AP));
+    pass("Taxed partial purchase return — input VAT pro-rata");
+  })();
+
+  /* ── Tax: inclusive VAT — full sales return (price is tax-inclusive) ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "inclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_tax_inc";
+    st.products = [{ id: pid, name: "TaxedInc", stock: 10, cost: 50, sellPrice: 110 }];
+    st.purchases = [{
+      id: "pur_tax_inc", date: "2026-03-01", total: 500, totalTax: 0,
+      items: [{ id: pid, qty: 10, cost: 50 }],
+      paymentHistory: [],
+    }];
+    st.sales = [{
+      id: "sale_tax_inc", date: "2026-03-05", invoiceNo: "INV-INC-1",
+      total: 110, totalTax: 10, taxMode: "inclusive",
+      selectedTaxes: [{ name: "VAT", rate: 10, amount: 10 }],
+      paid: 110,
+      items: [{ id: pid, qty: 1, price: 110, cost: 50 }],
+      paymentHistory: [{ id: "ph1", date: "2026-03-05", amount: 110, cashMethod: "Cash" }],
+    }];
+    st.salesReturns = [{
+      id: "sr_inc_1", invoiceId: "sale_tax_inc", date: "2026-03-06",
+      amount: 100, returnTax: 10, returnGross: 110, qty: 1, cost: 50, refundAmount: 110, refundMethod: "Cash",
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Inclusive sales return: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_PAY)) > 0.02) return fail("Inclusive sales return: VAT_PAY", acctBal(x.r.lines, GL.VAT_PAY));
+    if (Math.abs(acctBal(x.r.lines, GL.SRET) - 100) > 0.02) return fail("Inclusive sales return: SRET net", acctBal(x.r.lines, GL.SRET));
+    var pl = profitAndLossFromLedger(x.r.lines, DEFAULT_GL_CHART, null, null);
+    if (Math.abs(pl.net) > 0.02) return fail("Inclusive sales return: P&L net should be 0", pl);
+    pass("Inclusive taxed sales return — net + VAT reversed");
+  })();
+
+  /* ── Tax: inclusive VAT — legacy row (gross in amount, no returnGross) ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "inclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_tax_inc_l";
+    st.products = [{ id: pid, name: "TaxedInc", stock: 10, cost: 50, sellPrice: 110 }];
+    st.purchases = [{
+      id: "pur_tax_inc_l", date: "2026-03-01", total: 500, totalTax: 0,
+      items: [{ id: pid, qty: 10, cost: 50 }],
+      paymentHistory: [],
+    }];
+    st.sales = [{
+      id: "sale_tax_inc_l", date: "2026-03-05", invoiceNo: "INV-INC-2",
+      total: 110, totalTax: 10, taxMode: "inclusive",
+      selectedTaxes: [{ name: "VAT", rate: 10, amount: 10 }],
+      paid: 110,
+      items: [{ id: pid, qty: 1, price: 110, cost: 50 }],
+      paymentHistory: [{ id: "ph1", date: "2026-03-05", amount: 110, cashMethod: "Cash" }],
+    }];
+    st.salesReturns = [{
+      id: "sr_inc_l", invoiceId: "sale_tax_inc_l", date: "2026-03-06",
+      amount: 110, returnTax: 10, qty: 1, cost: 50, refundAmount: 110, refundMethod: "Cash",
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Inclusive legacy sales return: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_PAY)) > 0.02) return fail("Inclusive legacy sales return: VAT_PAY", acctBal(x.r.lines, GL.VAT_PAY));
+    if (Math.abs(acctBal(x.r.lines, GL.SRET) - 100) > 0.02) return fail("Inclusive legacy sales return: SRET", acctBal(x.r.lines, GL.SRET));
+    pass("Inclusive legacy sales return — gross amount normalized on rebuild");
+  })();
+
+  /* ── Tax: inclusive purchase — net inventory + input VAT (no PUR_VAR double-count) ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "inclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_pur_inc";
+    st.products = [{ id: pid, name: "PurInc", stock: 0, cost: 0 }];
+    st.purchases = [{
+      id: "pur_inc_gl", date: "2026-04-01", invoiceNo: "P-INC-1",
+      total: 110, totalTax: 10, taxMode: "inclusive",
+      items: [{ id: pid, qty: 10, cost: 11 }],
+      paymentHistory: [],
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Inclusive purchase: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.INV) - 100) > 0.02) return fail("Inclusive purchase: INV net", acctBal(x.r.lines, GL.INV));
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_REC) - 10) > 0.02) return fail("Inclusive purchase: VAT_REC", acctBal(x.r.lines, GL.VAT_REC));
+    if (Math.abs(acctBal(x.r.lines, GL.AP) - 110) > 0.02) return fail("Inclusive purchase: AP", acctBal(x.r.lines, GL.AP));
+    if (Math.abs(acctBal(x.r.lines, GL.PUR_VAR)) > 0.02) return fail("Inclusive purchase: PUR_VAR should be 0", acctBal(x.r.lines, GL.PUR_VAR));
+    pass("Inclusive purchase — VAT extracted from inventory asset");
+  })();
+
+  /* ── Tax: orphan sales return uses stored tax snapshot (not current settings rate) ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "inclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 15, enabled: true }],
+    });
+    var pid = "prod_orphan_ret";
+    st.products = [{ id: pid, name: "OrphanRet", stock: 10, cost: 50 }];
+    st.purchases = [{
+      id: "pur_orphan", date: "2026-04-01", total: 500, totalTax: 0,
+      items: [{ id: pid, qty: 10, cost: 50 }],
+      paymentHistory: [],
+    }];
+    st.salesReturns = [{
+      id: "sr_orphan", date: "2026-04-06",
+      amount: 110, returnTax: 10, returnGross: 110,
+      taxMode: "inclusive",
+      selectedTaxes: [{ name: "VAT", rate: 10, amount: 10 }],
+      qty: 1, cost: 50, refundAmount: 110, refundMethod: "Cash",
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Orphan sales return: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.SRET) - 100) > 0.02) return fail("Orphan sales return: SRET net", acctBal(x.r.lines, GL.SRET));
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_PAY) + 10) > 0.02) return fail("Orphan sales return: VAT_PAY reversal", acctBal(x.r.lines, GL.VAT_PAY));
+    pass("Orphan sales return — historical tax snapshot preserved");
+  })();
+
+  /* ── Inventory: same-day events sort by isoDateTime (not array/_seq order) ── */
+  (function () {
+    var st = baseState();
+    var pid = "prod_ts_sort";
+    st.products = [{ id: pid, name: "TsSort", stock: 0, cost: 0, sellPrice: 250 }];
+    st.settings = Object.assign({}, st.settings, { inventoryCostingMethod: "wac" });
+    st.purchases = [
+      {
+        id: "p_late", date: "2026-05-01", createdAt: "2026-05-01T15:00:00.000Z",
+        total: 200, items: [{ id: pid, qty: 1, cost: 200 }],
+        paymentHistory: [],
+      },
+      {
+        id: "p_early", date: "2026-05-01", createdAt: "2026-05-01T09:00:00.000Z",
+        total: 100, items: [{ id: pid, qty: 1, cost: 100 }],
+        paymentHistory: [],
+      },
+    ];
+    st.sales = [{
+      id: "s_after", date: "2026-05-01", createdAt: "2026-05-01T16:00:00.000Z",
+      total: 250, items: [{ id: pid, qty: 1, price: 250, cost: 0 }],
+      paymentHistory: [{ id: "ph1", date: "2026-05-01", amount: 250, cashMethod: "Cash" }],
+    }];
+    var inv = deriveInventoryEconomics(st, Smock);
+    var cogs = inv.cogsBySaleId && inv.cogsBySaleId["s_after"];
+    if (cogs == null || Math.abs(cogs - 150) > 0.02) {
+      return fail("Same-day isoDateTime sort: WAC COGS", cogs);
+    }
+    pass("Same-day inventory events — chronological isoDateTime sort");
   })();
 }

@@ -16,6 +16,13 @@ import React, { useState, useEffect } from 'react';
 import App from '../App';
 import SetupWizard from '../SetupWizard';
 import { setPackagedMissingLicenseSecretBlock } from '../ops/accountingGuards.js';
+import { COMPUTER_SHOP_EDITION } from '../productionConfig.js';
+import {
+  TRIAL_MAX_RECORDS,
+  TRIAL_COUNT_MODULES,
+  getTrialLimitExceeded,
+  countArrayLength,
+} from './trialLimits.js';
 
 /* ── Colours matching ERP design tokens ───────────────────────── */
 const C = {
@@ -1149,8 +1156,11 @@ function UsageWarnBanner({ usageCounts, maxRecords, onActivate }) {
   var qc   = u.quotations|| 0;
   var rc   = u.repairs   || 0;
 
-  /* Max-based percentage: driven by the most-used module */
-  var maxUsage  = Math.max(sc, pc, cc, ec, puc, suc, qc, rc);
+  var maxUsage  = 0;
+  for (var ui = 0; ui < TRIAL_COUNT_MODULES.length; ui++) {
+    var uv = u[TRIAL_COUNT_MODULES[ui].key] || 0;
+    if (uv > maxUsage) maxUsage = uv;
+  }
   var remaining = Math.max(0, max - maxUsage);
   var pct       = Math.round((maxUsage / max) * 100);
   var isCritical = pct >= 80;
@@ -1160,13 +1170,16 @@ function UsageWarnBanner({ usageCounts, maxRecords, onActivate }) {
     : 'linear-gradient(90deg,#d97706,#f59e0b)';
 
   /* Key modules to show in banner */
-  var allMods = [
-    { key: 'Sales', val: sc }, { key: 'Products', val: pc },
-    { key: 'Customers', val: cc }, { key: 'Expenses', val: ec },
-    { key: 'Purchases', val: puc },
-  ];
-  /* Extra modules shown as "+N more" if any have data */
-  var extraUsed = suc + qc + rc;
+  var allMods = TRIAL_COUNT_MODULES.map(function (m) {
+    return { key: m.label, val: u[m.key] || 0 };
+  }).filter(function (m) { return m.val > 0; });
+  if (allMods.length === 0) {
+    allMods = [
+      { key: 'Sales', val: sc }, { key: 'Products', val: pc },
+      { key: 'Customers', val: cc }, { key: 'Purchases', val: puc },
+    ];
+  }
+  var extraUsed = 0;
 
   var activateBtnStyle = {
     background: '#fff', color: barColor, border: 'none',
@@ -1267,7 +1280,55 @@ function ExpiredReadOnlyBanner({ onActivate, message }) {
   );
 }
 
-/* --- Helper: read a key from IndexedDB without loading the full app --- */
+/* --- Load trial usage counts from IndexedDB --- */
+async function loadUsageCountsFromIdb() {
+  var counts = {};
+  for (var i = 0; i < TRIAL_COUNT_MODULES.length; i++) {
+    var m = TRIAL_COUNT_MODULES[i];
+    var raw = await readIdbKey(m.storageKey);
+    counts[m.key] = countArrayLength(raw);
+  }
+  return counts;
+}
+
+function TrialLimitReadOnlyShell({ licStatus, usageCounts, networkConfig, showActivation, setShowActivation, handleActivated, exceeded }) {
+  var limitLicInfo = Object.assign({}, licStatus, {
+    status: 'expired',
+    isReadOnly: true,
+    readOnlyReason: 'trial_limit_reached',
+  });
+  var detail = exceeded
+    ? (' (' + exceeded.label + ' ' + exceeded.count + '/' + exceeded.max + ')')
+    : '';
+  return (
+    <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <div style={{
+        background: 'linear-gradient(90deg,#e03151,#c82040)', color: '#fff',
+        padding: '10px 20px', display: 'flex', alignItems: 'center',
+        justifyContent: 'space-between', gap: 12, flexShrink: 0,
+        fontSize: 13, fontWeight: 700, fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif",
+      }}>
+        <span>🔒 Trial limit reached{detail} — View only. Activate a license to continue.</span>
+        <button onClick={function() { setShowActivation(true); }} style={{
+          background: '#fff', color: '#e03151', border: 'none',
+          borderRadius: 8, padding: '7px 18px', fontWeight: 800,
+          fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
+        }}>Activate License</button>
+      </div>
+      <div style={ERP_APP_SHELL_STYLE}>
+        <App licenseInfo={limitLicInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+      </div>
+      {showActivation && (
+        <ActivationScreen
+          onActivated={handleActivated}
+          isExpired={true}
+          daysLeft={0}
+          onClose={function() { setShowActivation(false); }}
+        />
+      )}
+    </div>
+  );
+}
 function readIdbKey(key) {
   return new Promise(function(resolve) {
     try {
@@ -1341,6 +1402,15 @@ export default function LicenseGate() {
             }
           }
           setNetworkConfig(cfg);
+        } else if (COMPUTER_SHOP_EDITION) {
+          const standaloneCfg = { role: 'standalone', apiUrl: '', wizardComplete: true };
+          try {
+            const api = window.electronAPI;
+            if (api && api.saveNetworkConfig) {
+              await api.saveNetworkConfig(standaloneCfg);
+            }
+          } catch (_e) { /* still proceed */ }
+          setNetworkConfig(standaloneCfg);
         } else {
           setNetworkConfig(false);
         }
@@ -1408,37 +1478,33 @@ export default function LicenseGate() {
     return function () { clearInterval(t); };
   }, []);
 
-  /* Load IndexedDB usage counts once on mount (before App renders) */
+  /* Load IndexedDB usage counts (refresh on interval so limits apply without restart) */
   useEffect(() => {
+    var cancelled = false;
     async function loadUsage() {
       try {
-        const sales     = await readIdbKey('tc3_sales')     || [];
-        const products  = await readIdbKey('tc3_products')  || [];
-        const customers = await readIdbKey('tc3_customers') || [];
-        const expenses  = await readIdbKey('tc3_expenses')  || [];
-        const purchases = await readIdbKey('tc3_purchases') || [];
-        const suppliers = await readIdbKey('tc3_suppliers') || [];
-        const quotations= await readIdbKey('tc3_quotations')|| [];
-        const repairs   = await readIdbKey('tc3_repairs')   || [];
-        const sc = Array.isArray(sales)     ? sales.length     : 0;
-        const pc = Array.isArray(products)  ? products.length  : 0;
-        const cc = Array.isArray(customers) ? customers.length : 0;
-        const ec = Array.isArray(expenses)  ? expenses.length  : 0;
-        const puc= Array.isArray(purchases) ? purchases.length : 0;
-        const suc= Array.isArray(suppliers) ? suppliers.length : 0;
-        const qc = Array.isArray(quotations)? quotations.length: 0;
-        const rc = Array.isArray(repairs)   ? repairs.length   : 0;
-        setUsageCounts({ sales: sc, products: pc, customers: cc,
-                         expenses: ec, purchases: puc, suppliers: suc,
-                         quotations: qc, repairs: rc });
-        setHasExistingData(sc > 0 || pc > 0 || cc > 0 || ec > 0 || puc > 0);
+        const counts = await loadUsageCountsFromIdb();
+        if (cancelled) return;
+        setUsageCounts(counts);
+        var any = false;
+        for (var k in counts) {
+          if (counts[k] > 0) { any = true; break; }
+        }
+        setHasExistingData(any);
       } catch (_) {
-        setUsageCounts({ sales:0, products:0, customers:0, expenses:0,
-                         purchases:0, suppliers:0, quotations:0, repairs:0 });
-        setHasExistingData(false);
+        if (!cancelled) {
+          var empty = {};
+          for (var i = 0; i < TRIAL_COUNT_MODULES.length; i++) {
+            empty[TRIAL_COUNT_MODULES[i].key] = 0;
+          }
+          setUsageCounts(empty);
+          setHasExistingData(false);
+        }
       }
     }
     loadUsage();
+    var t = setInterval(loadUsage, 12000);
+    return function () { cancelled = true; clearInterval(t); };
   }, []);
 
   /* -- Clock-drift recovery: retry every 15 s without restart ---------------- */
@@ -1713,16 +1779,21 @@ export default function LicenseGate() {
     );
   }
 
-  /* Grace period: license expired but within 3-day buffer */
+  /* Grace period: expired license — read-only until renewed */
   if (licStatus.status === 'grace') {
+    const graceRo = Object.assign({}, licStatus, {
+      status: 'expired',
+      isReadOnly: true,
+      readOnlyReason: 'license_expired',
+    });
     return (
       <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
-        <GracePeriodBanner
-          graceDaysLeft={licStatus.graceDaysLeft}
+        <ExpiredReadOnlyBanner
+          message={'License expired — read-only mode. Renew or activate within ' + (licStatus.graceDaysLeft || 0) + ' day(s).'}
           onActivate={function() { setShowActivation(true); }}
         />
         <div style={ERP_APP_SHELL_STYLE}>
-          <App licenseInfo={licStatus} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+          <App licenseInfo={graceRo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
         </div>
         {showActivation && (
           <ActivationScreen
@@ -1807,51 +1878,43 @@ export default function LicenseGate() {
 
   /* Trial — show ERP with usage limits + banner + activation overlay */
   if (licStatus.status === 'trial') {
-    /* Compute usage percentages */
-    const salesPct    = usageCounts ? (usageCounts.sales / (licStatus.trialMaxRecords || 20)) : 0;
-    const productsPct = usageCounts ? (usageCounts.products / (licStatus.trialMaxRecords || 20)) : 0;
-    const custPct     = usageCounts ? (usageCounts.customers/ (licStatus.trialMaxRecords || 20)) : 0;
-    const MAX = licStatus.trialMaxRecords || 20;
+    const MAX = licStatus.trialMaxRecords || TRIAL_MAX_RECORDS;
+    const exceeded = getTrialLimitExceeded(usageCounts, MAX);
+    var restoreGraceActive = false;
+    try {
+      var graceRaw = localStorage.getItem('tc3_restore_grace_until');
+      if (graceRaw) {
+        var graceUntil = Date.parse(String(graceRaw).replace(/^"|"$/g, ''));
+        restoreGraceActive = isFinite(graceUntil) && Date.now() < graceUntil;
+      }
+    } catch (_rg) { /* ignore */ }
 
-    /* Usage limit hit on any key module -- treat as expired/read-only */
-    if (usageCounts && (usageCounts.sales >= MAX || usageCounts.products >= MAX ||
-                        usageCounts.customers >= MAX || usageCounts.expenses >= MAX ||
-                        usageCounts.purchases >= MAX)) {
-      const limitLicInfo = Object.assign({}, licStatus, { status: 'expired', isReadOnly: true, readOnlyReason: 'license_expired' });
+    /* Any module at 20 — read-only until activation (unless recent backup restore grace) */
+    if (exceeded && !restoreGraceActive) {
       return (
-        <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
-          <div style={{
-            background: 'linear-gradient(90deg,#e03151,#c82040)', color: '#fff',
-            padding: '10px 20px', display: 'flex', alignItems: 'center',
-            justifyContent: 'space-between', gap: 12, flexShrink: 0,
-            fontSize: 13, fontWeight: 700, fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif",
-          }}>
-            <span>🔒 Trial limit reached — View only. Activate a license to continue.</span>
-            <button onClick={function() { setShowActivation(true); }} style={{
-              background: '#fff', color: '#e03151', border: 'none',
-              borderRadius: 8, padding: '7px 18px', fontWeight: 800,
-              fontSize: 12, cursor: 'pointer', whiteSpace: 'nowrap',
-            }}>Activate License</button>
-          </div>
-          <div style={ERP_APP_SHELL_STYLE}>
-            <App licenseInfo={limitLicInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
-          </div>
-          {showActivation && (
-            <ActivationScreen
-              onActivated={handleActivated}
-              isExpired={true}
-              daysLeft={0}
-              onClose={function() { setShowActivation(false); }}
-            />
-          )}
-        </div>
+        <TrialLimitReadOnlyShell
+          licStatus={licStatus}
+          usageCounts={usageCounts}
+          networkConfig={networkConfig}
+          showActivation={showActivation}
+          setShowActivation={setShowActivation}
+          handleActivated={handleActivated}
+          exceeded={exceeded}
+        />
       );
     }
 
+    const salesPct    = usageCounts ? (usageCounts.sales / MAX) : 0;
+    const productsPct = usageCounts ? (usageCounts.products / MAX) : 0;
+    const custPct     = usageCounts ? (usageCounts.customers / MAX) : 0;
+
     /* Max-based: warn when the most-used module reaches 80% of limit */
-    const maxPct = Math.max(salesPct, productsPct, custPct,
-      usageCounts ? (usageCounts.expenses  || 0) / MAX : 0,
-      usageCounts ? (usageCounts.purchases || 0) / MAX : 0);
+    var maxPct = Math.max(salesPct, productsPct, custPct);
+    for (var mi = 0; mi < TRIAL_COUNT_MODULES.length; mi++) {
+      var mk = TRIAL_COUNT_MODULES[mi].key;
+      var mv = usageCounts ? (usageCounts[mk] || 0) / MAX : 0;
+      if (mv > maxPct) maxPct = mv;
+    }
     const show80pctWarning = maxPct >= 0.8;
     return (
       <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -1859,6 +1922,11 @@ export default function LicenseGate() {
           daysLeft={licStatus.daysLeft}
           onActivate={function() { setShowActivation(true); }}
         />
+        {exceeded && restoreGraceActive && (
+          <div style={{ background: '#fff8e6', borderBottom: '1px solid #f0d080', padding: '8px 16px', fontSize: 13, color: '#7a5a00', textAlign: 'center' }}>
+            Restored backup exceeds trial limits — you can view and edit existing data. Activate your license to add new records.
+          </div>
+        )}
         {show80pctWarning && (
           <UsageWarnBanner
             usageCounts={usageCounts}
@@ -1882,15 +1950,36 @@ export default function LicenseGate() {
   }
 
   /* Fully activated — App runs normally + optional banners (only when still within paid period: 1–7 days left) */
+  const licensePastDue = licStatus.daysUntilExpiry !== null &&
+                         licStatus.daysUntilExpiry !== undefined &&
+                         licStatus.daysUntilExpiry <= 0 &&
+                         licStatus.plan !== 'lifetime';
+  if (licensePastDue) {
+    const pastDueInfo = Object.assign({}, licStatus, {
+      status: 'expired',
+      isReadOnly: true,
+      readOnlyReason: 'license_expired',
+    });
+    return (
+      <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <ExpiredReadOnlyBanner onActivate={function() { setShowActivation(true); }} />
+        <div style={ERP_APP_SHELL_STYLE}>
+          <App licenseInfo={pastDueInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+        </div>
+        <ActivationScreen
+          onActivated={handleActivated}
+          isExpired={true}
+          daysLeft={0}
+        />
+      </div>
+    );
+  }
+
   const showExpiryReminder = licStatus.daysUntilExpiry !== null &&
                              licStatus.daysUntilExpiry !== undefined &&
                              licStatus.daysUntilExpiry > 0 &&
                              licStatus.daysUntilExpiry <= 7;
-  /* Past due (0 or negative): must show activation — not dismissible; avoids stale reminder when daysUntilExpiry drifts negative */
-  const licensePastDue = licStatus.daysUntilExpiry !== null &&
-                         licStatus.daysUntilExpiry !== undefined &&
-                         licStatus.daysUntilExpiry <= 0;
-  const showActivationOverlay = showActivation || licensePastDue;
+  const showActivationOverlay = showActivation;
   return (
     <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
       {licStatus.plan === '3days' && (
@@ -1911,9 +2000,9 @@ export default function LicenseGate() {
       {showActivationOverlay && (
         <ActivationScreen
           onActivated={handleActivated}
-          isExpired={licensePastDue}
-          daysLeft={0}
-          onClose={licensePastDue ? undefined : function() { setShowActivation(false); }}
+          isExpired={false}
+          daysLeft={licStatus.daysLeft}
+          onClose={function() { setShowActivation(false); }}
         />
       )}
     </div>

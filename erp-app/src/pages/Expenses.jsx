@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
 var Expenses = function (props) {
   var state = props.state;
@@ -89,14 +91,14 @@ var Expenses = function (props) {
 
   var topCat = ECAT_NAMES.slice().sort(function (a, b) { return (catTotals[b] || 0) - (catTotals[a] || 0); }).slice(0, 5);
 
-  var filtered = allExp.slice().reverse().filter(function (e) {
+  var filtered = sortNewestFirst(allExp).filter(function (e) {
     var matchCat = filterCat === "All" || e.category === filterCat;
     var matchMonth = !filterMonth || e.date.slice(0, 7) === filterMonth;
     var q = search.toLowerCase();
     var matchQ = !q || e.description.toLowerCase().includes(q) || (e.payee || "").toLowerCase().includes(q) || e.category.toLowerCase().includes(q);
     return matchCat && matchMonth && matchQ;
   });
-  var expPager = usePager(filtered, 50);
+  var expPager = usePager(filtered, LIST_PAGE_SIZE);
   var filteredTotal = filtered.reduce(function (a, e) { return a + e.amount; }, 0);
 
   return (
@@ -162,8 +164,8 @@ var Expenses = function (props) {
                   <TD>{e.payMode || "—"}</TD>
                   <TD>{e.reference || "—"}</TD>
                   <TD bold color={C.red}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
-                  <td style={{ padding: "9px 12px" }}>
-                    <Btn sm col="red" onClick={function () { setDeleteId(e.id); }}>Del</Btn>
+                  <td style={actBtnCellStyle}>
+                    <ActBtn tone="red" title="Delete expense" onClick={function () { setDeleteId(e.id); }}>✕</ActBtn>
                   </td>
                 </TR>
               );

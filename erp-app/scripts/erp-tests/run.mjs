@@ -15,6 +15,11 @@ import { runReconciliationGateTests } from "./reconciliation-gate.test.mjs";
 import { runInventoryValuationTests } from "./inventory-valuation.test.mjs";
 import { runSettingsRegressionTests } from "./settings-regression.test.mjs";
 import { runRiskFlowRegressionTests } from "./risk-flow-regression.test.mjs";
+import { runTrialLimitsTests } from "./trial-limits.test.mjs";
+import { runPosFreeItemsTests } from "./pos-free-items.test.mjs";
+import { runProductNameMatchTests } from "./product-name-match.test.mjs";
+import { runVoidInvoiceTests } from "./void-invoice.test.mjs";
+import { runDemo360Tests } from "./demo-360.test.mjs";
 
 function fail(name, detail) {
   console.error("FAIL —", name, detail != null ? detail : "");
@@ -68,6 +73,26 @@ if (process.exitCode) {
   process.exit(process.exitCode);
 }
 runInventoryValuationTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runTrialLimitsTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runPosFreeItemsTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runProductNameMatchTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runVoidInvoiceTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runDemo360Tests(ctx);
 if (process.exitCode) {
   process.exit(process.exitCode);
 }

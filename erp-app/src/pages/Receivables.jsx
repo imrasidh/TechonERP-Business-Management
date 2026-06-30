@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { saleReturnUiStatus } from "../utils/returnDisplay.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE } from "../utils/listPage.js";
 
 /* ═══════════════════════════════════════════════════════════
    ENHANCED RECEIVABLES — Sales invoices + Manual (Loan Given, Other)
@@ -28,6 +30,8 @@ var EnhancedReceivables = function (props) {
   var TD = props.TD;
   var fmtDateFull = props.fmtDateFull;
   var SplitPaymentModal = props.SplitPaymentModal;
+  var usePager = props.usePager;
+  var Pager = props.Pager;
   var resolvePaymentCreditTargetIds = props.resolvePaymentCreditTargetIds;
   var warnPaymentCustomerMatchSafety = props.warnPaymentCustomerMatchSafety;
   var maybeShowPaymentMatchToasts = props.maybeShowPaymentMatchToasts;
@@ -116,6 +120,7 @@ var EnhancedReceivables = function (props) {
     var matchTab = rtab === "all" || (rtab === "outstanding" && e.balance > 0) || (rtab === "cleared" && e.balance <= 0) || (rtab === "manual" && e._type === "manual") || (rtab === "sales" && e._type === "sale");
     return matchQ && matchTab;
   });
+  var recPager = usePager(filtered, LIST_PAGE_SIZE);
 
   var totalReceivable = allEntries.reduce(function (a, e) { return a + e.balance; }, 0);
   var totalManual = manualEntries.reduce(function (a, e) { return a + e.balance; }, 0);
@@ -280,7 +285,7 @@ var EnhancedReceivables = function (props) {
             <thead><tr><TH>Date</TH><TH>Source</TH><TH>Type</TH><TH>Total Amount</TH><TH>Paid</TH><TH>Balance</TH><TH>Reference</TH><TH>Actions</TH></tr></thead>
             <tbody>
               {filtered.length === 0 && <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", color: C.muted }}>No receivables found</td></tr>}
-              {filtered.map(function (e, i) {
+              {recPager.slice.map(function (e, i) {
                 var isOut = e.balance > 0;
                 var saleRet = e._type === "sale" && e._returnMeta ? e._returnMeta : { hasReturns: false };
                 var rowBg = saleRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
@@ -288,10 +293,10 @@ var EnhancedReceivables = function (props) {
                   <tr key={e.id} className="table-row-hover" style={{ background: rowBg, borderBottom: "1px solid " + C.borderLight }} title={saleRet.hasReturns ? "This invoice has return activity" : undefined}>
                     <TD>{fmtDateFull(e.date)}</TD>
                     <TD bold>{e.source}</TD>
-                    <td style={{ padding: "10px 12px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 5, flexWrap: "nowrap" }}>
                         <span style={{ background: e._type === "sale" ? C.accentSoft : "#f3e8ff", color: e._type === "sale" ? C.accent : C.purple, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{e.type}</span>
-                        {saleRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 800, color: "#9f1239", background: "#ffe4e6", border: "1px solid #fda4af", borderRadius: 6, padding: "2px 6px" }}>↩ Return</span> : null}
+                        {saleRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 700, color: "#9f1239", background: "#ffe4e6", border: "1px solid #fda4af", borderRadius: 5, padding: "1px 5px", lineHeight: 1.3 }}>↩</span> : null}
                       </div>
                     </td>
                     <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
@@ -303,15 +308,15 @@ var EnhancedReceivables = function (props) {
                       }
                     </td>
                     <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: C.muted }}>{e.reference || "—"}</td>
-                    <td style={{ padding: "8px 10px" }}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <Btn sm col="gray" onClick={function () { setViewItem(e); }}>View</Btn>
-                        {isOut && (state.cheques || []).some(function (ch) { return ch.saleId === (e._saleObj && e._saleObj.id) && ch.status === "Pending"; }) && (
-                        <span title="Has pending cheque(s)" style={{ fontSize: 13 }}>🕐</span>
-                      )}
-                      {isOut && <Btn sm col="green" onClick={function () { setSplitPayModal(e); }}>Pay</Btn>}
-                        {e._type === "manual" && <Btn sm col="red" onClick={function () { deleteManual(e.id); }}>Del</Btn>}
-                      </div>
+                    <td style={actBtnCellStyle}>
+                      <ActBtnGroup>
+                        <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }}>🧾</ActBtn>
+                        {isOut && (state.cheques || []).some(function (ch) { return ch.saleId === (e._saleObj && e._saleObj.id) && ch.status === "Pending"; }) ? (
+                          <span title="Has pending cheque(s)" style={{ fontSize: 11, lineHeight: 1 }}>🕐</span>
+                        ) : null}
+                        {isOut ? <ActBtn tone="green" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
+                        {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }}>✕</ActBtn> : null}
+                      </ActBtnGroup>
                     </td>
                   </tr>
                 );
@@ -319,6 +324,7 @@ var EnhancedReceivables = function (props) {
             </tbody>
           </table>
         </div>
+        <Pager pager={recPager} />
         {filtered.length > 0 && (
           <div style={{ display: "flex", gap: 20, padding: "10px 14px", borderTop: "2px solid " + C.border, fontSize: 13, fontWeight: 700, background: "#f7f9ff" }}>
             <span>Total: <span style={{ color: C.blue }}>{getCurrencySymbol()} {fmtNum(filtered.reduce(function (a, e) { return a + e.amount; }, 0))}</span></span>

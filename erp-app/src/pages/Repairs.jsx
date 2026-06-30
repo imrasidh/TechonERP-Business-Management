@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 import CustomerPicker from "../components/CustomerPicker.jsx";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
 var Repairs = function (props) {
   var state = props.state;
@@ -235,14 +237,14 @@ var Repairs = function (props) {
     shareViaWhatsApp(body, filename, r.phone || "");
   };
 
-  var filtered = state.repairs.slice().reverse().filter(function (r) {
+  var filtered = sortNewestFirst(state.repairs).filter(function (r) {
     var matchS = filterStatus === "All" || r.status === filterStatus;
     var q = search.toLowerCase();
     var matchQ = !q || r.customer.toLowerCase().includes(q) || (r.brand || "").toLowerCase().includes(q) || (r.modelNo || "").toLowerCase().includes(q) || (r.problem || "").toLowerCase().includes(q);
     return matchS && matchQ;
   });
 
-  var repPager = usePager(filtered, 50);
+  var repPager = usePager(filtered, LIST_PAGE_SIZE);
   var SC = STATUS_COLORS;
   var SB = STATUS_BG;
 
@@ -297,16 +299,13 @@ var Repairs = function (props) {
                         {STATUS_ICONS[r.status]} {r.status || "Pending"}
                       </span>
                     </td>
-                    <td style={{ padding: "9px 12px" }}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <Btn sm col="gray" onClick={function () { setViewR(r); }}>View</Btn>
-                        <Btn sm col="blue" onClick={function () { setEditR(Object.assign({}, r)); }}>Edit</Btn>
-                        {/* Invoice button ONLY shown when status is Ready */}
-                        {isReady && (
-                          <Btn sm col="green" onClick={function () { openConvertModal(r); }}>📄 Invoice</Btn>
-                        )}
-                        <Btn sm col="red" onClick={function () { setDeleteModal(r); setDeleteReason(""); }}>Del</Btn>
-                      </div>
+                    <td style={actBtnCellStyle}>
+                      <ActBtnGroup>
+                        <ActBtn tone="cyan" title="View repair job" onClick={function () { setViewR(r); }}>🧾</ActBtn>
+                        <ActBtn tone="blue" title="Edit repair job" onClick={function () { setEditR(Object.assign({}, r)); }}>✎</ActBtn>
+                        {isReady ? <ActBtn tone="green" title="Convert to invoice" wide onClick={function () { openConvertModal(r); }}>Invoice</ActBtn> : null}
+                        <ActBtn tone="red" title="Delete repair job" onClick={function () { setDeleteModal(r); setDeleteReason(""); }}>✕</ActBtn>
+                      </ActBtnGroup>
                     </td>
                   </TR>
                 );

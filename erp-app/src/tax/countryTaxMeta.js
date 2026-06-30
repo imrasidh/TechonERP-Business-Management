@@ -4,7 +4,11 @@
  */
 
 export var COUNTRY_TAX_META = {
-  LK: [{ name: "VAT", rate: 15 }, { name: "NBT", rate: 2 }],
+  LK: [
+    { name: "SSCL", rate: 2.5, order: 1, appliesOn: "net" },
+    { name: "VAT", rate: 15, order: 2, appliesOn: "running" },
+    { name: "NBT", rate: 2, order: 3, appliesOn: "net", enabled: false },
+  ],
   IN: [{ name: "GST", rate: 18 }],
   PK: [{ name: "Sales Tax", rate: 17 }],
   BD: [{ name: "VAT", rate: 15 }],
@@ -57,7 +61,7 @@ export function mergeTaxesOnCountryChange(newCountryIso, previousSelectedTaxes) 
     if (old && typeof old.rate === "number" && !isNaN(old.rate)) {
       rate = old.rate;
     }
-    return { name: s.name, rate: rate, enabled: old ? old.enabled !== false : true, custom: false };
+    return { name: s.name, rate: rate, enabled: old ? old.enabled !== false : true, custom: false, order: s.order, appliesOn: s.appliesOn === "running" ? "running" : "net" };
   });
 
   var seen = {};
@@ -72,6 +76,8 @@ export function mergeTaxesOnCountryChange(newCountryIso, previousSelectedTaxes) 
       rate: typeof c.rate === "number" ? c.rate : parseFloat(c.rate) || 0,
       enabled: c.enabled !== false,
       custom: true,
+      order: typeof c.order === "number" ? c.order : merged.length + 1,
+      appliesOn: c.appliesOn === "running" ? "running" : "net",
     });
     seen[key] = true;
   });
@@ -90,6 +96,8 @@ export function normalizeTaxList(arr) {
         rate: rate,
         enabled: t.enabled !== false,
         custom: !!t.custom,
+        order: typeof t.order === "number" ? t.order : undefined,
+        appliesOn: t.appliesOn === "running" ? "running" : "net",
       };
     })
     .filter(Boolean);

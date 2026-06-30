@@ -2,6 +2,7 @@
  * Read-only helpers for linking display to tc3_salesReturns / tc3_purchaseReturns.
  * Does not change business logic — uses existing invoiceId / purchaseId on return rows.
  */
+import { isVoidedTxn } from "./voidInvoice.js";
 
 export function getReturnsForSale(sale, salesReturns) {
   if (!sale) return [];
@@ -49,12 +50,14 @@ export function purchaseReturnUiStatus(purchase, purchaseReturns) {
 }
 
 export function displayStatusForSale(sale, salesReturns) {
+  if (isVoidedTxn(sale)) return "Voided";
   var u = saleReturnUiStatus(sale, salesReturns);
   if (u.hasReturns) return u.label;
   return sale.payStatus || "Unpaid";
 }
 
 export function displayStatusForPurchase(purchase, purchaseReturns) {
+  if (isVoidedTxn(purchase)) return "Voided";
   var u = purchaseReturnUiStatus(purchase, purchaseReturns);
   if (u.hasReturns) return u.label;
   return purchase.status || "Unpaid";

@@ -1,7 +1,71 @@
 import React from "react";
 import { round2 } from "../utils/moneyRound.js";
 import { sumRawMaterialKitchenCostInRange } from "../utils/ingredientUsageCost.js";
+import { activeSales } from "../utils/voidInvoice.js";
+import { sortNewestFirst } from "../utils/listPage.js";
 
+var dashTileStyle = {
+  background: "#fff",
+  borderRadius: 12,
+  padding: "16px 18px",
+  border: "1px solid #e8ecf4",
+  boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
+  cursor: "pointer",
+  transition: "box-shadow .15s, border-color .15s",
+};
+
+var dashLabelStyle = {
+  fontSize: 10,
+  fontWeight: 700,
+  color: "#64748b",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+};
+
+var dashValueStyle = {
+  fontSize: 22,
+  fontWeight: 800,
+  color: "#0f172a",
+  marginTop: 8,
+  letterSpacing: "-0.02em",
+  fontVariantNumeric: "tabular-nums",
+};
+
+var dashSubStyle = { fontSize: 11, color: "#94a3b8", marginTop: 4, fontWeight: 500 };
+
+var DashTile = function (props) {
+  return (
+    <div
+      className="stat-card-hover"
+      onClick={props.onClick}
+      style={Object.assign({}, dashTileStyle, props.style || {}, { cursor: props.onClick ? "pointer" : "default" })}
+    >
+      <div style={dashLabelStyle}>{props.label}</div>
+      <div style={Object.assign({}, dashValueStyle, props.valueColor ? { color: props.valueColor } : {})}>{props.value}</div>
+      {props.sub ? <div style={dashSubStyle}>{props.sub}</div> : null}
+      {props.footer || null}
+    </div>
+  );
+};
+
+var DashLink = function (props) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      style={{
+        border: "none",
+        background: "transparent",
+        color: "#64748b",
+        fontSize: 11,
+        fontWeight: 700,
+        cursor: "pointer",
+        padding: "4px 0",
+        fontFamily: "inherit",
+      }}
+    >{props.children}</button>
+  );
+};
 var Dashboard = function (props) {
   var state = props.state;
   var setActive = props.setActive;
@@ -15,13 +79,7 @@ var Dashboard = function (props) {
   var fmtNum = props.fmtNum;
   var fmtDate = props.fmtDate;
   var C = props.C;
-  var StatCard = props.StatCard;
   var Card = props.Card;
-  var CardTitle = props.CardTitle;
-  var Btn = props.Btn;
-  var TH = props.TH;
-  var TR = props.TR;
-  var TD = props.TD;
   var Badge = props.Badge;
   var getBulkDisplayParts = props.getBulkDisplayParts;
   var fmtStockDual = props.fmtStockDual;
@@ -29,8 +87,9 @@ var Dashboard = function (props) {
   var getBusinessProfile = props.getBusinessProfile;
   var currentUser = props.currentUser || null;
   var t = today();
-  var todaySales = round2(state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.total; }, 0));
-  var todayInvoicedCost = round2(state.sales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); }, 0));
+  var liveSales = activeSales(state.sales);
+  var todaySales = round2(liveSales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.total; }, 0));
+  var todayInvoicedCost = round2(liveSales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); }, 0));
   var todayIngredientCost = round2(sumRawMaterialKitchenCostInRange(state, t, t));
   var todayCost = round2(todayInvoicedCost + todayIngredientCost);
   var todayProfit = round2(todaySales - todayCost);
@@ -44,7 +103,7 @@ var Dashboard = function (props) {
   var totalReceivable = typeof getTotalReceivableDerived === "function"
     ? round2(getTotalReceivableDerived(state))
     : (function () {
-      var fromSales = state.sales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
+      var fromSales = liveSales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
       var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
         var paid = (mr.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
         return a + Math.max(0, mr.amount - paid);
@@ -70,8 +129,8 @@ var Dashboard = function (props) {
   });
   var stockValue = round2(stockableProducts.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0));
   var stockRetailValue = round2(stockableProducts.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0));
-  var recentSales = state.sales.slice().reverse().slice(0, 5);
-  var recentRepairs = state.repairs.slice().reverse().slice(0, 5);
+  var recentSales = sortNewestFirst(liveSales).slice(0, 5);
+  var recentRepairs = sortNewestFirst(state.repairs || []).slice(0, 5);
   var lowStock = stockableProducts.filter(function (p) { return p.stock > 0 && p.stock <= 5; });
   var outOfStockProducts = stockableProducts.filter(function (p) { return (p.stock || 0) === 0; });
   var reorderSuggestions = lowStock.slice(0, 8).map(function (p) {
@@ -90,7 +149,7 @@ var Dashboard = function (props) {
       dt.setDate(dt.getDate() - i);
       var key = dt.toISOString().slice(0, 10);
       var label = dt.toLocaleDateString("en-US", { weekday: "short" });
-      var total = round2(state.sales.filter(function (s) { return s.date === key; }).reduce(function (a, s) { return a + (s.total || 0); }, 0));
+      var total = round2(liveSales.filter(function (s) { return s.date === key; }).reduce(function (a, s) { return a + (s.total || 0); }, 0));
       out.push({ key: key, label: label, total: total });
     }
     return out;
@@ -98,7 +157,7 @@ var Dashboard = function (props) {
   var weeklyMax = weeklyTrend.reduce(function (m, x) { return Math.max(m, x.total || 0); }, 1);
   var topProducts = (function () {
     var map = {};
-    (state.sales || []).forEach(function (s) {
+    (liveSales || []).forEach(function (s) {
       (s.items || []).forEach(function (it) {
         var k = it.id || it.name || "unknown";
         if (!map[k]) map[k] = { name: it.name || "Unknown", qty: 0, revenue: 0 };
@@ -116,8 +175,6 @@ var Dashboard = function (props) {
     var diffDays = Math.ceil((new Date(ch.dueDate) - new Date(t)) / 86400000);
     return diffDays <= 7; /* today + 7 days ahead, plus overdue */
   }).sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
-  var overdueCheques = dueAlertCheques.filter(function (ch) { return ch.dueDate < t; });
-  var dueTodayCheques = dueAlertCheques.filter(function (ch) { return ch.dueDate === t; });
 
   /* ── Fix 4: Data Integrity Checks ── */
   var integrityWarnings = (function () {
@@ -153,24 +210,44 @@ var Dashboard = function (props) {
     });
     return warns;
   }());
-  var WARN_ICONS = { inventory: "📦", invoice: "🧾", receivable: "📥", payable: "📤" };
-  var WARN_COLORS = { inventory: C.red, invoice: C.orange, receivable: C.cyan, payable: C.purple };
+    var WARN_COLORS = { inventory: C.red, invoice: C.orange, receivable: C.cyan, payable: C.purple };
+  var shopName = (state.settings && state.settings.shopName) ? state.settings.shopName : "Your business";
+  var displayDate = (function () {
+    try {
+      return new Date(t + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+    } catch (e) {
+      return fmtDate(t);
+    }
+  }());
+
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+      {/* ── Header ── */}
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>Dashboard</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.03em", lineHeight: 1.15 }}>{shopName}</div>
+          <div style={{ fontSize: 13, color: "#64748b", marginTop: 6, fontWeight: 500 }}>{displayDate}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" onClick={function () { setActive("pos"); }} style={{ border: "none", borderRadius: 9, padding: "9px 16px", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(41,121,255,0.25)" }}>Open POS</button>
+          <button type="button" onClick={function () { setActive("invoices"); }} style={{ border: "1px solid #e2e8f0", borderRadius: 9, padding: "9px 16px", background: "#fff", color: "#334155", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Invoices</button>
+          <button type="button" onClick={function () { setActive("reports"); }} style={{ border: "1px solid #e2e8f0", borderRadius: 9, padding: "9px 16px", background: "#fff", color: "#334155", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Reports</button>
+        </div>
+      </div>
+
       {(function () {
         var welcomeDismissed = !!S.get("tc3_dashboard_welcome_dismissed", false);
         if (welcomeDismissed) return null;
         var name = currentUser && (currentUser.name || currentUser.username) ? (currentUser.name || currentUser.username) : "there";
         return (
-          <div style={{ background: "linear-gradient(135deg,#eff6ff,#f8fafc)", border: "1.5px solid #bfdbfe", borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 800, color: "#1e3a8a" }}>Welcome, {name}</div>
-              <div style={{ fontSize: 12, color: "#475569", marginTop: 2 }}>Quick shortcuts and business insights appear here as your data grows.</div>
-            </div>
-            <button onClick={function () { S.set("tc3_dashboard_welcome_dismissed", true); props.setState(function (s) { return Object.assign({}, s); }); }} style={{ border: "1px solid #93c5fd", background: "#fff", color: "#1d4ed8", borderRadius: 8, fontWeight: 700, fontSize: 12, padding: "6px 10px", cursor: "pointer" }}>Dismiss</button>
+          <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div style={{ fontSize: 13, color: "#475569" }}>Welcome back, <strong style={{ color: "#0f172a" }}>{name}</strong>. Your key numbers and alerts are below.</div>
+            <button type="button" onClick={function () { S.set("tc3_dashboard_welcome_dismissed", true); props.setState(function (s) { return Object.assign({}, s); }); }} style={{ border: "1px solid #e2e8f0", background: "#fff", color: "#64748b", borderRadius: 7, fontWeight: 600, fontSize: 11, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>Dismiss</button>
           </div>
         );
       })()}
+
       {props.setupIncomplete && props.onRequestSetupWizard && (
         <div
           role="button"
@@ -178,60 +255,52 @@ var Dashboard = function (props) {
           title="Complete setup to use sales, POS, and invoicing"
           onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); props.onRequestSetupWizard(); } }}
           onClick={props.onRequestSetupWizard}
-          style={{
-            background: "linear-gradient(135deg,#fff7ed,#fef3c7)",
-            border: "1.5px solid #fcd34d",
-            borderRadius: 12,
-            padding: "12px 16px",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-            boxShadow: "0 2px 8px rgba(245,158,11,0.12)",
-          }}
+          style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-            <span style={{ fontSize: 22, flexShrink: 0 }}>⚙️</span>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 800, color: "#92400e" }}>Complete your setup</div>
-              <div style={{ fontSize: 12, color: "#a16207", marginTop: 2, lineHeight: 1.45 }}>Add your shop name and a phone number or address to use sales and POS.</div>
-            </div>
-          </div>
-          <span style={{ fontSize: 12, fontWeight: 800, color: "#b45309", flexShrink: 0 }}>Continue →</span>
+          <div style={{ fontSize: 13, color: "#92400e", fontWeight: 600 }}>Add shop name and contact in Settings to unlock sales and POS.</div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#b45309", flexShrink: 0 }}>Open Settings →</span>
         </div>
       )}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-        <div onClick={function () { setActive("reports"); }} style={{ cursor: "pointer" }}>
-          <div className="stat-card-hover" style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", border: "1.5px solid " + C.border, position: "relative", overflow: "hidden", boxShadow: C.shadowCard }}>
-            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: C.orange, borderRadius: "14px 14px 0 0" }}></div>
-            <div style={{ position: "absolute", top: 0, right: 0, width: 80, height: 80, background: C.orange + "10", borderRadius: "0 14px 0 80px" }}></div>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "center", gap: 5 }}><span style={{ fontSize: 14 }}>💰</span> Total Cash</div>
-            <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 6, letterSpacing: "-0.02em" }}>{getCurrencySymbol()} {fmtNum(balances.total)}</div>
-            <div style={{ display: "flex", gap: 5 }}>
-              <div style={{ flex: 1, background: "#f0f9f4", borderRadius: 7, padding: "4px 7px", border: "1px solid #c8edd8" }}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: "#2e7d32", textTransform: "uppercase", marginBottom: 1 }}>Cash</div>
-                <div style={{ fontSize: 12, fontWeight: 800, color: "#2e7d32" }}>{getCurrencySymbol()} {fmtNum(balances.cash)}</div>
+
+      {/* ── Primary KPIs ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
+        <DashTile
+          label="Total cash"
+          value={getCurrencySymbol() + " " + fmtNum(balances.total)}
+          sub="Cash + bank balance"
+          onClick={function () { setActive("reports"); }}
+          footer={(
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <div style={{ flex: 1, background: "#f0fdf4", borderRadius: 8, padding: "6px 8px", border: "1px solid #dcfce7" }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: "#15803d", textTransform: "uppercase" }}>Cash</div>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(balances.cash)}</div>
               </div>
-              <div style={{ flex: 1, background: "#e8f0fe", borderRadius: 7, padding: "4px 7px", border: "1px solid #c5d4f5" }}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: "#1565c0", textTransform: "uppercase", marginBottom: 1 }}>Bank</div>
-                <div style={{ fontSize: 12, fontWeight: 800, color: "#1565c0" }}>{getCurrencySymbol()} {fmtNum(balances.bank)}</div>
+              <div style={{ flex: 1, background: "#eff6ff", borderRadius: 8, padding: "6px 8px", border: "1px solid #dbeafe" }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: "#1d4ed8", textTransform: "uppercase" }}>Bank</div>
+                <div style={{ fontSize: 12, fontWeight: 800, color: "#1e40af", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(balances.bank)}</div>
               </div>
             </div>
-          </div>
-        </div>
-        <div onClick={function () { setActive("inventory"); }} style={{ cursor: "pointer" }}><StatCard label="Stock Value" value={stockValue} accent={C.purple} icon="📦" sub={"Low stock: " + lowStock.length} /></div>
-        <div onClick={function () { setActive("pos"); }} style={{ cursor: "pointer" }}><StatCard label="Today Sales" value={todaySales} accent={C.cyan} icon="💰" sub={fmtDate(t)} /></div>
-        <div onClick={function () { setActive("reports"); }} style={{ cursor: "pointer" }}><StatCard label="Today Profit" value={todayProfit} accent={todayProfit >= 0 ? C.green : C.red} icon="📈" /></div>
+          )}
+        />
+        <DashTile label="Today sales" value={getCurrencySymbol() + " " + fmtNum(todaySales)} sub={fmtDate(t)} valueColor={C.cyan} onClick={function () { setActive("pos"); }} />
+        <DashTile label="Today profit" value={getCurrencySymbol() + " " + fmtNum(todayProfit)} sub={"Cost " + getCurrencySymbol() + " " + fmtNum(todayCost)} valueColor={todayProfit >= 0 ? C.green : C.red} onClick={function () { setActive("reports"); }} />
+        <DashTile label="Stock value" value={getCurrencySymbol() + " " + fmtNum(stockValue)} sub={lowStock.length + " low · " + outOfStockProducts.length + " out"} valueColor={C.purple} onClick={function () { setActive("inventory"); }} />
       </div>
-      {/* ── Trial Usage Widget (visible in trial mode only) ── */}
+
+      {/* ── Receivable / Payable ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 }}>
+        <DashTile label="Receivables" value={getCurrencySymbol() + " " + fmtNum(totalReceivable)} sub="Money owed to you" valueColor={C.cyan} onClick={function () { setActive("receivables"); }} />
+        <DashTile label="Payables" value={getCurrencySymbol() + " " + fmtNum(totalPayable)} sub="Money you owe" valueColor={C.orange} onClick={function () { setActive("payables"); }} />
+        <DashTile label="Retail stock value" value={getCurrencySymbol() + " " + fmtNum(stockRetailValue)} sub="At selling price" onClick={function () { setActive("inventory"); }} />
+      </div>
+
+      {/* ── Trial usage ── */}
       {(function() {
         var licenseInfo = props.licenseInfo;
         if (!licenseInfo || licenseInfo.status !== 'trial') return null;
         var MAX = licenseInfo.trialMaxRecords || 20;
         var allMods = [
-          { label: 'Sales',      count: state.sales.length                  },
+          { label: 'Sales',      count: liveSales.length                  },
           { label: 'Products',   count: state.products.length               },
           { label: 'Customers',  count: state.customers.length              },
           { label: 'Expenses',   count: (state.expenses   || []).length     },
@@ -252,117 +321,71 @@ var Dashboard = function (props) {
         var secondary = allMods.slice(5).filter(function(m) { return m.count > 0; });
         var SUPPORT_WA_LINK = 'https://wa.me/94701234678?text=' + encodeURIComponent('Hi, I need help with TechonERP license.');
         return (
-          <div style={{ background: bgCol, borderRadius: 12, border: '1.5px solid ' + borderCol, padding: '14px 18px', marginBottom: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                Free Trial Usage
-              </span>
-              <span style={{ fontSize: 13, fontWeight: 800, color: barColor }}>
-                {maxCount}/{MAX} used &middot; <span style={{ fontWeight: 600 }}>{remaining} remaining</span>
+          <div style={{ background: bgCol, borderRadius: 10, border: "1px solid " + borderCol, padding: "14px 18px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
+              <span style={dashLabelStyle}>Free trial usage</span>
+              <span style={{ fontSize: 13, fontWeight: 800, color: barColor, fontVariantNumeric: "tabular-nums" }}>
+                {maxCount}/{MAX} · {remaining} left
               </span>
             </div>
-            <div style={{ background: '#e2e8f0', borderRadius: 99, height: 8, overflow: 'hidden', marginBottom: 8 }}>
-              <div style={{ height: '100%', borderRadius: 99, width: Math.min(pct, 100) + '%', background: barColor, transition: 'width 0.4s ease' }} />
+            <div style={{ background: "#e2e8f0", borderRadius: 99, height: 6, overflow: "hidden", marginBottom: 10 }}>
+              <div style={{ height: "100%", borderRadius: 99, width: Math.min(pct, 100) + "%", background: barColor, transition: "width 0.4s ease" }} />
             </div>
-            <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, marginBottom: 10 }}>
-              Highest: <span style={{ color: barColor, fontWeight: 800 }}>{topModule.label} ({topModule.count}/{MAX})</span>
-              {' \u2013 '}
-              {primary.map(function(m) { return m.label + '\u00a0' + m.count + '/' + MAX; }).join(' \u00b7 ')}
-              {secondary.length > 0 && ' \u00b7 ' + secondary.map(function(m) { return m.label + '\u00a0' + m.count; }).join(' \u00b7 ')}
+            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 500, marginBottom: 12, lineHeight: 1.5 }}>
+              Highest: <strong style={{ color: barColor }}>{topModule.label}</strong>
+              {" · "}
+              {primary.map(function (m) { return m.label + " " + m.count; }).join(" · ")}
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={function() { props.onActivate && props.onActivate(); }} style={{ flex: 1, padding: '9px', border: 'none', borderRadius: 9, background: 'linear-gradient(135deg,#2255d4,#2979ff)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif", animation: isCritical ? 'tcPulse 1.6s ease-in-out infinite' : 'none' }}>Activate License</button>
-              <button onClick={function() { window.open && window.open(SUPPORT_WA_LINK, '_blank'); }} style={{ padding: '9px 14px', border: 'none', borderRadius: 9, background: '#25D366', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap', fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif" }}>WhatsApp</button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button type="button" onClick={function () { props.onActivate && props.onActivate(); }} style={{ flex: 1, padding: "9px", border: "none", borderRadius: 8, background: "linear-gradient(135deg,#2255d4,#2979ff)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", animation: isCritical ? "tcPulse 1.6s ease-in-out infinite" : "none" }}>Activate license</button>
+              <button type="button" onClick={function () { window.open && window.open(SUPPORT_WA_LINK, "_blank"); }} style={{ padding: "9px 14px", border: "none", borderRadius: 8, background: "#25D366", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", fontFamily: "inherit" }}>WhatsApp</button>
             </div>
           </div>
         );
-      })()}<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div onClick={function () { setActive("receivables"); }} style={{ background: "#fff", borderRadius: 10, padding: "14px 16px", border: "1px solid " + C.border, cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 22 }}>💳</span>
-          <div><div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", fontWeight: 600 }}>Receivables</div><div style={{ fontSize: 18, fontWeight: 800, color: C.cyan }}>{getCurrencySymbol()} {fmtNum(totalReceivable)}</div></div>
-        </div>
-        <div onClick={function () { setActive("payables"); }} style={{ background: "#fff", borderRadius: 10, padding: "14px 16px", border: "1px solid " + C.border, cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 22 }}>🏭</span>
-          <div><div style={{ fontSize: 11, color: C.muted, textTransform: "uppercase", fontWeight: 600 }}>Payables</div><div style={{ fontSize: 18, fontWeight: 800, color: C.orange }}>{getCurrencySymbol()} {fmtNum(totalPayable)}</div></div>
-        </div>
-      </div>
-      {/* ── Fix 4: Data Integrity Warning Panel — only shows when issues exist ── */}
+      })()}
+
       {integrityWarnings.length > 0 && (
-        <div style={{ background: "#fff8e1", border: "2px solid #fcd34d", borderRadius: 12, padding: "14px 18px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ fontWeight: 800, fontSize: 14, color: "#92400e", display: "flex", alignItems: "center", gap: 8 }}>
-              ⚠️ Data Integrity Warnings ({integrityWarnings.length})
-            </div>
-            <button onClick={function () { setActive("auditlog"); }} style={{ fontSize: 11, color: C.accent, fontWeight: 700, background: "none", border: "none", cursor: "pointer" }}>View Audit Log →</button>
+        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "14px 18px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>Data warnings ({integrityWarnings.length})</div>
+            <DashLink onClick={function () { setActive("auditlog"); }}>Audit log →</DashLink>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {integrityWarnings.slice(0, 5).map(function (w, i) {
+            {integrityWarnings.slice(0, 4).map(function (w, i) {
               return (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 12px", background: "#fff", borderRadius: 8, border: "1px solid " + (WARN_COLORS[w.type] || C.border) + "44" }}>
-                  <span style={{ fontSize: 16, flexShrink: 0 }}>{WARN_ICONS[w.type] || "⚠"}</span>
-                  <span style={{ fontSize: 13, color: WARN_COLORS[w.type] || C.text, fontWeight: 600 }}>{w.msg}</span>
-                </div>
+                <div key={i} style={{ fontSize: 12, color: WARN_COLORS[w.type] || C.text, fontWeight: 600, padding: "8px 10px", background: "#fff", borderRadius: 8, border: "1px solid #fde68a" }}>{w.msg}</div>
               );
             })}
-            {integrityWarnings.length > 5 && (
-              <div style={{ fontSize: 12, color: C.muted, fontWeight: 600, padding: "4px 12px" }}>+{integrityWarnings.length - 5} more issues found</div>
-            )}
+            {integrityWarnings.length > 4 ? <div style={{ fontSize: 11, color: C.muted, paddingLeft: 4 }}>+{integrityWarnings.length - 4} more</div> : null}
           </div>
         </div>
       )}
 
-      {/* ── Cheque Alerts Panel ── */}
       {dueAlertCheques.length > 0 && (
-        <Card>
-          <CardTitle
-            sub={dueAlertCheques.length + " cheque" + (dueAlertCheques.length > 1 ? "s" : "") + " need attention"}
-            action={<Btn sm col="blue" onClick={function () { setActive("cheques"); }}>Open Register →</Btn>}
-          >🏷 Cheque Alerts</CardTitle>
-          {overdueCheques.length > 0 && (
-            <div style={{ background: "#fde8ed", border: "1px solid #f9a8ba", borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
-              <div style={{ fontWeight: 800, color: C.red, fontSize: 13 }}>🔴 {overdueCheques.length} overdue cheque{overdueCheques.length > 1 ? "s" : ""} — update status now!</div>
+        <Card pad={18}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 10 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Cheque alerts</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{dueAlertCheques.length} due within 7 days</div>
             </div>
-          )}
-          {dueTodayCheques.length > 0 && (
-            <div style={{ background: "#fff3e0", border: "1px solid #f7c97a", borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
-              <div style={{ fontWeight: 800, color: C.orange, fontSize: 13 }}>⚠ {dueTodayCheques.length} cheque{dueTodayCheques.length > 1 ? "s" : ""} due TODAY — did you pay/receive?</div>
-            </div>
-          )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {dueAlertCheques.map(function (ch) {
+            <DashLink onClick={function () { setActive("cheques"); }}>Open register →</DashLink>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {dueAlertCheques.slice(0, 5).map(function (ch) {
               var isOut = ch.type === "outgoing";
               var party = isOut ? (ch.supplierName || ch.partyName || "—") : (ch.customerName || ch.partyName || "—");
               var diffDays = Math.ceil((new Date(ch.dueDate) - new Date(t)) / 86400000);
               var overdue = diffDays < 0;
-              var bgCol = overdue ? "#fde8ed" : diffDays === 0 ? "#fff3e0" : "#f7f9ff";
-              var bdCol = overdue ? "#f9a8ba" : diffDays === 0 ? "#f7c97a" : C.border;
               return (
-                <div key={ch.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: bgCol, borderRadius: 10, border: "1px solid " + bdCol }}>
-                  <span style={{ fontSize: 18, flexShrink: 0 }}>{isOut ? "📤" : "📥"}</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>
-                      {isOut ? "Pay to: " : "Receive from: "}
-                      <span style={{ color: isOut ? C.red : C.green }}>{party}</span>
-                      {"  "}
-                      <span style={{ color: C.purple, fontSize: 12 }}>#{ch.chequeNo}</span>
-                      {ch.bankName ? <span style={{ color: C.muted, fontSize: 11, fontWeight: 500 }}> · {ch.bankName}</span> : null}
-                    </div>
+                <div key={ch.id} onClick={function () { setActive("cheques"); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e8ecf4", cursor: "pointer" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{party} · #{ch.chequeNo}</div>
                     <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                      {(ch.purchaseNo || ch.invoiceNo) ? "Ref: " + (ch.purchaseNo || ch.invoiceNo) + " · " : ""}
-                      Due: <strong style={{ color: overdue ? C.red : diffDays === 0 ? C.orange : C.text }}>{ch.dueDate}</strong>
-                      {overdue
-                        ? <span style={{ color: C.red, fontWeight: 700 }}> ({Math.abs(diffDays)}d overdue!)</span>
-                        : diffDays === 0
-                          ? <span style={{ color: C.orange, fontWeight: 700 }}> (TODAY!)</span>
-                          : <span style={{ color: C.muted }}> ({diffDays}d left)</span>}
+                      Due {ch.dueDate}
+                      {overdue ? <span style={{ color: C.red, fontWeight: 700 }}> · {Math.abs(diffDays)}d overdue</span> : diffDays === 0 ? <span style={{ color: C.orange, fontWeight: 700 }}> · today</span> : <span> · {diffDays}d left</span>}
                     </div>
                   </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontWeight: 900, fontSize: 15, color: isOut ? C.red : C.green }}>{getCurrencySymbol()} {fmtNum(ch.amount)}</div>
-                    <Btn sm col={overdue || diffDays === 0 ? "green" : "gray"} onClick={function () { setActive("cheques"); }} style={{ marginTop: 4 }}>
-                      {overdue || diffDays === 0 ? "Update Now" : "View"}
-                    </Btn>
-                  </div>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: isOut ? C.red : C.green, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(ch.amount)}</div>
                 </div>
               );
             })}
@@ -370,48 +393,85 @@ var Dashboard = function (props) {
         </Card>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
-        <Card>
-          <CardTitle sub="Last 5 sales" action={<Btn sm col="gray" onClick={function () { setActive("invoices"); }}>View All →</Btn>}>Recent Sales</CardTitle>
-          {recentSales.length === 0 ? <div style={{ color: C.muted, fontSize: 13, padding: "8px 0" }}>No sales yet</div> : (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-              <thead><tr><TH>Customer</TH><TH>Items</TH><TH>Total</TH><TH>Status</TH></tr></thead>
-              <tbody>{recentSales.map(function (s, i) {
-                return (
-                  <TR key={s.id} i={i} onClick={function () { setActive("invoices"); }} style={{ cursor: "pointer" }}>
-                    <TD bold>{s.customerName || s.customer || "Walk-in"}</TD>
-                    <TD center>{s.items.length}</TD>
-                    <TD color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD>
-                    <td style={{ padding: "8px 10px" }}><Badge status={s.payStatus || "Paid"} /></td>
-                  </TR>
-                );
-              })}</tbody>
-            </table>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.5fr) minmax(0,1fr)", gap: 14 }}>
+        <Card pad={18}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Recent sales</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Latest 5 invoices</div>
+            </div>
+            <DashLink onClick={function () { setActive("invoices"); }}>View all →</DashLink>
+          </div>
+          {recentSales.length === 0 ? (
+            <div style={{ color: C.muted, fontSize: 13, padding: "12px 0" }}>No sales yet — open POS to record your first sale.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
+                <thead>
+                  <tr style={{ background: "#f8fafc" }}>
+                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4" }}>Invoice</th>
+                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4" }}>Customer</th>
+                    <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4" }}>Total</th>
+                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4", width: "22%" }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentSales.map(function (s, i) {
+                    return (
+                      <tr key={s.id} onClick={function () { setActive("invoices"); }} className="table-row-hover" style={{ cursor: "pointer", borderBottom: "1px solid #f1f5f9", background: i % 2 === 0 ? "#fff" : "#fafbff" }}>
+                        <td style={{ padding: "9px 10px", fontFamily: "monospace", fontSize: 12, color: C.cyan, whiteSpace: "nowrap" }}>{s.invoiceNo || s.id.slice(0, 8)}</td>
+                        <td style={{ padding: "9px 10px", fontSize: 13, fontWeight: 600, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.customerName || s.customer || "Walk-in"}</td>
+                        <td style={{ padding: "9px 10px", textAlign: "right", fontSize: 13, fontWeight: 700, color: C.blue, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(s.total)}</td>
+                        <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}><Badge status={s.payStatus || "Paid"} /></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </Card>
-        <Card>
-          <CardTitle sub={lowStock.length + " items"}>Low Stock Products</CardTitle>
-          {lowStock.length === 0 ? <div style={{ color: C.green, fontSize: 13 }}>All stock levels OK</div> : (
+
+        <Card pad={18}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Stock attention</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{lowStock.length} low · {outOfStockProducts.length} out</div>
+            </div>
+            <DashLink onClick={function () { setActive("inventory"); }}>Inventory →</DashLink>
+          </div>
+          {lowStock.length === 0 && outOfStockProducts.length === 0 ? (
+            <div style={{ color: C.green, fontSize: 13, padding: "8px 0" }}>All stock levels look good.</div>
+          ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {lowStock.map(function (p) {
+              {lowStock.slice(0, 5).map(function (p) {
                 return (
-                  <div key={p.id} onClick={function () { setActive("inventory"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 10px", background: "#fef9c3", borderRadius: 7, fontSize: 13, cursor: "pointer", transition: "opacity .15s" }}>
-                    <span style={{ fontWeight: 600 }}>{p.name}</span>
-                    <span style={{ fontWeight: 800, color: p.stock <= 2 ? C.red : C.amber }}>{getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit)} left</span>
+                  <div key={p.id} onClick={function () { setActive("inventory"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#fffbeb", borderRadius: 8, border: "1px solid #fde68a", fontSize: 12, cursor: "pointer" }}>
+                    <span style={{ fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: 8 }}>{p.name}</span>
+                    <span style={{ fontWeight: 800, color: p.stock <= 2 ? C.red : C.amber, flexShrink: 0 }}>{getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit)}</span>
+                  </div>
+                );
+              })}
+              {outOfStockProducts.slice(0, Math.max(0, 5 - lowStock.length)).map(function (p) {
+                return (
+                  <div key={p.id} onClick={function () { setActive("inventory"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#fef2f2", borderRadius: 8, border: "1px solid #fecaca", fontSize: 12, cursor: "pointer" }}>
+                    <span style={{ fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: 8 }}>{p.name}</span>
+                    <span style={{ fontSize: 10, fontWeight: 800, color: C.red, background: "#fff", border: "1px solid #fecaca", borderRadius: 20, padding: "2px 8px" }}>OUT</span>
                   </div>
                 );
               })}
             </div>
           )}
           {recentRepairs.length > 0 && getBusinessProfile().modules.repairs && (
-            <div style={{ marginTop: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}><div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Recent Repairs</div><button onClick={function () { setActive("repairs"); }} style={{ fontSize: 11, color: C.accent, fontWeight: 700, background: "none", border: "none", cursor: "pointer" }}>View All →</button></div>
+            <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #e8ecf4" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Recent repairs</div>
+                <DashLink onClick={function () { setActive("repairs"); }}>View all →</DashLink>
+              </div>
               {recentRepairs.map(function (r) {
                 return (
-                  <div key={r.id} onClick={function () { setActive("repairs"); }} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "7px 8px", borderRadius: 6, marginBottom: 2, cursor: "pointer", background: "transparent", transition: "background .12s" }}
-                    onMouseEnter={function (e) { e.currentTarget.style.background = "#f0f4ff"; }}
-                    onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}>
-                    <span style={{ fontWeight: 600 }}>{r.customer} — {r.deviceType || r.device || ""} {r.brand || ""}</span>
+                  <div key={r.id} onClick={function () { setActive("repairs"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12, padding: "7px 0", cursor: "pointer", borderBottom: "1px solid #f1f5f9" }}>
+                    <span style={{ fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer}</span>
                     <Badge status={r.status} />
                   </div>
                 );
@@ -421,36 +481,43 @@ var Dashboard = function (props) {
         </Card>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14 }}>
-        <Card>
-          <CardTitle sub="Past 7 days sales trend">Sales Trend (Weekly)</CardTitle>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,minmax(0,1fr))", gap: 8, alignItems: "end", minHeight: 150 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.2fr) minmax(0,1fr)", gap: 14 }}>
+        <Card pad={18}>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Sales trend</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Past 7 days</div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,minmax(0,1fr))", gap: 10, alignItems: "end", minHeight: 120 }}>
             {weeklyTrend.map(function (w) {
-              var h = Math.max(6, Math.round((w.total / weeklyMax) * 110));
+              var h = Math.max(4, Math.round((w.total / weeklyMax) * 96));
               return (
                 <div key={w.key} style={{ textAlign: "center" }}>
-                  <div title={w.label + ": " + getCurrencySymbol() + " " + fmtNum(w.total)} style={{ margin: "0 auto", width: 22, height: h, borderRadius: 6, background: "linear-gradient(180deg,#60a5fa,#2563eb)" }} />
-                  <div style={{ fontSize: 10, color: C.muted, marginTop: 6 }}>{w.label}</div>
-                  <div style={{ fontSize: 10.5, color: C.textMd, fontWeight: 700 }}>{fmtNum(w.total)}</div>
+                  <div title={w.label + ": " + getCurrencySymbol() + " " + fmtNum(w.total)} style={{ margin: "0 auto", width: "100%", maxWidth: 28, height: h, borderRadius: 6, background: w.total > 0 ? "linear-gradient(180deg,#93c5fd,#2563eb)" : "#e2e8f0" }} />
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 8, fontWeight: 600 }}>{w.label}</div>
+                  <div style={{ fontSize: 10, color: C.textMd, fontWeight: 700, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{fmtNum(w.total)}</div>
                 </div>
               );
             })}
           </div>
         </Card>
-        <Card>
-          <CardTitle sub="By sold quantity">Top Selling Products</CardTitle>
+
+        <Card pad={18}>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Top products</div>
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>By quantity sold</div>
+          </div>
           {topProducts.length === 0 ? (
             <div style={{ color: C.muted, fontSize: 13 }}>No sales data yet.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {topProducts.map(function (tp, idx) {
                 return (
-                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 8, padding: "8px 10px" }}>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: 13 }}>{idx + 1}. {tp.name}</div>
-                      <div style={{ fontSize: 11, color: C.muted }}>{tp.qty} sold</div>
+                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: idx < topProducts.length - 1 ? "1px solid #f1f5f9" : "none" }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tp.name}</div>
+                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{tp.qty} sold</div>
                     </div>
-                    <div style={{ fontSize: 12, fontWeight: 800, color: C.blue }}>{getCurrencySymbol()} {fmtNum(tp.revenue)}</div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: C.blue, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(tp.revenue)}</div>
                   </div>
                 );
               })}
@@ -459,43 +526,24 @@ var Dashboard = function (props) {
         </Card>
       </div>
 
-      <Card>
-        <CardTitle sub={outOfStockProducts.length + " product" + (outOfStockProducts.length !== 1 ? "s" : "") + " with zero stock"} action={outOfStockProducts.length > 0 ? <Btn sm col="red" onClick={function () { setActive("inventory"); }}>View in Inventory →</Btn> : null}>
-          🚫 Out of Stock Products
-        </CardTitle>
-        {outOfStockProducts.length === 0 ? (
-          <div style={{ color: C.green, fontSize: 13 }}>✅ No out of stock products!</div>
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 8 }}>
-            {outOfStockProducts.map(function (p) {
-              return (
-                <div key={p.id} onClick={function () { setActive("inventory"); }}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: "#fde8ed", border: "1px solid #fbb6c4", borderRadius: 8, fontSize: 13, cursor: "pointer", transition: "background .12s" }}
-                  onMouseEnter={function (e) { e.currentTarget.style.background = "#fbd0d9"; }}
-                  onMouseLeave={function (e) { e.currentTarget.style.background = "#fde8ed"; }}>
-                  <div>
-                    <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
-                    <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{p.category || "—"}</div>
-                  </div>
-                  <span style={{ background: C.red, color: "#fff", padding: "2px 8px", borderRadius: 20, fontWeight: 800, fontSize: 11, flexShrink: 0, marginLeft: 8 }}>OUT</span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
       {reorderSuggestions.length > 0 && (
-        <Card>
-          <CardTitle sub="Suggested quantities to avoid stockouts">Reorder Suggestions</CardTitle>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 8 }}>
+        <Card pad={18}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Reorder suggestions</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Suggested quantities to restock</div>
+            </div>
+            <DashLink onClick={function () { setActive("purchases"); }}>New purchase →</DashLink>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 8 }}>
             {reorderSuggestions.map(function (r) {
               return (
-                <div key={r.id} onClick={function () { setActive("inventory"); }} style={{ cursor: "pointer", border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 8, padding: "9px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: 13 }}>{r.name}</div>
-                    <div style={{ fontSize: 11, color: "#92400e" }}>On hand: {r.current}</div>
+                <div key={r.id} onClick={function () { setActive("inventory"); }} style={{ cursor: "pointer", border: "1px solid #e8ecf4", background: "#f8fafc", borderRadius: 8, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>On hand: {r.current}</div>
                   </div>
-                  <div style={{ fontWeight: 800, fontSize: 12, color: "#b45309" }}>Order +{r.suggested} {r.unit || "pcs"}</div>
+                  <div style={{ fontWeight: 800, fontSize: 11, color: "#b45309", flexShrink: 0 }}>+{r.suggested}</div>
                 </div>
               );
             })}

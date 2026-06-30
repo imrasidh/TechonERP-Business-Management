@@ -6,6 +6,15 @@ import {
   rawMaterialOpeningQty,
 } from "../utils/rawMaterialQty.js";
 import CustomerPicker from "../components/CustomerPicker.jsx";
+import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
+import { splitSaleItemsByFree, baseQtyInCartLines, FREE_ITEM_LABEL } from "../utils/posFreeItems.js";
+import { UI } from "../utils/uiIcons.js";
+import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import {
+  buildQuotationTaxExtras,
+  mapCartLineToQuotationItem,
+  quotationToPrintInv,
+} from "../utils/quotationDocument.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
 var POS = React.memo(function (props) {
@@ -49,8 +58,6 @@ var POS = React.memo(function (props) {
   var shareViaWhatsApp = props.shareViaWhatsApp;
   var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
   var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
-  var getAllowedInvoiceLangCodes = props.getAllowedInvoiceLangCodes;
-  var INVOICE_LANG_NAMES = props.INVOICE_LANG_NAMES;
   var InvoiceThermal = props.InvoiceThermal;
   var InvoiceA4 = props.InvoiceA4;
   var getQuickAmounts = props.getQuickAmounts;
@@ -72,10 +79,11 @@ var POS = React.memo(function (props) {
   var TH = props.TH;
   var Card = props.Card;
   var CardTitle = props.CardTitle;
-  var Badge = props.Badge;
   var [search, setSearch] = useState("");
   var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
   var isRestaurant = businessType === "restaurant";
+  var [posPageTab, setPosPageTab] = useState("sale");
+  var isQuotationMode = posPageTab === "quotation" && !isRestaurant;
   var [restaurantProductFilter, setRestaurantProductFilter] = useState("all");
   var getProductType = function (p) { return String((p && p.type) || "stock").toLowerCase(); };
   var isRawMaterialProduct = function (p) { return getProductType(p) === "raw_material"; };
@@ -179,6 +187,11 @@ var POS = React.memo(function (props) {
     }
     return [];
   });
+  var [freeCart, setFreeCart] = useState([]);
+  var [freeSearch, setFreeSearch] = useState("");
+  var [freeDropPos, setFreeDropPos] = useState(null);
+  var [freeDropIdx, setFreeDropIdx] = useState(-1);
+  var freeSearchRef = useRef(null);
   var cartLineKey = function (it) { return it.cartLineId != null ? it.cartLineId : it.id; };
   var [custMode, setCustMode] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
@@ -228,14 +241,17 @@ var POS = React.memo(function (props) {
   var [posChqForm, setPosChqForm] = useState({ no: "", bank: "", amount: "", due: today() });
   var [posChqModal, setPosChqModal] = useState(false);
   var [invoiceNo, setInvoiceNo] = useState(function () { return genInvNo(); });
+  var [quotationNo, setQuotationNo] = useState(function () { return genInvNo("QT"); });
+  var [quotationNotes, setQuotationNotes] = useState("");
+  var [isSavingQuotation, setIsSavingQuotation] = useState(false);
   var [printMode, setPrintMode] = useState(null);
   var [invoice, setInvoice] = useState(null);
   var [waSharePicker, setWaSharePicker] = useState(false);
-  var [showRecent, setShowRecent] = useState(false);
   var [dropPos, setDropPos] = useState(null);
   var [pendingPrint, setPendingPrint] = useState(null);
   var [posDropIdx, setPosDropIdx] = useState(-1);
   var searchRef = useRef(null);
+  var pendingCartFocusRef = useRef(null);
   var waPendingRef = useRef(false); /* true when Save+WhatsApp was clicked */
   var lastBeepAtRef = useRef(0);
   var cartPulseTimerRef = useRef(null);
@@ -252,12 +268,70 @@ var POS = React.memo(function (props) {
       } catch (e) { /* ignore */ }
     }, 0);
   }, []);
-  var [posInvoiceLang, setPosInvoiceLang] = useState(function () { return (state.settings && state.settings.defaultInvoiceLang) || "en"; });
+
+  var focusCartField = useCallback(function (row, col) {
+    setTimeout(function () {
+      if (col < 0) {
+        focusPosSearch();
+        return;
+      }
+      var el = document.querySelector("[data-cartrow='" + row + "'][data-cartcol='" + col + "']");
+      if (el) {
+        el.focus();
+        if (typeof el.select === "function") el.select();
+        return;
+      }
+      if (col === 0) {
+        var qtyEl = document.querySelector("[data-cartrow='" + row + "'][data-cartcol='1']");
+        if (qtyEl) { qtyEl.focus(); if (typeof qtyEl.select === "function") qtyEl.select(); return; }
+      }
+      if (col === 1) {
+        var commentEl = document.querySelector("[data-cartrow='" + row + "'][data-cartcol='2']");
+        if (commentEl) { commentEl.focus(); return; }
+        focusPosSearch();
+        return;
+      }
+      if (col === 2) {
+        focusPosSearch();
+        return;
+      }
+      var nextPrice = document.querySelector("[data-cartrow='" + (row + 1) + "'][data-cartcol='0']");
+      if (nextPrice) {
+        nextPrice.focus();
+        if (typeof nextPrice.select === "function") nextPrice.select();
+      } else {
+        focusPosSearch();
+      }
+    }, 0);
+  }, [focusPosSearch]);
+
+  var handleCartFieldKey = useCallback(function (e, row, col) {
+    if (e.key === "ArrowUp") { e.preventDefault(); focusCartField(row - 1, col); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); focusCartField(row + 1, col); return; }
+    if (e.key === "ArrowLeft") { e.preventDefault(); focusCartField(row, col - 1); return; }
+    if (e.key === "ArrowRight" || e.key === "Tab") {
+      if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); focusCartField(row, col - 1); return; }
+      e.preventDefault();
+      focusCartField(row, col + 1);
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (col === 0) focusCartField(row, 1);
+      else if (col === 1) focusCartField(row, 2);
+      else focusPosSearch();
+    }
+  }, [focusCartField, focusPosSearch]);
+
   useEffect(function () {
-    var allowed = getAllowedInvoiceLangCodes(state.settings);
-    var d = (state.settings && state.settings.defaultInvoiceLang) || "en";
-    setPosInvoiceLang(function (cur) { return allowed.indexOf(cur) >= 0 ? cur : d; });
-  }, [state.settings]);
+    if (!pendingCartFocusRef.current) return;
+    var pending = pendingCartFocusRef.current;
+    pendingCartFocusRef.current = null;
+    var t = setTimeout(function () {
+      focusCartField(pending.row, pending.col);
+    }, 60);
+    return function () { clearTimeout(t); };
+  }, [cart, focusCartField]);
 
   /* ?? Held invoices: load from IDB ?? */
   var [heldInvoices, setHeldInvoices] = useState(function () {
@@ -266,47 +340,23 @@ var POS = React.memo(function (props) {
   });
   var [activeHeldId, setActiveHeldId] = useState(null); /* ID of the currently loaded held invoice */
 
-  /* ?? Recent Bills modal state ?????????????????????????????????? */
-  var [showRecentBills, setShowRecentBills] = useState(false);
-  var [deletingBillId, setDeletingBillId] = useState(null);   /* {id, invoiceNo} while awaiting confirm */
-  var [cancelReason,   setCancelReason]   = useState("");      /* reason selected before confirming cancel */
   var [editingSaleId,  setEditingSaleId]  = useState("");      /* non-empty when POS is in edit mode */
-  var [restoreToast,      setRestoreToast]      = useState("");   /* brief success message after restore */
-  var [restoredRowId,     setRestoredRowId]     = useState("");   /* row highlighted after restore */
-  var [restoreUndoTarget, setRestoreUndoTarget] = useState(null); /* {id,invoiceNo,cancelledAt,cancelReason} for undo */
-  var [isRestoringBill,   setIsRestoringBill]   = useState(false); /* debounce guard ? true for 800 ms after restore/undo */
 
   /* ?? Keep window snapshot current so Hold Invoice modal can capture it ?? */
   useEffect(function () {
     window._techon_pos_snapshot = {
-      cart: cart, custId: custId, custMode: custMode, custSearch: custSearch,
+      cart: cart, freeCart: freeCart, custId: custId, custMode: custMode, custSearch: custSearch,
       newCust: newCust, discount: discount, fromRepairId: fromRepairId,
       fromQuotationId: fromQuotationId, invoiceNo: invoiceNo,
+      quotationNo: quotationNo, quotationNotes: quotationNotes,
+      posPageTab: isQuotationMode ? "quotation" : "sale",
+      holdKind: isQuotationMode ? "quotation" : "sale",
       includeWarranty: includeWarranty, posSplitRows: posSplitRows,
+      paidAmt: paidAmt, payMode: payMode,
+      editingSaleId: editingSaleId,
       _activeHeldId: activeHeldId
     };
-  }, [cart, custId, custMode, custSearch, discount, includeWarranty, posSplitRows, invoiceNo, activeHeldId]);
-
-  /* ?? POS keyboard shortcuts ??????????????????????????????????????????????? */
-  useEffect(function () {
-    var handler = function (e) {
-      /* ESC ? close Recent Bills modal and reset its sub-state */
-      if (e.key === "Escape" && showRecentBills) {
-        setShowRecentBills(false);
-        setDeletingBillId(null);
-        setCancelReason("");
-        setRestoreUndoTarget(null);
-        setRestoreToast("");
-      }
-      /* Ctrl/Cmd+Z ? undo the most recent restore while the toast is still visible */
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && restoreUndoTarget) {
-        e.preventDefault();
-        undoRestoreSale();
-      }
-    };
-    document.addEventListener("keydown", handler);
-    return function () { document.removeEventListener("keydown", handler); };
-  }, [showRecentBills, restoreUndoTarget]); /* re-register only when gate conditions change */
+  }, [cart, freeCart, custId, custMode, custSearch, newCust, discount, includeWarranty, posSplitRows, invoiceNo, quotationNo, quotationNotes, isQuotationMode, paidAmt, payMode, editingSaleId, fromRepairId, fromQuotationId, activeHeldId]);
 
   /* Clear snapshot on unmount, refresh held invoices on mount */
   useEffect(function () {
@@ -360,7 +410,6 @@ var POS = React.memo(function (props) {
   }, [isRestaurant, restaurantUndo]);
 
   useEffect(function () {
-    if (!isRestaurant) return;
     var onKey = function (e) {
       var tag = String((e.target && e.target.tagName) || "").toLowerCase();
       var isTextInput = tag === "input" || tag === "textarea" || (e.target && e.target.isContentEditable);
@@ -370,13 +419,13 @@ var POS = React.memo(function (props) {
           focusPosSearch();
         }
       }
-      if (e.key === "Escape") {
-        setSearch("");
+      if (e.key === "Escape" && !isTextInput) {
+        focusPosSearch();
       }
     };
     document.addEventListener("keydown", onKey);
     return function () { document.removeEventListener("keydown", onKey); };
-  }, [isRestaurant, focusPosSearch]);
+  }, [focusPosSearch]);
 
   useEffect(function () {
     return function () {
@@ -411,8 +460,7 @@ var POS = React.memo(function (props) {
     return state.products.filter(function (p) {
       /* FIX 8: Exclude inactive (soft-deleted) products from POS selection */
       if (p.status === "inactive") return false;
-      var searchable = p.name.toLowerCase().includes(q) || (p.barcode || "").toLowerCase().includes(q);
-      if (!searchable) return false;
+      if (!productMatchesSearch(p, q)) return false;
       if (isRawMaterialProduct(p)) return false;
       if (!isRestaurant) return true;
       var isService = isRestaurantServiceProduct(p);
@@ -420,14 +468,30 @@ var POS = React.memo(function (props) {
       if (restaurantProductFilter === "stock" && isService) return false;
       return isService || (p.stock || 0) > 0;
     }).sort(function (a, b) {
-      /* exact barcode matches first */
-      var aExact = (a.barcode || "").toLowerCase() === q;
-      var bExact = (b.barcode || "").toLowerCase() === q;
+      /* exact barcode / product ID matches first */
+      var aExact = productMatchesSearchExact(a, q);
+      var bExact = productMatchesSearchExact(b, q);
       if (aExact && !bExact) return -1;
       if (!aExact && bExact) return 1;
       return (b.stock || 0) - (a.stock || 0);
     });
   }, [search, state.products, isRestaurant, restaurantProductFilter]);
+  var filteredFreeProds = useMemo(function () {
+    if (!freeSearch || isRestaurant) return [];
+    var q = freeSearch.toLowerCase();
+    return state.products.filter(function (p) {
+      if (p.status === "inactive") return false;
+      if (!productMatchesSearch(p, q)) return false;
+      if (isRawMaterialProduct(p)) return false;
+      return (p.stock || 0) > 0 || isRestaurantServiceProduct(p);
+    }).sort(function (a, b) {
+      var aExact = productMatchesSearchExact(a, q);
+      var bExact = productMatchesSearchExact(b, q);
+      if (aExact && !bExact) return -1;
+      if (!aExact && bExact) return 1;
+      return (b.stock || 0) - (a.stock || 0);
+    });
+  }, [freeSearch, state.products, isRestaurant]);
   var posDupNameKeys = getDuplicateNormalizedNameKeys(state.customers);
   var savePosInlineCustomer = function (draft) {
     var name = String(draft && draft.name || "").trim();
@@ -501,29 +565,53 @@ var POS = React.memo(function (props) {
     return restaurantOrders.find(function (o) { return o.tableId === tableId && !isOrderFullyBilled(o); }) || null;
   }
 
-  var addToCart = function (p) {
-    var latestForTable = isRestaurantDineIn ? findOpenOrderForTable(selectedTableId) : null;
-    var orderClosed = !!(latestForTable && isOrderFullyBilled(latestForTable));
-    if (orderClosed) {
-      showAlert("Order Closed for this table. Start/use another table.");
+  var getReservedBaseQtyForProduct = function (p) {
+    return baseQtyInCartLines(p, cart, toProductBaseQty) + baseQtyInCartLines(p, freeCart, toProductBaseQty);
+  };
+
+  var buildFreeCartLine = function (p, qty) {
+    var su = p.unit || "Pcs";
+    var lbl = String(p.comment_label || "").trim();
+    return {
+      cartLineId: uid(),
+      id: p.id,
+      name: p.name,
+      barcode: p.barcode || "",
+      unit: su,
+      saleUnit: su,
+      qty: qty,
+      price: 0,
+      cost: getPosCostPerSaleUnit(p, su),
+      stock: p.stock,
+      description: p.description || "",
+      comment: "",
+      commentLabel: lbl || "Comment",
+      requireComment: COMPUTER_SHOP_EDITION || !!p.require_comment,
+      itemNote: "",
+      customPrice: true,
+      isFree: true,
+    };
+  };
+
+  var addToFreeCart = function (p) {
+    if (isRestaurant) return;
+    if (!cart.length) {
+      showAlert("Add at least one paid sale item before adding free gifts.");
       return;
     }
     var isService = isRestaurantServiceProduct(p);
-    var inCartBaseQty = cart.filter(function (x) { return x.id === p.id; }).reduce(function (a, x) {
-      return a + toProductBaseQty(x.qty || 0, x.saleUnit || x.unit || (p.unit || "Pcs"), p);
-    }, 0);
-    if (!isService && (p.stock || 0) === 0) { showAlert("\"" + p.name + "\" is out of stock."); setSearch(""); return; }
-    if (!isService && inCartBaseQty >= (p.stock || 0)) {
+    var reserved = getReservedBaseQtyForProduct(p);
+    if (!isQuotationMode && !isService && (p.stock || 0) === 0) { showAlert("\"" + p.name + "\" is out of stock."); setFreeSearch(""); return; }
+    if (!isQuotationMode && !isService && reserved >= (p.stock || 0)) {
       var leftMsg = getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit);
       showAlert("Not enough stock for \"" + p.name + "\". Only " + leftMsg + " left.");
-      setSearch("");
+      setFreeSearch("");
       return;
     }
     try { sessionStorage.setItem("tc3_dirty", "pos"); } catch (e) { }
     var step = isDecimalUnit(p.unit) ? 0.5 : 1;
-    var needLinePerUnit = !!p.require_comment;
-    var prevSnapshot = cart.map(function (x) { return Object.assign({}, x); });
-    setCart(function (prev) {
+    var needLinePerUnit = COMPUTER_SHOP_EDITION || !!p.require_comment;
+    setFreeCart(function (prev) {
       if (!needLinePerUnit) {
         var ex = prev.find(function (x) { return x.id === p.id; });
         if (ex) return prev.map(function (x) {
@@ -534,6 +622,99 @@ var POS = React.memo(function (props) {
           });
         });
       }
+      return prev.concat([buildFreeCartLine(p, step)]);
+    });
+    setFreeSearch("");
+    focusPosSearch();
+  };
+
+  var updateFreeQty = function (lineKey, q) {
+    if (q <= 0) {
+      setFreeCart(function (prev) { return prev.filter(function (x) { return cartLineKey(x) !== lineKey; }); });
+      return;
+    }
+    var item = freeCart.find(function (x) { return cartLineKey(x) === lineKey; });
+    if (item) {
+      var prod = state.products.find(function (p) { return p.id === item.id; });
+      if (prod && !isRestaurantServiceProduct(prod)) {
+        var curBase = toProductBaseQty(item.qty || 0, item.saleUnit || item.unit || "Pcs", prod);
+        var newBase = toProductBaseQty(q, item.saleUnit || item.unit || "Pcs", prod);
+        var reserved = getReservedBaseQtyForProduct(prod) - curBase + newBase;
+        if (reserved > (prod.stock || 0)) {
+          var leftMsg = getBulkDisplayParts(prod) ? fmtStockDual(prod) : fmtStock(prod.stock, prod.unit);
+          showAlert("Not enough stock for \"" + item.name + "\". Only " + leftMsg + " left.");
+          return;
+        }
+      }
+    }
+    setFreeCart(function (prev) {
+      return prev.map(function (x) { return cartLineKey(x) === lineKey ? Object.assign({}, x, { qty: q }) : x; });
+    });
+  };
+
+  var removeFreeLine = function (lineKey) {
+    setFreeCart(function (prev) { return prev.filter(function (x) { return cartLineKey(x) !== lineKey; }); });
+  };
+
+  var mapCartLineToSaleItem = function (it) {
+    var prod = state.products.find(function (p) { return p.id === it.id; });
+    var baseQty = prod ? toProductBaseQty(it.qty || 0, it.saleUnit || it.unit || "Pcs", prod) : (it.qty || 0);
+    var comm = String(it.comment || "").trim();
+    var lineLbl = prod ? (String(prod.comment_label || "").trim() || "Comment") : "Comment";
+    var row = Object.assign({}, it, {
+      qty: baseQty,
+      inputQty: it.qty,
+      inputUnit: it.saleUnit || it.unit || "Pcs",
+      product_id: it.id,
+    });
+    delete row.comment;
+    delete row.commentLabel;
+    delete row.requireComment;
+    delete row.itemNote;
+    if (comm) {
+      row.comment = comm;
+      row.commentLabel = lineLbl;
+    }
+    return row;
+  };
+
+  var addToCart = function (p, opts) {
+    opts = opts || {};
+    var focusAfterAdd = opts.focusAfterAdd !== false;
+    var latestForTable = isRestaurantDineIn ? findOpenOrderForTable(selectedTableId) : null;
+    var orderClosed = !!(latestForTable && isOrderFullyBilled(latestForTable));
+    if (orderClosed) {
+      showAlert("Order Closed for this table. Start/use another table.");
+      return;
+    }
+    var isService = isRestaurantServiceProduct(p);
+    var inCartBaseQty = getReservedBaseQtyForProduct(p);
+    if (!isQuotationMode && !isService && (p.stock || 0) === 0) { showAlert("\"" + p.name + "\" is out of stock."); setSearch(""); return; }
+    if (!isQuotationMode && !isService && inCartBaseQty >= (p.stock || 0)) {
+      var leftMsg = getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit);
+      showAlert("Not enough stock for \"" + p.name + "\". Only " + leftMsg + " left.");
+      setSearch("");
+      return;
+    }
+    try { sessionStorage.setItem("tc3_dirty", "pos"); } catch (e) { }
+    var step = isDecimalUnit(p.unit) ? 0.5 : 1;
+    var needLinePerUnit = COMPUTER_SHOP_EDITION || !!p.require_comment;
+    var prevSnapshot = cart.map(function (x) { return Object.assign({}, x); });
+    setCart(function (prev) {
+      if (!needLinePerUnit) {
+        var exIdx = prev.findIndex(function (x) { return x.id === p.id; });
+        if (exIdx >= 0) {
+          if (focusAfterAdd) pendingCartFocusRef.current = { row: exIdx, col: 0 };
+          return prev.map(function (x) {
+            if (x.id !== p.id) return x;
+            return Object.assign({}, x, {
+              cartLineId: x.cartLineId || uid(),
+              qty: Math.round((x.qty + step) * 10000) / 10000,
+            });
+          });
+        }
+      }
+      if (focusAfterAdd) pendingCartFocusRef.current = { row: prev.length, col: 0 };
       var su = p.unit || "Pcs";
       var lbl = String(p.comment_label || "").trim();
       return prev.concat([{
@@ -549,7 +730,7 @@ var POS = React.memo(function (props) {
         stock: p.stock,
         description: p.description || "",
         comment: "",
-        commentLabel: lbl || "Comment",
+        commentLabel: lbl || DEFAULT_PRODUCT_COMMENT_LABEL,
         requireComment: needLinePerUnit,
         itemNote: "",
         customPrice: false,
@@ -566,18 +747,19 @@ var POS = React.memo(function (props) {
     setCartPulse(true);
     if (cartPulseTimerRef.current) clearTimeout(cartPulseTimerRef.current);
     cartPulseTimerRef.current = setTimeout(function () { setCartPulse(false); }, 150);
-    focusPosSearch();
+    if (!focusAfterAdd) focusPosSearch();
   };
   var duplicateCartItem = function (lineKey) {
     if (!isRestaurant || selectedTableLocked) return;
     var item = cart.find(function (x) { return cartLineKey(x) === lineKey; });
     if (!item) return;
+    var rowIdx = cart.findIndex(function (x) { return cartLineKey(x) === lineKey; });
     var step = isDecimalUnit(item.saleUnit || item.unit || "Pcs") ? 0.5 : 1;
     updateQty(lineKey, (Number(item.qty) || 0) + step);
+    if (rowIdx >= 0) pendingCartFocusRef.current = { row: rowIdx, col: 0 };
     setCartPulse(true);
     if (cartPulseTimerRef.current) clearTimeout(cartPulseTimerRef.current);
     cartPulseTimerRef.current = setTimeout(function () { setCartPulse(false); }, 150);
-    focusPosSearch();
   };
   var clearCurrentCart = function () {
     if (!cart.length) return;
@@ -591,6 +773,7 @@ var POS = React.memo(function (props) {
       return;
     }
     setCart([]);
+    setFreeCart([]);
     focusPosSearch();
   };
   var setCartItemRestaurantNote = function (lineKey, note) {
@@ -674,16 +857,14 @@ var POS = React.memo(function (props) {
     }
     var stockErr = null;
     var seenStockPid = {};
-    cart.forEach(function (item) {
+    cart.concat(freeCart).forEach(function (item) {
       if (stockErr) return;
       if (seenStockPid[item.id]) return;
       seenStockPid[item.id] = 1;
       var prod = state.products.find(function (p) { return p.id === item.id; });
       if (!prod) return;
       if (isRestaurantServiceProduct(prod)) return;
-      var totalReq = cart.filter(function (x) { return x.id === item.id; }).reduce(function (a, x) {
-        return a + toProductBaseQty(x.qty || 0, x.saleUnit || x.unit || "Pcs", prod);
-      }, 0);
+      var totalReq = getReservedBaseQtyForProduct(prod);
       if (totalReq > (prod.stock || 0)) {
         var availMsg = getBulkDisplayParts(prod) ? fmtStockDual(prod) : fmtStock(prod.stock || 0, prod.unit || "Pcs");
         stockErr = "Not enough stock for \"" + item.name + "\". Available: " + availMsg + ", requested (all lines): " + fmtStock(totalReq, prod.unit || "Pcs") + ".";
@@ -747,34 +928,16 @@ var POS = React.memo(function (props) {
     } else if (!isChequePayment && paidNum > 0) {
       initPh = [{ id: uid(), date: today(), amount: paidNum, note: "Initial payment", cashMethod: posCashMethod }];
     }
-    var saleItems = cart.map(function (it) {
-      var prod = state.products.find(function (p) { return p.id === it.id; });
-      var baseQty = prod ? toProductBaseQty(it.qty || 0, it.saleUnit || it.unit || "Pcs", prod) : (it.qty || 0);
-      var comm = String(it.comment || "").trim();
-      var lineLbl = prod ? (String(prod.comment_label || "").trim() || "Comment") : "Comment";
-      var row = Object.assign({}, it, {
-        qty: baseQty,
-        inputQty: it.qty,
-        inputUnit: it.saleUnit || it.unit || "Pcs",
-        product_id: it.id,
-      });
-      delete row.comment;
-      delete row.commentLabel;
-      delete row.requireComment;
-      delete row.itemNote;
-      if (comm) {
-        row.comment = comm;
-        row.commentLabel = lineLbl;
-      }
-      return row;
-    });
+    var saleItems = cart.map(mapCartLineToSaleItem).concat(freeCart.map(mapCartLineToSaleItem));
     if (state.settings && state.settings.taxEnabled && posTotalTax > 0 && subTotal > 0.005) {
       var lineAmts = cart.map(function (it) { return posLineAmount(it); });
       var subSum = lineAmts.reduce(function (a, b) { return a + b; }, 0);
       var remTax = posTotalTax;
+      var paidLineCount = cart.length;
       saleItems = saleItems.map(function (it, sidx) {
+        if (sidx >= paidLineCount) return it;
         var lt;
-        if (sidx === saleItems.length - 1) {
+        if (sidx === paidLineCount - 1) {
           lt = Number(remTax.toFixed(2));
         } else if (subSum > 0.005) {
           lt = Number((posTotalTax * (lineAmts[sidx] / subSum)).toFixed(2));
@@ -785,7 +948,7 @@ var POS = React.memo(function (props) {
         return Object.assign({}, it, { lineTax: lt });
       });
     }
-    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: today(), customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromQuotationId: fromQuotationId || undefined };
+    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: today(), customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromQuotationId: fromQuotationId || undefined, createdAt: new Date().toISOString() };
     if (isNetworkClientPos) {
       var li = props.licenseInfo || (typeof window !== "undefined" ? window._tcLicInfo : null) || {};
       var oid = li.terminalDeviceId || li.deviceId || "";
@@ -797,6 +960,7 @@ var POS = React.memo(function (props) {
     }
     if (state.settings && state.settings.taxEnabled && (posTotalTax > 0 || (posTaxLines && posTaxLines.length > 0))) {
       saleObj.taxMode = posTaxCalc.taxMode || "exclusive";
+      saleObj.taxCompoundMode = posTaxCalc.taxCompoundMode || state.settings.taxCompoundMode || "parallel";
       saleObj.totalTax = posTotalTax;
       saleObj.taxApplyBase = taxApplyBase;
       saleObj.selectedTaxes = (posTaxLines || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; });
@@ -819,7 +983,7 @@ var POS = React.memo(function (props) {
       }
     }
     var np = _baseProds.map(function (p) {
-      var lines = cart.filter(function (x) { return x.id === p.id; });
+      var lines = cart.filter(function (x) { return x.id === p.id; }).concat(freeCart.filter(function (x) { return x.id === p.id; }));
       if (!lines.length) return p;
       if (isRestaurantServiceProduct(p)) return p;
       var deductQty = lines.reduce(function (acc, ci) {
@@ -940,8 +1104,8 @@ var POS = React.memo(function (props) {
 
     var finalSaleForPrint = (newState.sales || []).find(function (s) { return s.id === saleObj.id; }) || saleObj;
     if (withPrint) {
-      setPendingPrint({ sale: finalSaleForPrint, mode: mode || "thermal", settings: Object.assign({}, state.settings), warranty: includeWarranty, invoiceLang: posInvoiceLang });
-      setCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId("");
+      setPendingPrint({ sale: finalSaleForPrint, mode: mode || "thermal", settings: Object.assign({}, state.settings), warranty: includeWarranty, invoiceLang: "en" });
+      setCart([]); setFreeCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId(""); setFreeSearch("");
       try { sessionStorage.removeItem("tc3_dirty"); } catch (e2) { }
       focusPosSearch();
     } else {
@@ -977,142 +1141,150 @@ var POS = React.memo(function (props) {
     saveAndFinish(true, mode);
   };
 
+  var resolvePosCustomer = function () {
+    var custName = custMode === "existing"
+      ? (function () { var c = state.customers.find(function (c) { return c.id === custId; }); return c ? c.name : "Walk-in"; }())
+      : (custMode === "new" ? newCust.name || "New Customer" : "Walk-in");
+    var custPhone = custMode === "existing"
+      ? (function () { var c = state.customers.find(function (c) { return c.id === custId; }); return c ? (c.phone || "") : ""; })()
+      : (custMode === "new" ? newCust.phone || "" : "");
+    return { custId: custId || "", custName: custName, custPhone: custPhone };
+  };
+
+  var resetQuotationForm = function () {
+    setCart([]);
+    setFreeCart([]);
+    setDiscount("");
+    setPaidAmt("");
+    setPayMode("full");
+    setPosSplitRows([]);
+    setPosSplitModal(false);
+    setIncludeWarranty(false);
+    setFromQuotationId("");
+    setFromRepairId("");
+    setActiveHeldId(null);
+    setQuotationNotes("");
+    setQuotationNo(genInvNo("QT"));
+    setCustMode("walkin");
+    setCustSearch("");
+    setCustId("");
+    setNewCust({ name: "", phone: "", address: "" });
+    try {
+      sessionStorage.removeItem("tc3_dirty");
+      sessionStorage.removeItem("tc3_held_pos");
+      sessionStorage.removeItem("tc3_invoice_held");
+      window._techon_pos_snapshot = null;
+    } catch (e) { /* ignore */ }
+    focusPosSearch();
+  };
+
+  var switchPosPageTab = function (tab) {
+    if (tab === posPageTab) return;
+    var applySwitch = function () {
+      setCart([]);
+      setFreeCart([]);
+      setDiscount("");
+      setEditingSaleId("");
+      if (tab === "quotation") {
+        setQuotationNo(genInvNo("QT"));
+        setQuotationNotes("");
+      } else {
+        setInvoiceNo(genInvNo());
+      }
+      setPosPageTab(tab);
+      focusPosSearch();
+    };
+    if (cart.length || freeCart.length) {
+      showConfirm("Switching will clear the current cart. Continue?", applySwitch);
+    } else {
+      applySwitch();
+    }
+  };
+
+  var saveQuotation = function (withPrint, printMode, waShare) {
+    if (!canEditInvoices) {
+      showPermissionDenied("create quotations");
+      return;
+    }
+    if (!cart.length) {
+      showAlert("Add at least one product to the quotation.");
+      return;
+    }
+    if (isSavingQuotation) return;
+    if (!tcTrialGuard(state.quotations || [], "quotations")) return;
+    setIsSavingQuotation(true);
+    try {
+      var finalQtNo = quotationNo;
+      if ((state.quotations || []).find(function (q) { return q.quotationNo === finalQtNo; })) {
+        finalQtNo = genInvNo("QT");
+      }
+      var cust = resolvePosCustomer();
+      var items = cart.map(mapCartLineToQuotationItem);
+      var taxExtra = buildQuotationTaxExtras(
+        state.settings,
+        subTotal,
+        discAmt,
+        taxCalcInput,
+        posTaxCalc,
+        total,
+        posTaxLines,
+        posTotalTax
+      );
+      var newQ = Object.assign({}, {
+        id: uid(),
+        quotationNo: finalQtNo,
+        customer: cust.custName,
+        customerId: cust.custId,
+        customerPhone: cust.custPhone,
+        items: items,
+        notes: String(quotationNotes || "").trim(),
+        status: "Sent",
+        date: today(),
+        createdAt: today(),
+        createdBy: currentUserName,
+      }, taxExtra);
+      var nq = (state.quotations || []).concat([newQ]);
+      S.set("tc3_quotations", nq);
+      addAudit("Created Quotation", newQ.quotationNo);
+      setState(function (st) { return Object.assign({}, st, { quotations: nq }); });
+      var heldIdToClear = activeHeldId;
+      resetQuotationForm();
+      if (heldIdToClear) deleteHeldInvoice(heldIdToClear);
+      if (withPrint || waShare) {
+        if (waShare) waPendingRef.current = true;
+        setPendingPrint({
+          kind: "quotation",
+          sale: quotationToPrintInv(newQ),
+          mode: printMode || (state.settings.invoiceDefaultSize || "a4"),
+          settings: Object.assign({}, state.settings),
+          invoiceLang: "en",
+        });
+      } else {
+        showAlert("Quotation " + finalQtNo + " saved. View it under Invoices → Quotations.");
+      }
+    } finally {
+      setIsSavingQuotation(false);
+    }
+  };
+
+  var saveQuotationWhatsApp = function (mode) {
+    if (!cart.length || isSavingQuotation) return;
+    waPendingRef.current = true;
+    saveQuotation(true, mode, true);
+  };
+
   var resetForm = function () {
-    setCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId("");
+    setCart([]); setFreeCart([]); setFreeSearch(""); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId("");
     setEditingSaleId("");
     focusPosSearch();
   };
 
-  /* ??? Recent Bills: reprint a completed sale ??????????????????????????????? */
-  var reprintRecentSale = function (sale) {
-    var mode = state.settings.invoiceDefaultSize || "thermal80";
-    setPendingPrint({ sale: sale, mode: mode, settings: Object.assign({}, state.settings), warranty: sale.includeWarranty, invoiceLang: posInvoiceLang });
-    setShowRecentBills(false);
-  };
-
-  /* ??? Recent Bills: load a past sale into POS for editing ?????????????????? */
-  var loadSaleForEdit = function (sale) {
-    if (!canEditInvoices) {
-      showPermissionDenied("edit completed sales");
-      return;
-    }
-    if ((sale && sale.payStatus === "Paid") && currentUserRole !== "admin") {
-      showPermissionDenied("edit a fully paid sale");
-      return;
-    }
-    var restoredCart = (sale.items || []).map(function (it) {
-      return Object.assign({}, it, {
-        cartLineId: it.cartLineId || uid(),
-        qty: it.inputQty !== undefined ? it.inputQty : it.qty,
-        saleUnit: it.inputUnit || it.unit || "Pcs",
-        customPrice: true,
-      });
-    });
-    setCart(restoredCart);
-    if (sale.customerId) {
-      setCustMode("existing");
-      setCustId(sale.customerId);
-      setCustSearch(sale.customerName || "");
-    } else if (sale.customerName && sale.customerName !== "Walk-in") {
-      setCustMode("new");
-      setNewCust({ name: sale.customerName, phone: sale.customerPhone || "", address: "" });
-      setCustId(""); setCustSearch("");
-    } else {
-      setCustMode("walkin");
-      setCustId(""); setCustSearch("");
-    }
-    setDiscount(sale.discount ? String(sale.discount) : "");
-    setIncludeWarranty(sale.includeWarranty || false);
-    setInvoiceNo(sale.invoiceNo);
-    setEditingSaleId(sale.id);
-    setShowRecentBills(false);
-  };
-
-  /* ??? Recent Bills: soft-cancel (mark status = "Cancelled") ??????????????? */
-  var cancelRecentSale = function (saleId, reason) {
-    if (!canEditInvoices) {
-      showPermissionDenied("cancel invoices");
-      return;
-    }
-    var updatedSales = state.sales.map(function (s) {
-      return s.id === saleId
-        ? Object.assign({}, s, { status: "Cancelled", cancelledAt: new Date().toISOString(), cancelReason: reason || "" })
-        : s;
-    });
-    var newSt = Object.assign({}, state, { sales: updatedSales });
-    setState(newSt);
-    S.set("tc3_sales", updatedSales);
-    var target = state.sales.find(function (s) { return s.id === saleId; });
-    addAudit("Cancelled Sale Invoice", ((target || {}).invoiceNo || saleId.slice(0, 8)) + (reason ? " - " + reason : ""));
-    setDeletingBillId(null);
-    setCancelReason("");
-  };
-
-  /* ??? Recent Bills: restore a cancelled sale back to active ??????????????? */
-  var restoreRecentSale = function (saleId) {
-    if (!canEditInvoices) {
-      showPermissionDenied("restore invoices");
-      return;
-    }
-    /* Capture the cancelled snapshot before wiping it ? needed for undo */
-    var target = state.sales.find(function (s) { return s.id === saleId; });
-    var undoSnapshot = target ? {
-      id:           target.id,
-      invoiceNo:    target.invoiceNo   || "",
-      cancelledAt:  target.cancelledAt || "",
-      cancelReason: target.cancelReason || "",
-    } : null;
-    var updatedSales = state.sales.map(function (s) {
-      if (s.id !== saleId) return s;
-      var restored = Object.assign({}, s);
-      delete restored.status;
-      delete restored.cancelledAt;
-      delete restored.cancelReason;
-      return restored;
-    });
-    var newSt = Object.assign({}, state, { sales: updatedSales });
-    setState(newSt);
-    S.set("tc3_sales", updatedSales);
-    addAudit("Restored Sale Invoice", (target || {}).invoiceNo || saleId.slice(0, 8));
-    /* UX feedback ? toast (4 s window for Undo) + row highlight (1.5 s) */
-    setRestoreUndoTarget(undoSnapshot);
-    setRestoreToast("Invoice restored successfully");
-    setRestoredRowId(saleId);
-    setTimeout(function () { setRestoreToast(""); setRestoreUndoTarget(null); }, 4000);
-    setTimeout(function () { setRestoredRowId(""); }, 1500);
-    /* Debounce ? prevent accidental double-clicks */
-    setIsRestoringBill(true);
-    setTimeout(function () { setIsRestoringBill(false); }, 800);
-  };
-
-  /* ??? Recent Bills: undo a restore ? re-applies the cancelled state ???????? */
-  var undoRestoreSale = function () {
-    if (!canEditInvoices) {
-      showPermissionDenied("undo invoice restore");
-      return;
-    }
-    if (!restoreUndoTarget || isRestoringBill) return;
-    var snap = restoreUndoTarget;
-    var updatedSales = state.sales.map(function (s) {
-      return s.id === snap.id
-        ? Object.assign({}, s, { status: "Cancelled", cancelledAt: snap.cancelledAt, cancelReason: snap.cancelReason })
-        : s;
-    });
-    var newSt = Object.assign({}, state, { sales: updatedSales });
-    setState(newSt);
-    S.set("tc3_sales", updatedSales);
-    addAudit("Undo Restore - Re-cancelled Invoice", snap.invoiceNo || snap.id.slice(0, 8));
-    setRestoreToast("");
-    setRestoredRowId("");
-    setRestoreUndoTarget(null);
-    /* Debounce ? prevent accidental double-clicks */
-    setIsRestoringBill(true);
-    setTimeout(function () { setIsRestoringBill(false); }, 800);
-  };
-
   /* ?? Load a held invoice ? keeps it in IDB until completed or manually deleted ?? */
   var loadHeldInvoice = function (h) {
+    var isQuotHold = h.holdKind === "quotation" || h.posPageTab === "quotation";
+    setPosPageTab(isQuotHold ? "quotation" : "sale");
     setCart((h.cart || []).map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); }));
+    setFreeCart((h.freeCart || []).map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid(), isFree: true, price: 0 }); }));
     setCustMode(h.custMode || "existing");
     setCustSearch(h.custSearch || "");
     setCustId(h.custId || "");
@@ -1120,13 +1292,97 @@ var POS = React.memo(function (props) {
     setDiscount(h.discount || "");
     setIncludeWarranty(h.includeWarranty || false);
     setPosSplitRows(h.posSplitRows || []);
-    if (h.invoiceNo) setInvoiceNo(h.invoiceNo);
+    setPaidAmt(h.paidAmt || "");
+    setPayMode(h.payMode || "full");
+    if (isQuotHold) {
+      setQuotationNo(h.quotationNo || genInvNo("QT"));
+      setQuotationNotes(h.quotationNotes || "");
+    } else if (h.invoiceNo) {
+      setInvoiceNo(h.invoiceNo);
+    }
     if (h.fromRepairId) setFromRepairId(h.fromRepairId);
     if (h.fromQuotationId) setFromQuotationId(h.fromQuotationId);
-    /* Track which held invoice is active ? DO NOT remove from IDB yet.
-       It stays until the invoice is completed or manually deleted. */
+    if (h.editingSaleId) setEditingSaleId(h.editingSaleId);
     setActiveHeldId(h.id);
     try { sessionStorage.setItem("tc3_dirty", "pos"); } catch (e) {}
+    focusPosSearch();
+  };
+
+  var clearCartAfterHold = function (wasQuotation) {
+    setCart([]);
+    setFreeCart([]);
+    setDiscount("");
+    setPaidAmt("");
+    setPayMode("full");
+    setPosSplitRows([]);
+    setIncludeWarranty(false);
+    setEditingSaleId("");
+    setFromQuotationId("");
+    setFromRepairId("");
+    setActiveHeldId(null);
+    if (wasQuotation) {
+      setQuotationNotes("");
+      setQuotationNo(genInvNo("QT"));
+    } else {
+      setInvoiceNo(genInvNo());
+    }
+    setCustMode("walkin");
+    setCustSearch("");
+    setCustId("");
+    setNewCust({ name: "", phone: "", address: "" });
+    try { sessionStorage.removeItem("tc3_dirty"); } catch (e) {}
+    focusPosSearch();
+  };
+
+  var holdCurrentCart = function () {
+    if (!cart.length && !freeCart.length) {
+      showAlert("Add at least one item before holding.");
+      return;
+    }
+    var isQuot = isQuotationMode;
+    var custLabel = custMode === "existing"
+      ? (custSearch || "Customer")
+      : (custMode === "new" ? (newCust.name || "New Customer") : "Walk-in");
+    var docNo = isQuot ? quotationNo : invoiceNo;
+    var kindLabel = isQuot ? "Quotation" : "Invoice";
+    var itemCount = (cart || []).length + (freeCart || []).length;
+    var held = S.get("tc3_held_invoices", []) || [];
+    var entry = {
+      cart: cart.map(function (it) { return Object.assign({}, it); }),
+      freeCart: freeCart.map(function (it) { return Object.assign({}, it); }),
+      custId: custId,
+      custMode: custMode,
+      custSearch: custSearch,
+      newCust: Object.assign({}, newCust),
+      discount: discount,
+      fromRepairId: fromRepairId,
+      fromQuotationId: fromQuotationId,
+      invoiceNo: invoiceNo,
+      quotationNo: quotationNo,
+      quotationNotes: quotationNotes,
+      posPageTab: isQuot ? "quotation" : "sale",
+      holdKind: isQuot ? "quotation" : "sale",
+      includeWarranty: includeWarranty,
+      posSplitRows: (posSplitRows || []).map(function (r) { return Object.assign({}, r); }),
+      paidAmt: paidAmt,
+      payMode: payMode,
+      editingSaleId: editingSaleId,
+      label: custLabel + " - " + kindLabel + (docNo ? (" " + docNo) : "") + " - " + itemCount + " item(s)",
+      heldAt: new Date().toISOString(),
+    };
+    if (activeHeldId) {
+      entry.id = activeHeldId;
+      held = held.map(function (h) { return h.id === activeHeldId ? entry : h; });
+      if (!held.find(function (h) { return h.id === activeHeldId; })) held = held.concat([entry]);
+    } else {
+      entry.id = "held_" + Date.now();
+      held = held.concat([entry]);
+    }
+    S.set("tc3_held_invoices", held);
+    setHeldInvoices(held);
+    addAudit("Held " + kindLabel, docNo || entry.id.slice(0, 12));
+    clearCartAfterHold(isQuot);
+    showAlert(kindLabel + " held. Open it anytime from On Hold below.");
   };
 
   var deleteHeldInvoice = function (id) {
@@ -1136,7 +1392,7 @@ var POS = React.memo(function (props) {
     if (activeHeldId === id) setActiveHeldId(null);
   };
 
-  var doPopupPrint = function (invoiceNo, mode) {
+  var doPopupPrint = function (docNo, mode, kind) {
     var el = document.getElementById("pos-print-preview");
     if (!el) { showAlert("Print preview not ready. Please try again."); return; }
     var w = window.open("", "_blank", "width=900,height=760");
@@ -1148,7 +1404,8 @@ var POS = React.memo(function (props) {
     var pgMargin = isThermal ? "3mm" : "8mm";
     var bodyW = isThermal ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}" : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
     var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pgSize + " portrait;margin:" + pgMargin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
-    w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>Invoice " + escapeHtml(invoiceNo || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
+    var docLabel = kind === "quotation" ? "Quotation" : "Invoice";
+    w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>" + docLabel + " " + escapeHtml(docNo || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
     w.document.close();
     setTimeout(function () { w.focus(); w.print(); }, 500);
   };
@@ -1171,20 +1428,20 @@ var POS = React.memo(function (props) {
         /* Thermal: no "portrait" keyword ? Chromium PDF maps it to A4 incorrectly */
         var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pgSize + (isThermal ? "" : " portrait") + ";margin:" + pgMargin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
         var pageFormat = isThermal ? (pendingPrint.mode === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
-        var filename = "Invoice-" + (pendingPrint.sale.invoiceNo || pendingPrint.sale.id.slice(0, 8));
+        var isQuot = pendingPrint.kind === "quotation";
+        var filename = (isQuot ? "Quotation-" : "Invoice-") + (pendingPrint.sale.invoiceNo || pendingPrint.sale.id.slice(0, 8));
         var phone = pendingPrint.sale.customerPhone || "";
         setPendingPrint(null);
         shareViaWhatsApp(el.innerHTML, filename, phone, { headStyles: css, pageFormat: pageFormat });
       } else {
         /* Normal print path */
-        doPopupPrint(pendingPrint.sale.invoiceNo, pendingPrint.mode);
+        doPopupPrint(pendingPrint.sale.invoiceNo, pendingPrint.mode, pendingPrint.kind);
         setPendingPrint(null);
       }
     }, 300); /* 300ms ensures DOM is painted for both paths */
     return function () { clearTimeout(timer); };
   }, [pendingPrint]);
 
-  var recentSales = state.sales.slice(0, 8);
   var activeRestaurantProfile = isRestaurant && typeof props.getBusinessProfile === "function"
     ? (props.getBusinessProfile() || {})
     : {};
@@ -1569,7 +1826,7 @@ var POS = React.memo(function (props) {
         description: (p && p.description) || "",
         comment: "",
         commentLabel: (p && String(p.comment_label || "").trim()) || "Comment",
-        requireComment: !!(p && p.require_comment),
+        requireComment: COMPUTER_SHOP_EDITION || !!(p && p.require_comment),
         itemNote: "",
         customPrice: true,
         restaurantNote: it.note || "",
@@ -1616,7 +1873,7 @@ var POS = React.memo(function (props) {
         description: (p && p.description) || "",
         comment: "",
         commentLabel: (p && String(p.comment_label || "").trim()) || "Comment",
-        requireComment: !!(p && p.require_comment),
+        requireComment: COMPUTER_SHOP_EDITION || !!(p && p.require_comment),
         itemNote: "",
         customPrice: true,
       };
@@ -1839,6 +2096,57 @@ var POS = React.memo(function (props) {
         Offline - sales may sync when connection restores
       </div>
     ) : null}
+    {!isRestaurant && (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 4, background: "#fff", borderRadius: 12, padding: 5, border: "1.5px solid " + C.border, boxShadow: C.shadowCard, alignSelf: "flex-start" }}>
+          {[["sale", "Sales"], ["quotation", "Quotation"]].map(function (t) {
+            var isA = posPageTab === t[0];
+            return (
+              <button
+                key={t[0]}
+                type="button"
+                onClick={function () { switchPosPageTab(t[0]); }}
+                style={{
+                  background: isA ? "linear-gradient(135deg,#2979ff,#2255d4)" : "transparent",
+                  color: isA ? "#fff" : C.textMd,
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "8px 20px",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  transition: "all .15s",
+                  fontFamily: "inherit",
+                  boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.28)" : "none",
+                }}
+              >
+                {t[1]}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          onClick={holdCurrentCart}
+          disabled={!cart.length}
+          style={{
+            padding: "10px 18px",
+            borderRadius: 10,
+            border: "1.5px solid " + (!cart.length ? "#f3b7c1" : "#d11a42"),
+            background: !cart.length ? "#fde8ed" : "linear-gradient(135deg,#f04464,#c81e45)",
+            color: !cart.length ? "#b76a78" : "#fff",
+            fontSize: 13,
+            fontWeight: 800,
+            cursor: !cart.length ? "not-allowed" : "pointer",
+            fontFamily: "inherit",
+            boxShadow: !cart.length ? "none" : "0 8px 18px rgba(209,26,66,0.22)",
+            minWidth: 140,
+          }}
+        >
+          {isQuotationMode ? "Hold Quotation" : "Hold Invoice"}
+        </button>
+      </div>
+    )}
     <form
       className="erp-page erp-pos"
       style={{ display: "flex", gap: 16, minHeight: "100%", boxSizing: "border-box", alignItems: "flex-start", margin: 0 }}
@@ -1850,14 +2158,16 @@ var POS = React.memo(function (props) {
     >
       {/* Left panel */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12, overflowY: "visible" }}>
-        <div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <Card>
-          <CardTitle sub={"Invoice: " + invoiceNo}>
-            {editingSaleId
-              ? <span>Edit Sale <span style={{ fontSize: 11, fontWeight: 600, background: "#fff3cd", color: "#856404", borderRadius: 5, padding: "2px 7px", marginLeft: 6 }}>EDITING</span></span>
-              : "New Sale"}
+          <CardTitle sub={isQuotationMode ? ("Quotation: " + quotationNo) : ("Invoice: " + invoiceNo)}>
+            {isQuotationMode
+              ? "New Quotation"
+              : (editingSaleId
+                ? <span>Edit Sale <span style={{ fontSize: 11, fontWeight: 600, background: "#fff3cd", color: "#856404", borderRadius: 5, padding: "2px 7px", marginLeft: 6 }}>EDITING</span></span>
+                : "New Sale")}
           </CardTitle>
-          {editingSaleId && (
+          {!isQuotationMode && editingSaleId && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 8, padding: "7px 12px", marginBottom: 8 }}>
               <span style={{ fontSize: 12, color: "#7c5700" }}>You are editing invoice <b>{invoiceNo}</b>. Save to apply changes or cancel.</span>
               <button onClick={function () { setEditingSaleId(""); setInvoiceNo(genInvNo()); setCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setDiscount(""); }} style={{ background: "none", border: "1px solid #ffe082", color: "#856404", borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Cancel Edit</button>
@@ -1932,7 +2242,7 @@ var POS = React.memo(function (props) {
               </div>
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Product (name or barcode)</label>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Product (name, ID, barcode, or category)</label>
               <input
                 ref={searchRef}
                 value={search}
@@ -1950,7 +2260,7 @@ var POS = React.memo(function (props) {
                   if (e.key === "ArrowDown") { e.preventDefault(); setPosDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
                   if (e.key === "ArrowUp") { e.preventDefault(); setPosDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
                   if (e.key === "Enter" && list.length > 0) {
-                    var pick = posDropIdx >= 0 ? list[posDropIdx] : (list.find(function (p) { return (p.barcode || "").toLowerCase() === search.toLowerCase(); }) || list[0]);
+                    var pick = posDropIdx >= 0 ? list[posDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, search); }) || list[0]);
                     addToCart(pick); setPosDropIdx(-1);
                     e.preventDefault();
                   }
@@ -1978,21 +2288,21 @@ var POS = React.memo(function (props) {
                   e.target.style.boxShadow = "none";
                   setTimeout(function () { setDropPos(null); }, 180);
                 }}
-                placeholder="Type name, barcode, or scan..."
+                placeholder="Type name, ID, barcode, category, or scan..."
                 style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s" }}
               />
             </div>
             {search && filteredProds.length > 0 && dropPos && (
               <div style={{ position: "fixed", top: dropPos.top + 2, left: dropPos.left, width: dropPos.width, background: "#fff", border: "1px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 260, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.14)" }}>
                 <div style={{ padding: "6px 14px 4px", fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid " + C.borderLight }}>
-                  {filteredProds.length} product{filteredProds.length > 1 ? "s" : ""} found ? Enter to add first
+                  {filteredProds.length} product{filteredProds.length > 1 ? "s" : ""} found — Enter adds · then Price → Qty → Search
                 </div>
                 {filteredProds.slice(0, 10).map(function (p, pidx) {
                   var isService = isRestaurantServiceProduct(p);
                   var oos = !isService && (p.stock || 0) === 0;
                   return (
                     <div key={p.id} onMouseDown={function (e) { e.preventDefault(); if (selectedTableLocked) return; addToCart(p); setPosDropIdx(-1); }}
-                      style={{ padding: "9px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: posDropIdx === pidx ? C.accentSoft : "#fff", opacity: oos ? 0.65 : 1 }}
+                      style={{ padding: "9px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: posDropIdx === pidx ? C.accentSoft : "#fff", opacity: (oos && !isQuotationMode) ? 0.65 : 1 }}
                       onMouseEnter={function (e) { setPosDropIdx(pidx); }}
                       onMouseLeave={function (e) { setPosDropIdx(-1); }}>
                       <div>
@@ -2015,59 +2325,45 @@ var POS = React.memo(function (props) {
           </div>
           {/* Cart ? keyboard navigable like a spreadsheet */}
           {cart.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 8, transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
-              <thead><tr style={{ background: "#f8fafc" }}><TH>Item</TH><TH>Price</TH><TH>Qty</TH><TH>Total</TH><TH></TH></tr></thead>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 8, tableLayout: "fixed", transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
+              <colgroup>
+                <col />
+                <col style={{ width: 88 }} />
+                <col style={{ width: 168 }} />
+                <col style={{ width: 96 }} />
+                <col style={{ width: 76 }} />
+              </colgroup>
+              <thead>
+                <tr style={{ background: "#f8fafc" }}>
+                  <th style={{ textAlign: "left", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Item</th>
+                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Price</th>
+                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Qty</th>
+                  <th style={{ textAlign: "right", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Total</th>
+                  <th style={{ padding: "8px 6px", borderBottom: "2px solid " + C.border }}></th>
+                </tr>
+              </thead>
               <tbody>
                 {cart.map(function (item, i) {
                   var prodRow = state.products.find(function (p) { return p.id === item.id; });
                   var saleU = item.saleUnit || item.unit || "Pcs";
                   var lineCost = prodRow ? getPosCostPerSaleUnit(prodRow, saleU) : (item.cost || 0);
-                  /* Keyboard nav helper ? focuses a specific cell in the cart grid */
-                  var focusCell = function (row, col) {
-                    var el = document.querySelector("[data-cartrow='" + row + "'][data-cartcol='" + col + "']");
-                    if (el) { el.focus(); el.select && el.select(); }
-                    else if (col < 0 && searchRef.current) searchRef.current.focus();
-                    else if (col > 1) {
-                      /* Past last col ? go to next row price */
-                      var next = document.querySelector("[data-cartrow='" + (row + 1) + "'][data-cartcol='0']");
-                      if (next) { next.focus(); next.select && next.select(); }
-                      else if (searchRef.current) searchRef.current.focus();
-                    }
-                  };
-                  var handleKey = function (e, row, col) {
-                    if (e.key === "ArrowUp")    { e.preventDefault(); focusCell(row - 1, col); }
-                    if (e.key === "ArrowDown")  { e.preventDefault(); focusCell(row + 1, col); }
-                    if (e.key === "ArrowLeft")  { e.preventDefault(); focusCell(row, col - 1); }
-                    if (e.key === "ArrowRight" || e.key === "Tab") {
-                      if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); focusCell(row, col - 1); return; }
-                      e.preventDefault(); focusCell(row, col + 1);
-                    }
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (col === 1) { /* qty ? back to search for next product */
-                        if (searchRef.current) searchRef.current.focus();
-                      } else {
-                        focusCell(row, col + 1);
-                      }
-                    }
-                    if (e.key === "Delete" || e.key === "Backspace") {
-                      /* Backspace on qty=1 with empty removes row */
-                    }
-                  };
+                  var showLineComment = !isRestaurant && (COMPUTER_SHOP_EDITION || (prodRow && prodRow.require_comment));
                   return (
                     <tr key={String(cartLineKey(item)) + "-" + i} style={{ borderBottom: "1px solid " + C.border, background: "transparent" }}
                       onMouseEnter={function (e) { e.currentTarget.style.background = "#f8faff"; }}
                       onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}>
-                      <td style={{ padding: "5px 8px", fontSize: 13, maxWidth: 160 }}>
+                      <td style={{ padding: "5px 8px", fontSize: 13, verticalAlign: "top" }}>
                         <div style={{ fontWeight: 600, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
                         {item.description && <div style={{ fontSize: 10, color: C.muted }}>{item.description}</div>}
-                        {prodRow && prodRow.require_comment && (
+                        {showLineComment && (
                           <div style={{ marginTop: 6, maxWidth: 220 }}>
                             <div style={{ fontSize: 10, fontWeight: 700, color: C.textMd, marginBottom: 3 }}>
-                              {String(prodRow.comment_label || "").trim() || "Comment"}
+                              {COMPUTER_SHOP_EDITION ? DEFAULT_PRODUCT_COMMENT_LABEL : (String((prodRow && prodRow.comment_label) || item.commentLabel || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL)}
                             </div>
                             <input
                               type="text"
+                              data-cartrow={i}
+                              data-cartcol="2"
                               value={item.comment || ""}
                               onChange={function (e) {
                                 var v = e.target.value;
@@ -2076,7 +2372,8 @@ var POS = React.memo(function (props) {
                                   return prev.map(function (x) { return cartLineKey(x) === lk ? Object.assign({}, x, { comment: v }) : x; });
                                 });
                               }}
-                              placeholder={String(prodRow.comment_label || "").trim() || "Optional"}
+                              onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
+                              placeholder={COMPUTER_SHOP_EDITION ? "Serial, IMEI, note…" : (String(prodRow.comment_label || "").trim() || "Optional")}
                               style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit", outline: "none" }}
                             />
                           </div>
@@ -2088,9 +2385,12 @@ var POS = React.memo(function (props) {
                             </div>
                             <input
                               type="text"
+                              data-cartrow={i}
+                              data-cartcol="2"
                               value={item.restaurantNote || ""}
                               disabled={selectedTableLocked}
                               onChange={function (e) { setCartItemRestaurantNote(cartLineKey(item), e.target.value); }}
+                              onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
                               placeholder="No onion / Extra spicy / Less sugar"
                               style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit", outline: "none" }}
                             />
@@ -2100,7 +2400,8 @@ var POS = React.memo(function (props) {
                           <div style={{ fontSize: 9, color: C.accent, fontWeight: 700 }}>{item.unit}</div>
                         )}
                       </td>
-                      <td style={{ padding: "4px 6px" }}>
+                      <td style={{ padding: "5px 6px", verticalAlign: "top", textAlign: "center" }}>
+                        <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
                         <input
                           data-cartrow={i} data-cartcol="0"
                           type="number"
@@ -2108,19 +2409,20 @@ var POS = React.memo(function (props) {
                           disabled={selectedTableLocked}
                           onChange={function (e) { var v = parseFloat(e.target.value) || 0; var lk = cartLineKey(item); setCart(function (prev) { return prev.map(function (x) { return cartLineKey(x) === lk ? Object.assign({}, x, { price: v, customPrice: true }) : x; }); }); }}
                           onFocus={function (e) { e.target.select(); }}
-                          onKeyDown={function (e) { handleKey(e, i, 0); }}
+                          onKeyDown={function (e) { handleCartFieldKey(e, i, 0); }}
                           style={{ width: 72, border: "1.5px solid " + (item.price < lineCost ? C.red : C.border), borderRadius: 6, padding: "5px 6px", fontSize: 13, textAlign: "right", fontFamily: "inherit", outline: "none", background: item.price < lineCost ? "#fde8ed" : "#fff" }}
                           onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + (item.price < lineCost ? C.red : C.accent); e.target.style.background = item.price < lineCost ? "#fde8ed" : "#f0f4ff"; }}
                           onBlur={function (e) { e.target.style.border = "1.5px solid " + (item.price < lineCost ? C.red : C.border); e.target.style.background = item.price < lineCost ? "#fde8ed" : "#fff"; }}
                           title={item.price < lineCost ? "Selling below cost! Cost: " + getCurrencySymbol() + " " + fmtNum(lineCost) + " per " + saleU : ""}
                         />
                         {item.price < lineCost && (
-                          <div style={{ fontSize: 9, color: C.red, fontWeight: 700, marginTop: 1, whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 9, color: C.red, fontWeight: 700, whiteSpace: "nowrap" }}>
                             Below cost!
                           </div>
                         )}
+                        </div>
                       </td>
-                      <td style={{ padding: "4px 6px", minWidth: 130 }}>
+                      <td style={{ padding: "5px 6px", verticalAlign: "top", textAlign: "center" }}>
                         {(function () {
                           var unit = item.saleUnit || item.unit || "Pcs";
                           var prodForUnit = state.products.find(function (p) { return p.id === item.id; });
@@ -2134,30 +2436,27 @@ var POS = React.memo(function (props) {
                             ? "1 " + unit + " = " + (fCur % 1 === 0 ? fCur : parseFloat(fCur.toFixed(4))) + " " + baseU
                             : null;
                           return (
-                            <div>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                                  <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Qty</span>
-                                  <input
-                                    data-cartrow={i} data-cartcol="1"
-                                    type="number"
-                                    min="0"
-                                    step={isDecimalUnit(unit) ? "0.001" : "1"}
-                                    value={item.qty}
-                                    disabled={selectedTableLocked}
-                                    onChange={function (e) {
-                                      var v = parseFloat(e.target.value);
-                                      updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
-                                    }}
-                                    onFocus={function (e) { e.target.select(); }}
-                                    onKeyDown={function (e) { handleKey(e, i, 1); }}
-                                    style={{ width: 56, border: "1.5px solid " + C.border, borderRadius: 6, padding: "4px 5px", fontSize: 12, textAlign: "center", fontFamily: "inherit", outline: "none", background: "#fff", fontWeight: 700 }}
-                                    onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
-                                    onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
-                                  />
-                                </div>
+                            <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", width: "100%", maxWidth: 156 }}>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", justifyContent: "center" }}>
+                                <input
+                                  data-cartrow={i} data-cartcol="1"
+                                  type="number"
+                                  min="0"
+                                  step={isDecimalUnit(unit) ? "0.001" : "1"}
+                                  value={item.qty}
+                                  disabled={selectedTableLocked}
+                                  onChange={function (e) {
+                                    var v = parseFloat(e.target.value);
+                                    updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
+                                  }}
+                                  onFocus={function (e) { e.target.select(); }}
+                                    onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
+                                  style={{ width: 56, border: "1.5px solid " + C.border, borderRadius: 6, padding: "4px 5px", fontSize: 12, textAlign: "center", fontFamily: "inherit", outline: "none", background: "#fff", fontWeight: 700 }}
+                                  onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
+                                  onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
+                                />
                                 {hasSecondary && (
-                                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+                                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, justifyContent: "center" }}>
                                     <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Unit</span>
                                     <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
                                       {unitOpts.map(function (uOpt) {
@@ -2225,10 +2524,10 @@ var POS = React.memo(function (props) {
                                 )}
                               </div>
                               {convHint && (
-                                <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{convHint}</div>
+                                <div style={{ fontSize: 10, color: C.muted, marginTop: 3, textAlign: "center" }}>{convHint}</div>
                               )}
                               {quickAmts.length > 0 && !hasSecondary && (
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4 }}>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4, justifyContent: "center" }}>
                                   {quickAmts.map(function (qa) {
                                     var active = item.qty === qa.qty;
                                     return (
@@ -2246,20 +2545,20 @@ var POS = React.memo(function (props) {
                                 </div>
                               )}
                               {prodForUnit && (
-                                <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.35 }}>
+                                <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.35, textAlign: "center" }}>
                                   <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span>{" "}
                                   {getBulkDisplayParts(prodForUnit) ? fmtStockDual(prodForUnit) : fmtStock(prodForUnit.stock || 0, prodForUnit.unit || "Pcs")}
                                   {" | "}
                                   <span style={{ fontWeight: 600, color: C.textMd }}>After sale:</span>{" "}
-                                  {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForUnit, cart), prodForUnit)}
+                                  {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForUnit, cart, freeCart), prodForUnit)}
                                 </div>
                               )}
                             </div>
                           );
                         })()}
                       </td>
-                      <td style={{ padding: "5px 8px", fontWeight: 700, color: C.blue, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
-                      <td style={{ padding: "4px 6px", whiteSpace: "nowrap" }}>
+                      <td style={{ padding: "5px 8px", fontWeight: 700, color: C.blue, whiteSpace: "nowrap", verticalAlign: "top", textAlign: "right" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
+                      <td style={{ padding: "5px 6px", whiteSpace: "nowrap", verticalAlign: "top", textAlign: "right" }}>
                         {isRestaurant && (
                           <button
                             type="button"
@@ -2282,6 +2581,115 @@ var POS = React.memo(function (props) {
           {cart.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: 13 }}>{isRestaurant ? "Add items to start order" : "Cart is empty - search and add products above"}</div>}
 
         </Card>
+        {!isRestaurant && !isQuotationMode && (
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: C.red }}>Free Items (Complimentary)</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Gifts with purchase — stock deducted, shown as FREE on invoice</div>
+              </div>
+              {freeCart.length > 0 && (
+                <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: "#dcfce7", padding: "3px 10px", borderRadius: 999 }}>{freeCart.length} free line{freeCart.length > 1 ? "s" : ""}</span>
+              )}
+            </div>
+            <div style={{ position: "relative", marginBottom: 10 }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Add Free Item</label>
+              <input
+                ref={freeSearchRef}
+                value={freeSearch}
+                disabled={!cart.length}
+                onChange={function (e) {
+                  var val = e.target.value;
+                  setFreeSearch(val);
+                  setFreeDropIdx(-1);
+                  if (freeSearchRef.current) {
+                    var r = freeSearchRef.current.getBoundingClientRect();
+                    setFreeDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
+                  }
+                }}
+                onKeyDown={function (e) {
+                  if (!cart.length) return;
+                  var list = filteredFreeProds.slice(0, 10);
+                  if (e.key === "ArrowDown") { e.preventDefault(); setFreeDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
+                  if (e.key === "ArrowUp") { e.preventDefault(); setFreeDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
+                  if (e.key === "Enter" && list.length > 0) {
+                    var pick = freeDropIdx >= 0 ? list[freeDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, freeSearch); }) || list[0]);
+                    addToFreeCart(pick); setFreeDropIdx(-1);
+                    e.preventDefault();
+                  }
+                  if (e.key === "Escape") { setFreeSearch(""); setFreeDropPos(null); setFreeDropIdx(-1); }
+                }}
+                onFocus={function (e) {
+                  e.target.style.borderColor = "#16a34a";
+                  e.target.style.boxShadow = "0 0 0 3px rgba(22,163,74,0.12)";
+                  if (freeSearchRef.current) {
+                    var r = freeSearchRef.current.getBoundingClientRect();
+                    setFreeDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
+                  }
+                }}
+                onBlur={function (e) {
+                  e.target.style.borderColor = C.border;
+                  e.target.style.boxShadow = "none";
+                  setTimeout(function () { setFreeDropPos(null); }, 180);
+                }}
+                placeholder={cart.length ? "Search product to add as free gift..." : "Add a paid item first"}
+                style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: cart.length ? "#fff" : "#f8fafc", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s", opacity: cart.length ? 1 : 0.7 }}
+              />
+              {freeSearch && filteredFreeProds.length > 0 && freeDropPos && cart.length > 0 && (
+                <div style={{ position: "fixed", top: freeDropPos.top + 2, left: freeDropPos.left, width: freeDropPos.width, background: "#fff", border: "1px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.14)" }}>
+                  {filteredFreeProds.slice(0, 10).map(function (p, pidx) {
+                    var oos = (p.stock || 0) === 0 && !isRestaurantServiceProduct(p);
+                    return (
+                      <div key={"free-" + p.id} onMouseDown={function (e) { e.preventDefault(); addToFreeCart(p); setFreeDropIdx(-1); }}
+                        style={{ padding: "9px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: freeDropIdx === pidx ? "#dcfce7" : "#fff", opacity: oos ? 0.65 : 1 }}
+                        onMouseEnter={function () { setFreeDropIdx(pidx); }}
+                      >
+                        <span style={{ fontWeight: 600, color: C.text }}>{p.name}</span>
+                        <span style={{ fontSize: 11, color: C.muted }}>{getCurrencySymbol()} {fmtNum(getPosSellPricePerSaleUnit(p, p.unit || "Pcs"))} · {fmtStock(p.stock || 0, p.unit || "Pcs")}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {freeCart.length > 0 ? (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid " + C.border, color: C.muted, fontSize: 10, textTransform: "uppercase" }}>
+                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Product</th>
+                    <th style={{ textAlign: "center", padding: "6px 8px", width: 90 }}>Qty</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", width: 70 }}>Price</th>
+                    <th style={{ padding: "6px 8px", width: 60 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {freeCart.map(function (item) {
+                    var prodForUnit = state.products.find(function (p) { return p.id === item.id; });
+                    var step = isDecimalUnit(item.saleUnit || item.unit || "Pcs") ? 0.5 : 1;
+                    return (
+                      <tr key={cartLineKey(item)} style={{ borderBottom: "1px solid " + C.borderLight }}>
+                        <td style={{ padding: "6px 8px", fontWeight: 600 }}>{item.name}</td>
+                        <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                          <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <button type="button" onClick={function () { updateFreeQty(cartLineKey(item), Math.max(0, (Number(item.qty) || 0) - step)); }} style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid " + C.border, background: "#fff", cursor: "pointer", fontWeight: 800 }}>-</button>
+                            <span style={{ minWidth: 36, textAlign: "center", fontWeight: 700 }}>{item.qty}</span>
+                            <button type="button" onClick={function () { updateFreeQty(cartLineKey(item), (Number(item.qty) || 0) + step); }} style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid " + C.border, background: "#fff", cursor: "pointer", fontWeight: 800 }}>+</button>
+                          </div>
+                        </td>
+                        <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 800, color: C.green }}>{FREE_ITEM_LABEL}</td>
+                        <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                          <button onClick={function () { removeFreeLine(cartLineKey(item)); }} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 14 }}>Remove</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <div style={{ textAlign: "center", padding: "14px 0", color: C.muted, fontSize: 12 }}>{cart.length ? "No free items yet" : "Add paid items first, then add complimentary gifts here"}</div>
+            )}
+          </Card>
+        )}
         </div>
         {isRestaurant && (
           <Card pad={0}>
@@ -2962,6 +3370,68 @@ var POS = React.memo(function (props) {
             )}
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 900, color: C.navBg, borderTop: "1px solid " + C.border, paddingTop: 8, marginTop: 2 }}><span>GRAND TOTAL</span><span>{getCurrencySymbol()} {fmtNum(total)}</span></div>
           </div>
+          {isQuotationMode ? (
+            <React.Fragment>
+              <div style={{ marginBottom: 10 }}>
+                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Notes / Terms</label>
+                <textarea
+                  value={quotationNotes}
+                  onChange={function (e) { setQuotationNotes(e.target.value); }}
+                  placeholder="Validity, payment terms, delivery notes..."
+                  rows={3}
+                  style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 13, fontFamily: "inherit", resize: "vertical", background: "#fff" }}
+                />
+              </div>
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.borderLight }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Save quotation</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <Btn onClick={function () { saveQuotation(false); }} disabled={!cart.length || isSavingQuotation} col="blue" full>{isSavingQuotation ? "Saving..." : "Save Quotation"}</Btn>
+                  {(function () {
+                    var paperSize = state.settings.invoiceDefaultSize || "a4";
+                    var thermalSize = state.settings.invoiceThermalSize || "thermal80";
+                    var paperLabel = paperSize === "a5" ? "Save + A5" : "Save + A4";
+                    var thermalLabel = thermalSize === "thermal58" ? "Save + Thermal (58mm)" : "Save + Thermal (80mm)";
+                    var qtDisabled = !cart.length || isSavingQuotation;
+                    return (
+                      <React.Fragment>
+                        <Btn onClick={function () { saveQuotation(true, paperSize); }} disabled={qtDisabled} col="gray" full>{isSavingQuotation ? "Saving..." : paperLabel}</Btn>
+                        <Btn onClick={function () { saveQuotation(true, thermalSize); }} disabled={qtDisabled} col="gray" full>{isSavingQuotation ? "Saving..." : thermalLabel}</Btn>
+                        <button
+                          type="button"
+                          onClick={function () { saveQuotationWhatsApp(paperSize); }}
+                          disabled={qtDisabled}
+                          style={{
+                            width: "100%",
+                            boxSizing: "border-box",
+                            background: qtDisabled ? "#9ca3af" : "linear-gradient(135deg,#25d366,#128c7e)",
+                            color: "#fff",
+                            border: "none",
+                            borderRadius: 8,
+                            padding: "10px 16px",
+                            fontSize: 13,
+                            fontWeight: 700,
+                            cursor: qtDisabled ? "not-allowed" : "pointer",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            gap: 8,
+                            fontFamily: "inherit",
+                            opacity: qtDisabled ? 0.45 : 1,
+                          }}
+                        >
+                          {isSavingQuotation ? "Saving..." : "WhatsApp"}
+                        </button>
+                      </React.Fragment>
+                    );
+                  })()}
+                </div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 10, lineHeight: 1.45 }}>
+                  Saved quotations appear under <strong>Invoices → Quotations</strong>. Convert to invoice when the customer confirms.
+                </div>
+              </div>
+            </React.Fragment>
+          ) : (
+          <React.Fragment>
           {/* Auto payment status badge ? updates live based on splitRows */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase" }}>Payment Mode</div>
@@ -3013,18 +3483,6 @@ var POS = React.memo(function (props) {
               {!state.settings.warrantyEnabled && <div style={{ fontSize: 11, color: C.muted }}>Disabled in Settings</div>}
             </div>
           </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, marginBottom: 4, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase" }}>Language</span>
-            <select
-              value={posInvoiceLang}
-              onChange={function (e) { setPosInvoiceLang(e.target.value); }}
-              style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "6px 10px", fontSize: 13, fontWeight: 600, background: "#fff", color: C.text, minWidth: 160, cursor: "pointer" }}
-            >
-              {getAllowedInvoiceLangCodes(state.settings).map(function (k) {
-                return <option key={k} value={k}>{INVOICE_LANG_NAMES[k] || k}</option>;
-              })}
-            </select>
-          </div>
           <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.borderLight }}>
             <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Complete sale</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -3091,29 +3549,23 @@ var POS = React.memo(function (props) {
                 );
               })()}
             </div>
-            {/* ?? Recent Bills quick-access ?? */}
-            <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
-              <button
-                type="button"
-                onClick={function () { setShowRecentBills(true); }}
-                style={{ display: "flex", alignItems: "center", gap: 6, background: "#f8fafc", border: "1.5px solid " + C.border, color: C.textMd, borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", width: "100%", justifyContent: "center", boxSizing: "border-box" }}
-              >Recent Bills</button>
-            </div>
             {(posSetupBlocked || isCheckingOut) && (
               <div id={posCheckoutHintId} role="status" aria-live="polite" style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
                 {isCheckingOut ? "Processing..." : TC_SETUP_DISABLE_TITLE}
               </div>
             )}
           </div>
+          </React.Fragment>
+          )}
         </Card>
 
-        {/* ?? Held Invoices Card ?? */}
+        {/* ?? On Hold — saved sales & quotations ?? */}
         {heldInvoices.length > 0 && (
           <Card pad={12}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 16 }}>i</span>
-                <span style={{ fontWeight: 800, fontSize: 13, color: C.text }}>Held Invoices</span>
+                <span style={{ fontSize: 16 }}>⏸</span>
+                <span style={{ fontWeight: 800, fontSize: 13, color: C.text }}>On Hold</span>
                 <span style={{ background: "#2979ff", color: "#fff", borderRadius: 10, fontSize: 10, fontWeight: 800, padding: "1px 7px" }}>{heldInvoices.length}</span>
               </div>
             </div>
@@ -3121,22 +3573,27 @@ var POS = React.memo(function (props) {
               {heldInvoices.map(function (h) {
                 var hTime = h.heldAt ? new Date(h.heldAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
                 var hDate = h.heldAt ? new Date(h.heldAt).toLocaleDateString() : "";
-                var cartCount = (h.cart || []).length;
+                var cartCount = (h.cart || []).length + ((h.freeCart || []).length);
                 var cartTotal = (h.cart || []).reduce(function (a, it) { return a + posLineAmount(it); }, 0) - (parseFloat(h.discount) || 0);
-                var custLabel = h.custSearch || (h.custMode === "walkin" ? "Walk-in" : h.newCust && h.newCust.name ? h.newCust.name : "Walk-in");
+                var custLabel = h.label || h.custSearch || (h.custMode === "walkin" ? "Walk-in" : h.newCust && h.newCust.name ? h.newCust.name : "Walk-in");
+                var isQuotHold = h.holdKind === "quotation" || h.posPageTab === "quotation";
+                var docNo = isQuotHold ? (h.quotationNo || "") : (h.invoiceNo || "");
                 return (
                   <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", background: "#f0f4ff", borderRadius: 9, border: "1.5px solid #c7d4f8" }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, fontSize: 13, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {custLabel}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexWrap: "wrap" }}>
+                        <span style={{ fontWeight: 700, fontSize: 13, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{custLabel}</span>
+                        <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 999, background: isQuotHold ? "#fef3c7" : "#e0f2fe", color: isQuotHold ? "#92400e" : "#0369a1" }}>{isQuotHold ? "Quotation" : "Sale"}</span>
+                        {activeHeldId === h.id ? <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 999, background: "#dcfce7", color: "#166534" }}>Active</span> : null}
                       </div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                        {cartCount} item{cartCount !== 1 ? "s" : ""} - {getCurrencySymbol()} {fmtNum(cartTotal)} - {hDate} {hTime}
+                      <div style={{ fontSize: 11, color: C.muted }}>
+                        {docNo ? <span style={{ fontFamily: "monospace", marginRight: 6 }}>{docNo}</span> : null}
+                        {cartCount} item{cartCount !== 1 ? "s" : ""} · {getCurrencySymbol()} {fmtNum(cartTotal)} · {hDate} {hTime}
                       </div>
                     </div>
                     <Btn sm col="blue" onClick={function () {
-                      if (cart.length > 0) {
-                        showConfirm("Loading this held invoice will replace your current cart. Continue?", function () {
+                      if (cart.length > 0 || freeCart.length > 0) {
+                        showConfirm("Loading this held " + (isQuotHold ? "quotation" : "invoice") + " will replace your current cart. Continue?", function () {
                           loadHeldInvoice(h);
                         });
                       } else {
@@ -3144,30 +3601,14 @@ var POS = React.memo(function (props) {
                       }
                     }}>Continue</Btn>
                     <button onClick={function () {
-                      showConfirm("Delete this held invoice?", function () { deleteHeldInvoice(h.id); });
-                    }} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px" }}>Delete</button>
+                      showConfirm("Delete this held " + (isQuotHold ? "quotation" : "invoice") + "?", function () { deleteHeldInvoice(h.id); });
+                    }} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px" }} title="Delete">✕</button>
                   </div>
                 );
               })}
             </div>
           </Card>
         )}
-
-        <Card pad={12}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ fontWeight: 700, fontSize: 13 }}>Recent Sales</span>
-            <button onClick={function () { setShowRecent(function (v) { return !v; }); }} style={{ background: "none", border: "none", color: C.cyan, cursor: "pointer", fontSize: 12 }}>{showRecent ? "Hide" : "Show"}</button>
-          </div>
-          {showRecent && recentSales.map(function (s) {
-            return (
-              <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid " + C.border, fontSize: 12 }}>
-                <span style={{ color: C.muted }}>{s.invoiceNo || s.id.slice(0, 8)}</span>
-                <span style={{ fontWeight: 700, color: C.blue }}>{getCurrencySymbol()} {fmtNum(s.total)}</span>
-                <Badge status={s.payStatus || "Paid"} />
-              </div>
-            );
-          })}
-        </Card>
       </div>
 
       {/* ?? POS Split Payment Modal ?? */}
@@ -3218,7 +3659,7 @@ var POS = React.memo(function (props) {
                   {posChequeList.map(function (c, i) {
                     return (
                       <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 9, padding: "12px 16px", border: "1px solid #ddd6fe" }}>
-                        <span style={{ fontSize: 20 }}>CHQ</span>
+                        <span style={{ fontSize: 20 }}>{UI.cheque}</span>
                         <div style={{ flex: 1 }}>
                           <div style={{ fontWeight: 700, fontSize: 14, color: "#7c3aed" }}>#{c.no}</div>
                           {c.bank && <div style={{ fontSize: 12, color: C.muted }}>{c.bank}</div>}
@@ -3255,8 +3696,8 @@ var POS = React.memo(function (props) {
       {pendingPrint && (
         <div id="pos-print-preview" style={{ position: "fixed", left: -9999, top: -9999, width: (pendingPrint.mode === "thermal58") ? 230 : (pendingPrint.mode === "thermal80" || pendingPrint.mode === "thermal") ? 310 : 794, pointerEvents: "none", opacity: 0 }}>
           {(pendingPrint.mode === "thermal" || pendingPrint.mode === "thermal58" || pendingPrint.mode === "thermal80")
-            ? <InvoiceThermal inv={Object.assign({}, pendingPrint.sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} width={pendingPrint.mode === "thermal58" ? 218 : 302} />
-            : <InvoiceA4 inv={Object.assign({}, pendingPrint.sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} size={pendingPrint.mode || "a4"} />
+            ? <InvoiceThermal inv={Object.assign({}, pendingPrint.sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} width={pendingPrint.mode === "thermal58" ? 218 : 302} documentKind={pendingPrint.kind === "quotation" ? "quotation" : "invoice"} />
+            : <InvoiceA4 inv={Object.assign({}, pendingPrint.sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} size={pendingPrint.mode || "a4"} documentKind={pendingPrint.kind === "quotation" ? "quotation" : "invoice"} />
           }
         </div>
       )}
@@ -3279,190 +3720,6 @@ var POS = React.memo(function (props) {
           })()}
         </Modal>
       )}
-
-      {/* ?? Recent Bills Modal ?????????????????????????????????????????????????? */}
-      {showRecentBills && (function () {
-        var recentBills = state.sales.slice(0, 5);
-        var invTime = function (invNo) {
-          if (!invNo) return "";
-          var m = String(invNo).match(/-(\d{2})(\d{2})(\d{2})$/);
-          if (!m) return "";
-          var h = parseInt(m[1]), mi = m[2];
-          return (h % 12 || 12) + ":" + mi + " " + (h >= 12 ? "PM" : "AM");
-        };
-        return (
-          <div style={{ position: "fixed", inset: 0, background: "rgba(10,22,50,0.78)", backdropFilter: "blur(8px)", zIndex: 2100, display: "flex", alignItems: "center", justifyContent: "center" }}
-            onClick={function (e) { if (e.target === e.currentTarget) { setShowRecentBills(false); setDeletingBillId(null); setCancelReason(""); } }}>
-            <div style={{ background: "#fff", borderRadius: 20, padding: "28px 32px", width: "min(620px, 95vw)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 32px 80px rgba(10,22,50,0.45)", border: "1.5px solid #e1e8f5" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-                <div>
-                  <div style={{ fontSize: 19, fontWeight: 900, color: "#0d1b3e" }}>Recent Invoices</div>
-                  <div style={{ fontSize: 12, color: "#6b82a8", marginTop: 3 }}>Last {recentBills.length} sales</div>
-                </div>
-                <button onClick={function () { setShowRecentBills(false); setDeletingBillId(null); setCancelReason(""); }}
-                  style={{ background: "#f0f4ff", border: "none", borderRadius: 10, width: 32, height: 32, fontSize: 16, cursor: "pointer", color: "#0d1b3e", fontWeight: 700 }}>X</button>
-              </div>
-
-              {restoreToast && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#dcfce7", border: "1.5px solid #86efac", borderRadius: 10, padding: "10px 14px", marginBottom: 14 }}>
-                  <span style={{ fontSize: 16 }}>i</span>
-                  <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: "#166534" }}>{restoreToast}</span>
-                  {restoreUndoTarget && (
-                    <button onClick={undoRestoreSale}
-                      disabled={isRestoringBill}
-                      title="Undo restore (Ctrl+Z)"
-                      style={{ background: "#fff", border: "1.5px solid #4ade80", borderRadius: 7, padding: "4px 13px", fontSize: 12, fontWeight: 800, color: isRestoringBill ? "#86efac" : "#15803d", cursor: isRestoringBill ? "not-allowed" : "pointer", whiteSpace: "nowrap" }}>
-                      Undo
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {recentBills.length === 0 && (
-                <div style={{ textAlign: "center", padding: "40px 0", color: "#6b82a8", fontSize: 14 }}>No sales recorded yet.</div>
-              )}
-
-              {recentBills.map(function (sale) {
-                var isDeleting = deletingBillId && deletingBillId.id === sale.id;
-                var isCancelled = sale.status === "Cancelled";
-                var isJustRestored = restoredRowId === sale.id;
-                var t = invTime(sale.invoiceNo);
-                return (
-                  <div key={sale.id} style={{ borderRadius: 12, border: "1.5px solid " + (isJustRestored ? "#86efac" : isCancelled ? "#fecaca" : isDeleting ? "#fecaca" : "#e1e8f5"), marginBottom: 10, overflow: "hidden", opacity: isCancelled ? 0.82 : 1, transition: "border-color 0.4s, background 0.4s" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: isJustRestored ? "#f0fdf4" : isCancelled ? "#fff5f5" : isDeleting ? "#fff5f5" : "#f8fafc", transition: "background 0.4s" }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <span style={{ fontWeight: 800, fontSize: 13, color: isCancelled ? "#991b1b" : "#0d1b3e", fontFamily: "monospace", textDecoration: isCancelled ? "line-through" : "none" }}>{sale.invoiceNo || sale.id.slice(0, 10)}</span>
-                          {t && <span style={{ fontSize: 11, color: "#6b82a8" }}>{t}</span>}
-                          {isCancelled ? (
-                            <span style={{ fontSize: 11, background: "#fee2e2", color: "#991b1b", borderRadius: 5, padding: "1px 7px", fontWeight: 700 }}>Cancelled</span>
-                          ) : (
-                            <span style={{ fontSize: 11, background: sale.payStatus === "Paid" ? "#dcfce7" : sale.payStatus === "Partial" ? "#fef9c3" : "#fee2e2",
-                              color: sale.payStatus === "Paid" ? "#166534" : sale.payStatus === "Partial" ? "#854d0e" : "#991b1b",
-                              borderRadius: 5, padding: "1px 7px", fontWeight: 700 }}>{sale.payStatus || "Paid"}</span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 12, color: "#6b82a8", marginTop: 3 }}>
-                          {sale.customerName || "Walk-in"} &nbsp;|&nbsp; {sale.date || ""}
-                        </div>
-                        {isCancelled && (function () {
-                          var cancelTime = "";
-                          if (sale.cancelledAt) {
-                            var cd = new Date(sale.cancelledAt);
-                            var ch = cd.getHours(), cm = cd.getMinutes();
-                            cancelTime = (ch % 12 || 12) + ":" + String(cm).padStart(2, "0") + " " + (ch >= 12 ? "PM" : "AM");
-                          }
-                          return (
-                            <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 2 }}>
-                              {cancelTime && (
-                                <div style={{ fontSize: 11, color: "#b91c1c", display: "flex", alignItems: "center", gap: 4 }}>
-                                  <span style={{ fontWeight: 700 }}>Cancelled at:</span>
-                                  <span>{cancelTime}</span>
-                                </div>
-                              )}
-                              {sale.cancelReason && (
-                                <div style={{ fontSize: 11, color: "#b91c1c", display: "flex", alignItems: "center", gap: 4 }}>
-                                  <span style={{ fontWeight: 700 }}>Reason:</span>
-                                  <span>{sale.cancelReason}</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })()}
-                      </div>
-                      <div style={{ textAlign: "right", flexShrink: 0 }}>
-                        <div style={{ fontWeight: 900, fontSize: 15, color: isCancelled ? "#991b1b" : "#0d1b3e" }}>{getCurrencySymbol()} {fmtNum(sale.total)}</div>
-                        <div style={{ fontSize: 11, color: "#6b82a8" }}>{(sale.items || []).length} item{(sale.items || []).length !== 1 ? "s" : ""}</div>
-                      </div>
-                    </div>
-
-                    {isDeleting ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 16px", background: "#fef2f2", borderTop: "1px solid #fecaca" }}>
-                        <div style={{ fontSize: 12, color: "#991b1b", fontWeight: 600 }}>Cancel invoice <b>{sale.invoiceNo}</b>? This cannot be undone.</div>
-                        <select
-                          value={cancelReason}
-                          onChange={function (e) { setCancelReason(e.target.value); }}
-                          style={{ width: "100%", border: "1.5px solid #fecaca", borderRadius: 7, padding: "7px 10px", fontSize: 12, color: cancelReason ? "#0d1b3e" : "#9ca3af", background: "#fff", fontFamily: "inherit", outline: "none", cursor: "pointer" }}
-                        >
-                          <option value="">Select cancellation reason</option>
-                          <option value="Wrong item">Wrong item</option>
-                          <option value="Customer cancelled">Customer cancelled</option>
-                          <option value="Price mistake">Price mistake</option>
-                          <option value="Other">Other</option>
-                        </select>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <button onClick={function () { cancelRecentSale(sale.id, cancelReason); }}
-                            disabled={!cancelReason}
-                            style={{ flex: 1, background: cancelReason ? "#dc2626" : "#f3a4a4", color: "#fff", border: "none", borderRadius: 7, padding: "8px 0", fontSize: 12, fontWeight: 700, cursor: cancelReason ? "pointer" : "not-allowed" }}>
-                            Yes, Cancel Invoice
-                          </button>
-                          <button onClick={function () { setDeletingBillId(null); setCancelReason(""); }}
-                            style={{ flex: 1, background: "#f0f4ff", color: "#0d1b3e", border: "1px solid #e1e8f5", borderRadius: 7, padding: "8px 0", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                            No, Keep It
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", gap: 0, borderTop: "1px solid #e1e8f5" }}>
-                        <button onClick={function () { reprintRecentSale(sale); }}
-                          style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "9px 0", background: "none", border: "none", borderRight: "1px solid #e1e8f5", color: "#2563eb", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                          Reprint
-                        </button>
-                        {isAdminMode && !isCancelled ? (
-                          <button onClick={function () {
-                            if (cart.length > 0) {
-                              showConfirm("Loading this invoice will replace your current cart. Continue?", function () { loadSaleForEdit(sale); });
-                            } else {
-                              loadSaleForEdit(sale);
-                            }
-                          }}
-                            style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "9px 0", background: "none", border: "none", borderRight: "1px solid #e1e8f5", color: "#d97706", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                            Edit
-                          </button>
-                        ) : (
-                          <div title={isCancelled ? "Cannot edit a cancelled invoice" : "Admin mode required"}
-                            style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "9px 0", borderRight: "1px solid #e1e8f5", color: "#c4c9d4", fontSize: 12, fontWeight: 600, userSelect: "none", cursor: "not-allowed" }}>
-                            Edit
-                          </div>
-                        )}
-                        {isCancelled ? (
-                          isAdminMode ? (
-                            <button onClick={function () { if (!isRestoringBill) restoreRecentSale(sale.id); }}
-                              title="Restore this cancelled invoice"
-                              disabled={isRestoringBill}
-                              style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "9px 0", background: "none", border: "none", color: isRestoringBill ? "#86efac" : "#16a34a", fontSize: 12, fontWeight: 700, cursor: isRestoringBill ? "not-allowed" : "pointer" }}>
-                              Restore
-                            </button>
-                          ) : (
-                            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "9px 0", color: "#fca5a5", fontSize: 11, fontWeight: 700, userSelect: "none" }}>
-                              Cancelled
-                            </div>
-                          )
-                        ) : isAdminMode ? (
-                          <button onClick={function () { setDeletingBillId({ id: sale.id, invoiceNo: sale.invoiceNo }); }}
-                            style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "9px 0", background: "none", border: "none", color: "#dc2626", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                            Cancel
-                          </button>
-                        ) : (
-                          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: "9px 0", color: "#c4c9d4", fontSize: 12, fontWeight: 600, userSelect: "none" }}>
-                            Cancel
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {!isAdminMode && (
-                <div style={{ textAlign: "center", fontSize: 12, color: "#6b82a8", marginTop: 6, padding: "8px 12px", background: "#f8fafc", borderRadius: 8 }}>
-                  Edit &amp; Cancel require Admin Mode
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })()}
     </form>
     {isRestaurant && selectedRestaurantOrderDetail && (
       <Modal title={"Order Details - " + (selectedRestaurantOrderDetail.tableId ? getRestaurantTableDisplayName(selectedRestaurantOrderDetail.tableId) : (selectedRestaurantOrderDetail.type === "takeaway" ? "Takeaway" : (selectedRestaurantOrderDetail.type === "delivery" ? "Delivery" : "Dine-in")))} onClose={function () { setRestaurantOrderDetailId(""); }}>

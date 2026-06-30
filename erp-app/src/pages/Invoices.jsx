@@ -1,8 +1,14 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { computeSaleTax } from "../tax/taxCompute.js";
 import { saleReturnUiStatus, displayStatusForSale } from "../utils/returnDisplay.js";
+import { buildVoidSaleUpdates, isVoidedTxn, VOID_REASON_OPTIONS, voidSaleBlockReason } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import CustomerPicker from "../components/CustomerPicker.jsx";
+import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
+import { formatInvoiceLinePrice, formatInvoiceLineTotal } from "../utils/posFreeItems.js";
+import { quotationToPrintInv } from "../utils/quotationDocument.js";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
 /* ─── QUOTATION FORM (top-level to prevent cursor loss on re-render) ──────── */
 var QuotationForm = function (props) {
@@ -42,7 +48,7 @@ var QuotationForm = function (props) {
   var activeProds = (state.products || []).filter(function (p) { return p.status !== "inactive"; });
   var qMatchProds = activeProds.filter(function (p) {
     var s = qProdSearch.toLowerCase();
-    return s && (p.name.toLowerCase().includes(s) || (p.barcode || "").toLowerCase().includes(s));
+    return s && productMatchesSearch(p, s);
   }).slice(0, 8);
 
   var posDupNameKeys = getDuplicateNormalizedNameKeys(state.customers || []);
@@ -63,7 +69,7 @@ var QuotationForm = function (props) {
   var addItem = function () {
     var prod = qMatchProds[qProdIdx >= 0 ? qProdIdx : 0];
     if (!prod && qProdSearch.trim()) {
-      prod = activeProds.find(function (p) { return p.barcode && p.barcode.toLowerCase() === qProdSearch.toLowerCase(); });
+      prod = activeProds.find(function (p) { return productMatchesSearchExact(p, qProdSearch); });
     }
     if (!prod) { showAlert("Select a product first."); return; }
     var qty = parseInt(qQty) || 1;
@@ -133,7 +139,7 @@ var QuotationForm = function (props) {
           <div style={{ flex: 2, position: "relative" }}>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product</label>
             <input
-              placeholder="Search product name or barcode..."
+              placeholder="Search name, ID, barcode, or category..."
               value={qProdSearch}
               onChange={function (e) { setQProdSearch(e.target.value); setQProdDrop(true); setQProdIdx(-1); }}
               onFocus={function () { setQProdDrop(true); }}
@@ -241,8 +247,6 @@ var Quotations = function (props) {
   var PRINT_FONT_LINK = props.PRINT_FONT_LINK;
   var escapeHtml = props.escapeHtml;
   var shareViaWhatsApp = props.shareViaWhatsApp;
-  var getAllowedInvoiceLangCodes = props.getAllowedInvoiceLangCodes;
-  var INVOICE_LANG_NAMES = props.INVOICE_LANG_NAMES;
   var StatCard = props.StatCard;
   var Card = props.Card;
   var CardTitle = props.CardTitle;
@@ -253,7 +257,11 @@ var Quotations = function (props) {
   var TR = props.TR;
   var TD = props.TD;
   var WABtn = props.WABtn;
+  var InvoiceA4 = props.InvoiceA4;
+  var InvoiceThermal = props.InvoiceThermal;
   var C = props.C;
+  var usePager = props.usePager;
+  var Pager = props.Pager;
   var canEditInvoices = props.canEditInvoices === true;
   var canDeleteInvoices = props.canDeleteInvoices === true;
   var showPermissionDenied = typeof props.showPermissionDenied === "function"
@@ -285,15 +293,8 @@ var Quotations = function (props) {
   var [viewQ, setViewQ] = useState(null);
   var [search, setSearch] = useState("");
   var [filterStatus, setFilterStatus] = useState("All");
-  var [quotPrintLang, setQuotPrintLang] = useState(function () { return state.settings.defaultInvoiceLang || "en"; });
-  useEffect(function () {
-    var allowed = getAllowedInvoiceLangCodes(state.settings);
-    var d = state.settings.defaultInvoiceLang || "en";
-    setQuotPrintLang(function (c) { return allowed.indexOf(c) >= 0 ? c : d; });
-  }, [state.settings]);
-  useEffect(function () {
-    if (viewQ) setQuotPrintLang(state.settings.defaultInvoiceLang || "en");
-  }, [viewQ ? viewQ.id : null, state.settings.defaultInvoiceLang]);
+  var [pendingQuotPrint, setPendingQuotPrint] = useState(null);
+  var quotWaPendingRef = useRef(false);
 
   var quotations = state.quotations || [];
   var STATUSES = ["All", "Draft", "Sent", "Converted", "Expired"];
@@ -306,12 +307,13 @@ var Quotations = function (props) {
     return computeSaleTax(state.settings, sub).grandTotal;
   };
 
-  var filteredQ = quotations.slice().reverse().filter(function (q) {
+  var filteredQ = sortNewestFirst(quotations).filter(function (q) {
     var sq = search.toLowerCase();
     var matchQ = !sq || (q.customer || "").toLowerCase().includes(sq) || (q.quotationNo || "").toLowerCase().includes(sq);
     var matchS = filterStatus === "All" || q.status === filterStatus;
     return matchQ && matchS;
   });
+  var quotPager = usePager(filteredQ, LIST_PAGE_SIZE);
 
   var saveNew = function () {
     if (!f.items.length) { showAlert("Add at least one product to the quotation."); return; }
@@ -391,35 +393,55 @@ var Quotations = function (props) {
     });
   };
 
-  var printQuotation = function (q, lang) {
-    var st = state.settings || {};
-    var L = getInvoicePrintLabels(lang || st.defaultInvoiceLang || "en");
-    var items = q.items || [];
-    var lineSub = formTotal(items);
-    var total = quotationGrand(q);
-    var qShowTax = (q.totalTax || 0) > 0 && (q.selectedTaxes || []).length > 0;
-    var w = window.open("", "_blank", "width=900,height=700");
-    var css = "body{font-family:'Plus Jakarta Sans',Arial,sans-serif;font-size:12px;color:#111;padding:20px;max-width:800px;margin:0 auto;} table{width:100%;border-collapse:collapse;margin-bottom:14px;} th{background:#0d47a1;color:#fff;padding:8px 10px;text-align:left;font-size:11px;} td{padding:7px 10px;border-bottom:1px solid #e8edf8;} .tot{font-weight:800;background:#e8eeff;} .hdr{display:flex;justify-content:space-between;margin-bottom:20px;} .shop{font-size:20px;font-weight:800;color:#0d47a1;} .badge{display:inline-block;padding:3px 12px;border-radius:12px;font-size:11px;font-weight:700;background:#e8eeff;color:#1a47c2;border:1px solid #a8bcf0;} .to{background:#f7f9ff;border-radius:8px;padding:10px 14px;margin-bottom:14px;} @media print{@page{size:A4;margin:12mm;}}";
-    w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>" + escapeHtml(L.quotationTitle) + " " + escapeHtml(q.quotationNo) + "</title><style>" + css + "</style></head><body>");
-    w.document.write("<div class='hdr'><div><div class='shop'>" + escapeHtml(st.shopName || "Techon Computers") + "</div><div style='font-size:11px;color:#555;margin-top:2px;'>" + escapeHtml(st.address || "") + "</div><div style='font-size:11px;color:#555;'>" + escapeHtml(st.phone || "") + "</div></div>");
-    w.document.write("<div style='text-align:right;'><div style='font-size:22px;font-weight:800;color:#0d47a1;letter-spacing:-1px;'>" + escapeHtml(L.quotationTitle) + "</div><div style='font-size:13px;margin-top:4px;'>" + escapeHtml(L.quotationNoLabel) + " <strong>" + escapeHtml(q.quotationNo || "") + "</strong></div><div style='font-size:12px;color:#555;'>" + escapeHtml(L.quotationDateLabel) + " " + escapeHtml(q.date || "") + "</div><div style='margin-top:5px;'><span class='badge'>" + escapeHtml(q.status || "Draft") + "</span></div></div></div>");
-    w.document.write("<div class='to'><strong>" + escapeHtml(L.quotationTo) + "</strong> " + escapeHtml(q.customer || L.walkInCustomer) + (q.customerPhone ? " &nbsp;|&nbsp; ☎ " + escapeHtml(q.customerPhone) : "") + "</div>");
-    w.document.write("<table><thead><tr><th>" + escapeHtml(L.tableIndex) + "</th><th>" + escapeHtml(L.productDescription) + "</th><th style='text-align:center;'>" + escapeHtml(L.qty) + "</th><th style='text-align:right;'>" + escapeHtml(L.unitPrice) + "</th><th style='text-align:right;'>" + escapeHtml(L.amount) + "</th></tr></thead><tbody>");
-    items.forEach(function (it, i) { w.document.write("<tr><td style='color:#888;'>" + (i + 1) + "</td><td><strong>" + escapeHtml(it.name || "") + "</strong></td><td style='text-align:center;'>" + fmtSumQty(it.qty) + "</td><td style='text-align:right;'>" + getCurrencySymbol() + " " + fmtNum(it.price || 0) + "</td><td style='text-align:right;font-weight:700;'>" + getCurrencySymbol() + " " + fmtNum((it.qty || 0) * (it.price || 0)) + "</td></tr>"); });
-    w.document.write("<tr><td colspan='4' style='text-align:right;font-size:12px;color:#555;'>Sub Total</td><td style='text-align:right;font-weight:600;'>" + getCurrencySymbol() + " " + fmtNum(lineSub) + "</td></tr>");
-    if (qShowTax) {
-      (q.selectedTaxes || []).forEach(function (tl) {
-        w.document.write("<tr><td colspan='4' style='text-align:right;font-size:12px;color:#555;'>" + escapeHtml(tl.name || "") + " (" + fmtNum(tl.rate) + "%)</td><td style='text-align:right;'>" + getCurrencySymbol() + " " + fmtNum(tl.amount || 0) + "</td></tr>");
-      });
-      w.document.write("<tr><td colspan='4' style='text-align:right;font-size:12px;color:#555;'>Total Tax</td><td style='text-align:right;font-weight:600;'>" + getCurrencySymbol() + " " + fmtNum(q.totalTax || 0) + "</td></tr>");
-    }
-    w.document.write("<tr class='tot'><td colspan='4' style='text-align:right;font-size:13px;'>" + escapeHtml(L.total) + "</td><td style='text-align:right;font-size:16px;color:#0d47a1;'>" + getCurrencySymbol() + " " + fmtNum(total) + "</td></tr></tbody></table>");
-    if (q.notes) w.document.write("<div style='margin-top:10px;padding:10px 14px;background:#f7f9ff;border-radius:8px;font-size:12px;border-left:3px solid #2979ff;'><strong>" + escapeHtml(L.notesTerms) + "</strong><br>" + escapeHtml(q.notes) + "</div>");
-    w.document.write("<div style='margin-top:30px;padding-top:14px;border-top:1px solid #eee;font-size:11px;color:#aaa;text-align:center;'>" + escapeHtml(L.quotationFooter) + "</div>");
-    w.document.write("</body></html>");
-    w.document.close();
-    setTimeout(function () { w.print(); }, 600);
+  var printQuotation = function (q, lang, waShare) {
+    if (waShare) quotWaPendingRef.current = true;
+    setPendingQuotPrint({
+      inv: quotationToPrintInv(q),
+      lang: "en",
+      mode: (state.settings && state.settings.invoiceDefaultSize) || "a4",
+      settings: state.settings || {},
+      phone: q.customerPhone || "",
+      docNo: q.quotationNo || q.id,
+    });
   };
+
+  useEffect(function () {
+    if (!pendingQuotPrint) return;
+    var timer = setTimeout(function () {
+      var el = document.getElementById("quot-print-preview");
+      if (!el) {
+        setPendingQuotPrint(null);
+        return;
+      }
+      var mode = pendingQuotPrint.mode || "a4";
+      var isThermal = mode === "thermal" || mode === "thermal58" || mode === "thermal80";
+      var isA5 = mode === "a5";
+      var thermalBodyW = mode === "thermal58" ? "218px" : "302px";
+      var pgSize = isThermal ? (mode === "thermal58" ? "58mm auto" : "80mm auto") : (isA5 ? "A5" : "A4");
+      var pgMargin = isThermal ? "3mm" : "8mm";
+      var bodyW = isThermal
+        ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}"
+        : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
+      var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pgSize + (isThermal ? "" : " portrait") + ";margin:" + pgMargin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+      var pageFormat = isThermal ? (mode === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
+      if (quotWaPendingRef.current) {
+        quotWaPendingRef.current = false;
+        var filename = "Quotation-" + (pendingQuotPrint.docNo || "");
+        shareViaWhatsApp(el.innerHTML, filename, pendingQuotPrint.phone || "", { headStyles: css, pageFormat: pageFormat });
+      } else {
+        var w = window.open("", "_blank", "width=900,height=760");
+        if (!w) {
+          showAlert("Popup blocked. Please allow popups for this window and try again.");
+        } else {
+          w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>Quotation " + escapeHtml(pendingQuotPrint.docNo || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
+          w.document.close();
+          setTimeout(function () { w.focus(); w.print(); }, 500);
+        }
+      }
+      setPendingQuotPrint(null);
+    }, 300);
+    return function () { clearTimeout(timer); };
+  }, [pendingQuotPrint]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -431,7 +453,7 @@ var Quotations = function (props) {
       </div>
 
       <Card>
-        <CardTitle sub={filteredQ.length + " quotations"} action={<Btn sm col="blue" onClick={function () { setF(Object.assign({}, BLANK_Q, { quotationNo: genInvNo("QT") })); setShow(true); }}>+ New Quotation</Btn>}>Quotations</CardTitle>
+        <CardTitle sub={filteredQ.length + " quotations — create new from Sales → Quotation"}>Quotations</CardTitle>
         <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
           <div style={{ flex: 1, minWidth: 220 }}>
             <Input placeholder="Search customer or quotation number..." value={search} onChange={function (e) { setSearch(e.target.value); }} />
@@ -447,7 +469,7 @@ var Quotations = function (props) {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr><TH>Quotation #</TH><TH>Customer</TH><TH>Date</TH><TH>Items</TH><TH>Total</TH><TH>Status</TH><TH>Actions</TH></tr></thead>
             <tbody>
-              {filteredQ.map(function (q, i) {
+              {quotPager.slice.map(function (q, i) {
                 return (
                   <TR key={q.id} i={i} onClick={function () { setViewQ(q); }}>
                     <TD bold><span style={{ color: C.blue, fontFamily: "monospace" }}>{q.quotationNo || q.id.slice(0, 8)}</span></TD>
@@ -456,21 +478,26 @@ var Quotations = function (props) {
                     <TD center color={C.muted}>{(q.items || []).length}</TD>
                     <TD bold>{getCurrencySymbol()} {fmtNum(quotationGrand(q))}</TD>
                     <TD><span style={{ fontWeight: 700, fontSize: 12, color: STATUS_COLORS[q.status] || C.textMd }}>{q.status}</span></TD>
-                    <td style={{ padding: "6px 10px" }} onClick={function (e) { e.stopPropagation(); }}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <Btn sm col="gray" onClick={function () { setViewQ(q); }}>View</Btn>
-                        {q.status !== "Converted" && <Btn sm col="blue" onClick={function () { if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; } setEditQ(q); }}>Edit</Btn>}
-                        {q.status !== "Converted" && <Btn sm col="green" onClick={function () { convertToSale(q); }}>→ Invoice</Btn>}
-                        <Btn sm col="red" onClick={function () { deleteQ(q.id); }} disabled={!canDeleteInvoices}>✕</Btn>
-                      </div>
+                    <td style={actBtnCellStyle} onClick={function (e) { e.stopPropagation(); }}>
+                      <ActBtnGroup>
+                        <ActBtn tone="cyan" title="View quotation" onClick={function () { setViewQ(q); }}>🧾</ActBtn>
+                        {q.status !== "Converted" ? (
+                          <ActBtn tone="blue" title="Edit quotation" onClick={function () { if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; } setEditQ(q); }}>✎</ActBtn>
+                        ) : null}
+                        {q.status !== "Converted" ? (
+                          <ActBtn tone="green" title="Convert to invoice" wide onClick={function () { convertToSale(q); }}>Invoice</ActBtn>
+                        ) : null}
+                        <ActBtn tone="red" title="Delete quotation" onClick={function () { deleteQ(q.id); }} disabled={!canDeleteInvoices}>✕</ActBtn>
+                      </ActBtnGroup>
                     </td>
                   </TR>
                 );
               })}
-              {filteredQ.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: 24, color: C.muted }}>No quotations yet. Click &quot;+ New Quotation&quot; to create one.</td></tr>}
+              {filteredQ.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: 24, color: C.muted }}>No quotations yet. Create one from <strong>Sales → Quotation</strong>.</td></tr>}
             </tbody>
           </table>
         </div>
+        <Pager pager={quotPager} />
       </Card>
 
       {/* New Quotation Modal */}
@@ -507,16 +534,8 @@ var Quotations = function (props) {
           {viewQ.notes && <div style={{ background: "#f7f9ff", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: C.textMd, borderLeft: "3px solid " + C.blue }}><strong>Notes:</strong> {viewQ.notes}</div>}
           {viewQ.convertedInvoiceId && <div style={{ background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: C.green }}>✅ Converted to Invoice: <strong>{viewQ.convertedInvoiceId}</strong> on {viewQ.convertedAt}</div>}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>Language</span>
-              <select value={quotPrintLang} onChange={function (e) { setQuotPrintLang(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 600, background: "#fff", color: C.text, cursor: "pointer" }}>
-                {getAllowedInvoiceLangCodes(state.settings).map(function (k) {
-                  return <option key={k} value={k}>{INVOICE_LANG_NAMES[k] || k}</option>;
-                })}
-              </select>
-            </div>
-            <Btn col="gray" onClick={function () { printQuotation(viewQ, quotPrintLang); }}>🖨 Print</Btn>
-            <WABtn title="Share Quotation via WhatsApp" onClick={function () { shareAnyReport(function () { printQuotation(viewQ, quotPrintLang); }, "Quotation-" + (viewQ.quotationNo || viewQ.id.slice(0, 8))); }} />
+            <Btn col="gray" onClick={function () { printQuotation(viewQ); }}>🖨 Print</Btn>
+            <WABtn title="Share Quotation via WhatsApp" onClick={function () { printQuotation(viewQ, null, true); }} />
             {viewQ.status !== "Converted" && (
               <React.Fragment>
                 {["Draft","Sent","Expired"].filter(function (s) { return s !== viewQ.status; }).map(function (s) {
@@ -529,6 +548,15 @@ var Quotations = function (props) {
             <Btn col="red" onClick={function () { deleteQ(viewQ.id); setViewQ(null); }} disabled={!canDeleteInvoices}>🗑 Delete</Btn>
           </div>
         </Modal>
+      )}
+
+      {pendingQuotPrint && InvoiceA4 && (
+        <div id="quot-print-preview" style={{ position: "fixed", left: -9999, top: -9999, width: 794, pointerEvents: "none", opacity: 0 }}>
+          {(pendingQuotPrint.mode === "thermal" || pendingQuotPrint.mode === "thermal58" || pendingQuotPrint.mode === "thermal80")
+            ? <InvoiceThermal inv={pendingQuotPrint.inv} settings={pendingQuotPrint.settings} invoiceLang={pendingQuotPrint.lang} width={pendingQuotPrint.mode === "thermal58" ? 218 : 302} documentKind="quotation" />
+            : <InvoiceA4 inv={pendingQuotPrint.inv} settings={pendingQuotPrint.settings} invoiceLang={pendingQuotPrint.lang} size={pendingQuotPrint.mode || "a4"} documentKind="quotation" />
+          }
+        </div>
       )}
     </div>
   );
@@ -549,8 +577,6 @@ var SalesInvoices = React.memo(function (props) {
   var fmtDate = props.fmtDate;
   var fmtDateFull = props.fmtDateFull;
   var fmtStock = props.fmtStock;
-  var getAllowedInvoiceLangCodes = props.getAllowedInvoiceLangCodes;
-  var INVOICE_LANG_NAMES = props.INVOICE_LANG_NAMES;
   var StatCard = props.StatCard;
   var Card = props.Card;
   var CardTitle = props.CardTitle;
@@ -592,9 +618,11 @@ var SalesInvoices = React.memo(function (props) {
   var [search, setSearch] = useState("");
   var [dateFrom, setDateFrom] = useState("");
   var [dateTo, setDateTo] = useState("");
-  var [filterStatus, setFilterStatus] = useState("All");
+  var [filterStatus, setFilterStatus] = useState("Active");
   var [viewSale, setViewSale] = useState(null);
   var [editSale, setEditSale] = useState(null);
+  var [voidSaleTarget, setVoidSaleTarget] = useState(null);
+  var [voidReason, setVoidReason] = useState("");
   var [payModal, setPayModal] = useState(null);
   var [splitPayModal, setSplitPayModal] = useState(null);
   var [payNote, setPayNote] = useState("");
@@ -604,45 +632,101 @@ var SalesInvoices = React.memo(function (props) {
   var [fullViewSale, setFullViewSale] = useState(null);
   var [fvFormat, setFvFormat] = useState(function () { return state.settings.invoiceDefaultSize || "a4"; });
   var [fvWarranty, setFvWarranty] = useState(false);
-  var [siInvoiceLang, setSiInvoiceLang] = useState(function () { return state.settings.defaultInvoiceLang || "en"; });
-  var [fvInvoiceLang, setFvInvoiceLang] = useState(function () { return state.settings.defaultInvoiceLang || "en"; });
-  useEffect(function () {
-    var allowed = getAllowedInvoiceLangCodes(state.settings);
-    var d = state.settings.defaultInvoiceLang || "en";
-    setSiInvoiceLang(function (c) { return allowed.indexOf(c) >= 0 ? c : d; });
-    setFvInvoiceLang(function (c) { return allowed.indexOf(c) >= 0 ? c : d; });
-  }, [state.settings]);
-  useEffect(function () {
-    if (!viewSale) return;
-    setSiInvoiceLang(state.settings.defaultInvoiceLang || "en");
-  }, [viewSale ? viewSale.id : null, state.settings.defaultInvoiceLang]);
-  useEffect(function () {
-    if (!fullViewSale) return;
-    setFvInvoiceLang(state.settings.defaultInvoiceLang || "en");
-  }, [fullViewSale ? fullViewSale.id : null, state.settings.defaultInvoiceLang]);
 
-  var filtered = state.sales.slice().reverse().filter(function (s) {
+  var filtered = sortNewestFirst(state.sales).filter(function (s) {
     var q = search.toLowerCase();
     var matchQ = !q || (s.customerName || s.customer || "").toLowerCase().includes(q) || (s.invoiceNo || "").toLowerCase().includes(q) || (s.customerPhone || "").includes(q);
     var matchFrom = !dateFrom || s.date >= dateFrom;
     var matchTo = !dateTo || s.date <= dateTo;
-    var matchStatus = filterStatus === "All" || s.payStatus === filterStatus;
-    return matchQ && matchFrom && matchTo && matchStatus;
+    var voided = isVoidedTxn(s);
+    if (filterStatus === "Active" && voided) return false;
+    if (filterStatus === "Voided" && !voided) return false;
+    if (filterStatus === "Paid" || filterStatus === "Partial" || filterStatus === "Unpaid") {
+      if (voided) return false;
+      if (s.payStatus !== filterStatus) return false;
+    }
+    return matchQ && matchFrom && matchTo;
   });
 
-  var siPager = usePager(filtered, 50);
+  var siPager = usePager(filtered, LIST_PAGE_SIZE);
   var totalShown = filtered.reduce(function (a, s) { return a + s.total; }, 0);
   var paidShown = filtered.reduce(function (a, s) { return a + (s.paid || 0); }, 0);
   var outstandingShown = totalShown - paidShown;
+
+  var invThStyle = function (align) {
+    return {
+      textAlign: align || "left",
+      padding: "10px 12px",
+      fontWeight: 700,
+      color: C.th,
+      fontSize: 10.5,
+      textTransform: "uppercase",
+      letterSpacing: "0.07em",
+      borderBottom: "2px solid " + C.border,
+      whiteSpace: "nowrap",
+      background: "#f8fafc",
+    };
+  };
+
+  var invMoneyTd = function (children, color, bold) {
+    return (
+      <td style={{ padding: "10px 12px", textAlign: "right", color: color || C.text, fontWeight: bold ? 700 : 500, whiteSpace: "nowrap", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
+        {children}
+      </td>
+    );
+  };
 
   var goSalesReturn = function () {
     try { sessionStorage.setItem("tc3_returns_tab", "salesreturn"); } catch (e) { /* ignore */ }
     if (typeof setActive === "function") setActive("returns");
   };
 
+  var voidSaleInvoice = function (saleId, reason) {
+    if (!canDeleteInvoices) {
+      showPermissionDenied("void invoices");
+      return;
+    }
+    var result = buildVoidSaleUpdates(state, saleId, reason);
+    if (!result.ok) {
+      showAlert(result.error);
+      return;
+    }
+    S.set("tc3_products", result.products);
+    S.set("tc3_customers", result.customers);
+    S.set("tc3_sales", result.sales);
+    S.set("tc3_cheques", result.cheques);
+    setState(function (st) {
+      return Object.assign({}, st, {
+        products: result.products,
+        customers: result.customers,
+        sales: result.sales,
+        cheques: result.cheques,
+      });
+    });
+    addAudit("Voided Sale Invoice", (result.voidedSale.invoiceNo || saleId.slice(0, 8)) + (reason ? " — " + reason : ""));
+    setVoidSaleTarget(null);
+    setVoidReason("");
+    if (viewSale && viewSale.id === saleId) setViewSale(null);
+    if (fullViewSale && fullViewSale.id === saleId) setFullViewSale(null);
+  };
+
+  var promptVoidSale = function (sale) {
+    if (!canDeleteInvoices) {
+      showPermissionDenied("void invoices");
+      return;
+    }
+    var block = voidSaleBlockReason(sale, state);
+    if (block) {
+      showAlert(block);
+      return;
+    }
+    setVoidReason("");
+    setVoidSaleTarget(sale);
+  };
+
   var saleInvoiceEditAllowed = function (s) {
-    if (!s) return false;
-    return (s.date || "").slice(0, 10) === today();
+    if (!s || isVoidedTxn(s)) return false;
+    return true;
   };
 
   /* Invoice edit: metadata only — no line items, totals, or stock (use Sales Return for quantity/amount corrections). */
@@ -652,9 +736,8 @@ var SalesInvoices = React.memo(function (props) {
       return;
     }
     if (!editSale) return;
-    var sd0 = (editSale.date || "").slice(0, 10);
-    if (sd0 !== today()) {
-      showAlert("Only same-day invoices can be edited.");
+    if (isVoidedTxn(editSale)) {
+      showAlert("Voided invoices cannot be edited.");
       return;
     }
     var orig = state.sales.find(function (s) { return s.id === editSale.id; });
@@ -662,6 +745,7 @@ var SalesInvoices = React.memo(function (props) {
     var editSaleAmtErr = validateTxnAmounts("Edited sale invoice", orig.total || 0, orig.paid || 0, orig.balance || 0);
     if (editSaleAmtErr) { showAlert("❌ " + editSaleAmtErr); return; }
     checkPeriodClose(orig.date, state.settings, function () {
+      checkPeriodClose(editSale.date, state.settings, function () {
       var merged = Object.assign({}, orig, {
         invoiceNo: editSale.invoiceNo,
         date: editSale.date,
@@ -674,6 +758,7 @@ var SalesInvoices = React.memo(function (props) {
       addAudit("Edited Sale Invoice (details)", merged.invoiceNo || merged.id.slice(0, 8));
       setState(function (st) { return Object.assign({}, st, { sales: ns }); });
       setEditSale(null);
+      });
     });
   };
 
@@ -822,107 +907,106 @@ var SalesInvoices = React.memo(function (props) {
           return <button key={t[0]} onClick={function () { setSiTab(t[0]); }} style={{ background: isA ? "linear-gradient(135deg,#2979ff,#2255d4)" : "transparent", color: isA ? "#fff" : C.textMd, border: "none", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", transition: "all .15s", fontFamily: "inherit", boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.28)" : "none" }}>{t[1]}</button>;
         })}
       </div>
-      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} getAllowedInvoiceLangCodes={getAllowedInvoiceLangCodes} INVOICE_LANG_NAMES={INVOICE_LANG_NAMES} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} C={C} canEditInvoices={canEditInvoices} canDeleteInvoices={canDeleteInvoices} showPermissionDenied={showPermissionDenied} />}
+      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} InvoiceA4={InvoiceA4} InvoiceThermal={InvoiceThermal} C={C} usePager={usePager} Pager={Pager} canEditInvoices={canEditInvoices} canDeleteInvoices={canDeleteInvoices} showPermissionDenied={showPermissionDenied} />}
       {siTab === "invoices" && <React.Fragment>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-        <StatCard money={false} label="Invoices" value={filtered.length} accent={C.cyan} icon="🧾" sub="shown" />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+        <StatCard money={false} label="Shown" value={filtered.length} accent={C.cyan} icon="🧾" sub="invoices" />
         <StatCard label="Total Value" value={totalShown} accent={C.blue} icon="💰" />
-        <StatCard label="Collected" value={paidShown} accent={C.green} icon="✅" sub={totalShown > 0 ? Math.round(paidShown / totalShown * 100) + "% rate" : "—"} />
-        <StatCard label="Outstanding" value={outstandingShown} accent={outstandingShown > 0 ? C.red : C.green} icon="⚠" />
+        <StatCard label="Collected" value={paidShown} accent={C.green} icon="✅" sub={totalShown > 0 ? Math.round(paidShown / totalShown * 100) + "% collected" : "—"} />
+        <StatCard label="Outstanding" value={outstandingShown} accent={outstandingShown > 0 ? C.red : C.green} icon={outstandingShown > 0 ? "⏳" : "✓"} sub={outstandingShown > 0 ? "due" : "all clear"} />
       </div>
 
       <Card>
-        <CardTitle sub={filtered.length.toLocaleString() + " invoices — Total " + getCurrencySymbol() + " " + fmtNum(totalShown)} action={<Btn sm col="gray" onClick={function () { setSearch(""); setDateFrom(""); setDateTo(""); setFilterStatus("All"); }}>Clear Filters</Btn>}>Sales Invoices</CardTitle>
-        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: "2 1 200px", minWidth: 200 }}><Input label="Search" value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Customer, invoice #, phone..." /></div>
-          <div style={{ flex: "1 1 140px", minWidth: 140 }}><Input type="date" label="From" value={dateFrom} onChange={function (e) { setDateFrom(e.target.value); }} /></div>
-          <div style={{ flex: "1 1 140px", minWidth: 140 }}><Input type="date" label="To" value={dateTo} onChange={function (e) { setDateTo(e.target.value); }} /></div>
-          <div style={{ flex: "1 1 130px", minWidth: 130 }}>
+        <CardTitle sub="Search, view, print, and manage customer invoices" action={<Btn sm col="gray" onClick={function () { setSearch(""); setDateFrom(""); setDateTo(""); setFilterStatus("Active"); }}>Clear filters</Btn>}>Sales Invoices</CardTitle>
+        <div style={{ background: "#f8fafc", border: "1px solid " + C.borderLight, borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 2fr) repeat(3, minmax(120px, 1fr))", gap: 10, alignItems: "end" }}>
+            <Input label="Search" value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Customer, invoice #, phone..." />
+            <Input type="date" label="From" value={dateFrom} onChange={function (e) { setDateFrom(e.target.value); }} />
+            <Input type="date" label="To" value={dateTo} onChange={function (e) { setDateTo(e.target.value); }} />
             <Sel label="Status" value={filterStatus} onChange={function (e) { setFilterStatus(e.target.value); }}>
-              <option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
+              <option>Active</option><option>Voided</option><option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
             </Sel>
           </div>
         </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><TH>Invoice #</TH><TH>Date</TH><TH>Customer</TH><TH>Items</TH><TH>Total</TH><TH>Paid</TH><TH>Balance</TH><TH>Status</TH><TH>Last Payment</TH><th style={{ textAlign: "right", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap", background: "#f7f9ff" }}>Actions</th></tr></thead>
+        <div style={{ overflowX: "auto", border: "1px solid " + C.borderLight, borderRadius: 10 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1040, tableLayout: "fixed" }}>
+            <thead>
+              <tr>
+                <th style={Object.assign({}, invThStyle(), { width: "14%" })}>Invoice #</th>
+                <th style={Object.assign({}, invThStyle(), { width: "7%" })}>Date</th>
+                <th style={Object.assign({}, invThStyle(), { width: "11%" })}>Customer</th>
+                <th style={Object.assign({}, invThStyle("center"), { width: "5%" })}>Items</th>
+                <th style={Object.assign({}, invThStyle("right"), { width: "9%" })}>Total</th>
+                <th style={Object.assign({}, invThStyle("right"), { width: "9%" })}>Paid</th>
+                <th style={Object.assign({}, invThStyle(), { width: "10%" })}>Status</th>
+                <th style={Object.assign({}, invThStyle("right"), { width: "12%" })}>Last payment</th>
+                <th style={Object.assign({}, invThStyle("right"), { width: "23%", paddingRight: 14 })}>Actions</th>
+              </tr>
+            </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={10} style={{ padding: 20, textAlign: "center", color: C.muted }}>No invoices found</td></tr>}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={9} style={{ padding: 32, textAlign: "center", color: C.muted, fontSize: 13 }}>
+                    <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.5 }}>🧾</div>
+                    No invoices match your filters
+                  </td>
+                </tr>
+              )}
               {siPager.slice.map(function (s, i) {
                 var bal = Math.max(0, s.total - (s.paid || 0));
                 var lastPay = (s.paymentHistory || []).slice(-1)[0];
                 var hasPendingChq = (state.cheques || []).some(function (ch) { return ch.saleId === s.id && ch.status === "Pending"; });
                 var saleRet = saleReturnUiStatus(s, state.salesReturns);
                 var saleStatusLabel = displayStatusForSale(s, state.salesReturns);
-                var saleRowBg = saleRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
+                var saleRowBg = isVoidedTxn(s) ? "#fff5f5" : saleRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#fafbff");
+                var invNo = s.invoiceNo || s.id.slice(0, 8);
                 return (
                   <tr key={s.id} className="table-row-hover" style={{ background: saleRowBg, borderBottom: "1px solid " + C.borderLight }} title={saleRet.hasReturns ? "This invoice has return activity" : undefined}>
-                    <td style={{ padding: "10px 14px" }}>
-                      <span
+                    <td style={{ padding: "10px 12px", maxWidth: 0 }}>
+                      <button
+                        type="button"
                         onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}
-                        title="Click to view invoice"
-                        style={{ fontFamily: "monospace", fontSize: 12, color: C.accent, fontWeight: 700, cursor: "pointer", textDecoration: "underline dotted", textUnderlineOffset: 3 }}
-                      >{s.invoiceNo || s.id.slice(0, 8)}</span>
+                        title={invNo + " — View & print"}
+                        style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, cursor: "pointer", background: "none", border: "none", padding: 0, textAlign: "left", textDecoration: "none", lineHeight: 1.35, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block", width: "100%" }}
+                      >{invNo}</button>
                     </td>
                     <TD>{fmtDate(s.date)}</TD>
-                    <TD bold>{s.customerName || s.customer || "Walk-in"}</TD>
+                    <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.customerName || s.customer || "Walk-in"}>
+                      {s.customerName || s.customer || "Walk-in"}
+                    </td>
                     <TD center>{(s.items || []).length}</TD>
-                    <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD>
-                    <TD color={C.green}>{getCurrencySymbol()} {fmtNum(s.paid || 0)}</TD>
-                    <td style={{ padding: "10px 14px" }}>
-                      {bal > 0
-                        ? <span style={{ background: C.dangerSoft, color: C.red, padding: "3px 10px", borderRadius: 20, fontWeight: 700, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(bal)}</span>
-                        : <span style={{ background: C.successSoft, color: C.green, padding: "3px 10px", borderRadius: 20, fontWeight: 700, fontSize: 12 }}>Settled</span>
-                      }
-                    </td>
-                    <td style={{ padding: "10px 14px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    {invMoneyTd(getCurrencySymbol() + " " + fmtNum(s.total), C.blue, true)}
+                    {invMoneyTd(getCurrencySymbol() + " " + fmtNum(s.paid || 0), bal > 0 ? C.orange : C.green, false)}
+                    <td style={{ padding: "10px 12px", overflow: "hidden", maxWidth: 0 }}>
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 5, maxWidth: "100%", minWidth: 0 }}>
                         <Badge status={saleStatusLabel} />
-                        {saleRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 800, color: "#9f1239", background: "#ffe4e6", border: "1px solid #fda4af", borderRadius: 6, padding: "2px 6px" }}>↩ Return</span> : null}
+                        {hasPendingChq ? <span title="Pending cheque" style={{ fontSize: 11, lineHeight: 1, flexShrink: 0 }}>🕐</span> : null}
                       </div>
                     </td>
-                    <TD>{lastPay ? fmtDate(lastPay.date) + " · " + getCurrencySymbol() + " " + fmtNum(lastPay.amount) : "—"}</TD>
-                    <td style={{ padding: "8px 10px", verticalAlign: "middle", textAlign: "right", whiteSpace: "nowrap" }}>
-                      <div
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "flex-end",
-                          gap: 6,
-                          flexWrap: "nowrap",
-                        }}
-                      >
-                        <span
-                          style={{
-                            width: 22,
-                            flex: "0 0 22px",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontSize: 14,
-                            lineHeight: 1,
-                          }}
-                          title={hasPendingChq ? "Has pending cheque(s)" : undefined}
-                        >
-                          {hasPendingChq ? "🕐" : ""}
-                        </span>
-                        <Btn sm col="cyan" onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}>🧾</Btn>
-                        <Btn sm col="gray" onClick={function () { setViewSale(s); setSiWarranty(s.includeWarranty || false); }}>Details</Btn>
-                        <Btn
-                          sm
-                          col="blue"
-                          disabled={!saleInvoiceEditAllowed(s)}
-                          title={!saleInvoiceEditAllowed(s) ? "Only same-day invoices can be edited (for accounting safety)" : undefined}
-                          onClick={function () {
-                            if (!saleInvoiceEditAllowed(s)) return;
-                            setEditSale(Object.assign({}, s));
-                          }}
-                        >Edit</Btn>
-                        <div style={{ flex: "0 0 66px", width: 66, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 28 }}>
-                          {bal > 0 ? <Btn sm col="cyan" onClick={function () { setSplitPayModal(s); }}>Pay</Btn> : null}
-                        </div>
-                        <Btn sm col="orange" onClick={goSalesReturn} title="Use Sales Return to reverse stock and amounts">Return</Btn>
-                      </div>
+                    <td style={{ padding: "10px 12px", textAlign: "right", fontSize: 12, color: C.muted, whiteSpace: "nowrap" }}>
+                      {lastPay ? (
+                        <span>{fmtDate(lastPay.date)} · <strong style={{ color: C.text, fontWeight: 600 }}>{getCurrencySymbol()} {fmtNum(lastPay.amount)}</strong></span>
+                      ) : "—"}
+                    </td>
+                    <td style={actBtnCellStyle}>
+                      <ActBtnGroup>
+                        <ActBtn tone="cyan" title="View & print" onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}>🧾</ActBtn>
+                        {bal > 0 ? <ActBtn tone="green" title="Record payment" wide onClick={function () { setSplitPayModal(s); }}>Pay</ActBtn> : null}
+                        {!isVoidedTxn(s) ? (
+                          <ActBtn
+                            tone="blue"
+                            title="Edit invoice"
+                            disabled={!canEditInvoices}
+                            onClick={function () {
+                              if (!saleInvoiceEditAllowed(s)) return;
+                              if (!canEditInvoices) { showPermissionDenied("edit invoices"); return; }
+                              setEditSale(Object.assign({}, s));
+                            }}
+                          >✎</ActBtn>
+                        ) : null}
+                        {!isVoidedTxn(s) ? <ActBtn tone="orange" title="Sales return" onClick={goSalesReturn}>↩</ActBtn> : null}
+                        {!isVoidedTxn(s) && canDeleteInvoices ? <ActBtn tone="red" title="Void invoice" onClick={function () { promptVoidSale(s); }}>✕</ActBtn> : null}
+                      </ActBtnGroup>
                     </td>
                   </tr>
                 );
@@ -930,11 +1014,13 @@ var SalesInvoices = React.memo(function (props) {
             </tbody>
           </table>
         </div>
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 16, padding: "10px 14px", borderTop: "2px solid " + C.border, fontSize: 13, fontWeight: 700, background: "#f7f9ff" }}>
-          <span>Total: <span style={{ color: C.blue }}>{getCurrencySymbol()} {fmtNum(totalShown)}</span></span>
-          <span>Paid: <span style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(paidShown)}</span></span>
-          <span>Outstanding: <span style={{ color: outstandingShown > 0 ? C.red : C.green }}>{getCurrencySymbol()} {fmtNum(outstandingShown)}</span></span>
-        </div>
+        {filtered.length > 0 && (
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 20, padding: "12px 14px", borderTop: "1px solid " + C.borderLight, fontSize: 13, fontWeight: 600, background: "#f8fafc", borderRadius: "0 0 10px 10px", marginTop: -1, flexWrap: "wrap" }}>
+            <span style={{ color: C.muted }}>Filtered total: <strong style={{ color: C.blue }}>{getCurrencySymbol()} {fmtNum(totalShown)}</strong></span>
+            <span style={{ color: C.muted }}>Collected: <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(paidShown)}</strong></span>
+            <span style={{ color: C.muted }}>Outstanding: <strong style={{ color: outstandingShown > 0 ? C.red : C.green }}>{getCurrencySymbol()} {fmtNum(outstandingShown)}</strong></span>
+          </div>
+        )}
         <Pager pager={siPager} />
       </Card>
 
@@ -1002,15 +1088,6 @@ var SalesInvoices = React.memo(function (props) {
               Warranty
             </label>
 
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "rgba(200,220,255,0.75)", textTransform: "uppercase" }}>Language</span>
-              <select value={fvInvoiceLang} onChange={function (e) { setFvInvoiceLang(e.target.value); }} style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, padding: "4px 8px", fontSize: 12, color: "#fff", cursor: "pointer" }}>
-                {getAllowedInvoiceLangCodes(state.settings).map(function (k) {
-                  return <option key={k} value={k} style={{ color: "#111" }}>{INVOICE_LANG_NAMES[k] || k}</option>;
-                })}
-              </select>
-            </div>
-
             <div style={{ flex: 1 }} />
 
             {/* Print + WhatsApp buttons */}
@@ -1042,7 +1119,7 @@ var SalesInvoices = React.memo(function (props) {
 
           {saleReturnUiStatus(fullViewSale, state.salesReturns).hasReturns ? (
             <div style={{ flexShrink: 0, padding: "8px 20px", background: "#fff7ed", borderBottom: "1px solid #fed7aa", fontSize: 12, color: "#9a3412", fontWeight: 600 }}>
-              <span title="This invoice has return activity">↩ This invoice has sales return activity — open Details for full return lines.</span>
+              <span title="This invoice has return activity">↩ This invoice has sales return activity.</span>
             </div>
           ) : null}
 
@@ -1065,13 +1142,13 @@ var SalesInvoices = React.memo(function (props) {
                 ? <InvoiceThermal
                     inv={Object.assign({}, fullViewSale, { includeWarranty: fvWarranty })}
                     settings={state.settings}
-                    invoiceLang={fvInvoiceLang}
+                    invoiceLang="en"
                     width={fvFormat === "thermal58" ? 218 : 302}
                   />
                 : <InvoiceA4
                     inv={Object.assign({}, fullViewSale, { includeWarranty: fvWarranty })}
                     settings={state.settings}
-                    invoiceLang={fvInvoiceLang}
+                    invoiceLang="en"
                     size={fvFormat}
                   />
               }
@@ -1188,14 +1265,6 @@ var SalesInvoices = React.memo(function (props) {
                 <input type="checkbox" checked={siWarranty} onChange={function (e) { setSiWarranty(e.target.checked); }} style={{ width: 15, height: 15, cursor: "pointer", accentColor: C.accent }} />
                 Include Warranty
               </label>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>Language</span>
-                <select value={siInvoiceLang} onChange={function (e) { setSiInvoiceLang(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 600, background: "#fff", color: C.text, cursor: "pointer" }}>
-                  {getAllowedInvoiceLangCodes(state.settings).map(function (k) {
-                    return <option key={k} value={k}>{INVOICE_LANG_NAMES[k] || k}</option>;
-                  })}
-                </select>
-              </div>
               <Btn col="blue" onClick={function () { printInvoice(Object.assign({}, viewSale, { includeWarranty: siWarranty }), siFormat); }}>🖨 Print Invoice</Btn>
               <WABtn title="Share as PDF via WhatsApp" onClick={function () { whatsappInvoice(Object.assign({}, viewSale, { includeWarranty: siWarranty }), siFormat); }} />
             </div>
@@ -1208,8 +1277,8 @@ var SalesInvoices = React.memo(function (props) {
             </div>
             <div id={"si-inv-preview-" + viewSale.id} style={{ background: "#fff", maxHeight: 480, overflowY: "auto", padding: (siFormat === "thermal58" || siFormat === "thermal80") ? "12px" : "0" }}>
               {(siFormat === "thermal58" || siFormat === "thermal80")
-                ? <InvoiceThermal inv={Object.assign({}, viewSale, { includeWarranty: siWarranty })} settings={state.settings} invoiceLang={siInvoiceLang} width={siFormat === "thermal58" ? 218 : 302} />
-                : <InvoiceA4 inv={Object.assign({}, viewSale, { includeWarranty: siWarranty })} settings={state.settings} invoiceLang={siInvoiceLang} size={siFormat} />
+                ? <InvoiceThermal inv={Object.assign({}, viewSale, { includeWarranty: siWarranty })} settings={state.settings} invoiceLang="en" width={siFormat === "thermal58" ? 218 : 302} />
+                : <InvoiceA4 inv={Object.assign({}, viewSale, { includeWarranty: siWarranty })} settings={state.settings} invoiceLang="en" size={siFormat} />
               }
             </div>
           </div>
@@ -1220,8 +1289,7 @@ var SalesInvoices = React.memo(function (props) {
             )}
             <Btn
               col="blue"
-              disabled={!saleInvoiceEditAllowed(viewSale) || !canEditInvoices}
-              title={!saleInvoiceEditAllowed(viewSale) ? "Only same-day invoices can be edited (for accounting safety)" : undefined}
+              disabled={!canEditInvoices}
               onClick={function () {
                 if (!saleInvoiceEditAllowed(viewSale)) return;
                 if (!canEditInvoices) { showPermissionDenied("edit invoices"); return; }
@@ -1230,11 +1298,30 @@ var SalesInvoices = React.memo(function (props) {
               }}
             >Edit Invoice</Btn>
             <Btn col="orange" onClick={goSalesReturn}>Sales Return</Btn>
+            {!isVoidedTxn(viewSale) && canDeleteInvoices ? (
+              <Btn col="red" onClick={function () { promptVoidSale(viewSale); }}>Void Invoice</Btn>
+            ) : null}
             <Btn col="gray" onClick={function () { setViewSale(null); }}>Close</Btn>
           </div>
         </Modal>
         );
       })()}
+
+      {voidSaleTarget && (
+        <Modal title={"Void Invoice — " + (voidSaleTarget.invoiceNo || voidSaleTarget.id.slice(0, 8))} onClose={function () { setVoidSaleTarget(null); setVoidReason(""); }}>
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "12px 14px", marginBottom: 14, fontSize: 13, color: "#991b1b", lineHeight: 1.5 }}>
+            This will reverse stock, customer balance, and payments. The invoice stays on record as <strong>Voided</strong>. This cannot be undone.
+          </div>
+          <Sel label="Reason" value={voidReason} onChange={function (e) { setVoidReason(e.target.value); }}>
+            <option value="">Select reason…</option>
+            {VOID_REASON_OPTIONS.map(function (opt) { return <option key={opt} value={opt}>{opt}</option>; })}
+          </Sel>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <Btn col="red" disabled={!voidReason} onClick={function () { voidSaleInvoice(voidSaleTarget.id, voidReason); }}>Void Invoice</Btn>
+            <Btn col="gray" onClick={function () { setVoidSaleTarget(null); setVoidReason(""); }}>Cancel</Btn>
+          </div>
+        </Modal>
+      )}
 
       {splitPayModal && (
         <SplitPaymentModal
@@ -1269,8 +1356,8 @@ var SalesInvoices = React.memo(function (props) {
                     <tr key={it.id || idx} style={{ borderBottom: "1px solid " + C.border }}>
                       <td style={{ padding: "7px 10px", fontWeight: 600 }}>{it.name}</td>
                       <td style={{ padding: "7px 10px" }}>{fmtStock(it.qty, it.unit)}</td>
-                      <td style={{ padding: "7px 10px" }}>{getCurrencySymbol()} {fmtNum(it.price || 0)}</td>
-                      <td style={{ padding: "7px 10px", fontWeight: 700, color: C.blue }}>{getCurrencySymbol()} {fmtNum(it.qty * (it.price || 0))}</td>
+                      <td style={{ padding: "7px 10px" }}>{formatInvoiceLinePrice(it, fmtNum, getCurrencySymbol)}</td>
+                      <td style={{ padding: "7px 10px", fontWeight: 700, color: C.blue }}>{formatInvoiceLineTotal(it, fmtNum, getCurrencySymbol)}</td>
                     </tr>
                   );
                 })}

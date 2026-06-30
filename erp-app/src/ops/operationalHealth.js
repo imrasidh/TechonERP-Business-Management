@@ -2,6 +2,8 @@
  * Internal operational monitoring — read-only; does not change business logic.
  */
 
+import { isInventoryReconcileOk } from "../accounting/inventoryEngine.js";
+
 function countAuditActions(audit, actions) {
   var map = {};
   var i;
@@ -23,7 +25,8 @@ export function buildOperationalHealthSnapshot(S, syncMeta) {
   var audit = S.get("tc3_gl_audit", []) || [];
   var tail = audit.slice(-300);
   var inv = S.get("tc3_inv_reconciliation", null);
-  var lastInvOk = inv && inv.ok === true;
+  var settings = S.get("tc3_settings", {}) || {};
+  var lastInvOk = inv && isInventoryReconcileOk(inv, settings);
   var failActions = [
     "journal_merge_imbalance",
     "journal_commit_invariant_fail",
@@ -58,6 +61,6 @@ export function buildOperationalHealthSnapshot(S, syncMeta) {
     commitRelatedFailures: commitFail,
     glFailureBreakdown: countAuditActions(tail, failActions),
     inventoryReconciliationOk: lastInvOk,
-    reconciliationSummary: inv ? { ok: inv.ok === true } : null,
+    reconciliationSummary: inv ? { ok: isInventoryReconcileOk(inv, settings) } : null,
   };
 }

@@ -64,6 +64,18 @@ export function isPurchaseInputUnitMissingFactor(product, inputUnit) {
   return f == null || f <= 0;
 }
 
+/** Use product base unit when preferred unit is stale (e.g. default Pcs on Sq Ft product). */
+export function resolvePurchaseInputUnit(product, preferredUnit) {
+  if (!product) return String(preferredUnit || "").trim() || "Pcs";
+  var bu = String(product.unit || "Pcs").trim();
+  var u = String(preferredUnit || "").trim();
+  if (!u) return bu;
+  if (isProductBaseUnitLabel(product, u)) return bu;
+  var f = factorForNamedUnit(product, u);
+  if (f != null && f > 0) return u;
+  return bu;
+}
+
 /**
  * When the line uses the base unit, flag if cost/sell are extremely high vs catalogue (likely pack/sack total per base by mistake).
  */

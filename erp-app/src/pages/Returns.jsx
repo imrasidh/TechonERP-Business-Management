@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { computeSaleTaxFromSnapshot } from "../tax/taxCompute.js";
+import { computeSaleTaxFromSnapshot, computePurchaseReturnTax } from "../tax/taxCompute.js";
 import { round2 } from "../utils/moneyRound.js";
+import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
 /* ─── RETURNS PAGE ────────────────────────────────────────────────────────── */
 var Returns = function (props) {
@@ -27,6 +28,9 @@ var Returns = function (props) {
   var TR = props.TR;
   var TD = props.TD;
   var Badge = props.Badge;
+  var usePager = props.usePager;
+  var Pager = props.Pager;
+  var tcTrialGuard = props.tcTrialGuard;
   var [tab, setTab] = useState("salesreturn");
   var TABS = [["salesreturn", "↩ Sales Return"], ["purchasereturn", "🔄 Purchase Return"]];
   useEffect(function () {
@@ -75,6 +79,9 @@ var Returns = function (props) {
         TR={TR}
         TD={TD}
         Badge={Badge}
+        usePager={usePager}
+        Pager={Pager}
+        tcTrialGuard={tcTrialGuard}
       />}
       {tab === "purchasereturn" && <PurchaseReturnTab
         state={state}
@@ -100,6 +107,8 @@ var Returns = function (props) {
         TR={TR}
         TD={TD}
         Badge={Badge}
+        usePager={usePager}
+        Pager={Pager}
       />}
     </div>
   );
@@ -130,6 +139,9 @@ var SalesReturnTab = function (props) {
   var TR = props.TR;
   var TD = props.TD;
   var Badge = props.Badge;
+  var usePager = props.usePager;
+  var Pager = props.Pager;
+  var tcTrialGuard = props.tcTrialGuard;
 
   /* modal steps: null | "search" | "items" */
   var [modal, setModal] = useState(null);
@@ -168,14 +180,15 @@ var SalesReturnTab = function (props) {
   }, 0) : 0;
 
   /* Filter invoices: match customer search OR invoice number search */
-  var allSales = (state.sales || []).slice().reverse();
+  var allSales = sortNewestFirst(state.sales || []);
   var filteredSales = allSales.filter(function (s) {
     var cq = custSearch.toLowerCase().trim();
     var iq = invSearch.toLowerCase().trim();
     var matchC = !cq || (s.customerName || "").toLowerCase().includes(cq) || (s.customerPhone || "").includes(cq);
     var matchI = !iq || (s.invoiceNo || "").toLowerCase().includes(iq);
     return matchC && matchI;
-  }).slice(0, 60);
+  });
+  var salesPickPager = usePager(filteredSales, LIST_PAGE_SIZE);
 
   var processReturn = function () {
     if (!selInv) return;
@@ -191,6 +204,8 @@ var SalesReturnTab = function (props) {
       if (q > maxReturn) { err = "\"" + (it.name || "Item") + "\": max returnable is " + maxReturn + "."; }
     });
     if (err) { showAlert(err); return; }
+
+    if (!tcTrialGuard(state.salesReturns || [], "salesReturns")) return;
 
     /* FIX Bug 2: Dynamic refund calculation — works for Paid AND Partial invoices.
        If the new invoice total drops below what was already paid, the difference must be refunded. */
@@ -219,14 +234,22 @@ var SalesReturnTab = function (props) {
       (selInv.items || []).forEach(function (it) {
         var q = parseInt(returnQtys[it.id]) || 0;
         if (q <= 0) return;
-        var amt = q * (it.price || 0);
+        var lineGross = round2(q * (it.price || 0));
+        var isInclusive = selInv.taxMode === "inclusive" || ((state.settings && state.settings.taxMode === "inclusive") && selInv.taxMode !== "exclusive");
+        var lineTaxBundle = computeSaleTaxFromSnapshot(selInv, lineGross);
+        var lineReturnTax = round2(lineTaxBundle.totalTax || 0);
+        var lineNet = isInclusive ? round2(lineGross - lineReturnTax) : lineGross;
+        var lineReturnGross = isInclusive ? lineGross : round2(lineGross + lineReturnTax);
         var thisRefund = (needsRefund && !refundRecorded) ? refundAmt : 0;
         if (needsRefund && !refundRecorded) refundRecorded = true;
         newReturns.push({
           id: uid(), returnId: genInvNo("SR"), invoiceId: selInv.id, invoiceNo: selInv.invoiceNo,
           productId: it.id, productName: it.name || "Unknown Product",
-          qty: q, amount: amt, cost: it.cost || 0, /* FIX 1+3: store exact cost at return time — avoids cross-period lookup errors */
+          qty: q, amount: lineNet, returnTax: lineReturnTax, returnGross: lineReturnGross, cost: it.cost || 0, /* FIX 1+3: store exact cost at return time — avoids cross-period lookup errors */
+          taxMode: selInv.taxMode || (isInclusive ? "inclusive" : "exclusive"),
+          selectedTaxes: (selInv.selectedTaxes || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; }),
           date: today(),
+          createdAt: new Date().toISOString(),
           customer: selInv.customerName || selInv.customer || "",
           customerId: selInv.customerId || "",
           reason: returnReason.trim(),
@@ -308,12 +331,13 @@ var SalesReturnTab = function (props) {
   };
 
   /* History */
-  var history = (state.salesReturns || []).slice().reverse();
+  var history = sortNewestFirst(state.salesReturns || []);
   var filteredHistory = history.filter(function (r) {
     if (!histSearch.trim()) return true;
     var q = histSearch.toLowerCase();
     return (r.customer || "").toLowerCase().includes(q) || (r.invoiceNo || "").toLowerCase().includes(q) || (r.productName || "").toLowerCase().includes(q) || (r.returnId || "").toLowerCase().includes(q);
   });
+  var histPager = usePager(filteredHistory, LIST_PAGE_SIZE);
   var totalReturns = history.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
   var totalRefunds = history.filter(function (r) { return r.isRefund; }).reduce(function (a, r) { return a + (r.refundAmount || 0); }, 0);
 
@@ -345,7 +369,7 @@ var SalesReturnTab = function (props) {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr><TH>Date</TH><TH>Return ID</TH><TH>Invoice</TH><TH>Customer</TH><TH>Product</TH><TH>Qty</TH><TH>Amount</TH><TH>Reason</TH><TH>Settlement</TH></tr></thead>
             <tbody>
-              {filteredHistory.map(function (r, i) {
+              {histPager.slice.map(function (r, i) {
                 return (
                   <TR key={r.id} i={i}>
                     <TD color={C.muted}>{r.date}</TD>
@@ -364,6 +388,7 @@ var SalesReturnTab = function (props) {
             </tbody>
           </table>
         </div>
+        <Pager pager={histPager} />
       </Card>
 
       {/* ── MODAL: Step 1 — Invoice Search ── */}
@@ -378,7 +403,7 @@ var SalesReturnTab = function (props) {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead style={{ position: "sticky", top: 0, zIndex: 1 }}><tr><TH>Invoice #</TH><TH>Date</TH><TH>Customer</TH><TH>Phone</TH><TH>Items</TH><TH>Total</TH><TH>Status</TH></tr></thead>
               <tbody>
-                {filteredSales.map(function (s, i) {
+                {salesPickPager.slice.map(function (s, i) {
                   var alreadyReturnedAmt = (state.salesReturns || []).filter(function (r) { return r.invoiceId === s.id; }).reduce(function (a, r) { return a + r.amount; }, 0);
                   return (
                     <TR key={s.id} i={i} onClick={function () { selectInvoice(s); }}>
@@ -399,6 +424,7 @@ var SalesReturnTab = function (props) {
               </tbody>
             </table>
           </div>
+          <Pager pager={salesPickPager} />
         </Modal>
       )}
 
@@ -539,6 +565,9 @@ var PurchaseReturnTab = function (props) {
   var TR = props.TR;
   var TD = props.TD;
   var Badge = props.Badge;
+  var usePager = props.usePager;
+  var Pager = props.Pager;
+  var tcTrialGuard = props.tcTrialGuard;
 
   var [modal, setModal] = useState(null);
   var [suppSearch, setSuppSearch] = useState("");
@@ -571,17 +600,25 @@ var PurchaseReturnTab = function (props) {
 
   var returnTotal = selPur ? (selPur.items || []).reduce(function (a, it) {
     var q = parseInt(returnQtys[it.id]) || 0;
-    return a + q * (it.cost || 0);
+    if (q <= 0) return a;
+    var lineCost = round2(q * (it.cost || 0));
+    var taxOn = state.settings && state.settings.taxEnabled ? computePurchaseReturnTax(selPur, lineCost, state.settings) : { apGross: lineCost };
+    return a + round2(taxOn.apGross || lineCost);
+  }, 0) : 0;
+  var returnStockCost = selPur ? (selPur.items || []).reduce(function (a, it) {
+    var q = parseInt(returnQtys[it.id]) || 0;
+    return a + round2(q * (it.cost || 0));
   }, 0) : 0;
 
-  var allPurchases = (state.purchases || []).slice().reverse();
+  var allPurchases = sortNewestFirst(state.purchases || []);
   var filteredPurchases = allPurchases.filter(function (p) {
     var sq = suppSearch.toLowerCase().trim();
     var pq = purSearch.toLowerCase().trim();
     var matchS = !sq || (p.supplier || "").toLowerCase().includes(sq);
     var matchP = !pq || (p.invoiceNo || "").toLowerCase().includes(pq);
     return matchS && matchP;
-  }).slice(0, 60);
+  });
+  var purPickPager = usePager(filteredPurchases, LIST_PAGE_SIZE);
 
   var processReturn = function () {
     if (!selPur) return;
@@ -642,13 +679,15 @@ var PurchaseReturnTab = function (props) {
           }
         }
         var amt = round2(q * unitForGl);
+        var prTaxBundle = state.settings && state.settings.taxEnabled ? computePurchaseReturnTax(selPur, amt, state.settings) : { taxReversal: 0, apGross: amt };
         var thisRefund = (needsRefund && !purRefundRecorded) ? refundAmt : 0;
         if (needsRefund && !purRefundRecorded) purRefundRecorded = true;
         newReturns.push({
           id: uid(), returnId: genInvNo("PR"), purchaseId: selPur.id, purchaseNo: selPur.invoiceNo,
           purchaseLineId: it.id,
           productId: it.id, productName: it.name || "Unknown Product",
-          qty: q, amount: amt, date: today(),
+          qty: q, amount: amt, returnTax: round2(prTaxBundle.taxReversal || 0), returnGross: round2(prTaxBundle.apGross || amt), date: today(),
+          createdAt: new Date().toISOString(),
           supplier: selPur.supplier || "", cost: unitForGl,
           costSourceFallbackWac: costFallbackWac === true,
           reason: purReturnReason.trim(),
@@ -690,12 +729,13 @@ var PurchaseReturnTab = function (props) {
     });
   };
 
-  var history = (state.purchaseReturns || []).slice().reverse();
+  var history = sortNewestFirst(state.purchaseReturns || []);
   var filteredHistory = history.filter(function (r) {
     if (!histSearch.trim()) return true;
     var q = histSearch.toLowerCase();
     return (r.supplier || "").toLowerCase().includes(q) || (r.purchaseNo || "").toLowerCase().includes(q) || (r.productName || "").toLowerCase().includes(q) || (r.returnId || "").toLowerCase().includes(q);
   });
+  var purHistPager = usePager(filteredHistory, LIST_PAGE_SIZE);
   var totalReturns = history.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
 
   return (
@@ -729,7 +769,7 @@ var PurchaseReturnTab = function (props) {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr><TH>Date</TH><TH>Return ID</TH><TH>Purchase #</TH><TH>Supplier</TH><TH>Product</TH><TH>Qty</TH><TH>Amount</TH><TH>Cost basis</TH><TH>Reason</TH></tr></thead>
             <tbody>
-              {filteredHistory.map(function (r, i) {
+              {purHistPager.slice.map(function (r, i) {
                 return (
                   <TR key={r.id} i={i}>
                     <TD color={C.muted}>{r.date}</TD>
@@ -754,6 +794,7 @@ var PurchaseReturnTab = function (props) {
             </tbody>
           </table>
         </div>
+        <Pager pager={purHistPager} />
       </Card>
 
       {/* MODAL Step 1 — Purchase Search */}
@@ -768,7 +809,7 @@ var PurchaseReturnTab = function (props) {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead style={{ position: "sticky", top: 0, zIndex: 1 }}><tr><TH>Invoice #</TH><TH>Date</TH><TH>Supplier</TH><TH>Items</TH><TH>Total</TH><TH>Balance</TH><TH>Status</TH></tr></thead>
               <tbody>
-                {filteredPurchases.map(function (p, i) {
+                {purPickPager.slice.map(function (p, i) {
                   var alreadyRetAmt = (state.purchaseReturns || []).filter(function (r) { return r.purchaseId === p.id; }).reduce(function (a, r) { return a + r.amount; }, 0);
                   return (
                     <TR key={p.id} i={i} onClick={function () { selectPurchase(p); }}>
@@ -789,6 +830,7 @@ var PurchaseReturnTab = function (props) {
               </tbody>
             </table>
           </div>
+          <Pager pager={purPickPager} />
         </Modal>
       )}
 

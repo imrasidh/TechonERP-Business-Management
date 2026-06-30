@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 
 var Suppliers = function (props) {
   var state = props.state;
@@ -119,12 +120,12 @@ var Suppliers = function (props) {
                           : <span style={{ background: C.successSoft, color: C.green, padding: "3px 10px", borderRadius: 20, fontWeight: 700, fontSize: 12 }}>Cleared</span>;
                       })()}
                     </td>
-                    <td style={{ padding: "9px 12px" }}>
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <Btn sm col="gray" onClick={function () { setViewS(s); }}>View</Btn>
-                        <Btn sm col="blue" onClick={function () { setEditS(Object.assign({}, s)); }}>Edit</Btn>
-                        <Btn sm col="red" onClick={function () { deleteSupplier(s.id); }}>Del</Btn>
-                      </div>
+                    <td style={actBtnCellStyle}>
+                      <ActBtnGroup>
+                        <ActBtn tone="cyan" title="View supplier" onClick={function () { setViewS(s); }}>🧾</ActBtn>
+                        <ActBtn tone="blue" title="Edit supplier" onClick={function () { setEditS(Object.assign({}, s)); }}>✎</ActBtn>
+                        <ActBtn tone="red" title="Delete supplier" onClick={function () { deleteSupplier(s.id); }}>✕</ActBtn>
+                      </ActBtnGroup>
                     </td>
                   </TR>
                 );

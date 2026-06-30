@@ -61,6 +61,8 @@ var BASE = {
   timeWord: "Time",
   cashierWord: "Cashier",
   productDescription: "Product Description",
+  quantityUnit: "Quantity / Unit",
+  rateValue: "Rate",
   paymentMethod: "Payment Method",
   amountReceived: "Amount Received",
   balanceLabel: "Balance:",
@@ -76,9 +78,9 @@ var BASE = {
   amount: "Amount",
   notesTerms: "Notes / Terms:",
   quotationFooter:
-    "⚠ This is a quotation / estimate only and is NOT a tax invoice. Prices are subject to change without notice. Valid for 7 days from the date of issue.",
+    "Thank you for your interest. We look forward to doing business with you.",
   tableIndex: "#",
-  poweredBy: "Powered by TechonERP • www.erp.techon.lk",
+  poweredBy: "Powered By Techon Computers | +94 70 1234678",
   unknownProduct: "Unknown Product",
   footerPowered: "Powered by",
 };
@@ -326,16 +328,7 @@ export function normalizeOptionalInvoiceLangs(defaultLang, optionalArr) {
   return o.filter(function (x) { return x !== d; });
 }
 
-/** Ordered list: default first, then optional (unique). */
+/** Invoice print is English-only in the product UI. */
 export function getAllowedInvoiceLangCodes(settings) {
-  var s = settings || {};
-  var def = s.defaultInvoiceLang || "en";
-  var opt = normalizeOptionalInvoiceLangs(def, s.optionalInvoiceLangs);
-  var out = [def].concat(opt);
-  var seen = {};
-  return out.filter(function (x) {
-    if (!x || seen[x]) return false;
-    seen[x] = true;
-    return INVOICE_LANG_KEYS.indexOf(x) >= 0;
-  });
+  return ["en"];
 }

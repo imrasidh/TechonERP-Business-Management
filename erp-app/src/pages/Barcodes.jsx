@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { productMatchesSearch } from "../utils/productSearch.js";
 
 /* ═══════════════════════════════════════════════════════════════════
    UNIFIED BARCODE LABELS COMPONENT
@@ -211,9 +212,7 @@ var BarcodePrinter = function (props) {
     if (p.status === "inactive") return false;
     var q = printSearch.toLowerCase();
     if (!q) return false;
-    return (p.name || "").toLowerCase().includes(q) ||
-           (p.productId || "").toLowerCase().includes(q) ||
-           (p.barcode || "").toLowerCase().includes(q);
+    return productMatchesSearch(p, q);
   }).slice(0, 8);
 
   var addToPrintQueue = function (prod) {
@@ -444,7 +443,7 @@ var BarcodePrinter = function (props) {
                       }
                       if (e.key === "Escape") { setShowPrintDrop(false); setPrintSearchIdx(-1); }
                     }}
-                    placeholder="Search product..." 
+                    placeholder="Search name, ID, barcode, category..." 
                     style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 8px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" }} />
                   {showPrintDrop && filtPrintProds.length > 0 && (
                     <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
