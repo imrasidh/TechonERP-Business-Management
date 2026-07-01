@@ -1394,16 +1394,9 @@ export default function LicenseGate() {
             }
           }
           setNetworkConfig(cfg);
-        } else if (COMPUTER_SHOP_EDITION) {
-          const standaloneCfg = { role: 'standalone', apiUrl: '', wizardComplete: true };
-          try {
-            const api = window.electronAPI;
-            if (api && api.saveNetworkConfig) {
-              await api.saveNetworkConfig(standaloneCfg);
-            }
-          } catch (_e) { /* still proceed */ }
-          setNetworkConfig(standaloneCfg);
         } else {
+          /* First run (or reset): always show Setup Wizard so user can choose
+             Standalone vs Network Server vs Network Client. */
           setNetworkConfig(false);
         }
       } catch (e) {
