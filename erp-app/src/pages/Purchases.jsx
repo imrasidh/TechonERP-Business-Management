@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 import { purchaseReturnUiStatus, displayStatusForPurchase } from "../utils/returnDisplay.js";
 import { buildVoidPurchaseUpdates, isVoidedTxn, activePurchases, VOID_REASON_OPTIONS, voidPurchaseBlockReason } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
+import CloseIconButton from "../components/CloseIconButton.jsx";
 import { validateExtraUnits, buildUnitsPersistFields, getProductUnitRows, factorForNamedUnit, isProductBaseUnitLabel } from "../units/productUnits.js";
 import {
   normalizePurchaseLineItem,
@@ -36,8 +37,19 @@ import {
   findActiveProductByExactSearch,
 } from "../utils/productSearch.js";
 import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
-import ProductNameDuplicateHint from "../components/ProductNameDuplicateHint.jsx";
+import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
+import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
 import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import {
+  isGlassIndustry,
+  isGlassProduct,
+  validateGlassProductForm,
+  applyGlassProductFields,
+  glassCostPriceLabels,
+  glassFormFieldsOnUnitChange,
+  glassPurchaseEconomics,
+  formatGlassStockLabel,
+} from "../utils/glassProduct.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
@@ -47,6 +59,8 @@ var Purchases = React.memo(function (props) {
   var genPurNo = props.genPurNo;
   var today = props.today;
   var S = props.S;
+  var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
+  var glassIndustry = isGlassIndustry(businessType);
   var uid = props.uid;
   var tcTrialGuard = props.tcTrialGuard;
   var addAudit = props.addAudit;
@@ -118,6 +132,7 @@ var Purchases = React.memo(function (props) {
     return evaluateProductNameMatch(newProd.name, state.products, null);
   }, [newProd, state.products]);
   var newProductNameExactDup = !!(newProductNameMatch && newProductNameMatch.type === "exact");
+  var newNameHint = useProductNameHintControls(newProd ? newProd.name : "");
 
   /* Ctrl++ shortcut — open Add New Product */
   useEffect(function () {
@@ -588,6 +603,9 @@ var Purchases = React.memo(function (props) {
     var lowCost = typedPick ? purCostSeemsLow(typedPick, selU, pc, pCostInputMode) : false;
     var expCost = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : (typedPick ? getUnitCostPrice(typedPick, selU) : 0);
     var expLbl = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
+    var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
+    var glassPur = typedPick && isGlassProduct(typedPick, businessType);
+    var glassEcon = glassPur ? glassPurchaseEconomics(parseFloat(pq) || 0, parseFloat(pc) || 0, typedPick) : null;
     var inputStyle = { width: "100%", boxSizing: "border-box", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" };
     return (
       <tfoot>
@@ -729,7 +747,25 @@ var Purchases = React.memo(function (props) {
           <tr style={{ background: "#f0f9ff" }}>
             <td colSpan={7} style={{ padding: "0 8px 8px", fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
               {hint ? <div>{hint}</div> : null}
-              <div>Current stock: <strong style={{ color: C.text }}>{fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
+              <div>Current stock: <strong style={{ color: C.text }}>{glassPur ? formatGlassStockLabel(typedPick, fmtNum) : fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong style={{ color: C.green }}>{glassPur ? formatGlassStockLabel(Object.assign({}, typedPick, { stock: (typedPick.stock || 0) + (parseFloat(pq) || 0) }), fmtNum) : fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
+              {glassPur && glassEcon && (parseFloat(pq) || 0) > 0 && (parseFloat(pc) || 0) > 0 ? (
+                <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 6 }}>
+                  {[
+                    { label: "Area / Sheet", val: glassEcon.sheetSqFt + " Sq Ft" },
+                    { label: "Total Sq Ft", val: fmtNum(glassEcon.totalSqFt) },
+                    { label: "Total Sq M", val: fmtNum(glassEcon.totalSqM) },
+                    { label: "Cost / Sq Ft", val: getCurrencySymbol() + " " + fmtNum(glassEcon.costPerSqFt) },
+                    { label: "Cost / Sq M", val: getCurrencySymbol() + " " + fmtNum(glassEcon.costPerSqM) },
+                  ].map(function (row) {
+                    return (
+                      <div key={row.label} style={{ background: "#f0f4ff", border: "1px solid #dbe3f5", borderRadius: 6, padding: "6px 8px" }}>
+                        <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>{row.label}</div>
+                        <div style={{ fontWeight: 700, color: C.text, marginTop: 2 }}>{row.val}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
               {lowCost ? <div style={{ color: "#b45309", fontWeight: 700, marginTop: 2 }}>(!) Cost seems low vs catalogue (expected ~{getCurrencySymbol()} {fmtNum(expCost)} per {expLbl})</div> : null}
             </td>
           </tr>
@@ -1142,6 +1178,8 @@ var Purchases = React.memo(function (props) {
     }
     var performPurNewSave = function () {
       /* Force stock=0: purchase qty will add stock when saved — avoids double-counting */
+      var glassErr = validateGlassProductForm(newProd, businessType);
+      if (glassErr) { showAlert(glassErr); return; }
       var unitErr = validateExtraUnits(newProd.unit, newProd.extraUnits || []);
       if (unitErr) { showAlert(unitErr); return; }
       var unitFields = buildUnitsPersistFields({
@@ -1150,7 +1188,7 @@ var Purchases = React.memo(function (props) {
         price: newProd.price,
         extraUnits: newProd.extraUnits || [],
       });
-      var prod = Object.assign(
+      var prod = applyGlassProductFields(Object.assign(
         {
           id: uid(),
           productId: nextProductId(state.products),
@@ -1167,7 +1205,7 @@ var Purchases = React.memo(function (props) {
           comment_label: String(newProd.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         },
         unitFields
-      );
+      ), newProd, businessType);
       if (!tcTrialGuard(state.products, 'products')) return;
       var np = state.products.concat([prod]);
       S.set("tc3_products", np);
@@ -1409,7 +1447,7 @@ var Purchases = React.memo(function (props) {
                           </td>
                           <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(lineTot)}</td>
                           <td style={{ padding: "4px 4px", width: 30 }}>
-                            <button type="button" onClick={function () { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).filter(function (_, i) { return i !== idx; }) }); }); }} style={{ width: 26, height: 26, borderRadius: 5, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 13, cursor: "pointer", lineHeight: 1 }}>×</button>
+                            <CloseIconButton size={26} borderRadius={5} tone="danger" onClick={function () { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).filter(function (_, i) { return i !== idx; }) }); }); }} />
                           </td>
                         </tr>
                       );
@@ -1727,7 +1765,7 @@ var Purchases = React.memo(function (props) {
                           </td>
                           <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(lineTotEd)}</td>
                           <td style={{ padding: "4px 4px", width: 30 }}>
-                            <button type="button" onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.filter(function (_, i) { return i !== idx; }) }); }); }} style={{ width: 26, height: 26, borderRadius: 5, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 13, cursor: "pointer", lineHeight: 1 }}>×</button>
+                            <CloseIconButton size={26} borderRadius={5} tone="danger" onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.filter(function (_, i) { return i !== idx; }) }); }); }} />
                           </td>
                         </tr>
                       );
@@ -1927,8 +1965,8 @@ var Purchases = React.memo(function (props) {
         <Modal key={"newprod-" + newProdKey} title={"Add New Product — ID: " + nextProductId(state.products)} onClose={function () { setNewProd(null); }} wide>
           <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>Product will be added to inventory. Stock will be updated when the purchase is saved.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Product Name *" value={newProd.name} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
-            <ProductNameDuplicateHint name={newProd.name} products={state.products} C={C} />
+            <Input label="Product Name *" value={newProd.name} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={newNameHint.onNameFocus} onBlur={newNameHint.onNameBlur} />
+            <ProductNameDuplicateHint name={newProd.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
@@ -1940,15 +1978,21 @@ var Purchases = React.memo(function (props) {
               </Sel>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-              <Input label="Cost Price *" type="number" value={newProd.cost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-              <Input label="Sell Price *" type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+              <Input label={glassCostPriceLabels(newProd, businessType).cost} type="number" value={newProd.cost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
+              <Input label={glassCostPriceLabels(newProd, businessType).sell} type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
               <Sel label="Product Type" value={newProd.type || "stock"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
                 <option value="stock">Stock</option>
                 <option value="service">Service</option>
                 <option value="raw_material">Raw Material</option>
               </Sel>
-              <Sel label="Base Unit" value={newProd.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { unit: e.target.value }); }); }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
+              <Sel label="Base Unit" value={newProd.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) {
+                var nextUnit = e.target.value;
+                setNewProd(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
+              }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
             </div>
+            {glassIndustry && (
+              <GlassSheetInfo form={newProd} setForm={setNewProd} C={C} Input={Input} Sel={Sel} />
+            )}
             <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{newProd.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>

@@ -59,7 +59,7 @@ export function runDemo360Tests(ctx) {
     assert(validateJsonBackupPayload(bk), "demo backup validates");
     var d = bk.data;
 
-    assert(d.tc3_businessType === "glass", "glass industry set");
+    assert(d.tc3_businessType === "tech", "tech industry set");
     assert((d.tc3_products || []).length >= 50, "50+ products seeded");
     assert((d.tc3_customers || []).length >= 50, "50+ customers seeded");
     assert((d.tc3_suppliers || []).length >= 30, "30+ suppliers seeded");

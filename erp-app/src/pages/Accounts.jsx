@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { round2 } from "../accounting/generalLedger.js";
 import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
 import { buildReconciliationReport } from "../accounting/reconciliationReport.js";
@@ -10,7 +10,20 @@ import { diffTrialBalanceSnapshotVsLive } from "../accounting/snapshotTbDiff.js"
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
 import { DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
+import {
+  isGlassIndustry,
+  isGlassStockProductForm,
+  validateGlassProductForm,
+  glassCostPriceLabels,
+  glassFieldsFromProductForm,
+  glassPersistFieldsFromRow,
+  glassFormFieldsOnUnitChange,
+  isGlassSheetProductForm,
+} from "../utils/glassProduct.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { evaluateProductNameMatch, checkProductName } from "../utils/productNameMatch.js";
+import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
 
 /** Group GL lines by transactionId / entryGroupId for developer debug view only */
 function tcGroupJournalByTransaction(lines) {
@@ -32,6 +45,8 @@ var Accounts = function (props) {
   var state = props.state;
   var setState = props.setState;
   var S = props.S;
+  var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
+  var glassIndustry = isGlassIndustry(businessType);
   var today = props.today;
   var uid = props.uid;
   var showAlert = props.showAlert;
@@ -199,6 +214,12 @@ var Accounts = function (props) {
   var [obPayForm, setObPayForm] = useState({ source: "", amount: "", note: "" });
   var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
   var [obAssetForm, setObAssetForm] = useState({ name: "", category: "Equipment / Machinery", value: "", note: "" });
+  var obProductNameMatch = useMemo(function () {
+    if (!String(obStockForm.name || "").trim()) return null;
+    return evaluateProductNameMatch(obStockForm.name, state.products, null);
+  }, [obStockForm.name, state.products]);
+  var obProductNameExactDup = !!(obProductNameMatch && obProductNameMatch.type === "exact");
+  var obNameHint = useProductNameHintControls(obStockForm.name);
 
   var obCalcCapital = function (d) {
     var totalRecv = (d.receivables || []).reduce(function (a, r) { return a + r.amount; }, 0);
@@ -257,6 +278,7 @@ var Accounts = function (props) {
         var np = Array.isArray(s.units) && s.units.length > 0
           ? Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", units: s.units, bulkEnabled: false, bulkUnit: "", bulkConversion: 0, bulkPrice: 0, bulkCost: 0 })
           : Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", bulkEnabled: !!(s.bulkUnit && (parseFloat(s.bulkConversion) || 0) > 0), bulkUnit: s.bulkUnit || "", bulkConversion: parseFloat(s.bulkConversion) || 0, bulkCost: parseFloat(s.bulkCost) || 0, bulkPrice: parseFloat(s.bulkPrice) || 0 });
+        np = Object.assign(np, glassPersistFieldsFromRow(s));
         newProds.push(np);
         newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: np.id, productName: np.name, qty: np.stock, reason: "Opening Balance (New)" });
       }
@@ -1712,7 +1734,8 @@ var Accounts = function (props) {
                 <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} wide>
                   <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>New product will be added to your Inventory with opening stock quantity.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    <Input label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
+                    <Input label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={obNameHint.onNameFocus} onBlur={obNameHint.onNameBlur} />
+                    <ProductNameDuplicateHint name={obStockForm.name} products={state.products} C={C} visible={obNameHint.visible} onDismiss={obNameHint.onDismiss} />
                     <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
                       <div>
                         <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
@@ -1724,12 +1747,18 @@ var Accounts = function (props) {
                       </Sel>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                      <Input label="Cost Price *" type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-                      <Input label="Sell Price *" type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
-                      <Sel label="Base Unit" value={obStockForm.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { unit: e.target.value }); }); }}>
+                      <Input label={glassCostPriceLabels(obStockForm, businessType).cost} type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
+                      <Input label={glassCostPriceLabels(obStockForm, businessType).sell} type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+                      <Sel label="Base Unit" value={obStockForm.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) {
+                        var nextUnit = e.target.value;
+                        setObStockForm(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
+                      }}>
                         {getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}
                       </Sel>
                     </div>
+                    {glassIndustry && (
+                      <GlassSheetInfo form={obStockForm} setForm={setObStockForm} C={C} Input={Input} Sel={Sel} />
+                    )}
                     <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
                       <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
                       <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{obStockForm.unit || "Pcs"}</strong> (base) are in one of that unit.</div>
@@ -1762,7 +1791,14 @@ var Accounts = function (props) {
                     <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                       <Btn col="cyan" onClick={function () {
                         if (!obStockForm.name.trim()) { showAlert("Please enter a product name."); return; }
+                        var obNameCheck = checkProductName(obStockForm.name.trim(), state.products, null);
+                        if (obNameCheck && obNameCheck.type === "exact") {
+                          showAlert("A product named \"" + obNameCheck.match + "\" already exists.\nPlease use a different name.");
+                          return;
+                        }
                         if (!obStockForm.cost || parseFloat(obStockForm.cost) <= 0) { showAlert("Please enter a valid cost price."); return; }
+                        var glassErrOb = validateGlassProductForm(obStockForm, businessType);
+                        if (glassErrOb) { showAlert(glassErrOb); return; }
                         var unitErrOb = validateExtraUnits(obStockForm.unit, obStockForm.extraUnits || []);
                         if (unitErrOb) { showAlert(unitErrOb); return; }
                         var unitFieldsOb = buildUnitsPersistFields({
@@ -1772,8 +1808,11 @@ var Accounts = function (props) {
                           extraUnits: obStockForm.extraUnits || [],
                         });
                         /* Use qty from the grid input row — avoids double-counting */
-                        var obQtyToUse = parseInt(obStockQty, 10) || 1;
+                        var obQtyToUse = isGlassSheetProductForm(obStockForm, businessType)
+                          ? (parseFloat(obStockQty) || 1)
+                          : (parseInt(obStockQty, 10) || 1);
                         var bc = (obStockForm.barcode || "").trim() || genBarcode();
+                        var glassRowFields = glassFieldsFromProductForm(obStockForm);
                         setD({ stock: (d.stock || []).concat([Object.assign({
                           name: obStockForm.name.trim(),
                           barcode: bc,
@@ -1785,10 +1824,10 @@ var Accounts = function (props) {
                           _isNew: true,
                           require_comment: true,
                           comment_label: String(obStockForm.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
-                        }, unitFieldsOb)]) });
+                        }, unitFieldsOb, glassRowFields)]) });
                         setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
                         setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
-                      }} disabled={!obStockForm.name || !obStockForm.price || !obStockForm.cost}>Save Product</Btn>
+                      }} disabled={!obStockForm.name || !obStockForm.price || !obStockForm.cost || obProductNameExactDup}>Save Product</Btn>
                       <Btn col="gray" onClick={function () { setObStockModal(false); }}>Cancel</Btn>
                     </div>
                   </div>

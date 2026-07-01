@@ -15,6 +15,7 @@
 import React, { useState, useEffect } from 'react';
 import App from '../App';
 import SetupWizard from '../SetupWizard';
+import CloseIconButton from '../components/CloseIconButton.jsx';
 import { setPackagedMissingLicenseSecretBlock } from '../ops/accountingGuards.js';
 import { COMPUTER_SHOP_EDITION } from '../productionConfig.js';
 import {
@@ -404,10 +405,7 @@ function TrialBanner({ daysLeft, onActivate }) {
         >
           Activate Now
         </button>
-        <button
-          onClick={() => setDismissed(true)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 16, lineHeight: 1 }}
-        >×</button>
+        <CloseIconButton onClick={function () { setDismissed(true); }} size={28} tone="ghost" />
       </div>
     </div>
   );
@@ -455,10 +453,7 @@ function ThreeDayBanner({ daysLeft, onActivate }) {
         >
           Upgrade License
         </button>
-        <button
-          onClick={() => setDismissed(true)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 16, lineHeight: 1 }}
-        >×</button>
+        <CloseIconButton onClick={function () { setDismissed(true); }} size={28} tone="ghost" />
       </div>
     </div>
   );
@@ -702,10 +697,7 @@ function GracePeriodBanner({ graceDaysLeft, onActivate }) {
           Renew License
         </button>
         {!urgent && (
-          <button
-            onClick={function() { setDismissed(true); }}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 18, lineHeight: 1, padding: 0 }}
-          >×</button>
+          <CloseIconButton onClick={function () { setDismissed(true); }} size={28} tone="ghost" />
         )}
       </div>
     </div>

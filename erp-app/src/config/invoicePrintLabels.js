@@ -61,6 +61,7 @@ var BASE = {
   timeWord: "Time",
   cashierWord: "Cashier",
   productDescription: "Product Description",
+  glassCutSize: "Cut Size",
   quantityUnit: "Quantity / Unit",
   rateValue: "Rate",
   paymentMethod: "Payment Method",

@@ -1,7 +1,9 @@
 import { computeSaleTax } from "../tax/taxCompute.js";
+import { glassInvoiceLineTotal } from "./glassProduct.js";
 
 export function quotationLineSubtotal(items) {
   return (items || []).reduce(function (a, it) {
+    if (it && it.isGlassLine) return a + glassInvoiceLineTotal(it);
     return a + (Number(it.qty) || 0) * (Number(it.price) || 0);
   }, 0);
 }
@@ -40,7 +42,7 @@ export function buildQuotationTaxExtras(settings, subTotal, discount, taxCalcInp
 }
 
 export function mapCartLineToQuotationItem(it) {
-  return {
+  var base = {
     id: it.id,
     name: it.name,
     barcode: it.barcode || "",
@@ -53,6 +55,22 @@ export function mapCartLineToQuotationItem(it) {
     commentLabel: it.commentLabel || "",
     customPrice: !!it.customPrice,
   };
+  if (it && it.isGlassLine) {
+    return Object.assign(base, {
+      isGlassLine: true,
+      glassLength: it.glassLength,
+      glassWidth: it.glassWidth,
+      glassPieces: it.glassPieces,
+      glassDimensionUnit: it.glassDimensionUnit,
+      glassTotalSqFt: it.glassTotalSqFt,
+      glassTotalSqM: it.glassTotalSqM,
+      glassPieceSqFt: it.glassPieceSqFt,
+      glassRatePerSqFt: it.glassRatePerSqFt != null ? it.glassRatePerSqFt : it.price,
+      price: it.glassRatePerSqFt != null ? it.glassRatePerSqFt : it.price,
+      saleUnit: "Sq Ft",
+    });
+  }
+  return base;
 }
 
 export function quotationToPrintInv(q) {

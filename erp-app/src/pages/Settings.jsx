@@ -14,6 +14,13 @@ import {
 import { ROLE_ADMIN, ROLE_LABELS, normalizeRole } from "../security/rbac.js";
 import { COMPUTER_SHOP_EDITION, validateJsonBackupPayload } from "../productionConfig.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import {
+  isFreeItemsEnabled,
+  isRepairsModuleEnabled,
+  getModuleToggles,
+  persistModuleToggles,
+  MODULE_TOGGLE_DEFS,
+} from "../utils/featureFlags.js";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
 
@@ -145,6 +152,9 @@ var Settings = function (props) {
     preventNegativeStock: state.settings.preventNegativeStock !== false,
     allowCostFallback: state.settings.allowCostFallback === true,
     glVatPostingEnabled: state.settings.glVatPostingEnabled !== false,
+    freeItemsEnabled: isFreeItemsEnabled(state.settings, businessType),
+    repairsModuleEnabled: isRepairsModuleEnabled(state.settings, businessType, getBusinessProfile()),
+    moduleToggles: getModuleToggles(state.settings, businessType, getBusinessProfile()),
   }));
   var [newAsset, setNewAsset] = useState(null);
   var [editAsset, setEditAsset] = useState(null);
@@ -562,6 +572,7 @@ var Settings = function (props) {
     ns.taxEnabled = ns.taxEnabled === true;
     ns.allowCostFallback = ns.allowCostFallback === true;
     ns.glVatPostingEnabled = ns.glVatPostingEnabled !== false;
+    Object.assign(ns, persistModuleToggles(f.moduleToggles || {}));
     ns.strictPeriodLock = ns.strictPeriodLock === true;
     ns.purchaseReturnCostMode = ns.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac";
     ns.taxApplyBase = ns.taxApplyBase === "before_discount" ? "before_discount" : "after_discount";
@@ -918,7 +929,7 @@ var Settings = function (props) {
     );
   };
 
-  var TABS = [["shop", "Shop Info"], ["langcurrency", "Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["security", "Security"]];
+  var TABS = [["shop", "Shop Info"], ["features", "Modules"], ["langcurrency", "Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["security", "Security"]];
   if (isRestaurantBusiness) TABS.splice(1, 0, ["restaurantsetup", "Restaurant Setup"]);
   if (canManageUsers) TABS.push(["users", "Users"]);
   TABS.push(["activity", "Activity Log"]);
@@ -1142,7 +1153,7 @@ var Settings = function (props) {
       {!hideWizardTabs && (
       <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border, marginBottom: 16, flexWrap: "wrap" }}>
         {TABS.map(function (t) {
-          var icons = { shop: "🏪", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", about: "ℹ" };
+          var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", about: "ℹ" };
           return <button key={t[0]} onClick={function () { setStab(t[0]); }} style={{ padding: "10px 20px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (stab === t[0] ? C.border : "transparent"), borderBottom: stab === t[0] ? "2px solid #fff" : "none", background: stab === t[0] ? "#fff" : "transparent", color: stab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: stab === t[0] ? -2 : 0 }}>{icons[t[0]]} {t[1]}</button>;
         })}
       </div>
@@ -1257,6 +1268,76 @@ var Settings = function (props) {
               </div>
             </Card>
           )}
+        </div>
+      )}
+
+      {stab === "features" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <CardTitle sub="Turn sidebar screens and Sales features on or off. Sales and Settings always stay available.">
+              Modules &amp; screens
+            </CardTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 640 }}>
+              <div style={{ padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + C.border, background: "#f8fafc" }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Always on</div>
+                {[
+                  { label: "Sales", blurb: "Point of sale — create invoices, take payments, and hold orders." },
+                  { label: "Settings", blurb: "Shop setup, modules, backup, security, and accounting options." },
+                ].map(function (row) {
+                  return (
+                    <div key={row.label} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0", borderTop: "1px solid " + C.borderLight }}>
+                      <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: C.accent, background: C.accentSoft, padding: "3px 8px", borderRadius: 999, marginTop: 2 }}>On</span>
+                      <span>
+                        <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: C.text }}>{row.label}</span>
+                        <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{row.blurb}</span>
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {["Main", "Stock", "People", "Finance", "Operations", "Insight", "Sales"].map(function (groupName) {
+                var items = MODULE_TOGGLE_DEFS.filter(function (m) { return m.group === groupName; });
+                if (!items.length) return null;
+                return (
+                  <div key={groupName}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>{groupName}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {items.map(function (m) {
+                        var on = f.moduleToggles && f.moduleToggles[m.id] === true;
+                        return (
+                          <label key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "11px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff" }}>
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              onChange={function (e) {
+                                var checked = e.target.checked;
+                                setF(function (x) {
+                                  var toggles = Object.assign({}, x.moduleToggles || {}, { [m.id]: checked });
+                                  return Object.assign({}, x, {
+                                    moduleToggles: toggles,
+                                    freeItemsEnabled: m.id === "freeItems" ? checked : x.freeItemsEnabled,
+                                    repairsModuleEnabled: m.id === "repairs" ? checked : x.repairsModuleEnabled,
+                                  });
+                                });
+                              }}
+                              style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 2, flexShrink: 0 }}
+                            />
+                            <span>
+                              <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: on ? C.accent : C.text }}>{m.label}</span>
+                              <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{m.blurb}</span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <Btn col="blue" onClick={save}>Save modules</Btn>
+            </div>
+          </Card>
         </div>
       )}
 

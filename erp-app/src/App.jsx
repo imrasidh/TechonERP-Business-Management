@@ -79,6 +79,24 @@ import Accounts from "./pages/Accounts.jsx";
 import { ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, canAccessPageByRole, hasPermission, normalizeRole } from "./security/rbac.js";
 import { showPermissionDenied as showPermissionDeniedUi } from "./utils/permissionUi.js";
 import { UI } from "./utils/uiIcons.js";
+import CloseIconButton from "./components/CloseIconButton.jsx";
+import {
+  glassInvoiceLineTotal,
+  glassInvoiceRateLabel,
+  glassInvoiceCutSizeCol,
+  glassInvoiceQtyCol,
+  invoiceHasGlassLines,
+} from "./utils/glassProduct.js";
+import { hydrateFeatureFlagDefaults, isRepairsModuleEnabled, isNavModuleEnabled, CORE_NAV_IDS, getDefaultLandingNavId } from "./utils/featureFlags.js";
+import { formatGlassDimensionLine } from "./utils/glassDimensions.js";
+import { checkProductName as checkProductNameMatch } from "./utils/productNameMatch.js";
+
+var checkProductName = checkProductNameMatch;
+
+var toTitleCase = function (str) {
+  var s = String(str == null ? "" : str).trim();
+  return s.replace(/\w\S*/g, function (w) { return w.charAt(0).toUpperCase() + w.slice(1); });
+};
 
 /* --- FONTS ----------------------------------------- */
 if (!document.getElementById("erp-fonts")) {
@@ -305,7 +323,7 @@ var fmtDate = function (d) { try { return new Date(d).toLocaleDateString("en-US"
 var fmtDateFull = function (d) { try { return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch (e) { return d; } };
 /* isDecimalUnit - returns true for weight/volume units that should allow decimal quantities in POS */
 var isDecimalUnit = function (unit) {
-  return ["Kg", "G", "Litre", "ML", "Gram", "Metre", "CM", "MM"].indexOf(unit || "") >= 0;
+  return ["Kg", "G", "Litre", "ML", "Gram", "Metre", "CM", "MM", "Sheet"].indexOf(unit || "") >= 0;
 };
 
 /* --- UNIT CONVERSION ENGINE -------------------------------------------------
@@ -991,30 +1009,6 @@ var encodeCost = function (cost, key) {
   return "X" + core + "X";
 };
 
-/* --- PRODUCT NAME HELPERS ---------------------------- */
-var toTitleCase = function (str) {
-  var s = String(str == null ? "" : str).trim();
-  return s.replace(/\w\S*/g, function (w) { return w.charAt(0).toUpperCase() + w.slice(1); });
-};
-var checkProductName = function (name, products, excludeId) {
-  var trimmed = String(name == null ? "" : name).trim().toLowerCase();
-  var active = (products || []).filter(function (p) { return p.status !== "inactive" && (!excludeId || p.id !== excludeId); });
-  /* Exact match */
-  var exact = active.find(function (p) {
-    return String(p.name == null ? "" : p.name).trim().toLowerCase() === trimmed;
-  });
-  if (exact) return { type: "exact", match: exact.name };
-  /* Similar - 2+ meaningful words overlap */
-  var words = trimmed.split(/\s+/).filter(function (w) { return w.length > 2; });
-  if (words.length < 1) return null;
-  var similar = active.find(function (p) {
-    var pw = String(p.name == null ? "" : p.name).trim().toLowerCase().split(/\s+/).filter(function (w) { return w.length > 2; });
-    var common = words.filter(function (w) { return pw.includes(w); });
-    return common.length >= 2 || (words.length === 1 && pw.includes(words[0]));
-  });
-  if (similar) return { type: "similar", match: similar.name };
-  return null;
-};
 /* --- INDEXEDDB STORAGE - replaces localStorage, ~500MB capacity --- */
 var _idbCache = {};  /* in-memory cache - S.get reads from here synchronously */
 var _idbDB    = null; /* IndexedDB connection, set after initAndLoadIDB() */
@@ -2019,6 +2013,9 @@ var loadState = function () {
   if (st.settings && st.settings.glArApHardBlockAt === undefined) {
     st.settings.glArApHardBlockAt = 1000000;
   }
+  var _btFlags = S.get("tc3_businessType", "tech") || "tech";
+  var _profFlags = BUSINESS_PROFILES[_btFlags] || BUSINESS_PROFILES.tech;
+  st.settings = hydrateFeatureFlagDefaults(st.settings, _btFlags, _profFlags);
   /* Initialize currency symbol from saved settings */
   updateCurrencySymbol(st.settings.currency || "Rs");
   return st;
@@ -2809,7 +2806,7 @@ var Modal = function (props) {
       <div style={{ background: "#fff", borderRadius: 16, width: wide ? "1160px" : props.medium ? "720px" : "500px", maxWidth: "96vw", maxHeight: "92vh", overflow: "auto", padding: 28, boxShadow: "0 24px 80px rgba(13,27,62,0.28)", border: "1.5px solid " + C.border }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, paddingBottom: 16, borderBottom: "1.5px solid " + C.border }}>
           <div style={{ fontWeight: 800, fontSize: 16.5, color: C.text, letterSpacing: "-0.01em" }}>{props.title}</div>
-          <button onClick={props.onClose} style={{ background: "#f0f4ff", border: "none", borderRadius: 8, width: 32, height: 32, cursor: "pointer", color: C.textMd, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, transition: "background .15s" }}>x</button>
+          <CloseIconButton onClick={props.onClose} size={32} />
         </div>
         {props.children}
       </div>
@@ -3099,10 +3096,13 @@ var InvoiceThermal = function (props) {
         {(inv.items || []).map(function (it, i) {
           var items = inv.items || [];
           var len = items.length;
-          var line = it.qty * it.price;
+          var isGlass = !!(it && it.isGlassLine);
+          var line = isGlass ? glassInvoiceLineTotal(it) : (it.qty * it.price);
           var sym = getCurrencySymbol();
           var lineUnit = it.saleUnit || it.unit || "Pcs";
-          var leftLine = fmtInvoiceLineQty(it.qty, lineUnit) + " x " + sym + " " + fmtNum(it.price);
+          var leftLine = isGlass
+            ? (glassInvoiceCutSizeCol(it) + "\n" + glassInvoiceQtyCol(it, fmtNum) + " @ " + glassInvoiceRateLabel(it, getCurrencySymbol, fmtNum))
+            : (fmtInvoiceLineQty(it.qty, lineUnit) + " x " + sym + " " + fmtNum(it.price));
           var rightLine = sym + " " + fmtNum(line);
           var numMono = { fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1' };
           var isLast = i >= len - 1;
@@ -3118,7 +3118,7 @@ var InvoiceThermal = function (props) {
               <div style={{ fontWeight: 600, lineHeight: 1.4, wordBreak: "break-word", overflowWrap: "anywhere", marginBottom: 3, color: "#000" }}>{it.name}</div>
               {(function () {
                 var ctext = String(it.comment != null ? it.comment : it.itemNote || "").trim();
-                if (!ctext) return null;
+                if (!ctext || isGlass) return null;
                 return (
                   <div style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.35, wordBreak: "break-word", overflowWrap: "anywhere", marginBottom: 4, color: "#222" }}>
                     {ctext}
@@ -3136,6 +3136,7 @@ var InvoiceThermal = function (props) {
                     overflowWrap: "anywhere",
                     lineHeight: 1.35,
                     color: "#000",
+                    whiteSpace: isGlass ? "pre-line" : undefined,
                   })}
                 >
                   {leftLine}
@@ -3367,6 +3368,7 @@ var InvoiceA4 = function (props) {
         </div>
         {(function () {
           var items = inv.items || [];
+          var glassInvoice = invoiceHasGlassLines(items);
           var padded = items.slice();
           while (padded.length < 5) { padded.push(null); }
           return (
@@ -3376,8 +3378,11 @@ var InvoiceA4 = function (props) {
                   <tr style={{ background: accent, color: "#fff" }}>
                     <th style={{ padding: invCellPad, textAlign: "center", fontWeight: 700, fontSize: fs - 1, width: 28, borderRight: invThSide }}>{L.tableIndex}</th>
                     <th style={{ padding: invCellPad, textAlign: "left", fontWeight: 700, fontSize: fs - 1, borderRight: invThSide }}>{L.productDescription}</th>
-                    <th style={{ padding: invCellPad, textAlign: "center", fontWeight: 700, fontSize: fs - 1, width: 120, whiteSpace: "nowrap", borderRight: invThSide }}>{L.quantityUnit || L.qty}</th>
-                    <th style={{ padding: invCellPad, textAlign: "right", fontWeight: 700, fontSize: fs - 1, width: 112, whiteSpace: "nowrap", borderRight: invThSide }}>{L.rateValue || L.price}</th>
+                    {glassInvoice && (
+                      <th style={{ padding: invCellPad, textAlign: "center", fontWeight: 700, fontSize: fs - 1, width: 96, whiteSpace: "nowrap", borderRight: invThSide }}>{L.glassCutSize || "Cut Size"}</th>
+                    )}
+                    <th style={{ padding: invCellPad, textAlign: "center", fontWeight: 700, fontSize: fs - 1, width: glassInvoice ? 88 : 120, whiteSpace: "nowrap", borderRight: invThSide }}>{L.quantityUnit || L.qty}</th>
+                    <th style={{ padding: invCellPad, textAlign: "right", fontWeight: 700, fontSize: fs - 1, width: glassInvoice ? 96 : 112, whiteSpace: "nowrap", borderRight: invThSide }}>{L.rateValue || L.price}</th>
                     <th style={{ padding: invCellPad, textAlign: "right", fontWeight: 700, fontSize: fs - 1, width: 80 }}>{L.total}</th>
                   </tr>
                 </thead>
@@ -3387,6 +3392,7 @@ var InvoiceA4 = function (props) {
                       <tr key={"e-" + i} style={{ borderBottom: "1px solid #e8ecf2", height: 28 }}>
                         <td style={{ padding: invCellPad, textAlign: "center", color: "#ccc", fontSize: fs - 2, borderRight: invTdSide }}>{i + 1}</td>
                         <td style={{ padding: invCellPad, borderRight: invTdSide }}></td>
+                        {glassInvoice && <td style={{ padding: invCellPad, borderRight: invTdSide }}></td>}
                         <td style={{ padding: invCellPad, borderRight: invTdSide }}></td>
                         <td style={{ padding: invCellPad, borderRight: invTdSide }}></td>
                         <td style={{ padding: invCellPad }}></td>
@@ -3397,16 +3403,29 @@ var InvoiceA4 = function (props) {
                         <td style={{ padding: invCellPad, textAlign: "center", color: "#888", fontWeight: 600, fontSize: fs - 1, borderRight: invTdSide }}>{i + 1}</td>
                         <td style={{ padding: invCellPad, fontWeight: 500, color: "#111", borderRight: invTdSide }}>
                           <div style={{ fontWeight: 600 }}>{it.name || L.unknownProduct}</div>
-                          {it.description && <div style={{ fontSize: fs - 3, color: "#555", marginTop: 1 }}>{it.description}</div>}
+                          {it.description && !it.isGlassLine && <div style={{ fontSize: fs - 3, color: "#555", marginTop: 1 }}>{it.description}</div>}
                           {(function () {
                             var ctext = String(it.comment != null ? it.comment : it.itemNote || "").trim();
-                            if (!ctext) return null;
+                            if (!ctext || it.isGlassLine) return null;
                             return <div style={{ fontSize: fs - 2, color: "#444", marginTop: 3, lineHeight: 1.35 }}>{ctext}</div>;
                           })()}
                         </td>
-                        <td style={{ padding: invCellPad, textAlign: "center", color: "#333", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", borderRight: invTdSide }}>{fmtInvoiceLineQty(it.qty, it.saleUnit || it.unit)}</td>
-                        <td style={{ padding: invCellPad, textAlign: "right", color: "#333", borderRight: invTdSide }}>{fmtNum(it.price)}</td>
-                        <td style={{ padding: invCellPad, textAlign: "right", fontWeight: 600, color: "#111" }}>{fmtNum(it.qty * it.price)}</td>
+                        {glassInvoice && (
+                          <td style={{ padding: invCellPad, textAlign: "center", color: "#333", fontWeight: 600, fontSize: fs - 1, whiteSpace: "nowrap", borderRight: invTdSide }}>
+                            {it.isGlassLine ? glassInvoiceCutSizeCol(it) : "\u2014"}
+                          </td>
+                        )}
+                        <td style={{ padding: invCellPad, textAlign: "center", color: "#333", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", borderRight: invTdSide }}>
+                          {it.isGlassLine
+                            ? glassInvoiceQtyCol(it, fmtNum)
+                            : fmtInvoiceLineQty(it.qty, it.saleUnit || it.unit)}
+                        </td>
+                        <td style={{ padding: invCellPad, textAlign: "right", color: "#333", borderRight: invTdSide }}>
+                          {it.isGlassLine ? glassInvoiceRateLabel(it, getCurrencySymbol, fmtNum) : fmtNum(it.price)}
+                        </td>
+                        <td style={{ padding: invCellPad, textAlign: "right", fontWeight: 600, color: "#111" }}>
+                          {fmtNum(it.isGlassLine ? glassInvoiceLineTotal(it) : (it.qty * it.price))}
+                        </td>
                       </tr>
                     );
                   })}
@@ -6344,9 +6363,15 @@ function App(props) {
 
   /* -- Sales Mode pages (always accessible) -- */
   var _activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
-  var SALES_MODE_PAGES = ["pos", "invoices", "purchases", "returns", "customers"].concat(
-    _activeProfile.modules.repairs ? ["repairs"] : []
-  );
+  var _repairsModuleOn = isRepairsModuleEnabled(state && state.settings, businessType, _activeProfile);
+  var _navOn = function (id) { return isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id); };
+  var _landingNav = function () { return getDefaultLandingNavId(state && state.settings, businessType, _activeProfile); };
+  var SALES_MODE_PAGES = ["pos"]
+    .concat(_navOn("invoices") ? ["invoices"] : [])
+    .concat(_navOn("customers") ? ["customers"] : [])
+    .concat(_navOn("purchases") ? ["purchases"] : [])
+    .concat(_navOn("returns") ? ["returns"] : [])
+    .concat(_repairsModuleOn ? ["repairs"] : []);
   var normalizedCurrentUser = currentUser || {
     id: "legacy-admin",
     username: "admin",
@@ -6484,7 +6509,7 @@ function App(props) {
       lockTimerRef.current = setTimeout(function () {
         setIsAdminMode(false);
         if (!isNetworkClient && !isStartupFlowSatisfied()) {
-          setActive("dashboard");
+          setActive(_landingNav());
           return;
         }
         setActive("pos");
@@ -6520,7 +6545,7 @@ function App(props) {
     setIsAdminMode(false);
     if (!isNetworkClient && !isStartupFlowSatisfied()) {
       showAlert("Please add your shop name and contact details in Settings before using sales mode.");
-      setActive("dashboard");
+      setActive(_landingNav());
       return;
     }
     if (isNetworkClient) {
@@ -6545,6 +6570,9 @@ function App(props) {
       showPermissionDenied("open this page");
       return;
     }
+    if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id)) {
+      return;
+    }
     /* Network server: full navigation - no sales/admin mode gate */
     if (!isNetworkServer) {
       if (isNetworkMode && !isAdminMode && id !== "pos") return;
@@ -6553,12 +6581,19 @@ function App(props) {
     setActive(id);
   };
 
+  useEffect(function () {
+    if (!loggedIn || !state || isNetworkClient) return;
+    if (CORE_NAV_IDS.indexOf(active) >= 0) return;
+    if (isNavModuleEnabled(state.settings, businessType, _activeProfile, active)) return;
+    setActive("pos");
+  }, [loggedIn, state, active, businessType, isNetworkClient]);
+
   /* If setup identity is incomplete, keep user off sales-only pages - redirect without a modal (banner on dashboard is enough; repeated state updates were re-firing the old alert). */
   useEffect(function () {
     if (!idbReady || !loggedIn || !state || isNetworkClient) return;
     if (isStartupFlowSatisfied()) return;
     if (SALES_MODE_PAGES.indexOf(active) < 0) return;
-    setActive("dashboard");
+    setActive(_landingNav());
   }, [idbReady, loggedIn, state, active, isNetworkClient, businessType]);
 
   /* POS terminal: never stay on a disallowed route */
@@ -6810,7 +6845,7 @@ function App(props) {
         <div className="erp-sidebar" style={{ width: 200, background: "linear-gradient(180deg,#0a1628 0%,#0d1e38 60%,#0a1628 100%)", display: "flex", flexDirection: "column", height: "100%", minHeight: 0, overflow: "hidden", flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)" }}>
 
           {/* Logo */}
-          <div onClick={function () { if (isNetworkClient) { safeSetActive("pos"); } else { setActive("dashboard"); } }} style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.06)", cursor: "pointer" }}>
+          <div onClick={function () { if (isNetworkClient) { safeSetActive("pos"); } else { safeSetActive(_landingNav()); } }} style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.06)", cursor: "pointer" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               {/* Logo - filter drop-shadow: no hard ring, pure glow */}
               <div style={{ width: 40, height: 40, flexShrink: 0, filter: "drop-shadow(0 0 6px rgba(180,100,255,0.8)) drop-shadow(0 0 14px rgba(120,100,255,0.4))" }}>
@@ -6842,6 +6877,7 @@ function App(props) {
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 10px 6px" }}>
             {NAV_GROUPS.map(function (group) {
               var activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
+              var navEnabled = function (id) { return isNavModuleEnabled(state.settings, businessType, activeProfile, id); };
               var groupItems = NAV_ITEMS.filter(function (n) {
                 if (group.ids.indexOf(n.id) < 0) return false;
                 /* POS terminal (network_client): fixed sidebar - no admin mode */
@@ -6850,19 +6886,17 @@ function App(props) {
                   if (n.id === "repairs" && CLIENT_POS_REPAIR_BT[businessType] !== true) return false;
                   return true;
                 }
-                /* Network server: show full nav (business profile only) */
+                /* Network server: show full nav (settings + module toggles) */
                 if (isNetworkServer) {
-                  if (n.id === "repairs" && !activeProfile.modules.repairs) return false;
-                  if (n.id === "barcodeprint" && !activeProfile.modules.barcode) return false;
+                  if (!navEnabled(n.id)) return false;
                   return true;
                 }
                 /* Network mode + Sales Mode (non-server): POS page only */
                 if (isNetworkMode && !isAdminMode && n.id !== "pos") return false;
                 /* Standalone Sales Mode: only show allowed pages */
                 if (!COMPUTER_SHOP_EDITION && !isNetworkMode && !isAdminMode && !SALES_MODE_PAGES.includes(n.id)) return false;
-                /* Business profile - hide modules not relevant to this business type */
-                if (n.id === "repairs" && !activeProfile.modules.repairs) return false;
-                if (n.id === "barcodeprint" && !activeProfile.modules.barcode) return false;
+                /* Settings module toggles */
+                if (!navEnabled(n.id)) return false;
                 if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
                 return true;
               });

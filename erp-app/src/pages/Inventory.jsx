@@ -8,7 +8,22 @@ import {
 } from "../utils/rawMaterialPricingGuard.js";
 import { productMatchesSearch } from "../utils/productSearch.js";
 import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
-import ProductNameDuplicateHint from "../components/ProductNameDuplicateHint.jsx";
+import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
+import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
+import {
+  isGlassIndustry,
+  isGlassProduct,
+  isGlassStockProductForm,
+  validateGlassProductForm,
+  applyGlassProductFields,
+  glassCostPriceLabels,
+  glassFieldsFromProductForm,
+  glassFormFieldsOnUnitChange,
+  isGlassSheetProductForm,
+  formatGlassStockLabel,
+  glassStockDisplay,
+  getGlassSellRatePerSqFt,
+} from "../utils/glassProduct.js";
 import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
@@ -53,6 +68,23 @@ var Inventory = React.memo(function (props) {
   var roundQty = props.roundQty;
   var periodLockTransactionMinDate = props.periodLockTransactionMinDate;
   var toProductBaseQty = props.toProductBaseQty;
+
+  var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
+  var glassIndustry = isGlassIndustry(businessType);
+
+  var glassStockVal = function (p) {
+    var d = glassStockDisplay(p);
+    return d.sqFt * (Number(p.price) || 0);
+  };
+
+  var glassMarginPct = function (p) {
+    var sqFt = Number(p.glassAreaSqFt) || 0;
+    var costSheet = Number(p.cost) || 0;
+    var sellSqFt = Number(p.price) || 0;
+    if (!(sqFt > 0) || !(sellSqFt > 0)) return null;
+    var costSqFt = costSheet / sqFt;
+    return Math.round((sellSqFt - costSqFt) / sellSqFt * 100);
+  };
 
   var [search, setSearch] = useState("");
   var [catFilter, setCatFilter] = useState("All");
@@ -122,6 +154,13 @@ var Inventory = React.memo(function (props) {
     return evaluateProductNameMatch(newP.name, state.products, null);
   }, [newP, state.products]);
   var newProductNameExactDup = !!(newProductNameMatch && newProductNameMatch.type === "exact");
+  var newNameHint = useProductNameHintControls(newP ? newP.name : "");
+  var editProductNameMatch = useMemo(function () {
+    if (!editP || !String(editP.name || "").trim()) return null;
+    return evaluateProductNameMatch(editP.name, state.products, editP.id);
+  }, [editP, state.products]);
+  var editProductNameExactDup = !!(editProductNameMatch && editProductNameMatch.type === "exact");
+  var editNameHint = useProductNameHintControls(editP ? editP.name : "");
   var getProductType = function (p) { return String((p && p.type) || "stock").toLowerCase(); };
   var isServiceProduct = function (p) { return getProductType(p) === "service"; };
   var isRawMaterialProduct = function (p) { return getProductType(p) === "raw_material"; };
@@ -460,7 +499,11 @@ var Inventory = React.memo(function (props) {
         price: newP.price,
         extraUnits: newP.extraUnits || [],
       });
-      var prod = Object.assign(
+      var glassFields = glassFieldsFromProductForm(newP);
+      var isGlassNew = isGlassSheetProductForm(newP, businessType);
+      var glassErr = validateGlassProductForm(newP, businessType);
+      if (glassErr) { showAlert(glassErr); return; }
+      var prod = applyGlassProductFields(Object.assign(
         {
           id: uid(),
           productId: nextProductId(state.products),
@@ -471,13 +514,13 @@ var Inventory = React.memo(function (props) {
           description: newP.description || "",
           cost: parseFloat(newP.cost) || 0,
           price: parseFloat(newP.price) || 0,
-          stock: parseInt(newP.stock) || 0,
+          stock: isGlassNew ? (parseFloat(newP.stock) || 0) : (parseInt(newP.stock) || 0),
           damaged: 0,
           require_comment: true,
           comment_label: String(newP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         },
         unitFields
-      );
+      ), newP, businessType);
       if (!tcTrialGuard(state.products, 'products')) return;
       var np = state.products.concat([prod]);
       var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Added", productId: prod.id, productName: prod.name, qty: prod.stock, reason: "New product" }]);
@@ -506,6 +549,12 @@ var Inventory = React.memo(function (props) {
 
   var saveEdit = function () {
     if (!editP) return;
+    var editNameStr = String(editP.name == null ? "" : editP.name).trim();
+    var editNameCheck = checkProductName(editNameStr, state.products, editP.id);
+    if (editNameCheck && editNameCheck.type === "exact") {
+      showAlert("A product named \"" + editNameCheck.match + "\" already exists.\nPlease use a different name.");
+      return;
+    }
     if (editP.barcode && state.products.find(function (p) { return p.id !== editP.id && p.barcode === editP.barcode; })) {
       showAlert("Another product already uses this barcode. Please use a unique barcode.");
       return;
@@ -527,21 +576,24 @@ var Inventory = React.memo(function (props) {
         price: editP.price,
         extraUnits: editP.extraUnits || [],
       });
+      var glassFieldsEdit = glassFieldsFromProductForm(editP);
+      var isGlassEdit = isGlassSheetProductForm(editP, businessType);
+      var glassErrEdit = validateGlassProductForm(editP, businessType);
+      if (glassErrEdit) { showAlert(glassErrEdit); return; }
       var np = state.products.map(function (p) {
-        return p.id === editP.id
-          ? Object.assign({}, p, {
-              name: editP.name,
-              barcode: editP.barcode,
-              category: editP.category,
-              type: normalizeProductType(editP.type),
-              description: editP.description,
-              cost: parseFloat(editP.cost) || 0,
-              price: parseFloat(editP.price) || 0,
-              stock: origStock,
-              require_comment: true,
-              comment_label: String(editP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
-            }, unitFieldsEdit)
-          : p;
+        if (p.id !== editP.id) return p;
+        return applyGlassProductFields(Object.assign({}, p, {
+          name: editP.name,
+          barcode: editP.barcode,
+          category: editP.category,
+          type: normalizeProductType(editP.type),
+          description: editP.description,
+          cost: parseFloat(editP.cost) || 0,
+          price: parseFloat(editP.price) || 0,
+          stock: origStock,
+          require_comment: true,
+          comment_label: String(editP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
+        }, unitFieldsEdit), editP, businessType);
       });
       S.set("tc3_products", np);
       addAudit("Edited Product", editP.name + " (" + (editP.productId || editP.id.slice(0, 6)) + ")");
@@ -986,8 +1038,8 @@ var Inventory = React.memo(function (props) {
                   var isRaw = isRawMaterialProduct(p);
                   var effectiveCost = inventoryRetailCostPerBase(p);
                   var effectiveSell = inventoryRetailSellPerBase(p);
-                  var margin = (isService || isRaw) ? null : getProductMarginPct(p);
-                  var stockVal = isService ? 0 : (inventoryQtyForTotals(p) * effectiveSell);
+                  var margin = (isService || isRaw) ? null : (isGlassProduct(p, businessType) ? glassMarginPct(p) : getProductMarginPct(p));
+                  var stockVal = isService ? 0 : (isGlassProduct(p, businessType) ? glassStockVal(p) : (inventoryQtyForTotals(p) * effectiveSell));
                   return (
                     <TR key={p.id} i={i}>
                       <td style={{ padding: "10px 14px" }}><span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: C.accent }}>{p.productId || "-"}</span></td>
@@ -1012,7 +1064,9 @@ var Inventory = React.memo(function (props) {
                           <span style={{ background: "#e0f2fe", color: C.blue, padding: "3px 10px", borderRadius: 20, fontWeight: 800, fontSize: 13 }}>Service</span>
                         ) : (
                           <span style={{ background: (p.stock || 0) === 0 ? "#fde8ed" : (p.stock || 0) <= 5 ? "#fef3e2" : C.successSoft, color: (p.stock || 0) === 0 ? C.red : (p.stock || 0) <= 5 ? C.amber : C.green, padding: "3px 10px", borderRadius: 20, fontWeight: 800, fontSize: 13 }}>
-                            {getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit)}
+                            {isGlassProduct(p, businessType)
+                              ? formatGlassStockLabel(p, fmtNum)
+                              : (getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit))}
                           </span>
                         )}
                       </td>
@@ -1563,14 +1617,20 @@ var Inventory = React.memo(function (props) {
               { label: "Sell Price", val: getCurrencySymbol() + " " + fmtNum(inventoryRetailSellPerBase(viewP)), color: C.blue },
               { label: "Profit/Unit", val: hasMeaningfulMargin(viewP) ? (getCurrencySymbol() + " " + fmtNum(inventoryRetailSellPerBase(viewP) - inventoryRetailCostPerBase(viewP))) : "-", color: hasMeaningfulMargin(viewP) ? C.green : C.muted },
               { label: "Margin", val: getProductMarginPct(viewP) == null ? "-" : (getProductMarginPct(viewP) + "%"), color: getProductMarginPct(viewP) == null ? C.muted : C.purple },
-              { label: "Stock Units", val: isServiceProduct(viewP) ? "Service" : (getBulkDisplayParts(viewP) ? fmtStockDual(viewP) : fmtStock(viewP.stock || 0, viewP.unit)), color: isServiceProduct(viewP) ? C.blue : ((viewP.stock || 0) > 5 ? C.green : (viewP.stock || 0) > 0 ? C.amber : C.red) },
-              { label: "Stock Value", val: isServiceProduct(viewP) ? "-" : (getCurrencySymbol() + " " + fmtNum(inventoryQtyForTotals(viewP) * inventoryRetailSellPerBase(viewP))), color: isServiceProduct(viewP) ? C.muted : C.blue },
+              { label: "Stock Units", val: isServiceProduct(viewP) ? "Service" : (isGlassProduct(viewP, businessType) ? formatGlassStockLabel(viewP, fmtNum) : (getBulkDisplayParts(viewP) ? fmtStockDual(viewP) : fmtStock(viewP.stock || 0, viewP.unit))), color: isServiceProduct(viewP) ? C.blue : ((viewP.stock || 0) > 5 ? C.green : (viewP.stock || 0) > 0 ? C.amber : C.red) },
+              { label: "Stock Value", val: isServiceProduct(viewP) ? "-" : (getCurrencySymbol() + " " + fmtNum(isGlassProduct(viewP, businessType) ? glassStockVal(viewP) : (inventoryQtyForTotals(viewP) * inventoryRetailSellPerBase(viewP)))), color: isServiceProduct(viewP) ? C.muted : C.blue },
               { label: "Damaged Units", val: String(viewP.damaged || 0), color: (viewP.damaged || 0) > 0 ? C.orange : C.muted },
               { label: "Damage Cost", val: getCurrencySymbol() + " " + fmtNum((viewP.damaged || 0) * inventoryRetailCostPerBase(viewP)), color: C.red },
               { label: "Category", val: viewP.category || "General", color: C.text },
               { label: "Unit", val: viewP.unit || "Pcs", color: C.accent }
             ].concat(!COMPUTER_SHOP_EDITION && getBusinessProfile().modules.serial && viewP.serialNo ? [
               { label: "Serial / IMEI", val: viewP.serialNo, color: C.cyan }
+            ] : []).concat(isGlassProduct(viewP, businessType) ? [
+              { label: "Sheet Size", val: (viewP.glassSheetWidth || "-") + " × " + (viewP.glassSheetHeight || "-") + " " + (viewP.glassDimensionUnit || "mm"), color: C.text },
+              { label: "Area / Sheet", val: (viewP.glassAreaSqFt || 0) + " Sq Ft / " + (viewP.glassAreaSqM || 0) + " Sq M", color: C.cyan },
+              { label: "Sell Price", val: getCurrencySymbol() + " " + fmtNum(viewP.price || 0) + " / Sheet", color: C.blue },
+              { label: "Sell Rate", val: getCurrencySymbol() + " " + fmtNum(getGlassSellRatePerSqFt(viewP)) + " / Sq Ft", color: C.blue },
+              { label: "Cost / Sheet", val: getCurrencySymbol() + " " + fmtNum(viewP.cost || 0), color: C.muted },
             ] : []).concat(getBusinessProfile().name === "Jewelry & Watches" ? [
               { label: "Weight", val: viewP.weightGrams ? viewP.weightGrams + " g" : "-", color: C.text },
               { label: "Making Charge", val: viewP.makingCharge ? getCurrencySymbol() + " " + fmtNum(viewP.makingCharge) : "-", color: C.orange }
@@ -1601,8 +1661,8 @@ var Inventory = React.memo(function (props) {
       {newP && (
         <Modal title={"Add New Product - ID: " + nextProductId(state.products)} onClose={function () { setNewP(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Product Name *" value={newP.name} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
-            <ProductNameDuplicateHint name={newP.name} products={state.products} C={C} />
+            <Input label="Product Name *" value={newP.name} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={newNameHint.onNameFocus} onBlur={newNameHint.onNameBlur} />
+            <ProductNameDuplicateHint name={newP.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
@@ -1617,8 +1677,8 @@ var Inventory = React.memo(function (props) {
               <option value="raw_material">raw_material</option>
             </Sel>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, alignItems: "end" }}>
-              <Input label="Cost Price *" type="number" value={newP.cost} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-              <Input label="Sell Price *" type="number" value={newP.price} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+              <Input label={glassCostPriceLabels(newP, businessType).cost} type="number" value={newP.cost} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
+              <Input label={glassCostPriceLabels(newP, businessType).sell} type="number" value={newP.price} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", minHeight: 30, display: "block" }}>
                   {newP.type === "service" ? "Initial Stock (not required for service)" : "Initial Stock"}
@@ -1636,13 +1696,19 @@ var Inventory = React.memo(function (props) {
                 </label>
                 <select
                   value={newP.unit || getBusinessProfile().units[0] || "Pcs"}
-                  onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { unit: e.target.value }); }); }}
+                  onChange={function (e) {
+                    var nextUnit = e.target.value;
+                    setNewP(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
+                  }}
                   style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
                 >
                   {getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}
                 </select>
               </div>
             </div>
+            {glassIndustry && (
+              <GlassSheetInfo form={newP} setForm={setNewP} C={C} Input={Input} Sel={Sel} />
+            )}
             <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{newP.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>
@@ -1704,7 +1770,8 @@ var Inventory = React.memo(function (props) {
       {editP && (
         <Modal title={"Edit: " + editP.name} onClose={function () { setEditP(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Product Name" value={editP.name} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
+            <Input label="Product Name" value={editP.name} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={editNameHint.onNameFocus} onBlur={editNameHint.onNameBlur} />
+            <ProductNameDuplicateHint name={editP.name} products={state.products} excludeId={editP.id} C={C} visible={editNameHint.visible} onDismiss={editNameHint.onDismiss} />
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <Input label="Barcode" value={editP.barcode || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
               <Sel label="Category" value={editP.category || "General"} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>{getCats().map(function (c) { return <option key={c}>{c}</option>; })}</Sel>
@@ -1715,17 +1782,23 @@ var Inventory = React.memo(function (props) {
               <option value="raw_material">raw_material</option>
             </Sel>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-              <Input label="Cost" type="number" value={editP.cost || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-              <Input label="Sell Price" type="number" value={editP.price || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
-              <Sel label="Base Unit" value={editP.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { unit: e.target.value }); }); }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
+              <Input label={glassCostPriceLabels(editP, businessType).cost} type="number" value={editP.cost || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
+              <Input label={glassCostPriceLabels(editP, businessType).sell} type="number" value={editP.price || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+              <Sel label="Base Unit" value={editP.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) {
+                var nextUnit = e.target.value;
+                setEditP(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
+              }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Current Stock</div>
                 <div style={{ padding: "9px 13px", background: "#f8fafc", border: "1.5px solid " + C.border, borderRadius: 8, fontSize: 13, fontWeight: 700, color: C.text }}>
-                  {getBulkDisplayParts(editP) ? fmtStockDual(editP) : fmtStock(editP.stock || 0, editP.unit)}
+                  {isGlassProduct(editP, businessType) ? formatGlassStockLabel(editP, fmtNum) : (getBulkDisplayParts(editP) ? fmtStockDual(editP) : fmtStock(editP.stock || 0, editP.unit))}
                   <div style={{ fontSize: 10, color: C.muted, fontWeight: 500, marginTop: 2 }}>Add stock via Purchases only</div>
                 </div>
               </div>
             </div>
+            {glassIndustry && (
+              <GlassSheetInfo form={editP} setForm={setEditP} C={C} Input={Input} Sel={Sel} />
+            )}
             <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{editP.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>
@@ -1768,7 +1841,7 @@ var Inventory = React.memo(function (props) {
                 <Input label="Batch / Lot Number (optional)" value={editP.batchNo || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { batchNo: e.target.value }); }); }} placeholder="e.g. BATCH-2025-001" />
               </div>
             )}
-            <div style={{ display: "flex", gap: 8, marginTop: 4 }}><Btn col="cyan" onClick={saveEdit}>Save Changes</Btn><Btn col="gray" onClick={function () { setEditP(null); }}>Cancel</Btn></div>
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}><Btn col="cyan" onClick={saveEdit} disabled={editProductNameExactDup}>Save Changes</Btn><Btn col="gray" onClick={function () { setEditP(null); }}>Cancel</Btn></div>
           </div>
         </Modal>
       )}

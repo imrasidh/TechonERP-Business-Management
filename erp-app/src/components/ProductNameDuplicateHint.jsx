@@ -1,5 +1,6 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { evaluateProductNameMatch, findSimilarProductNameCandidates } from "../utils/productNameMatch.js";
+import CloseIconButton from "./CloseIconButton.jsx";
 
 function relationLabel(relation) {
   if (relation === "exact") return "Exact match";
@@ -8,11 +9,30 @@ function relationLabel(relation) {
   return "Similar";
 }
 
+/** Focus / blur / dismiss state for the live name hint panel. */
+export function useProductNameHintControls(name) {
+  var [focused, setFocused] = useState(false);
+  var [dismissed, setDismissed] = useState(false);
+  var trimmed = String(name || "").trim();
+
+  useEffect(function () {
+    setDismissed(false);
+  }, [trimmed]);
+
+  return {
+    visible: focused && !dismissed,
+    onNameFocus: function () { setFocused(true); },
+    onNameBlur: function () { setFocused(false); },
+    onDismiss: function () { setDismissed(true); },
+  };
+}
+
 export default function ProductNameDuplicateHint(props) {
   var name = props.name;
   var products = props.products;
   var excludeId = props.excludeId;
   var C = props.C;
+  var visible = props.visible !== false;
 
   var trimmed = String(name || "").trim();
 
@@ -26,7 +46,7 @@ export default function ProductNameDuplicateHint(props) {
     return evaluateProductNameMatch(trimmed, products, excludeId);
   }, [trimmed, products, excludeId]);
 
-  if (trimmed.length < 2) return null;
+  if (!visible || trimmed.length < 2) return null;
 
   var isExact = blockResult && blockResult.type === "exact";
   var isLikelySame = blockResult && blockResult.type === "likely_same";
@@ -39,12 +59,24 @@ export default function ProductNameDuplicateHint(props) {
 
   return (
     <div style={{ marginTop: 6, borderRadius: 8, border: "1px solid " + headerBorder, overflow: "hidden", fontSize: 12, lineHeight: 1.45 }}>
-      <div style={{ padding: "8px 10px", background: headerBg, color: headerColor, fontWeight: 700 }}>
-        {isExact
-          ? "Exact product name already exists — choose a different name or edit the existing product."
-          : isLikelySame
-            ? "This looks like a product you already have (same model, extra words):"
-            : "Similar products already in inventory — check before saving:"}
+      <div style={{ padding: "10px 12px", background: headerBg, color: headerColor, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, minHeight: 40 }}>
+        <span style={{ flex: 1, lineHeight: 1.4, paddingRight: 4 }}>
+          {isExact
+            ? "Exact product name already exists — choose a different name or edit the existing product."
+            : isLikelySame
+              ? "This looks like a product you already have (same model, extra words):"
+              : "Similar products already in inventory — check before saving:"}
+        </span>
+        {props.onDismiss && (
+          <CloseIconButton
+            onMouseDown={function (e) { e.preventDefault(); }}
+            onClick={props.onDismiss}
+            ariaLabel="Close suggestions"
+            size={26}
+            bg="rgba(255,255,255,0.75)"
+            color={headerColor}
+          />
+        )}
       </div>
       <div style={{ background: "#fff" }}>
         {candidates.map(function (row) {

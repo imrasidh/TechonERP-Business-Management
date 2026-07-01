@@ -20,6 +20,7 @@ import { runPosFreeItemsTests } from "./pos-free-items.test.mjs";
 import { runProductNameMatchTests } from "./product-name-match.test.mjs";
 import { runVoidInvoiceTests } from "./void-invoice.test.mjs";
 import { runDemo360Tests } from "./demo-360.test.mjs";
+import { runGlassDimensionsTests } from "./glass-dimensions.test.mjs";
 
 function fail(name, detail) {
   console.error("FAIL —", name, detail != null ? detail : "");
@@ -89,6 +90,10 @@ if (process.exitCode) {
   process.exit(process.exitCode);
 }
 runVoidInvoiceTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runGlassDimensionsTests(ctx);
 if (process.exitCode) {
   process.exit(process.exitCode);
 }
