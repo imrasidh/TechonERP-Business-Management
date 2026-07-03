@@ -16,7 +16,7 @@ import {
   mapCartLineToQuotationItem,
   quotationToPrintInv,
 } from "../utils/quotationDocument.js";
-import GlassCartLine, { glassCartCellLabel, glassCartFieldStyle } from "../components/GlassCartLine.jsx";
+import { GlassRateInput, glassCartCellLabel, glassCartFieldStyle, GlassCutFields, GlassLineExtras } from "../components/GlassCartLine.jsx";
 import {
   isGlassProduct,
   recalcGlassCartLine,
@@ -27,7 +27,6 @@ import {
   getGlassSellRatePerSqFt,
   getGlassCostPerSqFt,
 } from "../utils/glassProduct.js";
-import { isGlassWorkflowEnabled } from "../utils/categoryGroups.js";
 import { isFreeItemsEnabled } from "../utils/featureFlags.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
@@ -199,7 +198,7 @@ var POS = React.memo(function (props) {
   var [cart, setCart] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     if (pf && Array.isArray(pf.items)) {
-      return pf.items.map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); });
+      return pf.items.slice().reverse().map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); });
     }
     return [];
   });
@@ -209,8 +208,14 @@ var POS = React.memo(function (props) {
   var [freeDropIdx, setFreeDropIdx] = useState(-1);
   var freeSearchRef = useRef(null);
   var cartLineKey = function (it) { return it.cartLineId != null ? it.cartLineId : it.id; };
+  /** POS cart: index 0 = newest (top of screen). Invoices/quotations: oldest-first. */
+  var cartChronological = function (lines) {
+    return (lines || cart).slice().reverse();
+  };
   var cartHasGlassLine = cart.some(function (x) { return x && x.isGlassLine; });
-  var glassCartLayout = cartHasGlassLine || isGlassWorkflowEnabled(shopSettings);
+  var cartHasNonGlassLine = cart.some(function (x) { return x && !x.isGlassLine; });
+  var cartMixedGlassLayout = cartHasGlassLine && cartHasNonGlassLine;
+  var glassCartLayout = cartHasGlassLine;
   var [custMode, setCustMode] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     if (pf && pf.customerId) return "existing";
@@ -760,8 +765,8 @@ var POS = React.memo(function (props) {
     var needLinePerUnit = COMPUTER_SHOP_EDITION || !!p.require_comment;
     var prevSnapshot = cart.map(function (x) { return Object.assign({}, x); });
     setCart(function (prev) {
-      if (!needLinePerUnit) {
-        var exIdx = prev.findIndex(function (x) { return x.id === p.id; });
+      if (!needLinePerUnit && !isGlass) {
+        var exIdx = prev.findIndex(function (x) { return x.id === p.id && !x.isGlassLine; });
         if (exIdx >= 0) {
           if (focusAfterAdd) pendingCartFocusRef.current = { row: exIdx, col: 0 };
           return prev.map(function (x) {
@@ -773,9 +778,9 @@ var POS = React.memo(function (props) {
           });
         }
       }
-      if (focusAfterAdd) pendingCartFocusRef.current = { row: prev.length, col: isGlass ? 1 : 0 };
+      if (focusAfterAdd) pendingCartFocusRef.current = { row: 0, col: isGlass ? 1 : 0 };
       if (isGlass) {
-        return prev.concat([recalcGlassCartLine({
+        return [recalcGlassCartLine({
           cartLineId: uid(),
           id: p.id,
           name: p.name,
@@ -799,11 +804,11 @@ var POS = React.memo(function (props) {
           glassWidth: "",
           glassPieces: 1,
           glassDimensionUnit: "mm",
-        }, p)]);
+        }, p)].concat(prev);
       }
       var su = p.unit || "Pcs";
       var lbl = String(p.comment_label || "").trim();
-      return prev.concat([{
+      return [{
         cartLineId: uid(),
         id: p.id,
         name: p.name,
@@ -820,7 +825,7 @@ var POS = React.memo(function (props) {
         requireComment: needLinePerUnit,
         itemNote: "",
         customPrice: false,
-      }]);
+      }].concat(prev);
     });
     if (isRestaurant) {
       setRestaurantUndo({ cart: prevSnapshot, msg: "Item added" });
@@ -1026,9 +1031,10 @@ var POS = React.memo(function (props) {
     } else if (!isChequePayment && paidNum > 0) {
       initPh = [{ id: uid(), date: today(), amount: paidNum, note: "Initial payment", cashMethod: posCashMethod }];
     }
-    var saleItems = cart.map(mapCartLineToSaleItem).concat(freeCart.map(mapCartLineToSaleItem));
+    var chronoCart = cartChronological();
+    var saleItems = chronoCart.map(mapCartLineToSaleItem).concat(freeCart.map(mapCartLineToSaleItem));
     if (state.settings && state.settings.taxEnabled && posTotalTax > 0 && subTotal > 0.005) {
-      var lineAmts = cart.map(function (it) { return posLineAmount(it); });
+      var lineAmts = chronoCart.map(function (it) { return posLineAmount(it); });
       var subSum = lineAmts.reduce(function (a, b) { return a + b; }, 0);
       var remTax = posTotalTax;
       var paidLineCount = cart.length;
@@ -1324,7 +1330,7 @@ var POS = React.memo(function (props) {
     try {
       var finalQtNo = ensureUniqueDocumentNumber(quotationNo, "QT", state);
       var cust = resolvePosCustomer();
-      var items = cart.map(mapCartLineToQuotationItem);
+      var items = cartChronological().map(mapCartLineToQuotationItem);
       var taxExtra = buildQuotationTaxExtras(
         state.settings,
         subTotal,
@@ -1388,7 +1394,7 @@ var POS = React.memo(function (props) {
   var loadHeldInvoice = function (h) {
     var isQuotHold = h.holdKind === "quotation" || h.posPageTab === "quotation";
     setPosPageTab(isQuotHold ? "quotation" : "sale");
-    setCart((h.cart || []).map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); }));
+    setCart(cartChronological(h.cart || []).map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); }));
     setFreeCart((h.freeCart || []).map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid(), isFree: true, price: 0 }); }));
     setCustMode(h.custMode || "existing");
     setCustSearch(h.custSearch || "");
@@ -1453,7 +1459,8 @@ var POS = React.memo(function (props) {
     var itemCount = (cart || []).length + (freeCart || []).length;
     var held = S.get("tc3_held_invoices", []) || [];
     var entry = {
-      cart: cart.map(function (it) { return Object.assign({}, it); }),
+      cart: cartChronological().map(function (it) { return Object.assign({}, it); }),
+      cartDisplayOrder: "chrono",
       freeCart: freeCart.map(function (it) { return Object.assign({}, it); }),
       custId: custId,
       custMode: custMode,
@@ -2443,16 +2450,16 @@ var POS = React.memo(function (props) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 8, tableLayout: "fixed", transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
               <colgroup>
                 <col />
-                <col style={{ width: glassCartLayout ? 84 : 88 }} />
-                <col style={{ width: glassCartLayout ? 328 : 168 }} />
+                <col style={{ width: glassCartLayout ? 180 : 88 }} />
+                <col style={{ width: glassCartLayout ? 300 : 168 }} />
                 <col style={{ width: 96 }} />
                 <col style={{ width: 76 }} />
               </colgroup>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
                   <th style={{ textAlign: "left", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Item</th>
-                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Price</th>
-                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? "Cut (W×H)" : "Qty"}</th>
+                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? (cartMixedGlassLayout ? "Price" : "Rate / Sq Ft") : "Price"}</th>
+                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? (cartMixedGlassLayout ? "Qty / Cut" : "Cut (W×H)") : "Qty"}</th>
                   <th style={{ textAlign: "right", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Total</th>
                   <th style={{ padding: "8px 6px", borderBottom: "2px solid " + C.border }}></th>
                 </tr>
@@ -2465,14 +2472,25 @@ var POS = React.memo(function (props) {
                     ? getGlassCostPerSqFt(prodRow)
                     : (prodRow ? getPosCostPerSaleUnit(prodRow, saleU) : (item.cost || 0));
                   var showLineComment = !isRestaurant && !item.isGlassLine && (COMPUTER_SHOP_EDITION || (prodRow && prodRow.require_comment));
+                  var commentInDetail = glassCartLayout && showLineComment;
+                  var isNewestRow = i === 0;
+                  var rowBg = isNewestRow ? "#eef5ff" : "#fafbfc";
+                  var detailBg = isNewestRow ? "#f3f8ff" : "#f4f6f9";
+                  var hasDetailRow = item.isGlassLine || commentInDetail || (glassCartLayout && !item.isGlassLine);
                   return (
-                    <tr key={String(cartLineKey(item)) + "-" + i} style={{ borderBottom: "1px solid " + C.border, background: "transparent" }}
-                      onMouseEnter={function (e) { e.currentTarget.style.background = "#f8faff"; }}
-                      onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}>
-                      <td style={{ padding: "5px 8px", fontSize: 13, verticalAlign: "top" }}>
-                        <div style={{ fontWeight: 600, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
+                    <React.Fragment key={String(cartLineKey(item)) + "-" + i}>
+                    <tr style={{ borderBottom: hasDetailRow ? "none" : ("1px solid " + C.border), background: rowBg, boxShadow: isNewestRow ? ("inset 3px 0 0 " + C.accent) : "none" }}
+                      onMouseEnter={function (e) { e.currentTarget.style.background = isNewestRow ? "#e5efff" : "#f3f7ff"; }}
+                      onMouseLeave={function (e) { e.currentTarget.style.background = rowBg; }}>
+                      <td style={{ padding: "10px 8px", fontSize: 13, verticalAlign: "top" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 2 }}>
+                          <div style={{ fontWeight: 700, color: C.text, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
+                          {isNewestRow ? (
+                            <span style={{ fontSize: 9, fontWeight: 800, color: "#fff", background: C.accent, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>Adding</span>
+                          ) : null}
+                        </div>
                         {item.description && <div style={{ fontSize: 10, color: C.muted }}>{item.description}</div>}
-                        {showLineComment && (
+                        {showLineComment && !commentInDetail && (
                           <div style={{ marginTop: 6, maxWidth: 220 }}>
                             <div style={{ fontSize: 10, fontWeight: 700, color: C.textMd, marginBottom: 3 }}>
                               {COMPUTER_SHOP_EDITION ? DEFAULT_PRODUCT_COMMENT_LABEL : (String((prodRow && prodRow.comment_label) || item.commentLabel || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL)}
@@ -2517,17 +2535,20 @@ var POS = React.memo(function (props) {
                           <div style={{ fontSize: 9, color: C.accent, fontWeight: 700 }}>{item.unit}</div>
                         )}
                       </td>
-                      <td style={{ padding: item.isGlassLine ? "8px 10px" : "8px 6px", verticalAlign: "top", textAlign: "center" }}>
+                      <td style={{ padding: "10px 8px", verticalAlign: "top", textAlign: "center", minWidth: item.isGlassLine || glassCartLayout ? 168 : undefined, overflow: "visible" }}>
+                        {glassCartLayout ? glassCartCellLabel(item.isGlassLine ? "Rate / Sq Ft" : "Price", C) : null}
                         {item.isGlassLine ? (
-                        <div style={{ minWidth: 0, padding: "4px 0", maxWidth: 84, margin: "0 auto" }}>
-                        {glassCartCellLabel("Rate", C)}
-                        <input
-                          data-cartrow={i} data-cartcol="0"
-                          type="number"
+                        <React.Fragment>
+                        <GlassRateInput
+                          C={C}
+                          currencySymbol={getCurrencySymbol()}
+                          belowCost={item.price < lineCost}
                           value={item.glassRatePerSqFt != null ? item.glassRatePerSqFt : (prodRow ? getGlassSellRatePerSqFt(prodRow) : item.price)}
                           disabled={selectedTableLocked}
-                          onChange={function (e) {
-                            var v = parseFloat(e.target.value) || 0;
+                          dataProps={{ "data-cartrow": i, "data-cartcol": "0" }}
+                          title={item.price < lineCost ? "Selling below cost! Cost: " + getCurrencySymbol() + " " + fmtNum(lineCost) + " per Sq Ft" : (getCurrencySymbol() + " per Sq Ft")}
+                          onKeyDown={function (e) { handleCartFieldKey(e, i, 0); }}
+                          onChange={function (v) {
                             var lk = cartLineKey(item);
                             setCart(function (prev) {
                               return prev.map(function (x) {
@@ -2545,24 +2566,41 @@ var POS = React.memo(function (props) {
                               });
                             });
                           }}
-                          onFocus={function (e) { e.target.select(); }}
-                          onKeyDown={function (e) { handleCartFieldKey(e, i, 0); }}
-                          style={Object.assign({}, glassCartFieldStyle(C, {
-                            textAlign: "right",
-                            border: "1.5px solid " + (item.price < lineCost ? C.red : C.border),
-                            background: item.price < lineCost ? "#fde8ed" : "#fff",
-                          }))}
-                          onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + (item.price < lineCost ? C.red : C.accent); e.target.style.background = item.price < lineCost ? "#fde8ed" : "#f0f4ff"; }}
-                          onBlur={function (e) { e.target.style.border = "1.5px solid " + (item.price < lineCost ? C.red : C.border); e.target.style.background = item.price < lineCost ? "#fde8ed" : "#fff"; }}
-                          title={item.price < lineCost ? "Selling below cost! Cost: " + getCurrencySymbol() + " " + fmtNum(lineCost) + " per Sq Ft" : ""}
                         />
-                        <div style={{ fontSize: 9, color: C.muted, fontWeight: 700, marginTop: 6, textAlign: "center" }}>/ Sq Ft</div>
                         {item.price < lineCost && (
                           <div style={{ fontSize: 9, color: C.red, fontWeight: 700, whiteSpace: "nowrap", marginTop: 4, textAlign: "center" }}>
                             Below cost!
                           </div>
                         )}
-                        </div>
+                        </React.Fragment>
+                        ) : glassCartLayout ? (
+                        <React.Fragment>
+                        <GlassRateInput
+                          C={C}
+                          currencySymbol={getCurrencySymbol()}
+                          unitNote={false}
+                          belowCost={item.price < lineCost}
+                          value={item.price}
+                          disabled={selectedTableLocked}
+                          dataProps={{ "data-cartrow": i, "data-cartcol": "0" }}
+                          title={item.price < lineCost ? "Selling below cost! Cost: " + getCurrencySymbol() + " " + fmtNum(lineCost) + (" per " + saleU) : ""}
+                          onKeyDown={function (e) { handleCartFieldKey(e, i, 0); }}
+                          onChange={function (v) {
+                            var lk = cartLineKey(item);
+                            setCart(function (prev) {
+                              return prev.map(function (x) {
+                                if (cartLineKey(x) !== lk) return x;
+                                return Object.assign({}, x, { price: v, customPrice: true });
+                              });
+                            });
+                          }}
+                        />
+                        {item.price < lineCost && (
+                          <div style={{ fontSize: 9, color: C.red, fontWeight: 700, whiteSpace: "nowrap", marginTop: 4, textAlign: "center" }}>
+                            Below cost!
+                          </div>
+                        )}
+                        </React.Fragment>
                         ) : (
                         <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2, width: "100%", maxWidth: 72 }}>
                         <input
@@ -2608,20 +2646,17 @@ var POS = React.memo(function (props) {
                         )}
                       </td>
                       <td style={{
-                        padding: item.isGlassLine ? "8px 10px" : "8px 6px",
+                        padding: "8px 8px",
                         verticalAlign: "top",
                         textAlign: "center",
-                        borderLeft: item.isGlassLine ? "2px solid #e8ecf4" : "none",
                       }}>
                         {(function () {
                           if (item.isGlassLine) {
                             return (
-                              <GlassCartLine
+                              <GlassCutFields
                                 item={item}
                                 product={prodRow}
                                 C={C}
-                                fmtNum={fmtNum}
-                                getCurrencySymbol={getCurrencySymbol}
                                 rowIndex={i}
                                 onFieldKey={handleCartFieldKey}
                                 disabled={selectedTableLocked}
@@ -2640,8 +2675,34 @@ var POS = React.memo(function (props) {
                           var convHint = fCur != null && fCur > 1
                             ? "1 " + unit + " = " + (fCur % 1 === 0 ? fCur : parseFloat(fCur.toFixed(4))) + " " + baseU
                             : null;
+                          if (glassCartLayout) {
+                            return (
+                              <div style={{ display: "grid", gridTemplateColumns: "minmax(56px, 1fr) minmax(56px, 1fr) 76px 56px", gap: 10, alignItems: "end", width: "100%" }}>
+                                <div>
+                                  {glassCartCellLabel("Qty", C)}
+                                  <input
+                                    data-cartrow={i} data-cartcol="1"
+                                    type="number"
+                                    min="0"
+                                    step={isDecimalUnit(unit) ? "0.001" : "1"}
+                                    value={item.qty}
+                                    disabled={selectedTableLocked}
+                                    onChange={function (e) {
+                                      var v = parseFloat(e.target.value);
+                                      updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
+                                    }}
+                                    onFocus={function (e) { e.target.select(); }}
+                                    onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
+                                    style={Object.assign({}, glassCartFieldStyle(C), { fontSize: 14, fontWeight: 800 })}
+                                    onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
+                                    onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          }
                           return (
-                            <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", width: "100%", maxWidth: 156 }}>
+                            <div style={{ minWidth: 0, width: "100%", boxSizing: "border-box" }}>
                               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", justifyContent: "center" }}>
                                 <input
                                   data-cartrow={i} data-cartcol="1"
@@ -2655,7 +2716,7 @@ var POS = React.memo(function (props) {
                                     updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
                                   }}
                                   onFocus={function (e) { e.target.select(); }}
-                                    onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
+                                  onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
                                   style={{ width: 56, border: "1.5px solid " + C.border, borderRadius: 6, padding: "4px 5px", fontSize: 12, textAlign: "center", fontFamily: "inherit", outline: "none", background: "#fff", fontWeight: 700 }}
                                   onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
                                   onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
@@ -2762,8 +2823,8 @@ var POS = React.memo(function (props) {
                           );
                         })()}
                       </td>
-                      <td style={{ padding: "5px 8px", fontWeight: 700, color: C.blue, whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
-                      <td style={{ padding: "5px 6px", whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right" }}>
+                      <td style={{ padding: "8px 8px", fontWeight: 700, color: C.blue, fontSize: 13, whiteSpace: "nowrap", verticalAlign: "top", textAlign: "right" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
+                      <td style={{ padding: "8px 6px", whiteSpace: "nowrap", verticalAlign: "top", textAlign: "right" }}>
                         {isRestaurant && (
                           <button
                             type="button"
@@ -2778,6 +2839,161 @@ var POS = React.memo(function (props) {
                         <button disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), 0); }} style={{ background: "none", border: "none", color: C.red, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px", opacity: selectedTableLocked ? 0.5 : 1 }}>Remove</button>
                       </td>
                     </tr>
+                    {hasDetailRow ? (
+                      <tr style={{ borderBottom: "1px solid " + C.border, background: detailBg }}>
+                        <td colSpan={5} style={{ padding: "6px 12px 10px", verticalAlign: "top" }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-start" }}>
+                            {commentInDetail && (
+                              <div style={{ flex: "1 1 200px", minWidth: 160, maxWidth: 320 }}>
+                                <div style={{ fontSize: 9, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Comment</div>
+                                <input
+                                  type="text"
+                                  value={item.comment || ""}
+                                  disabled={selectedTableLocked}
+                                  onChange={function (e) {
+                                    var lk = cartLineKey(item);
+                                    setCart(function (prev) {
+                                      return prev.map(function (x) {
+                                        if (cartLineKey(x) !== lk) return x;
+                                        return Object.assign({}, x, { comment: e.target.value });
+                                      });
+                                    });
+                                  }}
+                                  onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
+                                  placeholder="Serial, IMEI, note…"
+                                  style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, fontFamily: "inherit", outline: "none", background: "#fff" }}
+                                />
+                              </div>
+                            )}
+                            {item.isGlassLine ? (
+                              <div style={{ flex: "1 1 260px" }}>
+                                <GlassLineExtras
+                                  item={item}
+                                  product={prodRow}
+                                  C={C}
+                                  fmtNum={fmtNum}
+                                  getCurrencySymbol={getCurrencySymbol}
+                                  disabled={selectedTableLocked}
+                                  onChange={function (next) { updateGlassCartItem(cartLineKey(item), next); }}
+                                />
+                              </div>
+                            ) : null}
+                            {glassCartLayout && !item.isGlassLine ? (function () {
+                              var unit = item.saleUnit || item.unit || "Pcs";
+                              var prodForUnit = state.products.find(function (p) { return p.id === item.id; });
+                              var unitRows = prodForUnit ? getProductUnitRows(prodForUnit) : [];
+                              var unitOpts = unitRows.map(function (r) { return r.name; });
+                              var hasSecondary = unitOpts.length > 1;
+                              var quickAmts = getQuickAmounts(unit);
+                              var baseU = unitRows[0] && unitRows[0].name ? unitRows[0].name : "Pcs";
+                              var fCur = prodForUnit ? factorForNamedUnit(prodForUnit, unit) : null;
+                              var convHint = fCur != null && fCur > 1
+                                ? "1 " + unit + " = " + (fCur % 1 === 0 ? fCur : parseFloat(fCur.toFixed(4))) + " " + baseU
+                                : null;
+                              return (
+                                <div style={{ flex: "1 1 280px" }}>
+                                  {hasSecondary && (
+                                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                                      <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Unit</span>
+                                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
+                                        {unitOpts.map(function (uOpt) {
+                                          var activeUnit = unit === uOpt;
+                                          return (
+                                            <button
+                                              key={uOpt}
+                                              type="button"
+                                              onClick={function () {
+                                                if (selectedTableLocked) return;
+                                                setCart(function (prev) {
+                                                  return prev.map(function (x) {
+                                                    if (cartLineKey(x) !== cartLineKey(item)) return x;
+                                                    return Object.assign({}, x, {
+                                                      saleUnit: uOpt,
+                                                      price: getPosSellPricePerSaleUnit(prodForUnit, uOpt),
+                                                      cost: getPosCostPerSaleUnit(prodForUnit, uOpt),
+                                                      customPrice: false,
+                                                    });
+                                                  });
+                                                });
+                                              }}
+                                              style={{
+                                                fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+                                                background: activeUnit ? "#3b82f6" : "#fff", color: activeUnit ? "#fff" : "#4b5563", whiteSpace: "nowrap"
+                                              }}
+                                              disabled={selectedTableLocked}
+                                            >
+                                              {uOpt}
+                                            </button>
+                                          );
+                                        })}
+                                      </div>
+                                      {unitRows.filter(function (r) { return r.factor > 1; }).map(function (r) {
+                                        return (
+                                          <button
+                                            key={"qb-d-" + r.name}
+                                            type="button"
+                                            onClick={function () {
+                                              if (selectedTableLocked) return;
+                                              setCart(function (prev) {
+                                                return prev.map(function (x) {
+                                                  if (cartLineKey(x) !== cartLineKey(item)) return x;
+                                                  var q = parseFloat(x.qty) || 0;
+                                                  return Object.assign({}, x, {
+                                                    saleUnit: r.name,
+                                                    qty: q + 1,
+                                                    price: getPosSellPricePerSaleUnit(prodForUnit, r.name),
+                                                    cost: getPosCostPerSaleUnit(prodForUnit, r.name),
+                                                    customPrice: false,
+                                                  });
+                                                });
+                                              });
+                                            }}
+                                            style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                                          >
+                                            +1 {r.name}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                  {convHint && (
+                                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>{convHint}</div>
+                                  )}
+                                  {quickAmts.length > 0 && !hasSecondary && (
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
+                                      {quickAmts.map(function (qa) {
+                                        var active = item.qty === qa.qty;
+                                        return (
+                                          <button key={qa.label} disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), qa.qty); }} style={{
+                                            fontSize: 9, padding: "2px 6px", borderRadius: 10,
+                                            border: "1px solid " + (active ? C.accent : C.border),
+                                            background: active ? C.accentSoft : "#fff",
+                                            color: active ? C.accent : C.muted,
+                                            fontWeight: active ? 800 : 600,
+                                            cursor: selectedTableLocked ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+                                            opacity: selectedTableLocked ? 0.5 : 1,
+                                          }}>{qa.label}</button>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                  {prodForUnit && (
+                                    <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.35 }}>
+                                      <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span>{" "}
+                                      {getBulkDisplayParts(prodForUnit) ? fmtStockDual(prodForUnit) : fmtStock(prodForUnit.stock || 0, prodForUnit.unit || "Pcs")}
+                                      {" | "}
+                                      <span style={{ fontWeight: 600, color: C.textMd }}>After sale:</span>{" "}
+                                      {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForUnit, cart, freeCart), prodForUnit)}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })() : null}
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

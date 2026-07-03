@@ -23,6 +23,8 @@ import {
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { evaluateProductNameMatch, checkProductName } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
+import CategorySelect from "../components/CategorySelect.jsx";
+import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
 
 /** Group GL lines by transactionId / entryGroupId for developer debug view only */
 function tcGroupJournalByTransaction(lines) {
@@ -44,7 +46,31 @@ var Accounts = function (props) {
   var state = props.state;
   var setState = props.setState;
   var S = props.S;
-  var shopSettings = state.settings || {};
+  var shopSettings = hydrateShopSettings(state.settings, S.get("tc3_businessType", null));
+  var blankObStockForm = function (extra) {
+    var cat = getDefaultProductCategory(shopSettings);
+    var unit = getDefaultProductUnit(shopSettings, cat);
+    return Object.assign({
+      name: "",
+      barcode: genBarcode(),
+      category: cat,
+      unit: unit,
+      extraUnits: [],
+      description: "",
+      cost: "",
+      price: "",
+      qty: "",
+      require_comment: true,
+      comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
+    }, extra || {});
+  };
+  var onObStockCategoryChange = function (cat) {
+    var units = getUnitsForSubCategory(cat, shopSettings);
+    setObStockForm(function (x) {
+      var nextUnit = units.indexOf(x.unit) >= 0 ? x.unit : (units[0] || "Pcs");
+      return Object.assign({}, x, { category: cat, unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit));
+    });
+  };
   var today = props.today;
   var uid = props.uid;
   var showAlert = props.showAlert;
@@ -182,7 +208,7 @@ var Accounts = function (props) {
         setShowObStockDrop(false);
         setObStockSearch("");
         setObStockModal(true);
-        setObStockForm(function (prev) { return Object.assign({}, prev, { name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", description: "", cost: "", price: "", qty: "1", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); });
+        setObStockForm(blankObStockForm({ qty: "1" }));
       }
     };
     window.addEventListener("keydown", handler);
@@ -1729,29 +1755,27 @@ var Accounts = function (props) {
               var existNonOB = (state.products || []).filter(function (p) { return !p._isOpening; });
               var obNextId = nextProductId(existNonOB);
               return (
-                <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} wide>
+                <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm(blankObStockForm()); }} wide>
                   <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>New product will be added to your Inventory with opening stock quantity.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     <Input label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={obNameHint.onNameFocus} onBlur={obNameHint.onNameBlur} />
                     <ProductNameDuplicateHint name={obStockForm.name} products={state.products} C={C} visible={obNameHint.visible} onDismiss={obNameHint.onDismiss} />
-                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
                       <div>
                         <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
                         <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{obNextId}</div>
                       </div>
                       <Input label="Barcode" value={obStockForm.barcode || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
-                      <Sel label="Category" value={obStockForm.category || "General"} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>
-                        {getCats().map(function (c) { return <option key={c}>{c}</option>; })}
-                      </Sel>
                     </div>
+                    <CategorySelect Sel={Sel} value={obStockForm.category || getDefaultProductCategory(shopSettings)} settings={shopSettings} onChange={function (e) { onObStockCategoryChange(e.target.value); }} />
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
                       <Input label={glassCostPriceLabels(obStockForm, shopSettings).cost} type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
                       <Input label={glassCostPriceLabels(obStockForm, shopSettings).sell} type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
-                      <Sel label="Base Unit" value={obStockForm.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) {
+                      <Sel label="Base Unit" value={obStockForm.unit || getDefaultProductUnit(shopSettings, obStockForm.category)} onChange={function (e) {
                         var nextUnit = e.target.value;
                         setObStockForm(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
                       }}>
-                        {getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}
+                        {getUnitsForSubCategory(obStockForm.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}
                       </Sel>
                     </div>
                     {isGlassStockProductForm(obStockForm, shopSettings) && (
@@ -1823,7 +1847,7 @@ var Accounts = function (props) {
                           require_comment: true,
                           comment_label: String(obStockForm.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
                         }, unitFieldsOb, glassRowFields)]) });
-                        setObStockModal(false); setObStockForm({ name: "", barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+                        setObStockModal(false); setObStockForm(blankObStockForm());
                         setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
                       }} disabled={!obStockForm.name || !obStockForm.price || !obStockForm.cost || obProductNameExactDup}>Save Product</Btn>
                       <Btn col="gray" onClick={function () { setObStockModal(false); }}>Cancel</Btn>
@@ -2246,7 +2270,7 @@ var Accounts = function (props) {
                                 {obStockSearch.trim() && (
                                   <div onClick={function () {
                                     setObStockModal(true);
-                                    setObStockForm({ name: obStockSearch, barcode: genBarcode(), category: "General", unit: getBusinessProfile().units[0] || "Pcs", extraUnits: [], description: "", cost: obStockCost, price: obStockSell, qty: obStockQty, require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+                                    setObStockForm(blankObStockForm({ name: obStockSearch, cost: obStockCost, price: obStockSell, qty: obStockQty }));
                                     setShowObStockDrop(false);
                                   }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, color: C.green, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
                                     + Create "{obStockSearch}" as new product

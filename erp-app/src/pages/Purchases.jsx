@@ -51,7 +51,8 @@ import {
   glassPurchaseEconomics,
   formatGlassStockLabel,
 } from "../utils/glassProduct.js";
-import { getUnitsForSubCategory } from "../utils/categoryGroups.js";
+import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
+import CategorySelect from "../components/CategorySelect.jsx";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
@@ -61,7 +62,23 @@ var Purchases = React.memo(function (props) {
   var genPurNo = props.genPurNo;
   var today = props.today;
   var S = props.S;
-  var shopSettings = state.settings || {};
+  var shopSettings = hydrateShopSettings(state.settings, S.get("tc3_businessType", null));
+  var onProductCategoryChange = function (setForm, cat) {
+    var units = getUnitsForSubCategory(cat, shopSettings);
+    setForm(function (x) {
+      var nextUnit = units.indexOf(x.unit) >= 0 ? x.unit : (units[0] || "Pcs");
+      return Object.assign({}, x, { category: cat, unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit));
+    });
+  };
+  var blankNewProd = function (extra) {
+    var cat = getDefaultProductCategory(shopSettings);
+    var unit = getDefaultProductUnit(shopSettings, cat);
+    return Object.assign({
+      name: "", barcode: genBarcode(), category: cat, unit: unit, type: "stock",
+      cost: "", price: "", description: "", stock: "0", extraUnits: [],
+      require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
+    }, extra || {});
+  };
   var uid = props.uid;
   var tcTrialGuard = props.tcTrialGuard;
   var addAudit = props.addAudit;
@@ -135,7 +152,7 @@ var Purchases = React.memo(function (props) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         if (!show) return; /* only active when New Purchase modal is open */
         e.preventDefault();
-        setNewProd(null); setTimeout(function () { setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }, 30);
+        setNewProd(null); setTimeout(function () { setNewProd(blankNewProd());; }, 30);
       }
     };
     window.addEventListener("keydown", handler);
@@ -647,7 +664,7 @@ var Purchases = React.memo(function (props) {
                     );
                   })}
                   {fp.length === 0 && <div style={{ padding: "10px 12px", fontSize: 12, color: C.muted }}>No matching products</div>}
-                  <div onClick={function () { setShowPurDrop(false); setNewProdKey(function (k) { return k + 1; }); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
+                  <div onClick={function () { setShowPurDrop(false); setNewProdKey(function (k) { return k + 1; }); setNewProd(blankNewProd());; }} style={{ padding: "10px 12px", cursor: "pointer", fontSize: 12, color: C.cyan, fontWeight: 700, borderTop: "1.5px dashed " + C.border, display: "flex", alignItems: "center", gap: 6 }}>
                     + Create "{ps}" as new product
                   </div>
                 </div>
@@ -1338,7 +1355,7 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
@@ -1450,7 +1467,7 @@ var Purchases = React.memo(function (props) {
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -1656,7 +1673,7 @@ var Purchases = React.memo(function (props) {
             <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   + New Product
                 </button>
               </div>
@@ -1768,7 +1785,7 @@ var Purchases = React.memo(function (props) {
               {ps.trim().length > 0 && fp.length === 0 && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
                   <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", cost: "", price: "", description: "", stock: "0", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }); }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
+                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
                 </div>
               )}
             </div>
@@ -1958,16 +1975,14 @@ var Purchases = React.memo(function (props) {
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <Input label="Product Name *" value={newProd.name} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={newNameHint.onNameFocus} onBlur={newNameHint.onNameBlur} />
             <ProductNameDuplicateHint name={newProd.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
-            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
                 <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{nextProductId(state.products)}</div>
               </div>
               <Input label="Barcode" value={newProd.barcode || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
-              <Sel label="Category" value={newProd.category || "General"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>
-                {getCats().map(function (c) { return <option key={c}>{c}</option>; })}
-              </Sel>
             </div>
+            <CategorySelect Sel={Sel} value={newProd.category || "General"} settings={shopSettings} onChange={function (e) { onProductCategoryChange(setNewProd, e.target.value); }} />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
               <Input label={glassCostPriceLabels(newProd, shopSettings).cost} type="number" value={newProd.cost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
               <Input label={glassCostPriceLabels(newProd, shopSettings).sell} type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
@@ -1976,13 +1991,18 @@ var Purchases = React.memo(function (props) {
                 <option value="service">Service</option>
                 <option value="raw_material">Raw Material</option>
               </Sel>
-              <Sel label="Base Unit" value={newProd.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) {
+              <Sel label="Base Unit" value={newProd.unit || getDefaultProductUnit(shopSettings, newProd.category)} onChange={function (e) {
                 var nextUnit = e.target.value;
                 setNewProd(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
-              }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
+              }}>{getUnitsForSubCategory(newProd.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
             </div>
             {isGlassStockProductForm(newProd, shopSettings) && (
               <GlassSheetInfo form={newProd} setForm={setNewProd} C={C} Input={Input} Sel={Sel} />
+            )}
+            {!isGlassStockProductForm(newProd, shopSettings) && newProd.category && (
+              <div style={{ fontSize: 11, color: C.muted }}>
+                Units for this category: {getUnitsForSubCategory(newProd.category, shopSettings).join(", ")}
+              </div>
             )}
             <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>

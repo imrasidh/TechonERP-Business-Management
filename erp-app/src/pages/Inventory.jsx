@@ -23,7 +23,8 @@ import {
   glassStockDisplay,
   getGlassSellRatePerSqFt,
 } from "../utils/glassProduct.js";
-import { getUnitsForSubCategory } from "../utils/categoryGroups.js";
+import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
+import CategorySelect from "../components/CategorySelect.jsx";
 import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
@@ -69,7 +70,23 @@ var Inventory = React.memo(function (props) {
   var periodLockTransactionMinDate = props.periodLockTransactionMinDate;
   var toProductBaseQty = props.toProductBaseQty;
 
-  var shopSettings = state.settings || {};
+  var shopSettings = hydrateShopSettings(state.settings, S.get("tc3_businessType", null));
+  var blankProduct = function (extra) {
+    var cat = getDefaultProductCategory(shopSettings);
+    var unit = getDefaultProductUnit(shopSettings, cat);
+    return Object.assign({
+      name: "", barcode: genBarcode(), category: cat, unit: unit, type: "stock",
+      description: "", cost: "", price: "", stock: "", extraUnits: [],
+      require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
+    }, extra || {});
+  };
+  var onProductCategoryChange = function (setForm, cat) {
+    var units = getUnitsForSubCategory(cat, shopSettings);
+    setForm(function (x) {
+      var nextUnit = units.indexOf(x.unit) >= 0 ? x.unit : (units[0] || "Pcs");
+      return Object.assign({}, x, { category: cat, unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit));
+    });
+  };
 
   var glassStockVal = function (p) {
     var d = glassStockDisplay(p);
@@ -97,7 +114,7 @@ var Inventory = React.memo(function (props) {
     var handler = function (e) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         e.preventDefault();
-        setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+        setNewP(blankProduct());
       }
     };
     window.addEventListener("keydown", handler);
@@ -706,7 +723,7 @@ var Inventory = React.memo(function (props) {
   var openAddProduct = function () {
     setNewP(null);
     setTimeout(function () {
-      setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+      setNewP(blankProduct());
     }, 30);
   };
 
@@ -1331,20 +1348,7 @@ var Inventory = React.memo(function (props) {
                   onClick={function () {
                     setItab("products");
                     setTimeout(function () {
-                      setNewP({
-                        name: "",
-                        barcode: genBarcode(),
-                        category: getBusinessProfile().categories[0] || "General",
-                        unit: getBusinessProfile().units[0] || "Pcs",
-                        type: "raw_material",
-                        description: "",
-                        cost: "",
-                        price: "",
-                        stock: "",
-                        extraUnits: [],
-                        require_comment: true,
-                        comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
-                      });
+                      setNewP(blankProduct({ type: "raw_material" }));
                     }, 30);
                   }}
                 >
@@ -1662,21 +1666,14 @@ var Inventory = React.memo(function (props) {
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <Input label="Product Name *" value={newP.name} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={newNameHint.onNameFocus} onBlur={newNameHint.onNameBlur} />
             <ProductNameDuplicateHint name={newP.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
-            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 1fr", gap: 10 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
                 <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{nextProductId(state.products)}</div>
               </div>
               <Input label="Barcode" value={newP.barcode} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
-              <Sel label="Category" value={newP.category} onChange={function (e) {
-                var cat = e.target.value;
-                var units = getUnitsForSubCategory(cat, shopSettings);
-                setNewP(function (x) {
-                  var nextUnit = units.indexOf(x.unit) >= 0 ? x.unit : (units[0] || "Pcs");
-                  return Object.assign({}, x, { category: cat, unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit));
-                });
-              }}>{getCats().map(function (c) { return <option key={c}>{c}</option>; })}</Sel>
             </div>
+            <CategorySelect Sel={Sel} value={newP.category} settings={shopSettings} onChange={function (e) { onProductCategoryChange(setNewP, e.target.value); }} />
             <Sel label="Product Type" value={newP.type || "stock"} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
               <option value="stock">stock</option>
               <option value="service">service</option>
@@ -1701,7 +1698,7 @@ var Inventory = React.memo(function (props) {
                   Base Unit
                 </label>
                 <select
-                  value={newP.unit || getBusinessProfile().units[0] || "Pcs"}
+                  value={newP.unit || getDefaultProductUnit(shopSettings, newP.category)}
                   onChange={function (e) {
                     var nextUnit = e.target.value;
                     setNewP(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
@@ -1714,6 +1711,11 @@ var Inventory = React.memo(function (props) {
             </div>
             {isGlassStockProductForm(newP, shopSettings) && (
               <GlassSheetInfo form={newP} setForm={setNewP} C={C} Input={Input} Sel={Sel} />
+            )}
+            {!isGlassStockProductForm(newP, shopSettings) && newP.category && (
+              <div style={{ fontSize: 11, color: C.muted, marginTop: -4 }}>
+                Units for this category: {getUnitsForSubCategory(newP.category, shopSettings).join(", ")}
+              </div>
             )}
             <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
@@ -1764,7 +1766,7 @@ var Inventory = React.memo(function (props) {
                 if (!newP.name || !newP.price || newProductNameExactDup) return;
                 saveNew();
                 setTimeout(function () {
-                  setNewP({ name: "", barcode: genBarcode(), category: getBusinessProfile().categories[0] || "General", unit: getBusinessProfile().units[0] || "Pcs", type: "stock", description: "", cost: "", price: "", stock: "", extraUnits: [], require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+                  setNewP(blankProduct());
                 }, 80);
               }} disabled={!newP.name || !newP.price || newProductNameExactDup}>Save + Add Another</Btn>
               <Btn col="gray" onClick={function () { setNewP(null); }}>Cancel</Btn>
@@ -1778,17 +1780,8 @@ var Inventory = React.memo(function (props) {
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <Input label="Product Name" value={editP.name} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={editNameHint.onNameFocus} onBlur={editNameHint.onNameBlur} />
             <ProductNameDuplicateHint name={editP.name} products={state.products} excludeId={editP.id} C={C} visible={editNameHint.visible} onDismiss={editNameHint.onDismiss} />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label="Barcode" value={editP.barcode || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
-              <Sel label="Category" value={editP.category || "General"} onChange={function (e) {
-                var cat = e.target.value;
-                var units = getUnitsForSubCategory(cat, shopSettings);
-                setEditP(function (x) {
-                  var nextUnit = units.indexOf(x.unit) >= 0 ? x.unit : (units[0] || "Pcs");
-                  return Object.assign({}, x, { category: cat, unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit));
-                });
-              }}>{getCats().map(function (c) { return <option key={c}>{c}</option>; })}</Sel>
-            </div>
+            <CategorySelect Sel={Sel} value={editP.category || "General"} settings={shopSettings} onChange={function (e) { onProductCategoryChange(setEditP, e.target.value); }} />
+            <Input label="Barcode" value={editP.barcode || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
             <Sel label="Product Type" value={editP.type || "stock"} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
               <option value="stock">stock</option>
               <option value="service">service</option>
@@ -1797,7 +1790,7 @@ var Inventory = React.memo(function (props) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
               <Input label={glassCostPriceLabels(editP, shopSettings).cost} type="number" value={editP.cost || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
               <Input label={glassCostPriceLabels(editP, shopSettings).sell} type="number" value={editP.price || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
-              <Sel label="Base Unit" value={editP.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) {
+              <Sel label="Base Unit" value={editP.unit || getDefaultProductUnit(shopSettings, editP.category)} onChange={function (e) {
                 var nextUnit = e.target.value;
                 setEditP(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
               }}>{getUnitsForSubCategory(editP.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}</Sel>

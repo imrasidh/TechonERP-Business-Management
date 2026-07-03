@@ -112,6 +112,61 @@ export function isGlassWorkflowEnabled(settings) {
   });
 }
 
+export function getCategoryOptionGroups(settings) {
+  return getEnabledCategoryGroupsList(settings).map(function (g) {
+    return {
+      id: g.id,
+      label: g.label,
+      emoji: g.emoji || "",
+      workflow: g.workflow || "standard",
+      options: (g.subCategories || []).slice(),
+    };
+  });
+}
+
+/** Resolve main group + sub-category for product forms (legacy names kept as sub-only). */
+export function resolveCategorySelection(subCategory, settings) {
+  var groups = getCategoryOptionGroups(settings);
+  var sub = String(subCategory || "").trim();
+  var groupId = "";
+  if (sub) {
+    var g = getCategoryGroupForSubCategory(sub);
+    if (g && groups.some(function (gr) { return gr.id === g.id; })) groupId = g.id;
+  }
+  if (!groupId && groups.length) groupId = groups[0].id;
+  return { groups: groups, groupId: groupId, subCategory: sub };
+}
+
+export function getSubCategoriesForGroup(groupId, settings, currentSub) {
+  var groups = getCategoryOptionGroups(settings);
+  var grp = groups.find(function (g) { return g.id === groupId; });
+  var opts = grp ? grp.options.slice() : [];
+  var sub = String(currentSub || "").trim();
+  if (sub && opts.indexOf(sub) < 0) opts.unshift(sub);
+  if (!opts.length) opts = ["General"];
+  return opts;
+}
+
+export function getDefaultProductGroupId(settings) {
+  var groups = getCategoryOptionGroups(settings);
+  return groups.length ? groups[0].id : "";
+}
+
+export function getDefaultProductCategory(settings) {
+  var groups = getCategoryOptionGroups(settings);
+  if (groups.length && groups[0].options.length) return groups[0].options[0];
+  return "General";
+}
+
+export function getDefaultProductUnit(settings, category) {
+  var units = getUnitsForSubCategory(category || getDefaultProductCategory(settings), settings);
+  return units[0] || "Pcs";
+}
+
+export function hydrateShopSettings(settings, businessType) {
+  return hydrateCategoryGroupSettings(settings || {}, businessType);
+}
+
 export function persistCategoryGroupToggles(formMap) {
   var toggles = {};
   CATEGORY_GROUPS.forEach(function (g) {

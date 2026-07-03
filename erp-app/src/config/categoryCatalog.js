@@ -77,7 +77,7 @@ export var CATEGORY_GROUPS = [
   {
     id: "glass_glazing",
     label: "Glass & Glazing",
-    emoji: "🪟",
+    emoji: "\u{1F537}",
     workflow: "glass_cut",
     units: ["Sheet", "Sq Ft", "Sq M", "Pcs", "Metre", "Panel", "Set", "Pair", "Box", "Job"],
     subCategories: [

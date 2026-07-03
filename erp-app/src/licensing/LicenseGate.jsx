@@ -187,9 +187,9 @@ function ActivationScreen(props) {
             filter       : 'drop-shadow(0 8px 24px rgba(41,121,255,0.5))',
           }}
         />
-        <div style={{ color: '#fff', fontSize: 22, fontWeight: 800, letterSpacing: '-0.03em' }}>Techon ERP</div>
+        <div style={{ color: '#fff', fontSize: 22, fontWeight: 800, letterSpacing: '-0.03em' }}>TechonERP</div>
         <div style={{ color: 'rgba(160,185,240,0.8)', fontSize: 12, fontWeight: 500, marginTop: 4 }}>
-          Business Management System
+          Business Management
         </div>
       </div>
 

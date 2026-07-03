@@ -2206,8 +2206,20 @@ var getBusinessProfile = function () {
 
 var loadState = function () {
   var persisted = S.get("tc3_settings", {}) || {};
+  var btForCats = S.get("tc3_businessType", null);
+  var hydratedSettings = hydrateCategoryGroupSettings(Object.assign({}, SEED.settings, persisted), btForCats);
+  if (!persisted.enabledCategoryGroups || !Object.keys(persisted.enabledCategoryGroups || {}).some(function (k) {
+    return persisted.enabledCategoryGroups[k] === true;
+  })) {
+    try {
+      S.set("tc3_settings", Object.assign({}, persisted, {
+        enabledCategoryGroups: hydratedSettings.enabledCategoryGroups,
+        edition: MASTER_EDITION_ID,
+      }));
+    } catch (_e) {}
+  }
   var st = {
-    settings: hydrateCategoryGroupSettings(Object.assign({}, SEED.settings, persisted), S.get("tc3_businessType", null)),
+    settings: hydratedSettings,
     products: S.get("tc3_products", SEED.products),
     customers: S.get("tc3_customers", SEED.customers),
     suppliers: S.get("tc3_suppliers", SEED.suppliers),
@@ -4210,7 +4222,7 @@ var AboutTab = function (props) {
               <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#2979ff,#5ca8ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>UPD</div>
               <div>
                 <div style={{ fontSize: 17, fontWeight: 900, color: "#0d1b3e", letterSpacing: "-0.02em" }}>New Version Available!</div>
-                <div style={{ fontSize: 12, color: "#5a78a5", fontWeight: 500, marginTop: 2 }}>A newer version of Techon ERP is ready</div>
+                <div style={{ fontSize: 12, color: "#5a78a5", fontWeight: 500, marginTop: 2 }}>A newer version of TechonERP is ready</div>
               </div>
             </div>
             <div style={{ background: "#f0f4ff", borderRadius: 10, padding: "14px 16px", marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -4254,10 +4266,11 @@ var AboutTab = function (props) {
           <div style={{ position: "absolute", top: -16, right: -16, width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, position: "relative", zIndex: 1 }}>
             <div style={{ width: 72, height: 72, borderRadius: 20, flexShrink: 0, filter: "drop-shadow(0 0 12px rgba(180,100,255,0.75))" }}>
-              <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+              <img src={TECHON_LOGO} alt="TechonERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
             </div>
             <div style={{ flex: "1 1 220px", minWidth: 0 }}>
-              <div style={{ fontSize: 21, fontWeight: 900, color: "#fff", letterSpacing: "-0.03em", lineHeight: 1.2 }}>Techon ERP System</div>
+              <div style={{ fontSize: 21, fontWeight: 900, color: "#fff", letterSpacing: "-0.03em", lineHeight: 1.2 }}>TechonERP</div>
+              <div style={{ fontSize: 11, color: "rgba(148,163,184,0.95)", fontWeight: 600, marginTop: 4, letterSpacing: "0.06em", textTransform: "uppercase" }}>Business Management</div>
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 8 }}>
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.14)", border: "1.5px solid rgba(255,255,255,0.2)", borderRadius: 20, padding: "4px 14px" }}>
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 6px #4ade80" }} />
@@ -5673,8 +5686,8 @@ var LoginScreen = function (props) {
                   <img src={TECHON_LOGO} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
                 </div>
                 <div>
-                  <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1.1 }}>Techon ERP</div>
-                  <div style={{ fontSize: 11, color: "rgba(148,163,184,0.95)", fontWeight: 600, marginTop: 4, letterSpacing: "0.06em", textTransform: "uppercase" }}>Business management</div>
+                  <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.03em", lineHeight: 1.1 }}>TechonERP</div>
+                  <div style={{ fontSize: 11, color: "rgba(148,163,184,0.95)", fontWeight: 600, marginTop: 4, letterSpacing: "0.06em", textTransform: "uppercase" }}>Business Management</div>
                 </div>
               </div>
               <div style={{ fontSize: 15, fontWeight: 600, color: "rgba(226,232,240,0.95)", lineHeight: 1.45, marginBottom: 22, maxWidth: 320 }}>
@@ -7267,8 +7280,8 @@ function App(props) {
                 <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
               </div>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 900, color: "#ffffff", letterSpacing: "-0.03em", lineHeight: 1.1, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>Techon</div>
-                <div style={{ fontSize: 9.5, color: "rgba(138,170,212,0.8)", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", marginTop: 2 }}>ERP System</div>
+                <div style={{ fontSize: 15, fontWeight: 900, color: "#ffffff", letterSpacing: "-0.03em", lineHeight: 1.1, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>TechonERP</div>
+                <div style={{ fontSize: 9.5, color: "rgba(138,170,212,0.8)", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 2 }}>Business Management</div>
               </div>
             </div>
           </div>
