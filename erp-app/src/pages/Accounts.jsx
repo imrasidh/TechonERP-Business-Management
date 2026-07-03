@@ -12,7 +12,6 @@ import { productMatchesSearch, productMatchesSearchExact } from "../utils/produc
 import { DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
 import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
 import {
-  isGlassIndustry,
   isGlassStockProductForm,
   validateGlassProductForm,
   glassCostPriceLabels,
@@ -45,8 +44,7 @@ var Accounts = function (props) {
   var state = props.state;
   var setState = props.setState;
   var S = props.S;
-  var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
-  var glassIndustry = isGlassIndustry(businessType);
+  var shopSettings = state.settings || {};
   var today = props.today;
   var uid = props.uid;
   var showAlert = props.showAlert;
@@ -1747,8 +1745,8 @@ var Accounts = function (props) {
                       </Sel>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                      <Input label={glassCostPriceLabels(obStockForm, businessType).cost} type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-                      <Input label={glassCostPriceLabels(obStockForm, businessType).sell} type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+                      <Input label={glassCostPriceLabels(obStockForm, shopSettings).cost} type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
+                      <Input label={glassCostPriceLabels(obStockForm, shopSettings).sell} type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
                       <Sel label="Base Unit" value={obStockForm.unit || getBusinessProfile().units[0] || "Pcs"} onChange={function (e) {
                         var nextUnit = e.target.value;
                         setObStockForm(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
@@ -1756,7 +1754,7 @@ var Accounts = function (props) {
                         {getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}
                       </Sel>
                     </div>
-                    {glassIndustry && (
+                    {isGlassStockProductForm(obStockForm, shopSettings) && (
                       <GlassSheetInfo form={obStockForm} setForm={setObStockForm} C={C} Input={Input} Sel={Sel} />
                     )}
                     <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
@@ -1797,7 +1795,7 @@ var Accounts = function (props) {
                           return;
                         }
                         if (!obStockForm.cost || parseFloat(obStockForm.cost) <= 0) { showAlert("Please enter a valid cost price."); return; }
-                        var glassErrOb = validateGlassProductForm(obStockForm, businessType);
+                        var glassErrOb = validateGlassProductForm(obStockForm, shopSettings);
                         if (glassErrOb) { showAlert(glassErrOb); return; }
                         var unitErrOb = validateExtraUnits(obStockForm.unit, obStockForm.extraUnits || []);
                         if (unitErrOb) { showAlert(unitErrOb); return; }
@@ -1808,7 +1806,7 @@ var Accounts = function (props) {
                           extraUnits: obStockForm.extraUnits || [],
                         });
                         /* Use qty from the grid input row — avoids double-counting */
-                        var obQtyToUse = isGlassSheetProductForm(obStockForm, businessType)
+                        var obQtyToUse = isGlassSheetProductForm(obStockForm, shopSettings)
                           ? (parseFloat(obStockQty) || 1)
                           : (parseInt(obStockQty, 10) || 1);
                         var bc = (obStockForm.barcode || "").trim() || genBarcode();

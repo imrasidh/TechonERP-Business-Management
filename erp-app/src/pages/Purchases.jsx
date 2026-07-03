@@ -42,8 +42,8 @@ import ProductNameDuplicateHint, { useProductNameHintControls } from "../compone
 import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
 import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
 import {
-  isGlassIndustry,
   isGlassProduct,
+  isGlassStockProductForm,
   validateGlassProductForm,
   applyGlassProductFields,
   glassCostPriceLabels,
@@ -51,6 +51,7 @@ import {
   glassPurchaseEconomics,
   formatGlassStockLabel,
 } from "../utils/glassProduct.js";
+import { getUnitsForSubCategory } from "../utils/categoryGroups.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
@@ -60,8 +61,7 @@ var Purchases = React.memo(function (props) {
   var genPurNo = props.genPurNo;
   var today = props.today;
   var S = props.S;
-  var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
-  var glassIndustry = isGlassIndustry(businessType);
+  var shopSettings = state.settings || {};
   var uid = props.uid;
   var tcTrialGuard = props.tcTrialGuard;
   var addAudit = props.addAudit;
@@ -598,8 +598,7 @@ var Purchases = React.memo(function (props) {
     var lowCost = typedPick ? purCostSeemsLow(typedPick, selU, pc, pCostInputMode) : false;
     var expCost = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : (typedPick ? getUnitCostPrice(typedPick, selU) : 0);
     var expLbl = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
-    var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
-    var glassPur = typedPick && isGlassProduct(typedPick, businessType);
+    var glassPur = typedPick && isGlassProduct(typedPick, shopSettings);
     var glassEcon = glassPur ? glassPurchaseEconomics(parseFloat(pq) || 0, parseFloat(pc) || 0, typedPick) : null;
     var inputStyle = { width: "100%", boxSizing: "border-box", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "4px 6px", fontSize: 12, outline: "none", fontFamily: "inherit", background: "#fff" };
     return (
@@ -1170,7 +1169,7 @@ var Purchases = React.memo(function (props) {
     }
     var performPurNewSave = function () {
       /* Force stock=0: purchase qty will add stock when saved — avoids double-counting */
-      var glassErr = validateGlassProductForm(newProd, businessType);
+      var glassErr = validateGlassProductForm(newProd, shopSettings);
       if (glassErr) { showAlert(glassErr); return; }
       var unitErr = validateExtraUnits(newProd.unit, newProd.extraUnits || []);
       if (unitErr) { showAlert(unitErr); return; }
@@ -1197,7 +1196,7 @@ var Purchases = React.memo(function (props) {
           comment_label: String(newProd.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         },
         unitFields
-      ), newProd, businessType);
+      ), newProd, shopSettings);
       if (!tcTrialGuard(state.products, 'products')) return;
       var np = state.products.concat([prod]);
       S.set("tc3_products", np);
@@ -1970,8 +1969,8 @@ var Purchases = React.memo(function (props) {
               </Sel>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-              <Input label={glassCostPriceLabels(newProd, businessType).cost} type="number" value={newProd.cost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-              <Input label={glassCostPriceLabels(newProd, businessType).sell} type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+              <Input label={glassCostPriceLabels(newProd, shopSettings).cost} type="number" value={newProd.cost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
+              <Input label={glassCostPriceLabels(newProd, shopSettings).sell} type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
               <Sel label="Product Type" value={newProd.type || "stock"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
                 <option value="stock">Stock</option>
                 <option value="service">Service</option>
@@ -1982,7 +1981,7 @@ var Purchases = React.memo(function (props) {
                 setNewProd(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
               }}>{getBusinessProfile().units.map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
             </div>
-            {glassIndustry && (
+            {isGlassStockProductForm(newProd, shopSettings) && (
               <GlassSheetInfo form={newProd} setForm={setNewProd} C={C} Input={Input} Sel={Sel} />
             )}
             <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>

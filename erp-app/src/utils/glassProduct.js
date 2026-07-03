@@ -1,7 +1,8 @@
 /**
- * Glass & Glazing module helpers — active only when tc3_businessType === "glass".
+ * Glass & Glazing — per product category (glass_cut workflow), not whole-shop industry.
  */
 import { calcRectAreas, calcCutTotals, sheetsFromSqFt, formatGlassDimensionLine, parseGlassCutInput, glassCutInputFromLine } from "./glassDimensions.js";
+import { isGlassWorkflowCategory } from "./categoryGroups.js";
 
 export var GLASS_MODULE_CATEGORIES = [
   "Plain Float Glass", "Tempered Glass", "Laminated Glass", "Mirrors",
@@ -9,6 +10,16 @@ export var GLASS_MODULE_CATEGORIES = [
   "Safety & Wire Glass", "Shower Enclosures & Partitions", "Aluminium & uPVC Frames",
   "Glass Fittings & Hardware", "Sealants & Silicones", "Custom Cut Glass", "Glass Blocks & Specialty",
 ];
+
+function resolveGlassSettings(settingsOrLegacy) {
+  if (settingsOrLegacy && typeof settingsOrLegacy === "object" && !Array.isArray(settingsOrLegacy)) {
+    return settingsOrLegacy;
+  }
+  if (String(settingsOrLegacy || "").toLowerCase() === "glass") {
+    return { enabledCategoryGroups: { glass_glazing: true } };
+  }
+  return {};
+}
 
 export function isGlassIndustry(businessType) {
   return String(businessType || "").toLowerCase() === "glass";
@@ -18,10 +29,10 @@ export function isGlassModuleCategory(category) {
   return GLASS_MODULE_CATEGORIES.indexOf(String(category || "").trim()) >= 0;
 }
 
-export function isGlassProduct(product, businessType) {
-  if (!product || !isGlassIndustry(businessType)) return false;
+export function isGlassProduct(product, settingsOrLegacy) {
+  if (!product) return false;
   if (String(product.type || "stock").toLowerCase() !== "stock") return false;
-  return isGlassModuleCategory(product.category);
+  return isGlassWorkflowCategory(product.category, resolveGlassSettings(settingsOrLegacy));
 }
 
 export function buildGlassSheetFields(width, height, unit) {
@@ -44,12 +55,12 @@ export function glassFieldsFromProductForm(form) {
   return buildGlassSheetFields(form.glassSheetWidth, form.glassSheetHeight, form.glassDimensionUnit || "mm");
 }
 
-/** True when form category is a glass module stock product in a glass industry. */
-export function isGlassStockProductForm(form, businessType) {
-  if (!form || !isGlassIndustry(businessType)) return false;
+/** True when form category uses glass_cut workflow and group is enabled. */
+export function isGlassStockProductForm(form, settingsOrLegacy) {
+  if (!form) return false;
   var pt = form.type != null ? String(form.type).toLowerCase() : "stock";
   if (pt !== "stock") return false;
-  return isGlassModuleCategory(form.category);
+  return isGlassWorkflowCategory(form.category, resolveGlassSettings(settingsOrLegacy));
 }
 
 /** True when base unit is Sheet (glass sheet dimensions apply). */
@@ -58,8 +69,8 @@ export function isGlassSheetUnit(form) {
 }
 
 /** Glass stock product sold/purchased by full sheet — needs sheet dimensions. */
-export function isGlassSheetProductForm(form, businessType) {
-  return isGlassStockProductForm(form, businessType) && isGlassSheetUnit(form);
+export function isGlassSheetProductForm(form, settingsOrLegacy) {
+  return isGlassStockProductForm(form, settingsOrLegacy) && isGlassSheetUnit(form);
 }
 
 /** Clear glass sheet fields when base unit is not Sheet. */
@@ -77,8 +88,8 @@ export function glassFormFieldsOnUnitChange(nextUnit) {
   };
 }
 
-export function validateGlassProductForm(form, businessType) {
-  if (!isGlassSheetProductForm(form, businessType)) return null;
+export function validateGlassProductForm(form, settingsOrLegacy) {
+  if (!isGlassSheetProductForm(form, settingsOrLegacy)) return null;
   var fields = glassFieldsFromProductForm(form);
   if (!(Number(fields.glassSheetWidth) > 0) || !(Number(fields.glassSheetHeight) > 0)) {
     return "Enter sheet width and height for glass products.";
@@ -87,13 +98,13 @@ export function validateGlassProductForm(form, businessType) {
 }
 
 /** Attach calculated glass fields and force base unit Sheet on a product record. */
-export function applyGlassProductFields(product, form, businessType) {
-  if (!isGlassSheetProductForm(form, businessType)) return product;
+export function applyGlassProductFields(product, form, settingsOrLegacy) {
+  if (!isGlassSheetProductForm(form, settingsOrLegacy)) return product;
   return Object.assign({}, product, glassFieldsFromProductForm(form), glassSellRateFieldsFromProductForm(form), { unit: "Sheet" });
 }
 
-export function glassCostPriceLabels(form, businessType) {
-  var glass = isGlassSheetProductForm(form, businessType);
+export function glassCostPriceLabels(form, settingsOrLegacy) {
+  var glass = isGlassSheetProductForm(form, settingsOrLegacy);
   return {
     cost: glass ? "Cost Price (per Sheet) *" : "Cost Price *",
     sell: glass ? "Sell Price (per Sheet) *" : "Sell Price *",

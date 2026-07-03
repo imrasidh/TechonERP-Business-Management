@@ -5,6 +5,14 @@ import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFr
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
 import { generateDocumentNumber } from "./utils/docNumbers.js";
 import {
+  MASTER_EDITION_ID,
+  CATEGORY_GROUPS,
+  hydrateCategoryGroupSettings,
+  getEnabledSubCategories,
+  getUnionUnitsForEnabledGroups,
+  getUnitsForSubCategory,
+} from "./utils/categoryGroups.js";
+import {
   getInvoicePrintLabels,
   getAllowedInvoiceLangCodes,
   INVOICE_LANG_KEYS,
@@ -2182,23 +2190,24 @@ var BUSINESS_PROFILES = {
     categories: ["General Merchandise", "Stationery & Office Supplies", "Sports & Fitness", "Toys & Games", "Books & Media", "Gifts & Novelties", "Home D-cor", "Cleaning Supplies", "Beauty & Salon Products", "Printing & Signage", "Services & Labour", "Miscellaneous"]
   }
 };
-/* Helper: get the active business profile (defaults to general retail if unset / bad key - neutral UX) */
+/* Helper: get the active business profile — TechonERP Master Edition */
 var getBusinessProfile = function () {
-  var bt = S.get("tc3_businessType", null);
-  var p = BUSINESS_PROFILES[bt] || BUSINESS_PROFILES.general;
-  var d = { name: "", modules: { repairs: false, barcode: true, serial: false, expiry: false }, categories: [], units: ["Pcs"] };
-  var o = Object.assign({}, d, p || {});
-  if (!Array.isArray(o.categories)) o.categories = d.categories.slice();
-  if (!Array.isArray(o.units)) o.units = d.units.slice();
-  if (!o.modules || typeof o.modules !== "object") o.modules = Object.assign({}, d.modules);
-  else o.modules = Object.assign({}, d.modules, o.modules);
-  return o;
+  var settings = hydrateCategoryGroupSettings(S.get("tc3_settings", {}) || {}, S.get("tc3_businessType", null));
+  var d = { name: "TechonERP Master Edition", emoji: "\u{1F3EA}", color: "#2979ff", modules: { repairs: true, barcode: true, serial: true, expiry: false }, categories: [], units: ["Pcs"] };
+  return {
+    name: d.name,
+    emoji: d.emoji,
+    color: d.color,
+    modules: d.modules,
+    categories: getEnabledSubCategories(settings),
+    units: getUnionUnitsForEnabledGroups(settings),
+  };
 };
 
 var loadState = function () {
   var persisted = S.get("tc3_settings", {}) || {};
   var st = {
-    settings: Object.assign({}, SEED.settings, persisted),
+    settings: hydrateCategoryGroupSettings(Object.assign({}, SEED.settings, persisted), S.get("tc3_businessType", null)),
     products: S.get("tc3_products", SEED.products),
     customers: S.get("tc3_customers", SEED.customers),
     suppliers: S.get("tc3_suppliers", SEED.suppliers),
@@ -2639,10 +2648,11 @@ scheduleGlLiveRebuild = function () {
 
 window._tcPersistGL = persistTechonGLJournal;
 
-/* First paint: match post-IDB business-type logic so we do not flash BusinessTypeSelector while storage loads. */
+/* First paint: Master Edition — legacy industry keys still load; new installs use master. */
 var resolveInitialBusinessType = function () {
   var existing = S.get("tc3_businessType", null);
   if (existing && BUSINESS_PROFILES[existing]) return existing;
+  if (existing === MASTER_EDITION_ID || existing === "master") return MASTER_EDITION_ID;
   var hasBusinessData = !!(
     (S.get("tc3_products", []) || []).length ||
     (S.get("tc3_sales", []) || []).length ||
@@ -2662,22 +2672,19 @@ var resolveInitialBusinessType = function () {
     return "tech";
   }
   if (COMPUTER_SHOP_EDITION) {
-    S.set("tc3_businessType", "tech");
-    return "tech";
+    S.set("tc3_businessType", MASTER_EDITION_ID);
+    return MASTER_EDITION_ID;
   }
-  S.set("tc3_businessType", "general");
-  return "general";
+  S.set("tc3_businessType", MASTER_EDITION_ID);
+  return MASTER_EDITION_ID;
 };
 
 var ensureDefaultBusinessType = function () {
   var existing = S.get("tc3_businessType", null);
   if (existing && BUSINESS_PROFILES[existing]) return existing;
-  if (COMPUTER_SHOP_EDITION) {
-    S.set("tc3_businessType", "tech");
-    return "tech";
-  }
-  S.set("tc3_businessType", "general");
-  return "general";
+  if (existing === MASTER_EDITION_ID || existing === "master") return MASTER_EDITION_ID;
+  S.set("tc3_businessType", MASTER_EDITION_ID);
+  return MASTER_EDITION_ID;
 };
 
 var markAccountSetupComplete = function () {
@@ -3826,11 +3833,12 @@ var Pager = function (props) {
 
 /* CATS computed fresh each render so changing business type reflects immediately */
 var getCats = function () {
-  var profile = getBusinessProfile();
-  var base = Array.isArray(profile.categories) ? profile.categories.slice() : [];
-  if (base.indexOf("Other") < 0) base.push("Other");
-  if (base.indexOf("General") < 0) base.push("General");
-  return base;
+  var settings = hydrateCategoryGroupSettings(S.get("tc3_settings", {}) || {}, S.get("tc3_businessType", null));
+  return getEnabledSubCategories(settings);
+};
+var getUnitsForProductCategory = function (category) {
+  var settings = hydrateCategoryGroupSettings(S.get("tc3_settings", {}) || {}, S.get("tc3_businessType", null));
+  return getUnitsForSubCategory(category, settings);
 };
 var CATS = getCats(); /* backward-compat alias - components should call getCats() directly */
 
@@ -4740,26 +4748,18 @@ var StartupOnboardingWizard = function (props) {
   var [phase, setPhase] = useState(function () {
     var ad = safeTrim(S.get("tc3_admin_name", ""));
     if (ad.length < 2) return "admin";
-    if (!COMPUTER_SHOP_EDITION && !S.get("tc3_businessType")) return "industry";
-    if (COMPUTER_SHOP_EDITION && !S.get("tc3_businessType")) {
-      S.set("tc3_businessType", "tech");
+    if (!S.get("tc3_businessType")) {
+      S.set("tc3_businessType", MASTER_EDITION_ID);
     }
     return "shop";
   });
   var [adminName, setAdminName] = useState(function () { return S.get("tc3_admin_name", "") || ""; });
 
-  var steps = COMPUTER_SHOP_EDITION
-    ? [
-      { id: "admin", n: 2, label: "Admin" },
-      { id: "shop", n: 3, label: "Shop" },
-      { id: "lang", n: 4, label: "Language" },
-    ]
-    : [
-      { id: "admin", n: 2, label: "Admin" },
-      { id: "industry", n: 3, label: "Industry" },
-      { id: "shop", n: 4, label: "Shop" },
-      { id: "lang", n: 5, label: "Language" },
-    ];
+  var steps = [
+    { id: "admin", n: 2, label: "Admin" },
+    { id: "shop", n: 3, label: "Shop" },
+    { id: "lang", n: 4, label: "Language" },
+  ];
 
   var goAdmin = function () {
     var t = adminName.trim();

@@ -25,6 +25,12 @@ import {
 } from "../utils/featureFlags.js";
 import { safeStr } from "../utils/syncDataNormalize.js";
 import { pushKeysToServer, NETWORK_KV_KEYS } from "../sync/SyncEngine.js";
+import {
+  CATEGORY_GROUPS,
+  readEnabledCategoryGroups,
+  getEnabledCategoryGroupsList,
+  persistCategoryGroupToggles,
+} from "../utils/categoryGroups.js";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
 
@@ -161,6 +167,7 @@ var Settings = function (props) {
     mainModuleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
     counterModuleToggles: getCounterModuleToggles(state.settings, businessType, getBusinessProfile()),
     moduleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
+    enabledCategoryGroups: readEnabledCategoryGroups(state.settings),
   }));
   var [newAsset, setNewAsset] = useState(null);
   var [editAsset, setEditAsset] = useState(null);
@@ -606,6 +613,14 @@ var Settings = function (props) {
     showAlert("Counter modules saved.");
   };
 
+  var saveCategoryGroups = function () {
+    var ns = Object.assign({}, state.settings);
+    Object.assign(ns, persistCategoryGroupToggles(f.enabledCategoryGroups || {}));
+    S.set("tc3_settings", ns);
+    setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+    showAlert("Category groups saved.");
+  };
+
   var saveAccountingSettings = function () {
     var base = criticalAccountingRef.current;
     if (!base) {
@@ -876,7 +891,35 @@ var Settings = function (props) {
     if (profKey === "jewelry") chips.push("Weight & making charge");
     return chips;
   };
+  var renderMasterEditionBlock = function (compact, linkToCategories) {
+    var enabled = getEnabledCategoryGroupsList(Object.assign({}, state.settings, { enabledCategoryGroups: f.enabledCategoryGroups }));
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: compact ? 8 : 10 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: compact ? 10 : 12, background: "linear-gradient(135deg,#2979ff14,#2979ff08)", border: "1.5px solid #2979ff40", borderRadius: 10, padding: compact ? "8px 12px" : "12px 16px", flexWrap: "wrap" }}>
+          <span style={{ fontSize: compact ? 20 : 24 }}>🏪</span>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ fontSize: compact ? 11 : 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Edition</div>
+            <div style={{ fontSize: compact ? 13 : 14, fontWeight: 800, color: "#2979ff" }}>TechonERP Master Edition</div>
+            <div style={{ fontSize: compact ? 10 : 11, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+              Turn on category groups your shop needs (Phones, Computers, Glass, Grocery, etc.). Each group brings its own sub-categories and units.
+            </div>
+            <div style={{ fontSize: compact ? 10 : 11, color: C.text, marginTop: 6 }}>
+              <strong>{enabled.length}</strong> group{enabled.length !== 1 ? "s" : ""} enabled
+              {enabled.length > 0 ? (" — " + enabled.map(function (g) { return g.label; }).slice(0, 3).join(", ") + (enabled.length > 3 ? "…" : "")) : ""}
+            </div>
+          </div>
+        </div>
+        {linkToCategories && !isNetworkClient && (
+          <div>
+            <Btn col="blue" onClick={function () { setStab("categories"); }}>Configure categories</Btn>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   var renderIndustryBlock = function (editable, compact) {
+    if (!isRestaurantBusiness) return renderMasterEditionBlock(compact, editable);
     if (!getBusinessProfile && !industryProfileKeys.length) return null;
     var bp = getBusinessProfile ? getBusinessProfile() : (BUSINESS_PROFILES[businessType] || {});
     var chipKey = editable ? pendingIndustry : businessType;
@@ -941,7 +984,7 @@ var Settings = function (props) {
     );
   };
 
-  var TABS = [["shop", "Shop Info"], ["features", "Modules"], ["langcurrency", "Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["security", "Security"]];
+  var TABS = [["shop", "Shop Info"], ["features", "Modules"], ["categories", "Categories"], ["langcurrency", "Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["security", "Security"]];
   if (isRestaurantBusiness) TABS.splice(1, 0, ["restaurantsetup", "Restaurant Setup"]);
   if (canManageUsers) TABS.push(["users", "Users"]);
   TABS.push(["activity", "Activity Log"]);
@@ -1362,6 +1405,55 @@ var Settings = function (props) {
             : renderModulePanel("mainModuleToggles", "Main PC modules", "Screens shown on the main server PC sidebar. Sales and Settings always stay available.")}
           <div>
             <Btn col="blue" onClick={isNetworkClient ? saveCounterModules : save}>Save modules</Btn>
+          </div>
+        </div>
+      )}
+
+      {stab === "categories" && !isNetworkClient && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <CardTitle sub="Enable the product groups your shop sells. Sub-categories and units follow each group (e.g. Glass shows sheet dimensions; Phones use Pcs, Box, etc.).">Category groups</CardTitle>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 720 }}>
+              {CATEGORY_GROUPS.map(function (g) {
+                var on = (f.enabledCategoryGroups || {})[g.id] === true;
+                return (
+                  <label key={g.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff" }}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={function (e) {
+                        var checked = e.target.checked;
+                        setF(function (x) {
+                          var next = Object.assign({}, x.enabledCategoryGroups || {}, { [g.id]: checked });
+                          return Object.assign({}, x, { enabledCategoryGroups: next });
+                        });
+                      }}
+                      style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 3, flexShrink: 0 }}
+                    />
+                    <span style={{ flex: 1 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 18 }}>{g.emoji}</span>
+                        <span style={{ fontWeight: 800, fontSize: 14, color: on ? C.accent : C.text }}>{g.label}</span>
+                        {g.workflow === "glass_cut" && (
+                          <span style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: "#0e7490", background: "#ecfeff", padding: "2px 8px", borderRadius: 999 }}>Cut size</span>
+                        )}
+                      </span>
+                      <span style={{ display: "block", fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+                        Units: {(g.units || []).slice(0, 8).join(", ")}{(g.units || []).length > 8 ? "…" : ""}
+                      </span>
+                      {on && (
+                        <span style={{ display: "block", fontSize: 11, color: C.textMd, marginTop: 6, lineHeight: 1.5 }}>
+                          {(g.subCategories || []).join(" · ")}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </Card>
+          <div>
+            <Btn col="blue" onClick={saveCategoryGroups}>Save categories</Btn>
           </div>
         </div>
       )}

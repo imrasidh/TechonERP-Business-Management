@@ -1,8 +1,9 @@
 /**
  * Optional module toggles — settings override industry profile defaults.
- * Main PC and Counter PC have separate toggle maps (both configured on Main).
+ * Main PC and Counter PC have separate toggle maps.
  * Sales (pos) and Settings always stay on; every other sidebar screen is toggleable.
  */
+import { hydrateCategoryGroupSettings } from "./categoryGroups.js";
 
 /** Nav page ids that cannot be disabled. */
 export var CORE_NAV_IDS = ["pos", "settings"];
@@ -157,7 +158,7 @@ export function hydrateFeatureFlagDefaults(settings, businessType, profile) {
   next.moduleToggles = mainToggles;
   next.freeItemsEnabled = mainToggles.freeItems === true;
   next.repairsModuleEnabled = mainToggles.repairs === true;
-  return next;
+  return hydrateCategoryGroupSettings(next, businessType);
 }
 
 function packToggleForm(formToggles) {

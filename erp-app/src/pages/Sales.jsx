@@ -18,7 +18,6 @@ import {
 } from "../utils/quotationDocument.js";
 import GlassCartLine, { glassCartCellLabel, glassCartFieldStyle } from "../components/GlassCartLine.jsx";
 import {
-  isGlassIndustry,
   isGlassProduct,
   recalcGlassCartLine,
   glassLineAmount,
@@ -28,6 +27,7 @@ import {
   getGlassSellRatePerSqFt,
   getGlassCostPerSqFt,
 } from "../utils/glassProduct.js";
+import { isGlassWorkflowEnabled } from "../utils/categoryGroups.js";
 import { isFreeItemsEnabled } from "../utils/featureFlags.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
@@ -96,7 +96,7 @@ var POS = React.memo(function (props) {
   var [search, setSearch] = useState("");
   var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
   var isRestaurant = businessType === "restaurant";
-  var glassIndustry = isGlassIndustry(businessType);
+  var shopSettings = state.settings || {};
   var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
   var [posPageTab, setPosPageTab] = useState("sale");
   var isQuotationMode = posPageTab === "quotation" && !isRestaurant;
@@ -209,6 +209,8 @@ var POS = React.memo(function (props) {
   var [freeDropIdx, setFreeDropIdx] = useState(-1);
   var freeSearchRef = useRef(null);
   var cartLineKey = function (it) { return it.cartLineId != null ? it.cartLineId : it.id; };
+  var cartHasGlassLine = cart.some(function (x) { return x && x.isGlassLine; });
+  var glassCartLayout = cartHasGlassLine || isGlassWorkflowEnabled(shopSettings);
   var [custMode, setCustMode] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     if (pf && pf.customerId) return "existing";
@@ -739,7 +741,7 @@ var POS = React.memo(function (props) {
       return;
     }
     var isService = isRestaurantServiceProduct(p);
-    var isGlass = glassIndustry && isGlassProduct(p, businessType);
+    var isGlass = isGlassProduct(p, shopSettings);
     if (isGlass && !(getSheetAreaSqFt(p) > 0)) {
       showAlert("\"" + p.name + "\" has no sheet size configured.\nEdit the product and enter sheet width and height first.");
       setSearch("");
@@ -2425,10 +2427,10 @@ var POS = React.memo(function (props) {
                         {oos && <span style={{ marginLeft: 6, fontSize: 10, background: "#fee2e2", color: C.red, padding: "1px 6px", borderRadius: 10, fontWeight: 700 }}>OUT OF STOCK</span>}
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
-                        <span style={{ color: C.accent, fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(glassIndustry && isGlassProduct(p, businessType) ? getGlassSellRatePerSqFt(p) : p.price)}{glassIndustry && isGlassProduct(p, businessType) ? " / Sq Ft" : ""}</span>
+                        <span style={{ color: C.accent, fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(glassCartLayout && isGlassProduct(p, shopSettings) ? getGlassSellRatePerSqFt(p) : p.price)}{glassCartLayout && isGlassProduct(p, shopSettings) ? " / Sq Ft" : ""}</span>
                         {isService
                           ? <span style={{ color: C.muted, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>(service item)</span>
-                          : (!oos && <span style={{ color: C.muted, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>({glassIndustry && isGlassProduct(p, businessType) ? (fmtNum(glassAvailableSqFt(p)) + " Sq Ft left") : (getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit) + " left")})</span>)}
+                          : (!oos && <span style={{ color: C.muted, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>({glassCartLayout && isGlassProduct(p, shopSettings) ? (fmtNum(glassAvailableSqFt(p)) + " Sq Ft left") : (getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit) + " left")})</span>)}
                       </div>
                     </div>
                   );
@@ -2441,8 +2443,8 @@ var POS = React.memo(function (props) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 8, tableLayout: "fixed", transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
               <colgroup>
                 <col />
-                <col style={{ width: glassIndustry ? 84 : 88 }} />
-                <col style={{ width: glassIndustry ? 328 : 168 }} />
+                <col style={{ width: glassCartLayout ? 84 : 88 }} />
+                <col style={{ width: glassCartLayout ? 328 : 168 }} />
                 <col style={{ width: 96 }} />
                 <col style={{ width: 76 }} />
               </colgroup>
@@ -2450,7 +2452,7 @@ var POS = React.memo(function (props) {
                 <tr style={{ background: "#f8fafc" }}>
                   <th style={{ textAlign: "left", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Item</th>
                   <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Price</th>
-                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>{glassIndustry ? "Cut (W×H)" : "Qty"}</th>
+                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? "Cut (W×H)" : "Qty"}</th>
                   <th style={{ textAlign: "right", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Total</th>
                   <th style={{ padding: "8px 6px", borderBottom: "2px solid " + C.border }}></th>
                 </tr>
