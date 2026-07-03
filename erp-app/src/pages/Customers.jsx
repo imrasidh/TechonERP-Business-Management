@@ -8,9 +8,11 @@ var Customers = function (props) {
   var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
   var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
   var showConfirm = props.showConfirm;
+  var showAlert = props.showAlert;
   var tcTrialGuard = props.tcTrialGuard;
   var uid = props.uid;
   var S = props.S;
+  var today = props.today;
   var usePager = props.usePager;
   var getCurrencySymbol = props.getCurrencySymbol;
   var fmtNum = props.fmtNum;
@@ -42,7 +44,7 @@ var Customers = function (props) {
     if (!f.name) return;
     if (f.phone && state.customers.find(function (c) { return c.phone === f.phone; })) {
       showConfirm("A customer with phone \"" + f.phone + "\" already exists. Add anyway?", function () {
-        var c = { id: uid(), name: f.name, phone: f.phone || "", address: f.address || "", credit: 0, totalSpent: 0 };
+        var c = { id: uid(), name: f.name, phone: f.phone || "", address: f.address || "", credit: 0, totalSpent: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
         if (!tcTrialGuard(state.customers, 'customers')) return;
         var nc = state.customers.concat([c]);
         S.set("tc3_customers", nc);
@@ -51,7 +53,7 @@ var Customers = function (props) {
       });
       return;
     }
-    var c = { id: uid(), name: f.name, phone: f.phone || "", address: f.address || "", credit: 0, totalSpent: 0 };
+    var c = { id: uid(), name: f.name, phone: f.phone || "", address: f.address || "", credit: 0, totalSpent: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     var nc = state.customers.concat([c]);
     S.set("tc3_customers", nc);
     setState(function (st) { return Object.assign({}, st, { customers: nc }); });
@@ -61,11 +63,30 @@ var Customers = function (props) {
   var saveEditCust = function () {
     if (!editCust || !editCust.name) return;
     var nc = state.customers.map(function (c) {
-      return c.id === editCust.id ? Object.assign({}, c, { name: editCust.name, phone: editCust.phone || "", address: editCust.address || "" }) : c;
+      return c.id === editCust.id ? Object.assign({}, c, { name: editCust.name, phone: editCust.phone || "", address: editCust.address || "", updatedAt: new Date().toISOString() }) : c;
     });
     S.set("tc3_customers", nc);
     setState(function (st) { return Object.assign({}, st, { customers: nc }); });
     setEditCust(null);
+  };
+
+  var deleteCust = function (custId) {
+    var target = state.customers.find(function (c) { return c.id === custId; });
+    if (!target) return;
+    var linkedSales = (state.sales || []).some(function (s) {
+      return s.customerId === custId || (s.customerName && s.customerName === target.name);
+    });
+    if (linkedSales) {
+      if (showAlert) showAlert("Cannot delete customer with existing sales history.");
+      return;
+    }
+    showConfirm("Delete customer \"" + target.name + "\"?", function () {
+      var nc = state.customers.filter(function (c) { return c.id !== custId; });
+      S.set("tc3_customers", nc);
+      setState(function (st) { return Object.assign({}, st, { customers: nc }); });
+      if (sel && sel.id === custId) setSel(null);
+      if (editCust && editCust.id === custId) setEditCust(null);
+    });
   };
 
   return (
@@ -87,6 +108,7 @@ var Customers = function (props) {
                     <ActBtnGroup align="left">
                       <ActBtn tone="blue" title="Edit customer" onClick={function () { setEditCust({ id: c.id, name: c.name, phone: c.phone || "", address: c.address || "" }); }}>✎</ActBtn>
                       <ActBtn tone="cyan" title="View history" onClick={function () { setSel(c); }}>🧾</ActBtn>
+                      <ActBtn tone="red" title="Delete customer" onClick={function () { deleteCust(c.id); }}>🗑</ActBtn>
                     </ActBtnGroup>
                   </td>
                 </TR>

@@ -21,6 +21,8 @@ import {
   persistModuleToggles,
   MODULE_TOGGLE_DEFS,
 } from "../utils/featureFlags.js";
+import { safeStr } from "../utils/syncDataNormalize.js";
+import { pushKeysToServer, NETWORK_KV_KEYS } from "../sync/SyncEngine.js";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
 
@@ -82,7 +84,7 @@ var Settings = function (props) {
   var StatCard = props.StatCard;
   var [stab, setStab] = useState(function () {
     var sc = props.systemConfig || {};
-    return sc.role === "network_client" ? "network" : "shop";
+    return sc.role === "network_client" ? "pos" : "shop";
   });
   var [supBndFrom, setSupBndFrom] = useState(today().slice(0, 7) + "-01");
   var [supBndTo, setSupBndTo] = useState(today());
@@ -167,7 +169,7 @@ var Settings = function (props) {
   var [snapValBusy, setSnapValBusy] = useState(false);
   var [snapValResult, setSnapValResult] = useState(null);
   var [pwOld, setPwOld] = useState("");
-  var [adminNameEdit, setAdminNameEdit] = useState(S.get("tc3_admin_name", ""));
+  var [adminNameEdit, setAdminNameEdit] = useState(safeStr(S.get("tc3_admin_name", "")));
   var [adminNameMsg, setAdminNameMsg] = useState(null);
   var [pwNew, setPwNew] = useState("");
   var [pwNew2, setPwNew2] = useState("");
@@ -189,6 +191,7 @@ var Settings = function (props) {
   var [cloudMsg,     setCloudMsg]     = useState(null);
   var [cloudLoading, setCloudLoading] = useState(false);
   var [licSyncBusy, setLicSyncBusy] = useState(false);
+  var [dataPushBusy, setDataPushBusy] = useState(false);
   var [clientSlotsBusy, setClientSlotsBusy] = useState(false);
   var [clientSlots, setClientSlots] = useState({ max_clients: 0, connected: 0, clients: [] });
   var [clientLabelDrafts, setClientLabelDrafts] = useState({});
@@ -347,11 +350,6 @@ var Settings = function (props) {
     }
     saveRestaurantSetup(restaurantDefaultOrderType, restaurantSetupTables.filter(function (t) { return t.id !== tableId; }), "Restaurant setup updated.");
   };
-
-  useEffect(function () {
-    if (!isNetworkClient) return;
-    setStab("network");
-  }, [isNetworkClient]);
 
   useEffect(function () {
     if (!isNetworkClient) return;
@@ -560,6 +558,17 @@ var Settings = function (props) {
       a.click(); URL.revokeObjectURL(url);
       setBakMsg({ type: "success", text: "✅ Excel/CSV export downloaded! Open with Excel or Google Sheets." });
     } catch (e) { setBakMsg({ type: "error", text: "Export failed: " + e.message }); }
+  };
+
+  var saveClientPosOptions = function () {
+    var ns = Object.assign({}, state.settings);
+    var toggles = Object.assign({}, ns.moduleToggles || {}, {
+      freeItems: !!(f.moduleToggles && f.moduleToggles.freeItems),
+    });
+    Object.assign(ns, persistModuleToggles(toggles));
+    S.set("tc3_settings", ns);
+    setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+    showAlert("POS options saved. Changes sync to the main server.");
   };
 
   var criticalAccountingRef = useRef(null);
@@ -933,10 +942,11 @@ var Settings = function (props) {
   if (isRestaurantBusiness) TABS.splice(1, 0, ["restaurantsetup", "Restaurant Setup"]);
   if (canManageUsers) TABS.push(["users", "Users"]);
   TABS.push(["activity", "Activity Log"]);
-  if (isNetworkMode && !COMPUTER_SHOP_EDITION) TABS.push(["network", "Network"]);
+  /* Always show Network tab on server/client PCs (needed for API URL + security key on main PC). */
+  if (isNetworkServer || isNetworkClient) TABS.push(["network", "Network"]);
   TABS.push(["about", "About"]);
   if (isNetworkClient) {
-    TABS = [["network", "Network"]];
+    TABS = [["network", "Network"], ["pos", "POS Options"]];
   }
 
   var applyShopCountry = function (v) {
@@ -1021,7 +1031,8 @@ var Settings = function (props) {
     return function () { clearTimeout(t); };
   }, [stab, props.embeddedWizard]);
 
-  var hideWizardTabs = !!props.embeddedWizard || isNetworkClient;
+  var hideWizardTabs = !!props.embeddedWizard;
+  var showSettingsTabs = !hideWizardTabs || isNetworkClient;
   var taxTipFine = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
   useEffect(function () {
     if (!taxModeTooltipOpen) return;
@@ -1150,10 +1161,10 @@ var Settings = function (props) {
 
   return (
     <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      {!hideWizardTabs && (
+      {showSettingsTabs && (
       <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border, marginBottom: 16, flexWrap: "wrap" }}>
         {TABS.map(function (t) {
-          var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", about: "ℹ" };
+          var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", pos: "🛒", about: "ℹ" };
           return <button key={t[0]} onClick={function () { setStab(t[0]); }} style={{ padding: "10px 20px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (stab === t[0] ? C.border : "transparent"), borderBottom: stab === t[0] ? "2px solid #fff" : "none", background: stab === t[0] ? "#fff" : "transparent", color: stab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: stab === t[0] ? -2 : 0 }}>{icons[t[0]]} {t[1]}</button>;
         })}
       </div>
@@ -3118,9 +3129,59 @@ var Settings = function (props) {
         </div>
       )}
 
+      {stab === "pos" && isNetworkClient && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <CardTitle sub="Sales screen options for this counter PC (synced with the main server)">
+              POS Options
+            </CardTitle>
+            {String(businessType || "").toLowerCase() === "glass" ? (
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+                Complimentary free items are not used for glass businesses.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 520 }}>
+                <label style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + (f.moduleToggles && f.moduleToggles.freeItems ? C.accent : C.border), background: f.moduleToggles && f.moduleToggles.freeItems ? C.accentSoft : "#fff" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!(f.moduleToggles && f.moduleToggles.freeItems)}
+                    onChange={function (e) {
+                      var checked = e.target.checked;
+                      setF(function (x) {
+                        var toggles = Object.assign({}, x.moduleToggles || {}, { freeItems: checked });
+                        return Object.assign({}, x, {
+                          moduleToggles: toggles,
+                          freeItemsEnabled: checked,
+                        });
+                      });
+                    }}
+                    style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 2, flexShrink: 0 }}
+                  />
+                  <span>
+                    <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: C.text }}>Free items (complimentary)</span>
+                    <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>
+                      Show the complimentary gift section on the Sales screen. Turn off to hide free-item lines on this counter.
+                    </span>
+                  </span>
+                </label>
+                <div>
+                  <Btn col="blue" onClick={saveClientPosOptions}>Save POS options</Btn>
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
 
       {stab === "network" && isNetworkClient && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <Card>
+            <CardTitle sub="Counter terminal sync">Sync status</CardTitle>
+            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+              Products, invoices, and customers sync from the main PC every few seconds. Changes you make here (sales, customers) sync back to the main PC automatically.
+              Use the <strong>POS Options</strong> tab to turn complimentary free items on or off for this counter.
+            </div>
+          </Card>
           <Card>
             <CardTitle sub="POS terminal connection">Network</CardTitle>
             {(function () {
@@ -3415,6 +3476,19 @@ var Settings = function (props) {
               <CardTitle sub="Database backup and maintenance">Server Actions</CardTitle>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <Btn col="blue" onClick={function () {
+                    if (!isNetworkServer || !systemConfig.apiUrl) {
+                      showAlert("Network server is not configured. Check Settings → Network.");
+                      return;
+                    }
+                    setDataPushBusy(true);
+                    pushKeysToServer(NETWORK_KV_KEYS, { authConfig: systemConfig }).then(function (r) {
+                      if (r && r.ok) showAlert("Shop data uploaded to the server database.\nCounter PCs will receive it on the next sync (within about 8 seconds).");
+                      else showAlert("Upload failed: " + ((r && r.message) || "Unknown error"));
+                    }).catch(function (e) {
+                      showAlert("Upload failed: " + (e && e.message ? e.message : String(e)));
+                    }).finally(function () { setDataPushBusy(false); });
+                  }} disabled={dataPushBusy}>{dataPushBusy ? "Uploading..." : "⬆ Upload Shop Data to Server"}</Btn>
                   <Btn col="green" onClick={function () {
                     var api = window.electronAPI;
                     if (!api || !api.backupDatabase) { showAlert("Backup not available in this build."); return; }
@@ -3429,6 +3503,7 @@ var Settings = function (props) {
                   }}>📂 Open Backup Folder</Btn>
                 </div>
                 <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
+                  Use <strong>Upload Shop Data to Server</strong> if counter PCs cannot see products or invoices (pushes this PC&apos;s data into MySQL).
                   Backups are saved as <code>.sql</code> files in <strong>Documents/TechonERP/backups/</strong>. Keep regular backups to avoid data loss.
                 </div>
               </div>

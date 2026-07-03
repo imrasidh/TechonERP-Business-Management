@@ -20,7 +20,7 @@ import packageJson from '../package.json';
 
 /* ─── Design tokens ─────────────────────────────────────────────── */
 const C = {
-  bg        : 'linear-gradient(135deg, #0a1632 0%, #0d1b3e 100%)',
+  bg        : 'radial-gradient(1200px 600px at 20% 10%, rgba(41,121,255,0.22) 0%, rgba(15,23,42,0.0) 55%), radial-gradient(900px 520px at 85% 18%, rgba(18,176,122,0.18) 0%, rgba(15,23,42,0.0) 55%), linear-gradient(180deg, #0b1324 0%, #0a1628 55%, #081023 100%)',
   card      : '#ffffff',
   border    : '#e1e8f5',
   text      : '#0d1b3e',
@@ -38,12 +38,51 @@ const C = {
   shadowLg  : '0 8px 40px rgba(13,27,62,0.18)',
 };
 
+function WizardGlyph({ tone }) {
+  var c = tone === 'green' ? '#12b07a' : tone === 'orange' ? '#e07a10' : '#2979ff';
+  var bg = tone === 'green' ? 'rgba(18,176,122,0.12)' : tone === 'orange' ? 'rgba(224,122,16,0.12)' : 'rgba(41,121,255,0.12)';
+  var bd = tone === 'green' ? 'rgba(18,176,122,0.28)' : tone === 'orange' ? 'rgba(224,122,16,0.28)' : 'rgba(41,121,255,0.28)';
+  return (
+    <div style={{
+      width: 44, height: 44, borderRadius: 14,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: bg, border: '1.5px solid ' + bd, flexShrink: 0,
+      boxShadow: '0 10px 24px rgba(2,6,23,0.12)',
+    }}>
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {tone === 'green' ? (
+          <>
+            <path d="M4 7h16" />
+            <path d="M7 7v12" />
+            <path d="M17 7v12" />
+            <path d="M5 19h14" />
+          </>
+        ) : tone === 'orange' ? (
+          <>
+            <path d="M4 6h16v10H4z" />
+            <path d="M7 20h10" />
+            <path d="M12 16v4" />
+          </>
+        ) : (
+          <>
+            <path d="M4 7h16" />
+            <path d="M6 7v12" />
+            <path d="M18 7v12" />
+            <path d="M9 11h6" />
+            <path d="M9 15h6" />
+          </>
+        )}
+      </svg>
+    </div>
+  );
+}
+
 /* ─── Shared styled primitives ───────────────────────────────────── */
 function Card({ children, style }) {
   return (
     <div style={{
-      background: C.card, borderRadius: 12, border: '1.5px solid ' + C.border,
-      boxShadow: C.shadow, padding: '16px 18px',
+      background: C.card, borderRadius: 16, border: '1.5px solid rgba(226,232,240,0.9)',
+      boxShadow: '0 20px 70px rgba(2,6,23,0.22)', padding: '18px 20px',
       ...style
     }}>
       {children}
@@ -75,7 +114,7 @@ function PrimaryBtn({ children, onClick, disabled, loading, col = 'blue', style 
   return (
     <button className="tc-btn" onClick={onClick} disabled={disabled || loading} style={{
       background: c.bg, color: c.txt, border: 'none', borderRadius: 8,
-      padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
+      padding: '10px 16px', fontSize: 13, fontWeight: 700, cursor: (disabled || loading) ? 'not-allowed' : 'pointer',
       display: 'inline-flex', alignItems: 'center', gap: 8,
       opacity: (disabled || loading) ? 0.55 : 1,
       boxShadow: (disabled || loading) ? 'none' : c.shadow,
@@ -152,43 +191,64 @@ function ModeSelector({ onSelect }) {
   const modes = [
     {
       id: 'standalone',
-      icon: '🖥️',
+      tone: 'blue',
       title: 'Single Computer',
       subtitle: 'Standalone Mode',
       desc: 'All your data stays on this computer. Perfect for a single-PC shop.',
       tags: ['Full ERP', 'No network needed', 'Simple setup'],
       color: C.blue,
-      bg: C.blueLight,
+      bg: 'rgba(41,121,255,0.08)',
     },
     {
       id: 'network_server',
-      icon: '🗄️',
+      tone: 'green',
       title: 'Main Computer',
       subtitle: 'Network Server',
       desc: 'This PC stores all business data. Other computers connect to it for POS.',
       tags: ['Full ERP', 'Shares data', 'Auto setup'],
       color: C.green,
-      bg: C.greenLight,
+      bg: 'rgba(18,176,122,0.08)',
     },
     {
       id: 'network_client',
-      icon: '🖨️',
+      tone: 'orange',
       title: 'Counter Computer',
       subtitle: 'Network Client',
       desc: 'POS terminal only. Connects to the main server computer.',
       tags: ['POS only', 'Needs server', 'Lightweight'],
       color: C.orange,
-      bg: C.orangeLight,
+      bg: 'rgba(224,122,16,0.08)',
     },
   ];
 
   return (
     <div>
-      <div style={{ textAlign: 'center', marginBottom: 14 }}>
-        <div style={{ fontSize: 28, marginBottom: 6 }}>👋</div>
-        <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 4 }}>Welcome to Techon ERP</div>
-        <div style={{ fontSize: 13, color: C.muted, maxWidth: 440, margin: '0 auto', lineHeight: 1.45 }}>
-          Let's set up your system. Choose how you'll use this computer.
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
+        <div style={{
+          width: 46, height: 46, borderRadius: 14,
+          background: 'linear-gradient(135deg, rgba(41,121,255,0.18), rgba(18,176,122,0.12))',
+          border: '1.5px solid rgba(148,163,184,0.35)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 14px 30px rgba(2,6,23,0.14)',
+          flexShrink: 0,
+        }}>
+          <img
+            src="./techonerp.ico"
+            alt="Techon ERP"
+            style={{
+              width: 30,
+              height: 30,
+              objectFit: 'contain',
+              display: 'block',
+              filter: 'drop-shadow(0 6px 14px rgba(2,6,23,0.18))',
+            }}
+          />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: C.text, letterSpacing: '-0.02em' }}>System setup</div>
+          <div style={{ fontSize: 13, color: C.textMd, marginTop: 4, lineHeight: 1.45 }}>
+            Choose how this computer will be used. You can reset this later from Settings.
+          </div>
         </div>
       </div>
 
@@ -202,29 +262,45 @@ function ModeSelector({ onSelect }) {
               onMouseEnter={() => setHovered(m.id)}
               onMouseLeave={() => setHovered(null)}
               style={{
-                border: '2px solid ' + (isHov ? m.color : C.border),
-                borderRadius: 12, padding: '12px 14px', cursor: 'pointer',
-                background: isHov ? m.bg : C.card,
+                border: '1.5px solid ' + (isHov ? 'rgba(15,23,42,0.18)' : C.border),
+                borderRadius: 14, padding: '12px 12px', cursor: 'pointer',
+                background: isHov ? 'linear-gradient(180deg, #ffffff 0%, #fbfdff 100%)' : C.card,
                 transition: 'all .18s cubic-bezier(.22,1,.36,1)',
                 display: 'flex', alignItems: 'center', gap: 12,
-                transform: isHov ? 'translateX(3px)' : 'none',
-                boxShadow: isHov ? '0 4px 20px rgba(13,27,62,0.10)' : 'none',
+                transform: isHov ? 'translateY(-2px)' : 'none',
+                boxShadow: isHov ? '0 16px 46px rgba(2,6,23,0.14)' : '0 10px 26px rgba(2,6,23,0.06)',
+                position: 'relative',
+                overflow: 'hidden',
+                minHeight: 158,
               }}
             >
-              <div style={{ fontSize: 26, flexShrink: 0 }}>{m.icon}</div>
+              <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(520px 220px at 10% 0%, ' + m.bg + ' 0%, rgba(255,255,255,0) 60%)', pointerEvents: 'none' }} />
+              <WizardGlyph tone={m.tone} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{m.title}</span>
-                  <span style={{ fontSize: 10, fontWeight: 600, color: m.color, background: m.bg, border: '1px solid ' + m.color, borderRadius: 16, padding: '1px 7px' }}>{m.subtitle}</span>
+                  <span style={{ fontSize: 13.5, fontWeight: 800, color: C.text, letterSpacing: '-0.01em' }}>{m.title}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: m.color, background: 'rgba(255,255,255,0.75)', border: '1px solid rgba(15,23,42,0.12)', borderRadius: 999, padding: '2px 8px' }}>{m.subtitle}</span>
                 </div>
-                <div style={{ fontSize: 12, color: C.textMd, lineHeight: 1.45, marginBottom: 6 }}>{m.desc}</div>
-                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 12, color: C.textMd, lineHeight: 1.4, marginBottom: 7, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.desc}</div>
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   {m.tags.map(t => (
-                    <span key={t} style={{ fontSize: 10, color: C.muted, background: '#f0f4ff', border: '1px solid ' + C.border, borderRadius: 16, padding: '1px 7px' }}>{t}</span>
+                    <span key={t} style={{ fontSize: 9.5, color: '#64748b', background: 'rgba(148,163,184,0.12)', border: '1px solid rgba(148,163,184,0.22)', borderRadius: 999, padding: '2px 7px', fontWeight: 700 }}>{t}</span>
                   ))}
                 </div>
               </div>
-              <span style={{ fontSize: 20, color: isHov ? m.color : C.muted, transition: 'color .18s' }}>›</span>
+              <div style={{
+                width: 28, height: 28, borderRadius: 10,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: isHov ? m.bg : 'rgba(148,163,184,0.10)',
+                border: '1px solid rgba(148,163,184,0.22)',
+                color: isHov ? m.color : '#64748b',
+                transition: 'all .18s',
+                flexShrink: 0,
+              }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
+              </div>
             </div>
           );
         })}
@@ -260,6 +336,54 @@ function ServerSetup({ onComplete }) {
   const [migrated, setMigrated]   = useState(false);
   const [keyCopied, setKeyCopied] = useState(false);
   const logRef = useRef(null);
+
+  /* Existing-data detection + background migration hook
+     NOTE: Hooks must run on every render; we gate by `phase` inside. */
+  const hasExistingData = (() => {
+    const cache = window._idbCache || {};
+    return ['tc3_products','tc3_sales','tc3_customers'].some(k => Array.isArray(cache[k]) && cache[k].length > 0);
+  })();
+
+  async function handleMigrate() {
+    setMigrating(true);
+    try {
+      const cache = window._idbCache || {};
+      const TC_KEYS = [
+        'tc3_settings','tc3_products','tc3_customers','tc3_suppliers',
+        'tc3_sales','tc3_purchases','tc3_expenses','tc3_repairs',
+        'tc3_assets','tc3_damageLog','tc3_productLog','tc3_repairDeleteLog',
+        'tc3_salesReturns','tc3_purchaseReturns','tc3_quotations','tc3_cheques',
+        'tc3_manualReceivables','tc3_manualPayables','tc3_capLedger','tc3_capLog',
+        'tc3_profitDist','tc3_assetLog','tc3_openBal','tc3_labelDesigns','tc3_businessType',
+      ];
+      const patches = TC_KEYS
+        .filter(k => cache[k] !== undefined && cache[k] !== null)
+        .map(k => ({ key: k, value: cache[k] }));
+
+      if (patches.length === 0) { setMigrating(false); setMigrated(true); return; }
+
+      const headers = { 'Content-Type': 'application/json', 'X-TC-Client-ID': 'migration' };
+      if (generatedKey) headers['X-TC-KEY'] = generatedKey;
+
+      const res  = await fetch(apiUrl + 'sync_patch.php', {
+        method: 'POST', headers,
+        body: JSON.stringify({ patches, client_id: 'migration' }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.message || 'Migration failed');
+      setMigrated(true);
+    } catch (err) {
+      alert('Migration error: ' + err.message);
+    }
+    setMigrating(false);
+  }
+
+  useEffect(function () {
+    if (phase !== 'done' || !hasExistingData || migrated || migrating || !apiUrl || !generatedKey) return;
+    var t = setTimeout(function () { handleMigrate(); }, 800);
+    return function () { clearTimeout(t); };
+  }, [phase, hasExistingData, migrated, migrating, apiUrl, generatedKey]); /* eslint-disable-line react-hooks/exhaustive-deps */
 
   function addLog(msg) {
     setLog(prev => [...prev, msg]);
@@ -483,47 +607,6 @@ function ServerSetup({ onComplete }) {
     );
   }
 
-  // Done
-  async function handleMigrate() {
-    setMigrating(true);
-    try {
-      const cache = window._idbCache || {};
-      const TC_KEYS = [
-        'tc3_settings','tc3_products','tc3_customers','tc3_suppliers',
-        'tc3_sales','tc3_purchases','tc3_expenses','tc3_repairs',
-        'tc3_assets','tc3_damageLog','tc3_productLog','tc3_repairDeleteLog',
-        'tc3_salesReturns','tc3_purchaseReturns','tc3_quotations','tc3_cheques',
-        'tc3_manualReceivables','tc3_manualPayables','tc3_capLedger','tc3_capLog',
-        'tc3_profitDist','tc3_assetLog','tc3_openBal','tc3_labelDesigns','tc3_businessType',
-      ];
-      const patches = TC_KEYS
-        .filter(k => cache[k] !== undefined && cache[k] !== null)
-        .map(k => ({ key: k, value: cache[k] }));
-
-      if (patches.length === 0) { setMigrating(false); setMigrated(true); return; }
-
-      const headers = { 'Content-Type': 'application/json', 'X-TC-Client-ID': 'migration' };
-      if (generatedKey) headers['X-TC-KEY'] = generatedKey;
-
-      const res  = await fetch(apiUrl + 'sync_patch.php', {
-        method: 'POST', headers,
-        body: JSON.stringify({ patches, client_id: 'migration' }),
-        signal: AbortSignal.timeout(30000),
-      });
-      const json = await res.json();
-      if (!json.success) throw new Error(json.message || 'Migration failed');
-      setMigrated(true);
-    } catch (err) {
-      alert('Migration error: ' + err.message);
-    }
-    setMigrating(false);
-  }
-
-  const hasExistingData = (() => {
-    const cache = window._idbCache || {};
-    return ['tc3_products','tc3_sales','tc3_customers'].some(k => Array.isArray(cache[k]) && cache[k].length > 0);
-  })();
-
   return (
     <div style={{ textAlign: 'center' }}>
       <div style={{ fontSize: 32, marginBottom: 6 }}>🎉</div>
@@ -637,6 +720,24 @@ function ClientSetup({ onComplete }) {
       if (!prodRes.ok) throw new Error('Server returned HTTP ' + prodRes.status);
       const prodJson = await prodRes.json();
       if (!Array.isArray(prodJson.products)) throw new Error('Invalid response from server. Products not found.');
+
+      /* Step 3 — verify license allows counter PCs */
+      const licRes = await fetch(
+        apiUrl + 'check_license.php?deviceId=wizard00000001&deviceName=' + encodeURIComponent('Setup Wizard'),
+        { headers: { 'X-TC-KEY': apiKey.trim() }, signal: AbortSignal.timeout(8000) }
+      );
+      const licJson = await licRes.json();
+      const licMsg = String((licJson && licJson.message) || '').toLowerCase();
+      if (licJson && (licJson.status === 'blocked' || licMsg.indexOf('does not allow client') !== -1)) {
+        throw new Error(
+          'This license does not allow counter PCs.\n\n' +
+          'On the main server PC: Settings → Network → License Sync.\n' +
+          'If "Allowed PCs" shows "Not Allowed", contact Techon Computers to upgrade your license.'
+        );
+      }
+      if (licJson && !licJson.success && licMsg.indexOf('not activated') !== -1) {
+        throw new Error('Server license is not activated yet. Activate the license on the main server PC first.');
+      }
 
       /* Save config */
       await api.saveNetworkConfig({
@@ -759,11 +860,12 @@ export default function SetupWizard({ onComplete }) {
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800;900&display=swap');
         .tc-wizard-modes-grid {
           display: grid;
-          grid-template-columns: 1fr;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 10px;
+          align-items: stretch;
         }
-        @media (min-width: 768px) {
-          .tc-wizard-modes-grid { grid-template-columns: 1fr 1fr; }
+        @media (max-width: 980px) {
+          .tc-wizard-modes-grid { grid-template-columns: 1fr; }
         }
         .tc-wizard-client-grid {
           display: grid;
@@ -788,11 +890,11 @@ export default function SetupWizard({ onComplete }) {
         fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif", zIndex: 9999,
         padding: 16,
       }}>
-        <div style={{ width: '100%', maxWidth: 720 }}>
+        <div style={{ width: '100%', maxWidth: 980 }}>
           {/* Header */}
           <div style={{ textAlign: 'center', marginBottom: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'rgba(255,255,255,0.55)', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 2 }}>
-              Techon ERP — First Run Setup
+              Techon ERP — First-run setup
             </div>
           </div>
 

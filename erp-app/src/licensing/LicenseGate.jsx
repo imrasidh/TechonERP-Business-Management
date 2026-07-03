@@ -707,9 +707,13 @@ function GracePeriodBanner({ graceDaysLeft, onActivate }) {
 /* ═══════════════════════════════════════════════════════════════
    CLIENT LICENSE LOCKED  (server unreachable or not configured)
    ═══════════════════════════════════════════════════════════════ */
-function ClientLicenseLocked({ message, checkedAt, serverUrl }) {
+function ClientLicenseLocked({ message, checkedAt, serverUrl, licenseBlocked }) {
   const [pinging, setPinging] = useState(false);
   const [retried, setRetried] = useState(false);
+  const msgLower = String(message || '').toLowerCase();
+  const isLicenseIssue = licenseBlocked || msgLower.indexOf('does not allow client') !== -1
+    || msgLower.indexOf('client limit') !== -1
+    || msgLower.indexOf('not allow connecting') !== -1;
 
   async function handleRetry() {
     setPinging(true);
@@ -735,7 +739,7 @@ function ClientLicenseLocked({ message, checkedAt, serverUrl }) {
     }}>
       {/* Status dot + icon */}
       <div style={{ marginBottom: 20, textAlign: 'center' }}>
-        <div style={{ fontSize: 56, lineHeight: 1 }}>🔌</div>
+        <div style={{ fontSize: 56, lineHeight: 1 }}>{isLicenseIssue ? '🔒' : '🔌'}</div>
         <div style={{ marginTop: 12 }}>
           <span style={{
             display        : 'inline-flex',
@@ -755,9 +759,9 @@ function ClientLicenseLocked({ message, checkedAt, serverUrl }) {
               borderRadius   : '50%',
               background     : '#e03151',
               display        : 'inline-block',
-              animation      : 'tcPulse 1.5s ease-in-out infinite',
+              animation      : isLicenseIssue ? 'none' : 'tcPulse 1.5s ease-in-out infinite',
             }} />
-            Server Not Reachable
+            {isLicenseIssue ? 'License Restriction' : 'Server Not Reachable'}
           </span>
         </div>
       </div>
@@ -773,10 +777,12 @@ function ClientLicenseLocked({ message, checkedAt, serverUrl }) {
         textAlign      : 'center',
       }}>
         <div style={{ fontSize: 20, fontWeight: 800, color: C.text, marginBottom: 8 }}>
-          Cannot Connect to Server
+          {isLicenseIssue ? 'Counter PC Not Allowed' : 'Cannot Connect to Server'}
         </div>
-        <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6 }}>
-          {message || 'Server not reachable. Please start the main server PC.'}
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6, whiteSpace: 'pre-line' }}>
+          {message || (isLicenseIssue
+            ? 'This license does not allow counter PCs. Use the main server PC or upgrade your license.'
+            : 'Server not reachable. Please start the main server PC.')}
         </div>
         {serverUrl && (
           <div style={{
@@ -803,9 +809,19 @@ function ClientLicenseLocked({ message, checkedAt, serverUrl }) {
           textAlign    : 'left',
         }}>
           <div style={{ fontWeight: 700, marginBottom: 4 }}>Steps to fix:</div>
-          <div>1. Turn on the main server computer</div>
-          <div>2. Make sure Techon ERP is running on it</div>
-          <div>3. Check that both computers are on the same network</div>
+          {isLicenseIssue ? (
+            <>
+              <div>1. On the <strong>main server PC</strong>, open Settings → Network → License Sync</div>
+              <div>2. Check <strong>Allowed PCs</strong> — if it says &quot;Not Allowed&quot;, your license is single-PC only</div>
+              <div>3. Contact Techon Computers to upgrade your license for counter PCs, then sync license on the main PC</div>
+            </>
+          ) : (
+            <>
+              <div>1. Turn on the main server computer</div>
+              <div>2. Make sure Techon ERP is running on it</div>
+              <div>3. Check that both computers are on the same network</div>
+            </>
+          )}
         </div>
         <button
           onClick={handleRetry}
@@ -822,7 +838,7 @@ function ClientLicenseLocked({ message, checkedAt, serverUrl }) {
             cursor       : pinging ? 'not-allowed' : 'pointer',
           }}
         >
-          {pinging ? 'Retrying...' : retried ? '✓ Reloading...' : '🔄 Retry Connection'}
+          {pinging ? 'Retrying...' : retried ? '✓ Reloading...' : (isLicenseIssue ? '🔄 Check Again' : '🔄 Retry Connection')}
         </button>
         {checkedAt && (
           <div style={{ marginTop: 12, fontSize: 11, color: C.muted }}>
@@ -1324,7 +1340,7 @@ function TrialLimitReadOnlyShell({ licStatus, usageCounts, networkConfig, showAc
 function readIdbKey(key) {
   return new Promise(function(resolve) {
     try {
-      var req = indexedDB.open('techon_erp_v1', 1);
+      var req = indexedDB.open('techon_erp_v1', 2);
       req.onerror = function() { resolve(null); };
       req.onsuccess = function(e) {
         try {
@@ -1688,6 +1704,7 @@ export default function LicenseGate() {
           message={blockedMessage}
           checkedAt={licStatus.checkedAt}
           serverUrl={networkConfig.apiUrl}
+          licenseBlocked={true}
         />
       );
     }

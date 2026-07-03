@@ -9,19 +9,63 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+var CLIENT_BLOCKED_RESPONSE = { status: 'blocked', message: 'Restricted in client mode' };
+
+var CLIENT_BLOCKED_METHODS = {
+  saveBackup: true,
+  selectFolder: true,
+  syncLicenseNow: true,
+  getConnectedClients: true,
+  removeConnectedClient: true,
+  checkXampp: true,
+  startXamppServices: true,
+  stopXamppServices: true,
+  openXamppInstaller: true,
+  testHttpPort: true,
+  getLanIp: true,
+  copyApiFiles: true,
+  setupDatabase: true,
+  generateApiKey: true,
+  writeApiKey: true,
+  backupDatabase: true,
+  openBackupFolder: true,
+  getLastBackupDate: true,
+  openLogFolder: true,
+};
+
+function isNetworkClientRoleSync() {
+  try {
+    return ipcRenderer.sendSync('tc-is-network-client-sync') === true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+function guardClientMethod(name, fn) {
+  return function () {
+    if (!CLIENT_BLOCKED_METHODS[name] || !isNetworkClientRoleSync()) {
+      return fn.apply(this, arguments);
+    }
+    if (name === 'saveBackup') {
+      return undefined;
+    }
+    return Promise.resolve(CLIENT_BLOCKED_RESPONSE);
+  };
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
 
   /**
    * Save a backup JSON file to Documents/TechonERP/backups/
    * @param {object} payload - { filename: string, content: string }
    */
-  saveBackup: function(payload) {
+  saveBackup: guardClientMethod('saveBackup', function(payload) {
     ipcRenderer.send('save-backup', payload);
-  },
+  }),
 
-  selectFolder: function() {
+  selectFolder: guardClientMethod('selectFolder', function() {
     return ipcRenderer.invoke('tc-select-folder');
-  },
+  }),
 
   /**
    * Get current license / trial status from main process.
@@ -47,15 +91,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncClockViaLicense: function() {
     return ipcRenderer.invoke('tc-sync-clock-via-license');
   },
-  syncLicenseNow: function() {
+  syncLicenseNow: guardClientMethod('syncLicenseNow', function() {
     return ipcRenderer.invoke('tc-license-sync-now');
-  },
-  getConnectedClients: function() {
+  }),
+  getConnectedClients: guardClientMethod('getConnectedClients', function() {
     return ipcRenderer.invoke('tc-connected-clients-list');
-  },
-  removeConnectedClient: function(payload) {
+  }),
+  removeConnectedClient: guardClientMethod('removeConnectedClient', function(payload) {
     return ipcRenderer.invoke('tc-connected-client-remove', payload || {});
-  },
+  }),
   setConnectedClientLabel: function(payload) {
     return ipcRenderer.invoke('tc-connected-client-set-label', payload || {});
   },
@@ -160,75 +204,75 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /* ── XAMPP Detection & Control ──────────────────────────────────── */
 
   /** Check if XAMPP is installed. Returns { found: bool, path?: string } */
-  checkXampp: function() {
+  checkXampp: guardClientMethod('checkXampp', function() {
     return ipcRenderer.invoke('tc-check-xampp');
-  },
+  }),
 
   /** Start Apache + MySQL services. Returns { ok: bool, message?: string } */
-  startXamppServices: function(payload) {
+  startXamppServices: guardClientMethod('startXamppServices', function(payload) {
     return ipcRenderer.invoke('tc-start-xampp-services', payload || {});
-  },
+  }),
 
   /** Stop XAMPP services. Returns { ok: bool } */
-  stopXamppServices: function(payload) {
+  stopXamppServices: guardClientMethod('stopXamppServices', function(payload) {
     return ipcRenderer.invoke('tc-stop-xampp-services', payload || {});
-  },
+  }),
 
   /** Open the XAMPP installer (bundled or web download). */
-  openXamppInstaller: function() {
+  openXamppInstaller: guardClientMethod('openXamppInstaller', function() {
     return ipcRenderer.invoke('tc-open-xampp-installer');
-  },
+  }),
 
   /* ── Network Setup Helpers ──────────────────────────────────────── */
 
   /** Test HTTP ports 80/8080/8000/3000 and return the first open one. */
-  testHttpPort: function() {
+  testHttpPort: guardClientMethod('testHttpPort', function() {
     return ipcRenderer.invoke('tc-test-http-port');
-  },
+  }),
 
   /** Get the LAN IPv4 address of this machine. Returns { ip, iface } */
-  getLanIp: function() {
+  getLanIp: guardClientMethod('getLanIp', function() {
     return ipcRenderer.invoke('tc-get-lan-ip');
-  },
+  }),
 
   /** Copy network-api/ folder to XAMPP htdocs/api/. Returns { ok, dest? } */
-  copyApiFiles: function(payload) {
+  copyApiFiles: guardClientMethod('copyApiFiles', function(payload) {
     return ipcRenderer.invoke('tc-copy-api-files', payload || {});
-  },
+  }),
 
   /** Create MySQL DB and import schema.sql. Returns { ok, message? } */
-  setupDatabase: function(payload) {
+  setupDatabase: guardClientMethod('setupDatabase', function(payload) {
     return ipcRenderer.invoke('tc-setup-database', payload || {});
-  },
+  }),
 
   /* ── Security ────────────────────────────────────────────────────── */
 
   /** Generate a cryptographically random API key. Returns { key: string } */
-  generateApiKey: function() {
+  generateApiKey: guardClientMethod('generateApiKey', function() {
     return ipcRenderer.invoke('tc-generate-api-key');
-  },
+  }),
 
   /** Write the API key to XAMPP htdocs/api/tc_api_key.php */
-  writeApiKey: function(payload) {
+  writeApiKey: guardClientMethod('writeApiKey', function(payload) {
     return ipcRenderer.invoke('tc-write-api-key', payload || {});
-  },
+  }),
 
   /* ── Backup ──────────────────────────────────────────────────────── */
 
   /** Run mysqldump to Documents/TechonERP/backups/. Returns { ok, path? } */
-  backupDatabase: function(payload) {
+  backupDatabase: guardClientMethod('backupDatabase', function(payload) {
     return ipcRenderer.invoke('tc-backup-database', payload || {});
-  },
+  }),
 
   /** Open the backups folder in Explorer. */
-  openBackupFolder: function() {
+  openBackupFolder: guardClientMethod('openBackupFolder', function() {
     return ipcRenderer.invoke('tc-open-backup-folder');
-  },
+  }),
 
   /** Get the date of the last DB backup. Returns { date: ISO string | null } */
-  getLastBackupDate: function() {
+  getLastBackupDate: guardClientMethod('getLastBackupDate', function() {
     return ipcRenderer.invoke('tc-last-db-backup-date');
-  },
+  }),
 
   /* ── Logging ─────────────────────────────────────────────────────── */
 
@@ -237,9 +281,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('tc-write-log', payload || {});
   },
 
-  /** Open the logs folder in Explorer. */
-  openLogFolder: function() {
-    return ipcRenderer.invoke('tc-open-log-folder');
+  /** Push key-value patches to LAN sync_patch.php (live sync — main + counter). */
+  syncPatch: function(payload) {
+    return ipcRenderer.invoke('tc-sync-patch', payload || {});
   },
+
+  /** Open the logs folder in Explorer. */
+  openLogFolder: guardClientMethod('openLogFolder', function() {
+    return ipcRenderer.invoke('tc-open-log-folder');
+  }),
 
 });

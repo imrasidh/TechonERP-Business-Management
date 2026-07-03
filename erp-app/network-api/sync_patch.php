@@ -16,6 +16,7 @@
  *  5. Returns: { success, message, data: { saved, failed, duplicates } }
  */
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/merge_records.php';
 
 requireAuth();
 
@@ -123,22 +124,7 @@ foreach ($patches as $patch) {
         continue;
     }
 
-    // ── Reject empty arrays for critical data ──────────────────────
-    if (is_array($value) && count($value) === 0) {
-        $allowEmpty = in_array($key, [
-            'tc3_auditLog','tc3_damageLog','tc3_productLog',
-            'tc3_repairDeleteLog','tc3_salesReturns','tc3_purchaseReturns',
-            'tc3_quotations','tc3_cheques','tc3_manualReceivables','tc3_manualPayables',
-            'tc3_capLedger','tc3_capLog','tc3_profitDist','tc3_assetLog',
-            'tc3_held_invoices','tc3_labelDesigns',
-            'tc3_journal_lines','tc3_gl_accounts',
-        ]);
-        if (!$allowEmpty) {
-            $failed[] = ['key' => $key, 'reason' => 'Rejecting empty array for ' . $key];
-            serverLog('warn', 'Rejected empty array for ' . $key . ' from client ' . $clientId);
-            continue;
-        }
-    }
+    // ── Empty arrays are allowed for critical data (merged safely on server side) ──
 
     // ── Duplicate patch protection ─────────────────────────────────
     if ($patchId !== '') {
@@ -159,6 +145,55 @@ foreach ($patches as $patch) {
     if ($json === false) {
         $failed[] = ['key' => $key, 'reason' => 'JSON encoding failed'];
         continue;
+    }
+
+    /* Array patches: chunked = additive merge; full snapshot = incoming membership (deletes work) */
+    if (is_array($value) && $ALLOWED[$key] === 'array') {
+        try {
+            $verifyStmt->execute([$key]);
+            $existingRaw = $verifyStmt->fetchColumn();
+            $existing = ($existingRaw !== false && $existingRaw !== null)
+                ? json_decode((string)$existingRaw, true)
+                : [];
+            if (!is_array($existing)) $existing = [];
+            $isChunk = !empty($patch['_chunk']);
+            if ($isChunk) {
+                $value = tcMergeRecordArraysByNewest($existing, $value);
+            } else {
+                $value = tcApplyFullArraySnapshot($existing, $value);
+            }
+            $json = json_encode($value, JSON_UNESCAPED_UNICODE);
+            if ($json === false) {
+                $failed[] = ['key' => $key, 'reason' => 'JSON encoding failed after merge'];
+                continue;
+            }
+        } catch (Exception $e) {
+            serverLog('warn', 'Array merge failed for ' . $key . ': ' . $e->getMessage());
+        }
+    }
+
+    /* Settings: shallow merge so counter POS toggles do not wipe main shop config */
+    if ($key === 'tc3_settings' && is_array($value)) {
+        try {
+            $verifyStmt->execute([$key]);
+            $existingRaw = $verifyStmt->fetchColumn();
+            $existing = ($existingRaw !== false && $existingRaw !== null)
+                ? json_decode((string)$existingRaw, true)
+                : [];
+            if (!is_array($existing)) $existing = [];
+            if (isset($existing['moduleToggles']) && is_array($existing['moduleToggles'])
+                && isset($value['moduleToggles']) && is_array($value['moduleToggles'])) {
+                $value['moduleToggles'] = array_merge($existing['moduleToggles'], $value['moduleToggles']);
+            }
+            $value = array_merge($existing, $value);
+            $json = json_encode($value, JSON_UNESCAPED_UNICODE);
+            if ($json === false) {
+                $failed[] = ['key' => $key, 'reason' => 'JSON encoding failed after settings merge'];
+                continue;
+            }
+        } catch (Exception $e) {
+            serverLog('warn', 'Settings merge failed: ' . $e->getMessage());
+        }
     }
 
     try {

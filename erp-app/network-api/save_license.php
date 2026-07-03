@@ -55,7 +55,11 @@ $expiresAt   = isset($input['expires_at'])     ? (string)$input['expires_at']   
 $trialEndsAt = isset($input['trial_ends_at'])  ? (string)$input['trial_ends_at'] : null;
 $maxClients  = isset($input['max_clients'])    ? (int)$input['max_clients']       : 0;
 $readOnly    = !empty($input['read_only']) ? 1 : 0;
-$maxClients  = $maxClients > 0 ? $maxClients : 0;
+if ($status === 'trial') {
+    $maxClients = 2; /* TRIAL_MAX_CLIENTS — match check_license.php */
+} else {
+    $maxClients  = $maxClients > 0 ? $maxClients : 0;
+}
 
 /* ── Ensure table exists (auto-migrate old installs) ────────────── */
 $pdo = db();

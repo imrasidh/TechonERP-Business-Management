@@ -33,6 +33,30 @@ try {
   }
 } catch (_e) { /* dotenv optional if missing */ }
 
+/* ═══════════════════════════════════════════════════════════════════
+   CHROMIUM STORAGE PATH FIX (Windows)
+   Avoid "Access is denied" errors for disk cache / quota DB which can
+   delay first paint by several seconds and show a blank window.
+   Put all runtime data under %APPDATA%/TechonERP.
+   ═══════════════════════════════════════════════════════════════════ */
+try {
+  const base = path.join(app.getPath('appData'), 'TechonERP');
+  fs.mkdirSync(base, { recursive: true });
+  const userDataDir = path.join(base, 'UserData');
+  const cacheDir = path.join(base, 'Cache');
+  const tempDir = path.join(base, 'Temp');
+  fs.mkdirSync(userDataDir, { recursive: true });
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.mkdirSync(tempDir, { recursive: true });
+  app.setPath('userData', userDataDir);
+  app.setPath('cache', cacheDir);
+  app.setPath('temp', tempDir);
+
+  /* Force Chromium disk cache into our writable cache folder. */
+  app.commandLine.appendSwitch('disk-cache-dir', path.join(cacheDir, 'disk'));
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+} catch (_e) { /* never block startup */ }
+
 if (process.env.TC_LIC_DEBUG === '1' && app && app.isPackaged !== true) {
   const s = process.env.LICENSE_SECRET || process.env.TC_LIC_SERVER_SECRET;
   console.log('[TC_LIC_DEBUG] LICENSE_SECRET/TC_LIC_SERVER_SECRET: ' + (s ? 'SET (length ' + String(s.length) + ')' : 'NOT SET'));
@@ -887,26 +911,78 @@ async function _syncAttempt(payload, cfg, attempt) {
   }
 }
 
+function buildMysqlLicensePayload(licData) {
+  const status = licData.status || 'none';
+  return {
+    status        : status,
+    shop_name     : licData.shopName != null ? licData.shopName : null,
+    license_key   : (licData.key != null && licData.key !== '') ? licData.key : (status === 'trial' ? '' : null),
+    plan          : licData.plan != null ? licData.plan : null,
+    expires_at    : licData.expires != null ? licData.expires : null,
+    trial_ends_at : licData.trialEndsAt != null ? licData.trialEndsAt : null,
+    max_clients   : licData.maxClients != null ? licData.maxClients : null,
+    read_only     : licData.readOnly ? 1 : 0,
+  };
+}
+
+function isLocalTrialLicense() {
+  const lic = loadLicense();
+  if (!lic) return true;
+  if (lic.mode !== 'activated') return !isTrialExpired(lic);
+  return false;
+}
+
+function getTrialLicenseSnapshot() {
+  const lic = getTrialInfo();
+  return {
+    status     : 'trial',
+    shopName   : lic.shopName || '',
+    key        : null,
+    plan       : 'trial',
+    expires    : null,
+    trialEndsAt: new Date(lic.trialMaxTs).toISOString(),
+    maxClients : TRIAL_MAX_CLIENTS,
+    readOnly   : false,
+  };
+}
+
+async function syncTrialLicenseToMySQLNow(cfg) {
+  if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl || !cfg.apiKey) {
+    return { ok: false, message: 'Network server not configured.' };
+  }
+  if (!isLocalTrialLicense()) {
+    return { ok: false, message: 'Not in trial mode.' };
+  }
+  const payload = buildMysqlLicensePayload(getTrialLicenseSnapshot());
+  try {
+    const r = await lanPost(cfg.apiUrl + 'save_license.php', payload, { 'X-TC-License-Sync': cfg.apiKey });
+    if (!r.success) throw new Error(r.message || 'save_license returned success:false');
+    writeLogFile('info', '[LicenseSync] Trial synced to MySQL — max_clients=' + TRIAL_MAX_CLIENTS);
+    return { ok: true, message: 'Trial license synced to server database.', max_clients: TRIAL_MAX_CLIENTS };
+  } catch (e) {
+    writeLogFile('warn', '[LicenseSync] Trial sync failed: ' + (e && e.message ? e.message : String(e)));
+    return { ok: false, message: e && e.message ? e.message : 'Trial sync failed.' };
+  }
+}
+
+function syncTrialLicenseToMySQL(cfg) {
+  if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl || !cfg.apiKey) return;
+  if (!isLocalTrialLicense()) return;
+  syncLicenseToMySQL(getTrialLicenseSnapshot(), cfg);
+}
+
 /**
  * Sync the current license snapshot to MySQL on the server.
  * Fire-and-forget with automatic retry — never blocks the caller.
  */
 function syncLicenseToMySQL(licData, cfg) {
   if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl || !cfg.apiKey) return;
-  _syncAttempt(
-    {
-      status        : licData.status      || 'none',
-      shop_name     : licData.shopName    || null,
-      license_key   : licData.key         || null,
-      plan          : licData.plan        || null,
-      expires_at    : licData.expires     || null,
-      trial_ends_at : licData.trialEndsAt || null,
-      max_clients   : licData.maxClients  != null ? licData.maxClients : null,
-      read_only     : licData.readOnly ? 1 : 0,
-    },
-    cfg,
-    0
-  );
+  _syncAttempt(buildMysqlLicensePayload(licData), cfg, 0);
+}
+
+function isCloudVerifySuccess(status) {
+  const s = String(status || '').toUpperCase();
+  return s === 'OK' || s === 'VALID';
 }
 
 async function forceCloudLicenseSync(manualTrigger) {
@@ -916,12 +992,19 @@ async function forceCloudLicenseSync(manualTrigger) {
   }
   const lic = loadLicense();
   if (!lic || lic.mode !== 'activated' || !lic.key) {
+    if (cfg && cfg.role === 'network_server' && isLocalTrialLicense()) {
+      const trialRes = await syncTrialLicenseToMySQLNow(cfg);
+      if (trialRes.ok) {
+        writeLogFile('info', '[LicenseSync] Trial MySQL sync OK' + (manualTrigger ? ' (manual)' : ' (background)'));
+      }
+      return trialRes;
+    }
     return { ok: false, message: 'No activated license found on this PC.' };
   }
   const deviceId = generateDeviceId();
   const now = Date.now();
   const resp = await tcRequest('/verify', { license_key: lic.key, device_id: deviceId });
-  if (resp.status !== 'OK') {
+  if (!isCloudVerifySuccess(resp.status)) {
     if (resp.status === 'EXPIRED') return { ok: false, message: 'License expired on cloud. Please renew.' };
     if (resp.status === 'INVALID') return { ok: false, message: 'License invalid on cloud. Please reactivate.' };
     return { ok: false, message: resp.message || 'License sync failed.' };
@@ -1019,6 +1102,8 @@ ipcMain.handle('tc-license-status', async () => {
         }
       } else {
         writeLogFile('warn', '[LicenseClient] check_license returned failure: ' + (data.message || '?'));
+        if (data.status === 'blocked') mappedStatus = 'blocked';
+        else if (data.status === 'expired') mappedStatus = 'expired';
       }
 
       const _devId = generateDeviceId();
@@ -1346,6 +1431,8 @@ ipcMain.handle('tc-license-status', async () => {
 
   const msLeft   = lic.trialMaxTs - Date.now();
   const daysLeft = Math.max(0, Math.ceil(msLeft / (24 * 3600 * 1000)));
+  const _trialNetCfg = loadNetworkConfig();
+  syncTrialLicenseToMySQL(_trialNetCfg);
   return {
     status            : 'trial',
     daysLeft          : daysLeft,
@@ -1396,7 +1483,9 @@ ipcMain.handle('tc-activate', async (_event, { licenseKey, shopName }) => {
         deviceId      : deviceId,
         plan          : resp.plan    || null,
         expires       : resp.expires || null,
-        max_clients   : resp.max_clients != null ? parseInt(resp.max_clients, 10) || null : null,
+        max_clients   : (resp.max_clients != null && !isNaN(parseInt(resp.max_clients, 10)))
+          ? parseInt(resp.max_clients, 10)
+          : null,
         activatedAt   : Date.now(),
         lastVerify    : Date.now(),
         lastSuccessfulSyncTime: Date.now(),
@@ -2240,6 +2329,15 @@ app.whenReady().then(() => {
 
   getBackupDir();
   createWindow();
+  /* Trial → MySQL sync for network server (counter PCs read shop_license, not local trial) */
+  setTimeout(function () {
+    const cfg = loadNetworkConfig();
+    if (cfg && cfg.role === 'network_server' && isLocalTrialLicense()) {
+      syncTrialLicenseToMySQLNow(cfg).catch(function (e) {
+        writeLogFile('warn', '[LicenseSync] Startup trial sync: ' + (e && e.message ? e.message : String(e)));
+      });
+    }
+  }, 4000);
   /* Dynamic cloud sync (server/standalone only): startup + periodic background */
   setTimeout(function () {
     forceCloudLicenseSync(false).catch(function (e) {
@@ -2303,6 +2401,11 @@ function clientModeBlockedIpc() {
 
 ipcMain.handle('tc-network-config-load', () => {
   return loadNetworkConfig();
+});
+
+/** Sync check for preload client-mode guards (contextBridge API is read-only in renderer). */
+ipcMain.on('tc-is-network-client-sync', (event) => {
+  event.returnValue = isNetworkClientRole();
 });
 
 /** Display-only: hostname + short device id for POS client header (not licensing). */
@@ -2373,6 +2476,11 @@ ipcMain.handle('tc-network-config-save', (_event, cfg) => {
   }
   const sanitized = sanitizeNetworkConfig(merged);
   const ok = saveNetworkConfig(sanitized);
+  if (ok && sanitized.role === 'network_server' && isLocalTrialLicense()) {
+    setTimeout(function () {
+      syncTrialLicenseToMySQLNow(sanitized).catch(function () {});
+    }, 2500);
+  }
   return { ok, config: sanitized };
 });
 
@@ -2809,6 +2917,41 @@ ipcMain.handle('tc-write-log', (_event, { level, message }) => {
   const msg = String(message || '').slice(0, 8000);
   writeLogFile(level || 'info', msg);
   return { ok: true };
+});
+
+/** Push ERP data patches to LAN sync_patch.php (main + counter). Reads fresh network config from disk. */
+ipcMain.handle('tc-sync-patch', async (_event, payload) => {
+  const cfg = loadNetworkConfig();
+  const patches = payload && Array.isArray(payload.patches) ? payload.patches : [];
+  const keys = patches.map(function (p) { return p && p.key; }).filter(Boolean).join(',');
+  const clientId = (payload && payload.client_id) ? String(payload.client_id) : '';
+  writeLogFile('info', '[SyncEngine:IPC] tc-sync-patch keys=[' + keys + '] role=' + (cfg && cfg.role ? cfg.role : 'null') + ' apiUrl=' + (cfg && cfg.apiUrl ? cfg.apiUrl : 'null'));
+  try {
+    if (!cfg || !cfg.apiUrl || cfg.role === 'standalone') {
+      writeLogFile('error', '[SyncEngine:IPC] blocked — not in network mode');
+      return { success: false, message: 'Not in network mode' };
+    }
+    if (!patches.length) {
+      return { success: false, message: 'No patches provided' };
+    }
+    const headers = { 'X-TC-KEY': cfg.apiKey || '' };
+    if (clientId) headers['X-TC-Client-ID'] = clientId;
+    const postUrl = cfg.apiUrl + 'sync_patch.php';
+    writeLogFile('info', '[SyncEngine:HTTP] POST ' + postUrl + ' keys=[' + keys + ']');
+    const r = await lanPost(
+      postUrl,
+      { patches: patches, client_id: clientId },
+      headers
+    );
+    writeLogFile(
+      r && r.success ? 'info' : 'error',
+      '[SyncEngine] ' + cfg.role + ' pushed [' + keys + '] -> ' + (r && r.message ? r.message : (r && r.success ? 'ok' : 'failed'))
+    );
+    return r;
+  } catch (e) {
+    writeLogFile('error', '[SyncEngine] tc-sync-patch failed: ' + (e && e.message ? e.message : String(e)));
+    return { success: false, message: e && e.message ? e.message : String(e) };
+  }
 });
 
 ipcMain.handle('tc-open-log-folder', async () => {

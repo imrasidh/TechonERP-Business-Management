@@ -1,7 +1,7 @@
-﻿import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { IS_PRODUCTION, COMPUTER_SHOP_EDITION, validateJsonBackupPayload, enforceProductionStrictPeriodLock } from "./productionConfig.js";
 import { defaultStrictPeriodLock } from "./productionDefaults.js";
-import { initSyncEngine, destroySyncEngine, loadStateFromServer, TC_SYNC, SYNC_STATUS } from "./sync/SyncEngine.js";
+import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
 import {
   getInvoicePrintLabels,
@@ -50,6 +50,7 @@ import { mergeRebuildWithImmutableHistory, mergeJournalLinesByTransactionId } fr
 import { getOrCreateDeviceId } from "./accounting/ids.js";
 import { evaluateLicenseStorageWrite } from "./licensing/trialLimits.js";
 import { mergeServerStateWithLocal } from "./utils/mergeRecordArrays.js";
+import { normalizeStorageKeyFromSync, safeTrim } from "./utils/syncDataNormalize.js";
 import { runCreatedAtBackfillMigration } from "./utils/recordTimestampMigration.js";
 import {
   isProductsUnitsArray,
@@ -250,7 +251,7 @@ var repairLoginAuthOnLoad = function () {
   if (!appHash) return;
   var users = S.get("tc3_users", []);
   if (!Array.isArray(users)) users = [];
-  var adminName = (S.get("tc3_admin_name", "") || "").trim() || "Admin";
+  var adminName = safeTrim(S.get("tc3_admin_name", "")) || "Admin";
   if (users.length === 0) {
     setLoginPassword(appHash, {
       user: {
@@ -1013,22 +1014,164 @@ var encodeCost = function (cost, key) {
 var _idbCache = {};  /* in-memory cache - S.get reads from here synchronously */
 var _idbDB    = null; /* IndexedDB connection, set after initAndLoadIDB() */
 var _IDB_NAME  = "techon_erp_v1";
+var _IDB_VERSION = 2;
 var _IDB_STORE = "kv";
+var _idbStartupMeta = {
+  dbName: _IDB_NAME,
+  requestedVersion: _IDB_VERSION,
+  openedVersion: null,
+  initialStores: [],
+  finalStores: [],
+  recoveryExecuted: false,
+  recreated: false,
+};
 
 /* Expose cache on window so main.cjs executeJavaScript can read it on close */
 window._tcCache = _idbCache;
 window._idbCache = _idbCache; /* alias - matches DeepSeek/Gemini recommendations */
 
+function _idbLog(level, message) {
+  try {
+    if (window.electronAPI && window.electronAPI.writeLog) {
+      window.electronAPI.writeLog({ level: level || "info", message: "[IndexedDB] " + String(message || "") });
+    }
+  } catch (_e) {}
+}
+
+function _idbStoreList(db) {
+  try { return Array.prototype.slice.call(db.objectStoreNames || []); } catch (_e) { return []; }
+}
+
+function _idbWriteStartupLog(meta) {
+  try {
+    _idbLog("info",
+      "startup db=" + meta.dbName
+      + " requestedVersion=" + String(meta.requestedVersion)
+      + " openedVersion=" + String(meta.openedVersion == null ? "null" : meta.openedVersion)
+      + " initialStores=[" + (meta.initialStores || []).join(",") + "]"
+      + " finalStores=[" + (meta.finalStores || []).join(",") + "]"
+      + " recoveryExecuted=" + String(!!meta.recoveryExecuted)
+      + " recreated=" + String(!!meta.recreated)
+    );
+  } catch (_e) {}
+}
+
+function _idbOpenDb(version, meta, createStoreOnUpgrade) {
+  return new Promise(function (resolve, reject) {
+    try {
+      var req = indexedDB.open(_IDB_NAME, version);
+      req.onupgradeneeded = function (e) {
+        try {
+          var db = e.target.result;
+          if (createStoreOnUpgrade && !db.objectStoreNames.contains(_IDB_STORE)) {
+            db.createObjectStore(_IDB_STORE);
+          }
+        } catch (upgradeErr) {
+          reject(upgradeErr);
+        }
+      };
+      req.onerror = function () {
+        reject(req.error || new Error("indexedDB.open failed for " + _IDB_NAME));
+      };
+      req.onsuccess = function (e) {
+        try {
+          var db = e.target.result;
+          if (meta && meta.openedVersion == null) meta.openedVersion = db.version;
+          resolve(db);
+        } catch (successErr) {
+          reject(successErr);
+        }
+      };
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function _idbDeleteDb() {
+  return new Promise(function (resolve, reject) {
+    try {
+      if (_idbDB) {
+        try { _idbDB.close(); } catch (_closeErr) {}
+        _idbDB = null;
+      }
+      var req = indexedDB.deleteDatabase(_IDB_NAME);
+      req.onblocked = function () {
+        reject(new Error("deleteDatabase blocked for " + _IDB_NAME));
+      };
+      req.onerror = function () {
+        reject(req.error || new Error("deleteDatabase failed for " + _IDB_NAME));
+      };
+      req.onsuccess = function () { resolve(); };
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function _idbEnsureSchema() {
+  var meta = {
+    dbName: _IDB_NAME,
+    requestedVersion: _IDB_VERSION,
+    openedVersion: null,
+    initialStores: [],
+    finalStores: [],
+    recoveryExecuted: false,
+    recreated: false,
+  };
+  return _idbOpenDb(_IDB_VERSION, meta, true).then(function (db) {
+    meta.initialStores = _idbStoreList(db);
+    if (db.objectStoreNames.contains(_IDB_STORE)) {
+      meta.finalStores = _idbStoreList(db);
+      _idbStartupMeta = meta;
+      _idbWriteStartupLog(meta);
+      return db;
+    }
+    meta.recoveryExecuted = true;
+    var nextVersion = Math.max(Number(db.version) || 0, _IDB_VERSION) + 1;
+    try { db.close(); } catch (_closeErr1) {}
+    return _idbOpenDb(nextVersion, meta, true).then(function (upgradedDb) {
+      meta.finalStores = _idbStoreList(upgradedDb);
+      if (upgradedDb.objectStoreNames.contains(_IDB_STORE)) {
+        _idbStartupMeta = meta;
+        _idbWriteStartupLog(meta);
+        return upgradedDb;
+      }
+      try { upgradedDb.close(); } catch (_closeErr2) {}
+      meta.recreated = true;
+      return _idbDeleteDb().then(function () {
+        return _idbOpenDb(_IDB_VERSION, meta, true).then(function (recreatedDb) {
+          meta.finalStores = _idbStoreList(recreatedDb);
+          if (!recreatedDb.objectStoreNames.contains(_IDB_STORE)) {
+            try { recreatedDb.close(); } catch (_closeErr3) {}
+            throw new Error("IndexedDB recovery failed: object store \"" + _IDB_STORE + "\" still missing after recreate");
+          }
+          _idbStartupMeta = meta;
+          _idbWriteStartupLog(meta);
+          return recreatedDb;
+        });
+      });
+    });
+  });
+}
+
 var _idbWrite = function (k, v) {
   if (!_idbDB) return;
   try {
-    var tx = _idbDB.transaction(_IDB_STORE, "readwrite");
-    if (v === undefined || v === null) {
-      tx.objectStore(_IDB_STORE).delete(k);
-    } else {
-      tx.objectStore(_IDB_STORE).put(v, k);
+    if (!_idbDB.objectStoreNames.contains(_IDB_STORE)) {
+      throw new Error("IndexedDB object store missing: " + _IDB_STORE);
     }
-  } catch (e) { /* fire-and-forget - never crash on write */ }
+    var tx = _idbDB.transaction(_IDB_STORE, "readwrite");
+    var store = tx.objectStore(_IDB_STORE);
+    if (v === undefined || v === null) {
+      store.delete(k);
+    } else {
+      store.put(v, k);
+    }
+  } catch (e) {
+    _idbLog("error", "_idbWrite failed key=" + k + " store=" + _IDB_STORE + " error=" + (e && e.message ? e.message : String(e)));
+    throw e;
+  }
 };
 
 var _idbWriteAsync = function (k, v) {
@@ -1038,15 +1181,23 @@ var _idbWriteAsync = function (k, v) {
       return;
     }
     try {
+      if (!_idbDB.objectStoreNames.contains(_IDB_STORE)) {
+        throw new Error("IndexedDB object store missing: " + _IDB_STORE);
+      }
       var tx = _idbDB.transaction(_IDB_STORE, "readwrite");
+      var store = tx.objectStore(_IDB_STORE);
       tx.oncomplete = function () { resolve(true); };
-      tx.onerror = function () { resolve(false); };
+      tx.onerror = function (ev) {
+        _idbLog("error", "_idbWriteAsync transaction failed key=" + k + " error=" + ((ev && ev.target && ev.target.error && ev.target.error.message) || "unknown"));
+        resolve(false);
+      };
       if (v === undefined || v === null) {
-        tx.objectStore(_IDB_STORE).delete(k);
+        store.delete(k);
       } else {
-        tx.objectStore(_IDB_STORE).put(v, k);
+        store.put(v, k);
       }
     } catch (e) {
+      _idbLog("error", "_idbWriteAsync failed key=" + k + " store=" + _IDB_STORE + " error=" + (e && e.message ? e.message : String(e)));
       resolve(false);
     }
   });
@@ -1065,6 +1216,16 @@ var _mirrorTc3ToLocalStorage = function (k, v) {
   } catch (e) {
     if (tcIsDevEnv()) try { console.warn("[TechonERP] localStorage mirror failed for " + k + ":", e.message); } catch (e2) {}
   }
+};
+
+var _writeMergedServerStateToCache = function (merged) {
+  Object.keys(merged).forEach(function (k) {
+    if (merged[k] === null || merged[k] === undefined) return;
+    var v = normalizeStorageKeyFromSync(k, merged[k]);
+    _idbCache[k] = v;
+    _idbWrite(k, v);
+    _mirrorTc3ToLocalStorage(k, v);
+  });
 };
 
 /* When IDB load runs after localStorage hydrate, the cursor overwrites _idbCache - including with empty [].
@@ -1236,6 +1397,27 @@ var S = {
       }
     }
     _coreStorageSet(k, v);
+    /* Network sync fallback: queue directly from the core storage path.
+       This avoids missed live-sync writes if the SyncEngine patch wraps late
+       or is lost during remounts. queuePatch() itself ignores standalone mode
+       and pull/hydration phases, so this is safe to call opportunistically. */
+    try {
+      var netRole = typeof window !== "undefined" ? window._tcNetRole : "";
+      if (netRole === "network_server" || netRole === "network_client") {
+        try {
+          window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
+          window._tcRecentLocalWrites[k] = Date.now();
+        } catch (_rw) {}
+        try {
+          if (window._tcSystemConfig) ensureSyncConfig(window._tcSystemConfig);
+        } catch (_ec) {}
+        if (window.TC_SYNC && typeof window.TC_SYNC.syncStorageKey === "function") {
+          window.TC_SYNC.syncStorageKey(k, v);
+        } else if (window.TC_SYNC && typeof window.TC_SYNC.queuePatch === "function") {
+          window.TC_SYNC.queuePatch(k, v);
+        }
+      }
+    } catch (eSync) { /* never block local writes */ }
     if (_glSilentDepth === 0) {
       try {
         if (MUTATION_ENTITY_BY_STORAGE_KEY[k]) {
@@ -1346,7 +1528,7 @@ var initAndLoadIDB = function () {
      parallel IDB cursors can race and wipe _idbCache after server_state hydrate. */
   if (initAndLoadIDB._promise) return initAndLoadIDB._promise;
 
-  initAndLoadIDB._promise = new Promise(function (resolve) {
+  initAndLoadIDB._promise = new Promise(function (resolve, reject) {
     var settled = false;
     function safeResolve() {
       if (settled) return;
@@ -1354,6 +1536,13 @@ var initAndLoadIDB = function () {
       initAndLoadIDB._done = true;
       initAndLoadIDB._promise = null;
       resolve();
+    }
+    function safeReject(err) {
+      if (settled) return;
+      settled = true;
+      initAndLoadIDB._done = false;
+      initAndLoadIDB._promise = null;
+      reject(err);
     }
 
     /* After any load path: merge LS gaps into cache, then resolve immediately.
@@ -1367,81 +1556,107 @@ var initAndLoadIDB = function () {
     }
 
     try {
-      var req = indexedDB.open(_IDB_NAME, 1);
-      /* Only bail out if indexedDB.open itself hangs - never resolve while a cursor is still
+      /* Only bail out if schema open hangs - never resolve while a cursor is still
          filling _idbCache (that used to wipe a concurrent loadStateFromServer hydrate). */
       timeoutId = setTimeout(function () {
-        if (!settled && req.readyState !== "done") {
-          if (tcIsDevEnv()) try { console.warn("[TechonERP] IDB open hung - merging localStorage fallback and continuing"); } catch (e2) {}
+        if (!settled) {
+          if (tcIsDevEnv()) try { console.warn("[TechonERP] IDB schema open hung - merging localStorage fallback and continuing"); } catch (e2) {}
+          _idbLog("warn", "schema open hung - using localStorage fallback");
           mergeLocalStorageIntoCache();
           safeResolve();
           scheduleDeferredLocalStorageBackfill();
         }
       }, 12000);
-      req.onupgradeneeded = function (e) {
-        var db = e.target.result;
-        if (!db.objectStoreNames.contains(_IDB_STORE)) {
-          db.createObjectStore(_IDB_STORE);
-        }
-      };
-      req.onerror = function () {
+      _idbEnsureSchema().then(function (db) {
         clearTimeout(timeoutId);
-        /* IDB unavailable - fall back to reading localStorage into cache */
-        for (var i = 0; i < localStorage.length; i++) {
-          var lk = localStorage.key(i);
-          if (lk && lk.startsWith("tc3_")) {
-            try { var lv = localStorage.getItem(lk); if (lv) _idbCache[lk] = JSON.parse(lv); } catch (e) {}
-          }
-        }
-        finishInit();
-      };
-      req.onsuccess = function (e) {
-        clearTimeout(timeoutId);
-        var db = e.target.result;
         /* Timeout resolved first - keep DB handle for writes; do not run cursor (would overwrite newer cache). */
         if (settled) {
           _idbDB = db;
           return;
         }
         _idbDB = db;
-        var tx = _idbDB.transaction(_IDB_STORE, "readonly");
-        var countReq = tx.objectStore(_IDB_STORE).count();
+        if (!_idbDB.objectStoreNames.contains(_IDB_STORE)) {
+          throw new Error("IndexedDB startup aborted: object store \"" + _IDB_STORE + "\" missing after recovery");
+        }
+        var tx;
+        var countReq;
+        try {
+          tx = _idbDB.transaction(_IDB_STORE, "readonly");
+          countReq = tx.objectStore(_IDB_STORE).count();
+        } catch (txErr) {
+          throw txErr;
+        }
         countReq.onsuccess = function () {
           if (countReq.result === 0) {
             /* First run - migrate existing localStorage keys to IndexedDB */
-            var migTx = _idbDB.transaction(_IDB_STORE, "readwrite");
-            var store = migTx.objectStore(_IDB_STORE);
+            var migTx;
+            var store;
+            try {
+              migTx = _idbDB.transaction(_IDB_STORE, "readwrite");
+              store = migTx.objectStore(_IDB_STORE);
+            } catch (migOpenErr) {
+              safeReject(migOpenErr);
+              return;
+            }
             var migrated = 0;
             for (var i = 0; i < localStorage.length; i++) {
               var mk = localStorage.key(i);
               if (mk && mk.startsWith("tc3_")) {
                 try {
                   var mv = localStorage.getItem(mk);
-                  if (mv) { var mpv = JSON.parse(mv); _idbCache[mk] = mpv; store.put(mpv, mk); migrated++; }
-                } catch (e) {}
+                  if (mv) {
+                    var mpv = JSON.parse(mv);
+                    _idbCache[mk] = mpv;
+                    store.put(mpv, mk);
+                    migrated++;
+                  }
+                } catch (e) {
+                  _idbLog("warn", "localStorage migration skipped key=" + mk + " error=" + (e && e.message ? e.message : String(e)));
+                }
               }
             }
             migTx.oncomplete = function () { finishInit(); };
-            migTx.onerror   = function () { finishInit(); };
+            migTx.onerror   = function (ev) {
+              safeReject((ev && ev.target && ev.target.error) || new Error("IndexedDB migration transaction failed"));
+            };
             /* If nothing was migrated, commit the empty tx manually */
             if (migrated === 0) {
               finishInit();
             }
           } else {
             /* Subsequent run - load all keys from IDB into cache */
-            var loadTx = _idbDB.transaction(_IDB_STORE, "readonly");
-            var cursor = loadTx.objectStore(_IDB_STORE).openCursor();
+            var loadTx;
+            var cursor;
+            try {
+              loadTx = _idbDB.transaction(_IDB_STORE, "readonly");
+              cursor = loadTx.objectStore(_IDB_STORE).openCursor();
+            } catch (loadOpenErr) {
+              safeReject(loadOpenErr);
+              return;
+            }
             cursor.onsuccess = function (ev) {
               var c = ev.target.result;
               if (c) { _idbCache[c.key] = c.value; c.continue(); }
             };
             loadTx.oncomplete = function () { finishInit(); };
-            loadTx.onerror   = function () { finishInit(); };
+            loadTx.onerror   = function (ev) {
+              safeReject((ev && ev.target && ev.target.error) || new Error("IndexedDB load transaction failed"));
+            };
           }
         };
-        countReq.onerror = function () { finishInit(); };
-      };
-    } catch (e) { finishInit(); /* fallback: merge may still restore from localStorage */ }
+        countReq.onerror = function (ev) {
+          safeReject((ev && ev.target && ev.target.error) || new Error("IndexedDB count request failed"));
+        };
+      }).catch(function (schemaErr) {
+        clearTimeout(timeoutId);
+        _idbLog("error", "schema recovery failed: " + (schemaErr && schemaErr.message ? schemaErr.message : String(schemaErr)));
+        safeReject(schemaErr);
+      });
+    } catch (e) {
+      clearTimeout(timeoutId);
+      _idbLog("error", "initAndLoadIDB threw: " + (e && e.message ? e.message : String(e)));
+      safeReject(e);
+    }
   });
   return initAndLoadIDB._promise;
 };
@@ -2476,9 +2691,9 @@ var validateCoreStartupIdentity = function (ts) {
     missing.push("shopName", "phone", "address");
     return { ok: false, missing: missing };
   }
-  if (!(ts.shopName || "").trim().length) missing.push("shopName");
-  var phone = (ts.phone || "").trim();
-  var addr = (ts.address || "").trim();
+  if (!safeTrim(ts.shopName).length) missing.push("shopName");
+  var phone = safeTrim(ts.phone);
+  var addr = safeTrim(ts.address);
   if (!phone.length && !addr.length) {
     missing.push("phone");
     missing.push("address");
@@ -2539,9 +2754,9 @@ var getOnboardingDataProgress = function (st) {
   var done = 0;
   var taxOn = st.taxEnabled === true;
   var total = taxOn ? 4 : 3;
-  if ((st.shopName || "").trim()) done++;
-  if ((st.phone || "").trim() || (st.address || "").trim()) done++;
-  if ((st.shopCountry || "").trim()) done++;
+  if (safeTrim(st.shopName)) done++;
+  if (safeTrim(st.phone) || safeTrim(st.address)) done++;
+  if (safeTrim(st.shopCountry)) done++;
   if (taxOn) {
     if (Array.isArray(st.selectedTaxes) && st.selectedTaxes.length > 0) done++;
   }
@@ -4522,7 +4737,7 @@ var StartupOnboardingWizard = function (props) {
   var onFinished = props.onFinished;
 
   var [phase, setPhase] = useState(function () {
-    var ad = (S.get("tc3_admin_name", "") || "").trim();
+    var ad = safeTrim(S.get("tc3_admin_name", ""));
     if (ad.length < 2) return "admin";
     if (!COMPUTER_SHOP_EDITION && !S.get("tc3_businessType")) return "industry";
     if (COMPUTER_SHOP_EDITION && !S.get("tc3_businessType")) {
@@ -5266,7 +5481,7 @@ var LoginScreen = function (props) {
   useEffect(function () {
     var refresh = function () {
       var pass = !!S.get("tc3_apppass", "");
-      var admin = !!(S.get("tc3_admin_name", "") || "").trim();
+      var admin = !!safeTrim(S.get("tc3_admin_name", ""));
       setIsFirst(!pass);
       setNeedName(pass && !admin);
     };
@@ -5759,15 +5974,25 @@ function App(props) {
   var isNetworkServer = systemConfig.role === 'network_server';
   var isNetworkClient = systemConfig.role === 'network_client';
   var isNetworkMode   = isNetworkServer || isNetworkClient;
+  if (isNetworkMode && systemConfig.apiUrl) {
+    ensureSyncConfig(systemConfig);
+    try {
+      window._tcSystemConfig = systemConfig;
+      window._tcNetRole = systemConfig.role || 'standalone';
+    } catch (_e) {}
+  }
 
   /* Expose licenseInfo + network role globally so tcTrialGuard can read them.
      _tcNetRole tells the guard whether to use local counts or server counts. */
   window._tcLicInfo  = props.licenseInfo || null;
-  window._tcNetRole  = systemConfig.role || 'standalone';
+  if (!isNetworkMode) {
+    window._tcNetRole  = systemConfig.role || 'standalone';
+  }
 
   var [state, setState] = useState(function () { return loadState(); });
   /* true immediately: data comes from sync localStorage hydrate + loadState; IDB reconciles in useEffect */
   var [idbReady, setIdbReady] = useState(true);
+  var [idbStartupError, setIdbStartupError] = useState(null);
   var [active, _setActive] = useState("pos");   /* Sales Mode default = POS */
   var [loggedIn, setLoggedIn] = useState(false);
   var [currentUser, setCurrentUser] = useState(null);
@@ -6098,7 +6323,11 @@ function App(props) {
       }
       setIdbReady(true);
     }
-    initAndLoadIDB().then(finishInit).catch(finishInit);
+    initAndLoadIDB().then(finishInit).catch(function (err) {
+      var msg = "IndexedDB startup failed: " + String((err && err.message) || err || "Unknown error");
+      _idbLog("error", msg);
+      setIdbStartupError(msg);
+    });
     var safety = setTimeout(finishInit, 4000);
     return function () { clearTimeout(safety); };
   }, []);
@@ -6118,46 +6347,43 @@ function App(props) {
 
   /* -- Sync Engine init (network modes only) ------------------- */
   useEffect(function () {
+    if (!isNetworkMode) return;
+    ensureSyncConfig(systemConfig);
+    try {
+      window._tcSystemConfig = systemConfig;
+      window._tcNetRole = systemConfig.role || 'standalone';
+    } catch (_e) {}
+    ensureSyncConfigFromDisk().catch(function () {});
+  }, [isNetworkMode, systemConfig.apiUrl, systemConfig.apiKey, systemConfig.role]);
+
+  useEffect(function () {
     if (!isNetworkMode || !systemConfig.apiUrl) return;
 
+    ensureSyncConfig(systemConfig);
+
     var cancelled = false;
-
-    /* Init the sync engine - it will patch S.set automatically */
-    initSyncEngine(systemConfig);
-
-    /* Subscribe to status changes for UI indicator */
-    var unsub = TC_SYNC.onStatus(function (s) {
-      setSyncStatus(s);
-      if (s === 'synced') {
-        var now = new Date();
-        var h = now.getHours(); var m = now.getMinutes();
-        var ampm = h >= 12 ? 'PM' : 'AM';
-        h = h % 12 || 12;
-        setLastSyncTime(h + ':' + String(m).padStart(2, '0') + ' ' + ampm);
-      }
-    });
+    var unsub = function () {};
 
     function applyFullServerState(data) {
       if (!data || cancelled) return;
-      var merged = mergeServerStateWithLocal(_idbCache, data);
-      Object.keys(merged).forEach(function (k) {
-        if (merged[k] !== null && merged[k] !== undefined) {
-          _idbCache[k] = merged[k];
-          _idbWrite(k, merged[k]);
-          _mirrorTc3ToLocalStorage(k, merged[k]);
-        }
-      });
-      setState(loadState());
+      setSyncPullPaused(true);
+      try {
+        var merged = mergeServerStateWithLocal(_idbCache, data);
+        _writeMergedServerStateToCache(merged);
+        setState(loadState());
+      } finally {
+        setSyncPullPaused(false);
+      }
     }
 
-    /* MUST run after initAndLoadIDB() finishes. If loadStateFromServer runs while the IDB
-       cursor is still filling _idbCache, server data gets overwritten with stale/empty rows
-       and the UI stays empty after restart (network client/server). */
+    /* 1) Load local IDB  2) Pull server state  3) THEN patch S.set for sync */
     initAndLoadIDB().then(function () {
       if (cancelled) return;
 
+      setSyncHydrating(true);
+      var pullPromise;
       if (isNetworkClient) {
-        return loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
+        pullPromise = loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
           .then(function (data) {
             applyFullServerState(data);
             if (!cancelled) setClientError(null);
@@ -6169,27 +6395,119 @@ function App(props) {
             }
             setClientError('Unable to connect to server at ' + systemConfig.apiUrl + '. Please check the server PC is running.');
           });
-      }
-
-      if (isNetworkServer) {
-        return loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
-          .then(function (data) {
-            applyFullServerState(data);
-          })
+      } else if (isNetworkServer) {
+        pullPromise = loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
+          .then(function (data) { applyFullServerState(data); })
           .catch(function (err) {
             if (!cancelled && tcIsDevEnv()) {
               try { console.warn('[TC_NET] Server state load failed (using local IDB):', err.message); } catch (e2) {}
             }
           });
+      } else {
+        pullPromise = Promise.resolve();
       }
+
+      return pullPromise.finally(function () {
+        if (cancelled) return;
+        setSyncHydrating(false);
+        return initSyncEngine(systemConfig).then(function () {
+          if (cancelled) return;
+          unsub = TC_SYNC.onStatus(function (s) {
+            setSyncStatus(s);
+            if (s === 'synced') {
+              var now = new Date();
+              var h = now.getHours(); var m = now.getMinutes();
+              var ampm = h >= 12 ? 'PM' : 'AM';
+              h = h % 12 || 12;
+              setLastSyncTime(h + ':' + String(m).padStart(2, '0') + ' ' + ampm);
+            }
+          });
+          if (isNetworkServer) {
+            bootstrapServerKvFromLocal(systemConfig.apiUrl, systemConfig).catch(function (e) {
+              if (tcIsDevEnv()) {
+                try { console.warn('[TC_NET] Server bootstrap:', e && e.message ? e.message : e); } catch (e2) {}
+              }
+            });
+          }
+        });
+      });
     });
 
     return function () {
       cancelled = true;
       unsub();
-      destroySyncEngine(); /* unpatches storage + clears retry timers - required for HMR / Strict Mode */
+      destroySyncEngine();
     };
   }, [isNetworkMode, systemConfig.apiUrl, isNetworkClient, isNetworkServer]);
+
+  /* -- Network PCs: periodic pull from MySQL (client gets main data; main gets counter changes) -- */
+  useEffect(function () {
+    if (!isNetworkMode || !loggedIn || !systemConfig.apiUrl) return;
+    if (isNetworkClient && connStatus === 'disconnected') return;
+
+    var cancelled = false;
+
+    function pullFromServer() {
+      if (cancelled) return Promise.resolve();
+      return loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
+        .then(function (data) {
+          if (cancelled || !data) return;
+          setSyncHydrating(true);
+          setSyncPullPaused(true);
+          try {
+            var merged = mergeServerStateWithLocal(_idbCache, data);
+            _writeMergedServerStateToCache(merged);
+            setState(loadState());
+            if (isNetworkClient) setClientError(null);
+          } finally {
+            setSyncPullPaused(false);
+            setSyncHydrating(false);
+          }
+        })
+        .catch(function (err) {
+          if (!cancelled && tcIsDevEnv()) {
+            try { console.warn('[TC_NET] Pull from server failed:', err.message); } catch (e2) {}
+          }
+        });
+    }
+
+    setSyncFlushCallback(function () {
+      if (!cancelled) pullFromServer();
+    });
+    pullFromServer();
+    var pullTimer = setInterval(pullFromServer, CLIENT_PULL_INTERVAL_MS);
+    return function () {
+      cancelled = true;
+      setSyncFlushCallback(null);
+      clearInterval(pullTimer);
+    };
+  }, [isNetworkMode, isNetworkClient, isNetworkServer, loggedIn, systemConfig.apiUrl, systemConfig.apiKey, connStatus]);
+
+  /* -- Counter PC: pull immediately when connection is restored -- */
+  var connPrevRef = useRef(connStatus);
+  useEffect(function () {
+    if (!isNetworkClient || !loggedIn || !systemConfig.apiUrl) return;
+    var prev = connPrevRef.current;
+    connPrevRef.current = connStatus;
+    if ((prev === 'disconnected' || prev === 'reconnecting') && connStatus === 'connected') {
+      loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
+        .then(function (data) {
+          if (!data) return;
+          setSyncHydrating(true);
+          setSyncPullPaused(true);
+          try {
+            var merged = mergeServerStateWithLocal(_idbCache, data);
+            _writeMergedServerStateToCache(merged);
+            setState(loadState());
+            setClientError(null);
+          } finally {
+            setSyncPullPaused(false);
+            setSyncHydrating(false);
+          }
+        })
+        .catch(function () {});
+    }
+  }, [isNetworkClient, loggedIn, connStatus, systemConfig.apiUrl, systemConfig.apiKey]);
 
   /* -- Connection monitor (network modes only) - single timer, backoff on client - */
   useEffect(function () {
@@ -6679,26 +6997,29 @@ function App(props) {
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [loggedIn]);
+  /* Mirror React state → local cache/IDB only. Never queue network sync here — pages call
+     S.set on real edits; re-syncing full snapshots on every state tick overwrote server merges
+     and drowned out counter-terminal patches. */
   useEffect(function () {
     if (!loggedIn || !state || !idbReady) return;
-    S.set("tc3_settings", state.settings);
-    S.set("tc3_products", state.products);
-    S.set("tc3_customers", state.customers);
-    S.set("tc3_suppliers", state.suppliers);
-    S.set("tc3_sales", state.sales);
-    S.set("tc3_purchases", state.purchases);
-    S.set("tc3_raw_material_counts", state.rawMaterialCounts || []);
-    S.set("tc3_raw_material_usage", state.rawMaterialUsages || []);
-    S.set("tc3_expenses", state.expenses);
-    S.set("tc3_repairs", state.repairs);
-    S.set("tc3_assets", state.assets || []);
-    S.set("tc3_damageLog", state.damageLog || []);
-    S.set("tc3_productLog", state.productLog || []);
-    S.set("tc3_repairDeleteLog", state.repairDeleteLog || []);
-    S.set("tc3_salesReturns", state.salesReturns || []);
-    S.set("tc3_purchaseReturns", state.purchaseReturns || []);
-    S.set("tc3_quotations", state.quotations || []);
-    S.set("tc3_cheques", state.cheques || []);
+    _coreStorageSet("tc3_settings", state.settings);
+    _coreStorageSet("tc3_products", state.products);
+    _coreStorageSet("tc3_customers", state.customers);
+    _coreStorageSet("tc3_suppliers", state.suppliers);
+    _coreStorageSet("tc3_sales", state.sales);
+    _coreStorageSet("tc3_purchases", state.purchases);
+    _coreStorageSet("tc3_raw_material_counts", state.rawMaterialCounts || []);
+    _coreStorageSet("tc3_raw_material_usage", state.rawMaterialUsages || []);
+    _coreStorageSet("tc3_expenses", state.expenses);
+    _coreStorageSet("tc3_repairs", state.repairs);
+    _coreStorageSet("tc3_assets", state.assets || []);
+    _coreStorageSet("tc3_damageLog", state.damageLog || []);
+    _coreStorageSet("tc3_productLog", state.productLog || []);
+    _coreStorageSet("tc3_repairDeleteLog", state.repairDeleteLog || []);
+    _coreStorageSet("tc3_salesReturns", state.salesReturns || []);
+    _coreStorageSet("tc3_purchaseReturns", state.purchaseReturns || []);
+    _coreStorageSet("tc3_quotations", state.quotations || []);
+    _coreStorageSet("tc3_cheques", state.cheques || []);
 
     /* Write backup file on every state change (debounced 2s).
        This ensures the file is always current - no reliance on beforeunload. */
@@ -6715,9 +7036,9 @@ function App(props) {
           var n = new Date();
           var fname = "techon-backup-" + n.getFullYear() + "-" + String(n.getMonth()+1).padStart(2,"0") + "-" + String(n.getDate()).padStart(2,"0") + "-" + String(n.getHours()).padStart(2,"0") + String(n.getMinutes()).padStart(2,"0") + ".json";
           window.electronAPI.saveBackup({ filename: fname, content: JSON.stringify(bk, null, 2), customPath: st.backupFolder || null });
-          S.set("tc3_last_auto_backup", bk.timestamp);
-          S.set("tc3_autobak_time", bk.timestamp);
-          S.set("tc3_autobak", bk);
+          _coreStorageSet("tc3_last_auto_backup", bk.timestamp);
+          _coreStorageSet("tc3_autobak_time", bk.timestamp);
+          _coreStorageSet("tc3_autobak", bk);
         } catch (e) { /* never crash */ }
       }, 500);
     }
@@ -6765,6 +7086,22 @@ function App(props) {
 
   }, [loggedIn]);
 
+  if (idbStartupError) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: "100vw", height: "100vh", background: "linear-gradient(135deg,#0a1628,#0d1e38)", fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif" }}>
+        <div style={{ background: "#fff", borderRadius: 20, padding: "40px 44px", width: 560, boxShadow: "0 20px 60px rgba(0,0,0,0.4)", textAlign: "center" }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>ERR</div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: "#0d1b3e", marginBottom: 8 }}>IndexedDB Startup Failed</div>
+          <div style={{ fontSize: 13, color: "#6b82a8", marginBottom: 20, lineHeight: 1.6 }}>{idbStartupError}</div>
+          <div style={{ background: "#fef3e2", border: "1px solid #fcd34d", borderRadius: 10, padding: "12px 14px", marginBottom: 20, fontSize: 12, color: "#92400e", textAlign: "left" }}>
+            Local IndexedDB recovery did not produce the required <strong>{_IDB_STORE}</strong> object store. Startup was aborted to avoid running with a broken local database.
+          </div>
+          <button onClick={function () { window.location.reload(); }} style={{ padding: "12px 28px", background: "#2979ff", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Reload App</button>
+        </div>
+      </div>
+    );
+  }
+
   /* -- Network Client: full-screen error if server unreachable -- */
   if (isNetworkClient && clientError) {
     return (
@@ -6783,12 +7120,18 @@ function App(props) {
           </div>
           <button onClick={function () {
             setClientError(null);
-            loadStateFromServer(systemConfig.apiUrl, ["tc3_products", "tc3_customers"], { authConfig: systemConfig })
+            loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
               .then(function (data) {
-                if (data) {
-                  if (data.tc3_products)  { _idbCache["tc3_products"]  = data.tc3_products; _mirrorTc3ToLocalStorage("tc3_products", data.tc3_products); _idbWrite("tc3_products", data.tc3_products); }
-                  if (data.tc3_customers) { _idbCache["tc3_customers"] = data.tc3_customers; _mirrorTc3ToLocalStorage("tc3_customers", data.tc3_customers); _idbWrite("tc3_customers", data.tc3_customers); }
-                  setState(function (prev) { return prev ? Object.assign({}, prev, { products: data.tc3_products || prev.products, customers: data.tc3_customers || prev.customers }) : prev; });
+                if (!data) return;
+                setSyncHydrating(true);
+                setSyncPullPaused(true);
+                try {
+                  var merged = mergeServerStateWithLocal(_idbCache, data);
+                  _writeMergedServerStateToCache(merged);
+                  setState(loadState());
+                } finally {
+                  setSyncPullPaused(false);
+                  setSyncHydrating(false);
                 }
               })
               .catch(function (err) { setClientError("Still cannot connect. " + err.message); });

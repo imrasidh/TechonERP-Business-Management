@@ -533,6 +533,8 @@ var POS = React.memo(function (props) {
       address: "",
       credit: 0,
       totalSpent: 0,
+      createdAt: today(),
+      updatedAt: today(),
     };
     if (!tcTrialGuard(state.customers, "customers")) return null;
     var nextCustomers = state.customers.concat([created]);
@@ -2397,6 +2399,16 @@ var POS = React.memo(function (props) {
                 placeholder="Type name, ID, barcode, category, or scan..."
                 style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s" }}
               />
+              {isNetworkClientPos && (state.products || []).length === 0 && (
+                <div style={{ marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7ed", border: "1px solid #fdba74", fontSize: 12, color: "#9a3412", lineHeight: 1.5 }}>
+                  No products synced from the main PC yet. On the <strong>main PC</strong>, open Settings → Network → <strong>Upload Shop Data to Server</strong>, then wait a few seconds. Products appear here when you search by name, ID, or barcode.
+                </div>
+              )}
+              {isNetworkClientPos && search && (state.products || []).length > 0 && filteredProds.length === 0 && (
+                <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 8, background: "#f8fafc", border: "1px solid " + C.border, fontSize: 12, color: C.muted }}>
+                  No matching products. Try another search term or check stock on the main PC.
+                </div>
+              )}
             </div>
             {search && filteredProds.length > 0 && dropPos && (
               <div style={{ position: "fixed", top: dropPos.top + 2, left: dropPos.left, width: dropPos.width, background: "#fff", border: "1px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 260, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.14)" }}>
@@ -2508,7 +2520,7 @@ var POS = React.memo(function (props) {
                           <div style={{ fontSize: 9, color: C.accent, fontWeight: 700 }}>{item.unit}</div>
                         )}
                       </td>
-                      <td style={{ padding: item.isGlassLine ? "8px 10px" : "5px 6px", verticalAlign: item.isGlassLine ? "top" : "middle", textAlign: "center" }}>
+                      <td style={{ padding: item.isGlassLine ? "8px 10px" : "8px 6px", verticalAlign: "top", textAlign: "center" }}>
                         {item.isGlassLine ? (
                         <div style={{ minWidth: 0, padding: "4px 0", maxWidth: 84, margin: "0 auto" }}>
                         {glassCartCellLabel("Rate", C)}
@@ -2599,8 +2611,8 @@ var POS = React.memo(function (props) {
                         )}
                       </td>
                       <td style={{
-                        padding: item.isGlassLine ? "8px 10px" : "5px 6px",
-                        verticalAlign: item.isGlassLine ? "top" : "middle",
+                        padding: item.isGlassLine ? "8px 10px" : "8px 6px",
+                        verticalAlign: "top",
                         textAlign: "center",
                         borderLeft: item.isGlassLine ? "2px solid #e8ecf4" : "none",
                       }}>

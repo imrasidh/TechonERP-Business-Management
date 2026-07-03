@@ -25,12 +25,14 @@ export const SYNC_STATUS = {
 
 /* ─── Constants ─────────────────────────────────────────────────── */
 const DEBOUNCE_MS       = 600;
+const RECORD_DEBOUNCE_MS = 100;   /* business tables — near-instant LAN sync */
 const MAX_RETRIES       = 3;
 const RETRY_BASE_MS     = 2000;    // 2s → 4s → 8s
 const CHUNK_SIZE        = 100;     // max array items per patch request
 const MAX_PAYLOAD_BYTES = 512_000; // 500 KB per request
 const QUEUE_IDB_KEY     = 'tc_sync_queue';
 const IDB_NAME          = 'techon_erp_v1';
+const IDB_VERSION       = 2;
 const IDB_STORE         = 'kv';
 
 /* ─── Module state ──────────────────────────────────────────────── */
@@ -43,6 +45,180 @@ let _statusCbs     = [];
 let _origSset      = null;        // original S.set before patching
 let _patchRetryTimer = null;      // pending patchStorageSet retry — cleared on destroy
 let _clientId      = null;
+let _hydrating     = false;       // true while applying server → local (no outbound patches)
+let _pullPaused    = false;       // true during pull apply (S.set writes from React)
+let _flushDeferred = false;       // patches queued while hydrating/pull paused
+let _retryInterval = null;
+let _onFlushSuccess = null;       // optional callback after successful drain (App pulls server)
+let _engineStarted = false;       // timers/queue drain armed (survives Strict Mode remount)
+let _keyDebounceTimers = {};      // per-key debounce for direct push
+let _keyPendingValues = {};       // value captured at S.set — survives pull/cache races
+let _inflightKeys = {};             // keys currently being pushed
+let _configReloadPromise = null;    // dedupe disk config reload
+
+export const CLIENT_PULL_INTERVAL_MS = 2500; /* Pull server data every 2.5s on all network PCs */
+
+export const NETWORK_KV_KEYS = [
+  'tc3_settings', 'tc3_products', 'tc3_customers', 'tc3_suppliers',
+  'tc3_sales', 'tc3_purchases', 'tc3_expenses', 'tc3_repairs',
+  'tc3_assets', 'tc3_damageLog', 'tc3_productLog', 'tc3_repairDeleteLog',
+  'tc3_salesReturns', 'tc3_purchaseReturns', 'tc3_quotations', 'tc3_cheques',
+  'tc3_manualReceivables', 'tc3_manualPayables',
+  'tc3_capLedger', 'tc3_capLog', 'tc3_profitDist', 'tc3_assetLog',
+  'tc3_openBal', 'tc3_labelDesigns', 'tc3_businessType',
+  'tc3_auditLog', 'tc3_admin_name', 'tc3_held_invoices',
+  'tc3_journal_lines', 'tc3_gl_accounts', 'tc3_gl_mode', 'tc3_gl_audit',
+  'tc3_journal_hash', 'tc3_gl_last_error', 'tc3_stock_movements',
+  'tc3_inv_reconciliation', 'tc3_inventory_layers', 'tc3_financial_snapshots',
+];
+
+const SYNC_KEY_SET = {};
+NETWORK_KV_KEYS.forEach(function (k) { SYNC_KEY_SET[k] = true; });
+
+export function setSyncHydrating(v) {
+  _hydrating = !!v;
+  if (!_hydrating) _maybeScheduleDeferredFlush();
+}
+export function setSyncPullPaused(v) {
+  _pullPaused = !!v;
+  if (!_pullPaused) _maybeScheduleDeferredFlush();
+}
+export function isSyncHydrating() { return _hydrating; }
+
+/** Register callback invoked after a successful queue drain (used to pull server state). */
+export function setSyncFlushCallback(fn) {
+  _onFlushSuccess = typeof fn === 'function' ? fn : null;
+}
+
+/** True while a key has a debounced, queued, or in-flight push (pull merge keeps local-only rows). */
+export function isSyncKeyPending(key) {
+  if (!key) return false;
+  if (_pending[key] !== undefined) return true;
+  if (_keyPendingValues[key] !== undefined) return true;
+  if (_inflightKeys[key]) return true;
+  if (_keyDebounceTimers[key]) return true;
+  for (var i = 0; i < _queue.length; i++) {
+    if (_queue[i] && _queue[i].key === key) return true;
+  }
+  return false;
+}
+
+/** Normalize + validate network config (single shape for push/pull). */
+function normalizeNetConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object') return null;
+  var role = String(cfg.role || '').trim();
+  if (role !== 'network_server' && role !== 'network_client') return null;
+  var apiUrl = String(cfg.apiUrl || '').trim();
+  if (!apiUrl) return null;
+  if (apiUrl.charAt(apiUrl.length - 1) !== '/') apiUrl += '/';
+  return Object.assign({}, cfg, { role: role, apiUrl: apiUrl });
+}
+
+function logConfigDebug(where) {
+  var cfg = getActiveConfig();
+  var src = 'none';
+  try {
+    if (typeof window !== 'undefined' && window._tcNetSyncConfig && window._tcNetSyncConfig.apiUrl) src = 'window._tcNetSyncConfig';
+    else if (_config && _config.apiUrl) src = 'module._config';
+  } catch (_) {}
+  log('info', '[cfg:' + where + '] role=' + (cfg ? cfg.role : 'null')
+    + ' apiUrl=' + (cfg ? cfg.apiUrl : 'null')
+    + ' source=' + src
+    + ' netRole=' + (typeof window !== 'undefined' ? String(window._tcNetRole || '') : ''));
+}
+
+/** Active network config — single source for push; mirrors window._tcNetSyncConfig. */
+function getActiveConfig() {
+  try {
+    if (typeof window !== 'undefined' && window._tcNetSyncConfig) {
+      var fromWin = normalizeNetConfig(window._tcNetSyncConfig);
+      if (fromWin) {
+        _config = fromWin;
+        return fromWin;
+      }
+    }
+  } catch (_) {}
+  var fromMod = normalizeNetConfig(_config);
+  if (fromMod) {
+    try {
+      if (typeof window !== 'undefined') window._tcNetSyncConfig = fromMod;
+    } catch (_) {}
+    return fromMod;
+  }
+  return null;
+}
+
+/**
+ * Set sync config immediately (before async init). Call as soon as network role + apiUrl are known.
+ */
+export function ensureSyncConfig(config) {
+  var normalized = normalizeNetConfig(config);
+  if (!normalized) return;
+  _config = normalized;
+  try {
+    if (typeof window !== 'undefined') {
+      window._tcNetSyncConfig = normalized;
+      window.__TC_SYNC_DIRECT__ = true;
+    }
+  } catch (_) {}
+  log('info', '[cfg:ensureSyncConfig] role=' + normalized.role + ' apiUrl=' + normalized.apiUrl);
+}
+
+/** Reload tc_network.json from main process (same file IPC push uses). */
+export function ensureSyncConfigFromDisk() {
+  if (_configReloadPromise) return _configReloadPromise;
+  _configReloadPromise = (async function () {
+    try {
+      if (typeof window === 'undefined' || !window.electronAPI || typeof window.electronAPI.loadNetworkConfig !== 'function') {
+        return null;
+      }
+      var cfg = await window.electronAPI.loadNetworkConfig();
+      var normalized = normalizeNetConfig(cfg);
+      if (normalized) {
+        ensureSyncConfig(normalized);
+        try { if (typeof window !== 'undefined') window._tcNetRole = normalized.role; } catch (_) {}
+        log('info', '[cfg:disk] reloaded role=' + normalized.role + ' apiUrl=' + normalized.apiUrl);
+      }
+      return normalized;
+    } catch (e) {
+      log('error', '[cfg:disk] reload failed: ' + (e && e.message ? e.message : e));
+      return null;
+    } finally {
+      _configReloadPromise = null;
+    }
+  })();
+  return _configReloadPromise;
+}
+
+const RECORD_SYNC_KEYS = {
+  tc3_products: 1, tc3_customers: 1, tc3_suppliers: 1, tc3_sales: 1,
+  tc3_purchases: 1, tc3_expenses: 1, tc3_repairs: 1, tc3_assets: 1,
+  tc3_salesReturns: 1, tc3_purchaseReturns: 1, tc3_quotations: 1, tc3_cheques: 1,
+  tc3_manualReceivables: 1, tc3_manualPayables: 1,
+};
+
+function _syncPaused() { return _hydrating || _pullPaused; }
+
+function _maybeScheduleDeferredFlush() {
+  var cfg = getActiveConfig();
+  if (_syncPaused() || !_flushDeferred || !cfg || cfg.role === 'standalone') return;
+  if (Object.keys(_pending).length === 0) {
+    _flushDeferred = false;
+    return;
+  }
+  _flushDeferred = false;
+  var keys = Object.keys(_pending);
+  keys.forEach(function (k) { syncStorageKey(k); });
+}
+
+function _scheduleFlushDebounce() {
+  clearTimeout(_debounceTimer);
+  var delay = DEBOUNCE_MS;
+  for (var k in _pending) {
+    if (RECORD_SYNC_KEYS[k]) { delay = RECORD_DEBOUNCE_MS; break; }
+  }
+  _debounceTimer = setTimeout(flush, delay);
+}
 
 /* ─── Public singleton ──────────────────────────────────────────── */
 export const TC_SYNC = {
@@ -92,7 +268,7 @@ function log(level, message) {
 function getIDB() {
   if (_idbDB) return Promise.resolve(_idbDB);
   return new Promise((resolve) => {
-    const req = indexedDB.open(IDB_NAME, 1);
+    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
     req.onupgradeneeded = e => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
@@ -161,7 +337,7 @@ const VALIDATORS = {
     if (!Array.isArray(v)) return 'tc3_products must be an array';
     for (const p of v) {
       if (typeof p !== 'object' || p === null) return 'Product item is not an object';
-      if (!p.id && p.id !== 0) return 'Product item missing id';
+      if (p.id == null && p.productId == null) return 'Product item missing id';
     }
     return null;
   },
@@ -232,33 +408,67 @@ function chunkPatches(patches) {
 }
 
 /* ─── HTTP helper ───────────────────────────────────────────────── */
+/** Prefer main-process lanPost (reads apiKey from disk) — same reliable path as license sync. */
+async function postSyncPatch(body) {
+  var keys = (body && body.patches) ? body.patches.map(function (p) { return p && p.key; }).filter(Boolean).join(',') : '';
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.syncPatch === 'function') {
+      log('info', '[push:IPC] electronAPI.syncPatch keys=[' + keys + ']');
+      const json = await window.electronAPI.syncPatch(body);
+      if (json && json.success) {
+        log('info', '[push:IPC] ok keys=[' + keys + '] msg=' + (json.message || 'ok'));
+        return json;
+      }
+      if (json && json.success === false) {
+        log('error', '[push:IPC] rejected keys=[' + keys + '] msg=' + (json.message || 'failed') + ' — trying fetch fallback');
+      } else if (json && typeof json === 'object') {
+        return json;
+      }
+    }
+  } catch (e) {
+    log('error', '[push:IPC] error keys=[' + keys + ']: ' + (e && e.message ? e.message : e));
+  }
+  log('info', '[push:fetch] POST sync_patch.php keys=[' + keys + ']');
+  const fetchJson = await post('sync_patch.php', body);
+  log('info', '[push:fetch] response keys=[' + keys + '] success=' + !!(fetchJson && fetchJson.success));
+  return fetchJson;
+}
+
 async function post(endpoint, body) {
-  const apiUrl = _config && _config.apiUrl;
+  const cfg = getActiveConfig();
+  const apiUrl = cfg && cfg.apiUrl;
   if (!apiUrl) throw new Error('API URL not configured');
 
   const headers = {
     'Content-Type': 'application/json',
     'X-TC-Client-ID': getClientId(),
   };
-  if (_config.apiKey) headers['X-TC-KEY'] = _config.apiKey;
+  if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
 
-  const res = await fetch(apiUrl + endpoint, {
+  var fetchOpts = {
     method:  'POST',
     headers,
     body:    JSON.stringify(body),
-    signal:  AbortSignal.timeout(30000),
-  });
+  };
+  try {
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+      fetchOpts.signal = AbortSignal.timeout(30000);
+    }
+  } catch (_e) { /* ignore */ }
+
+  const res = await fetch(apiUrl + endpoint, fetchOpts);
 
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
 
 async function get(endpoint) {
-  const apiUrl = _config && _config.apiUrl;
+  const cfg = getActiveConfig();
+  const apiUrl = cfg && cfg.apiUrl;
   if (!apiUrl) throw new Error('API URL not configured');
 
   const headers = { 'X-TC-Client-ID': getClientId() };
-  if (_config.apiKey) headers['X-TC-KEY'] = _config.apiKey;
+  if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
 
   const res = await fetch(apiUrl + endpoint, {
     headers,
@@ -280,28 +490,32 @@ async function get(endpoint) {
 async function sendBatch(patches) {
   const groups   = chunkPatches(patches);
   const sentKeys = [];
+  const patchKeys = patches.map(function (p) { return p && p.key; }).filter(Boolean).join(',');
+  log('info', '[push:sendBatch] keys=[' + patchKeys + '] groups=' + groups.length);
 
   for (const group of groups) {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const json = await post('sync_patch.php', { patches: group, client_id: getClientId() });
+        const json = await postSyncPatch({ patches: group, client_id: getClientId() });
 
-        /* Server must confirm which keys were actually saved */
+        /* Server must confirm which keys were actually saved or skipped as duplicate */
         const confirmed = (json.data && Array.isArray(json.data.saved)) ? json.data.saved : [];
+        const duplicates = (json.data && Array.isArray(json.data.duplicates)) ? json.data.duplicates : [];
+        const successKeys = [...new Set([...confirmed, ...duplicates])];
 
-        if (!json.success && confirmed.length === 0) {
+        if (!json.success && successKeys.length === 0) {
           throw new Error(json.message || 'Server rejected patch');
         }
 
         /* Chunked patches may not return per-key confirmed (server merges) */
-        if (confirmed.length === 0 && group.every(p => p._chunk)) {
+        if (successKeys.length === 0 && group.every(p => p._chunk)) {
           /* For chunk groups treat as success if server responded ok */
           sentKeys.push(...group.map(p => p.key));
         } else {
-          sentKeys.push(...confirmed);
+          sentKeys.push(...successKeys);
         }
 
-        if (confirmed.length === 0 && !group.every(p => p._chunk)) {
+        if (successKeys.length === 0 && !group.every(p => p._chunk)) {
           log('error', 'Server returned no confirmed saves — keys not cleared: ' + group.map(p => p.key).join(','));
         }
         break;
@@ -320,7 +534,8 @@ async function sendBatch(patches) {
 
 /* ─── Flush the in-memory pending map → queue → server ─────────── */
 async function flush() {
-  if (!_config || !_config.apiUrl || Object.keys(_pending).length === 0) return;
+  const cfg = getActiveConfig();
+  if (!cfg || !cfg.apiUrl || Object.keys(_pending).length === 0) return;
 
   /* Move pending into persistent queue */
   const toSend = { ..._pending };
@@ -347,8 +562,13 @@ async function drainQueue() {
 
   setStatus(SYNC_STATUS.SAVING, { pendingCount: _queue.length });
 
-  /* Include each entry's stable ID as patch_id for server-side dedup */
-  const patches  = _queue.map(e => ({ key: e.key, value: e.value, patch_id: e.id }));
+  /* Always send the latest in-memory value — queue may hold a stale snapshot from a prior session */
+  const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : null;
+  const patches  = _queue.map(e => ({
+    key: e.key,
+    value: (cache && cache[e.key] !== undefined && cache[e.key] !== null) ? cache[e.key] : e.value,
+    patch_id: e.id,
+  }));
   const savedKeys = [];
   const failedKeys = [];
 
@@ -373,36 +593,147 @@ async function drainQueue() {
       pendingCount: 0,
     });
     log('info', 'All patches synced. Keys: ' + savedKeys.join(', '));
+    if (_onFlushSuccess && savedKeys.length > 0) {
+      try { _onFlushSuccess(savedKeys); } catch (_) {}
+    }
   }
 }
 
-/* ─── Queue a patch (debounced) ─────────────────────────────────── */
-export function queuePatch(key, value) {
-  if (!_config || _config.role === 'standalone') return;
+/** Push one key to server immediately (same path as manual Upload — both roles). */
+export async function syncStorageKeyNow(key, optValue) {
+  var cfg = getActiveConfig();
+  if (!cfg) {
+    cfg = await ensureSyncConfigFromDisk();
+  }
+  if (!cfg || cfg.role === 'standalone' || !cfg.apiUrl) {
+    logConfigDebug('syncStorageKeyNow:blocked');
+    return { ok: false, message: 'No network config' };
+  }
+  if (!SYNC_KEY_SET[key]) return { ok: false };
+
+  const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
+  const value = optValue !== undefined ? optValue : cache[key];
+  if (value === undefined || value === null) {
+    log('error', '[push:syncStorageKeyNow] no value for ' + key);
+    return { ok: false };
+  }
 
   const err = validate(key, value);
-  if (err) { log('error', 'Skipping invalid patch for ' + key + ': ' + err); return; }
+  if (err) {
+    log('error', 'syncStorageKeyNow validate ' + key + ': ' + err);
+    return { ok: false, message: err };
+  }
 
+  if (_inflightKeys[key]) {
+    _keyPendingValues[key] = value;
+    return { ok: false, inflight: true };
+  }
+
+  _inflightKeys[key] = true;
+  try {
+    log('info', '[push:syncStorageKeyNow] key=' + key + ' role=' + cfg.role + ' apiUrl=' + cfg.apiUrl);
+    const sent = await sendBatch([{ key, value }]);
+    const ok = sent.indexOf(key) >= 0;
+    if (ok) {
+      log('info', '[push:syncStorageKeyNow] server saved ' + key);
+      try {
+        if (typeof window !== 'undefined') {
+          window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
+          window._tcRecentLocalWrites[key] = Date.now();
+        }
+      } catch (_) {}
+      if (_onFlushSuccess) {
+        try { _onFlushSuccess([key]); } catch (_) {}
+      }
+    } else {
+      log('error', '[push:syncStorageKeyNow] server did not confirm ' + key);
+    }
+    return { ok, saved: sent };
+  } catch (e) {
+    log('error', '[push:syncStorageKeyNow] failed ' + key + ': ' + (e && e.message ? e.message : e));
+    return { ok: false, message: e && e.message ? e.message : String(e) };
+  } finally {
+    delete _inflightKeys[key];
+    if (_keyPendingValues[key] !== undefined) {
+      var retryVal = _keyPendingValues[key];
+      delete _keyPendingValues[key];
+      if (retryVal !== undefined && retryVal !== null) {
+        setTimeout(function () { syncStorageKeyNow(key, retryVal); }, 50);
+      }
+    }
+  }
+}
+
+/** Debounced direct push — call from S.set on every business-data write. */
+export function syncStorageKey(key, optValue) {
+  if (!SYNC_KEY_SET[key]) return;
+
+  const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
+  const value = optValue !== undefined ? optValue : cache[key];
+  if (value === undefined || value === null) return;
+
+  const err = validate(key, value);
+  if (err) { log('error', 'syncStorageKey skip ' + key + ': ' + err); return; }
+
+  _keyPendingValues[key] = value;
   _pending[key] = value;
-  setStatus(SYNC_STATUS.SAVING, { pendingCount: _queue.length + Object.keys(_pending).length });
+  setStatus(SYNC_STATUS.SAVING, { pendingCount: Object.keys(_pending).length });
 
+  var cfg = getActiveConfig();
+  if (!cfg) {
+    logConfigDebug('syncStorageKey:noCfg');
+    ensureSyncConfigFromDisk().then(function (c) {
+      if (c) syncStorageKey(key, _keyPendingValues[key] !== undefined ? _keyPendingValues[key] : value);
+    });
+    return;
+  }
+
+  log('info', '[push:syncStorageKey] schedule key=' + key + ' role=' + cfg.role);
+
+  clearTimeout(_keyDebounceTimers[key]);
+  var delay = RECORD_SYNC_KEYS[key] ? RECORD_DEBOUNCE_MS : DEBOUNCE_MS;
+  var captured = value;
+  _keyDebounceTimers[key] = setTimeout(function () {
+    delete _keyDebounceTimers[key];
+    delete _pending[key];
+    var pushVal = _keyPendingValues[key] !== undefined ? _keyPendingValues[key] : captured;
+    delete _keyPendingValues[key];
+    syncStorageKeyNow(key, pushVal);
+  }, delay);
+}
+
+/** Flush all pending keys (before close). */
+export async function flushAllPendingKeys() {
   clearTimeout(_debounceTimer);
-  _debounceTimer = setTimeout(flush, DEBOUNCE_MS);
+  Object.keys(_keyDebounceTimers).forEach(function (k) {
+    clearTimeout(_keyDebounceTimers[k]);
+    delete _keyDebounceTimers[k];
+  });
+  const keys = Object.keys(_pending);
+  _pending = {};
+  _flushDeferred = false;
+  var allOk = true;
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var v = _keyPendingValues[k];
+    const r = await syncStorageKeyNow(k, v);
+    if (!r.ok) allOk = false;
+  }
+  return allOk;
+}
+/* ─── Queue a patch (debounced) — delegates to direct push ───────── */
+export function queuePatch(key, value) {
+  const cfg = getActiveConfig();
+  if (!cfg || cfg.role === 'standalone') return;
+  if (value !== undefined && value !== null) {
+    _pending[key] = value;
+  }
+  syncStorageKey(key);
 }
 
 /* ─── Force flush (used before app close) ───────────────────────── */
 export async function flushNow() {
-  clearTimeout(_debounceTimer);
-  /* Move in-memory pending to queue first */
-  for (const [key, value] of Object.entries(_pending)) {
-    const err = validate(key, value);
-    if (!err) enqueue(key, value);
-  }
-  _pending = {};
-
-  if (_queue.length === 0) return true;
-  await drainQueue();
-  return _queue.length === 0 && TC_SYNC.status !== SYNC_STATUS.FAILED;
+  return flushAllPendingKeys();
 }
 
 /* ─── Load full state from server ───────────────────────────────── */
@@ -434,8 +765,65 @@ export async function loadStateFromServer(apiUrl, keys = null, opts = null) {
   return json.data;
 }
 
+/** Push selected keys from window._idbCache to server (manual upload + bootstrap). */
+export async function pushKeysToServer(keys, opts = null) {
+  const cfg = (opts && opts.authConfig) || getActiveConfig() || {};
+  if (!cfg.apiUrl) {
+    return { ok: false, message: 'API URL not configured' };
+  }
+  if (cfg.role !== 'network_server' && cfg.role !== 'network_client') {
+    return { ok: false, message: 'Not network mode' };
+  }
+  const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
+  const patches = [];
+  (keys || NETWORK_KV_KEYS).forEach(function (k) {
+    if (cache[k] !== undefined && cache[k] !== null) {
+      patches.push({ key: k, value: cache[k] });
+    }
+  });
+  if (!patches.length) return { ok: false, message: 'No shop data found on this PC to upload' };
+  const savedConfig = _config;
+  try {
+    _config = cfg;
+    const sent = await sendBatch(patches);
+    return { ok: sent.length > 0, saved: sent, message: sent.length > 0 ? 'Uploaded' : 'Server did not confirm save' };
+  } finally {
+    _config = savedConfig;
+  }
+}
+
+/** If MySQL kv_store is empty or behind local data, upload from this PC. */
+export async function bootstrapServerKvFromLocal(apiUrl, authConfig) {
+  if (!_config || _config.role !== 'network_server') return { ok: false };
+  const cfg = authConfig || _config || {};
+  const probe = await loadStateFromServer(apiUrl, ['tc3_products', 'tc3_sales', 'tc3_customers', 'tc3_quotations'], { authConfig: cfg });
+  const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
+  const serverProducts = Array.isArray(probe.tc3_products) ? probe.tc3_products.length : 0;
+  const serverSales = Array.isArray(probe.tc3_sales) ? probe.tc3_sales.length : 0;
+  const serverCustomers = Array.isArray(probe.tc3_customers) ? probe.tc3_customers.length : 0;
+  const localProducts = Array.isArray(cache.tc3_products) ? cache.tc3_products.length : 0;
+  const localSales = Array.isArray(cache.tc3_sales) ? cache.tc3_sales.length : 0;
+  const localCustomers = Array.isArray(cache.tc3_customers) ? cache.tc3_customers.length : 0;
+  const serverEmpty = serverProducts === 0 && serverSales === 0 && serverCustomers === 0;
+  const localHasData = localProducts > 0 || localSales > 0 || localCustomers > 0;
+  const serverBehind = localProducts > serverProducts || localSales > serverSales || localCustomers > serverCustomers;
+  if (!localHasData) {
+    return { ok: true, message: 'No local data to push' };
+  }
+  if (!serverEmpty && !serverBehind) {
+    return { ok: true, message: 'Server already has data' };
+  }
+  log('info', 'Bootstrapping local shop data to server MySQL (server empty or behind local)');
+  return pushKeysToServer(NETWORK_KV_KEYS);
+}
+
 /* ─── Patch window._tcS.set ─────────────────────────────────────── */
 function patchStorageSet() {
+  if (typeof window !== 'undefined' && window.__TC_SYNC_DIRECT__) {
+    if (window._tcS) window._tcS.__synced = false;
+    log('info', 'Direct storage sync enabled; wrapper patch skipped');
+    return;
+  }
   if (!window._tcS) {
     if (_patchRetryTimer) clearTimeout(_patchRetryTimer);
     _patchRetryTimer = setTimeout(function () {
@@ -470,26 +858,61 @@ function unpatchStorageSet() {
 
 /* ─── Init ──────────────────────────────────────────────────────── */
 export async function initSyncEngine(config) {
-  _config  = config;
-  _pending = {};
+  ensureSyncConfig(config);
   clearTimeout(_debounceTimer);
 
-  /* Expose on window */
-  window.TC_SYNC             = TC_SYNC;
-  window.TC_SYNC.queuePatch  = queuePatch;
-  window.TC_SYNC.flushNow    = flushNow;
+  /* Expose on window — methods are on TC_SYNC even before async init finishes */
+  if (typeof window !== 'undefined') {
+    window.TC_SYNC = TC_SYNC;
+    if (!window.TC_SYNC.queuePatch) window.TC_SYNC.queuePatch = queuePatch;
+    if (!window.TC_SYNC.flushNow) window.TC_SYNC.flushNow = flushNow;
+    if (!window.TC_SYNC.pushKeysToServer) window.TC_SYNC.pushKeysToServer = pushKeysToServer;
+    window.TC_SYNC.bootstrapServerKv = function () {
+      return bootstrapServerKvFromLocal(config.apiUrl, config);
+    };
+  }
 
   if (!config || config.role === 'standalone') {
+    _engineStarted = false;
+    _pending = {};
+    _flushDeferred = false;
+    if (_retryInterval) {
+      clearInterval(_retryInterval);
+      _retryInterval = null;
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        window._tcNetSyncConfig = null;
+        window.__TC_SYNC_DIRECT__ = false;
+      }
+    } catch (_) {}
     unpatchStorageSet();
     setStatus(SYNC_STATUS.IDLE);
     return;
   }
+
+  /* Strict Mode remount: keep pending patches + config; only arm timers once */
+  if (_engineStarted) {
+    patchStorageSet();
+    _maybeScheduleDeferredFlush();
+    return;
+  }
+  _engineStarted = true;
+  log('info', 'Sync engine starting (' + config.role + ') → ' + config.apiUrl);
 
   /* Load any items that didn't sync before last close */
   await loadQueue();
 
   /* Patch storage before draining so new writes don't race */
   patchStorageSet();
+
+  /* Start periodic background retry timer (every 5 seconds) to drain the queue if it gets stuck */
+  _retryInterval = setInterval(async () => {
+    if (_queue.length > 0 && TC_SYNC.status !== SYNC_STATUS.SAVING && !_syncPaused()) {
+      log('info', 'Periodic retry: draining queue with ' + _queue.length + ' item(s)');
+      await drainQueue();
+    }
+  }, 5000);
 
   /* Drain leftover queue from previous session */
   if (_queue.length > 0) {
@@ -498,14 +921,24 @@ export async function initSyncEngine(config) {
   } else {
     setStatus(SYNC_STATUS.IDLE);
   }
+
+  /* Patches queued during startup pull/hydration must not be lost */
+  if (Object.keys(_pending).length > 0 || _flushDeferred) {
+    _maybeScheduleDeferredFlush();
+  }
 }
 
 export function destroySyncEngine() {
   clearTimeout(_debounceTimer);
   _debounceTimer = null;
+  if (_retryInterval) {
+    clearInterval(_retryInterval);
+    _retryInterval = null;
+  }
+  _engineStarted = false;
   unpatchStorageSet();
-  _config  = null;
-  _pending = {};
+  /* Keep _config, _pending, _onFlushSuccess, and window._tcNetSyncConfig */
+  _config = getActiveConfig();
 }
 
 /**
@@ -526,3 +959,13 @@ function sleep(ms) {
 
 /** Exposed for automated tests (chunking / validation invariants only). */
 export { chunkPatches, validate as validateSyncStorageValue };
+
+/* Attach API helpers to singleton immediately so Settings / IPC can call before async init */
+TC_SYNC.queuePatch = queuePatch;
+TC_SYNC.flushNow = flushNow;
+TC_SYNC.pushKeysToServer = pushKeysToServer;
+TC_SYNC.ensureSyncConfig = ensureSyncConfig;
+TC_SYNC.ensureSyncConfigFromDisk = ensureSyncConfigFromDisk;
+TC_SYNC.syncStorageKey = syncStorageKey;
+TC_SYNC.syncStorageKeyNow = syncStorageKeyNow;
+TC_SYNC.isKeyPending = isSyncKeyPending;

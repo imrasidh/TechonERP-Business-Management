@@ -169,7 +169,18 @@ try {
 }
 
 /* ── Check if license is present and activated ──────────────────── */
-if (!$row || $row['status'] === 'none' || empty($row['license_key'])) {
+$rowStatus = strtolower(trim((string)($row['status'] ?? 'none')));
+if (!$row || $rowStatus === 'none') {
+    respond([
+        'success'  => false,
+        'valid'    => false,
+        'status'   => 'locked',
+        'message'  => 'Server license not configured yet. Please open Techon ERP on the main server PC.',
+        'data'     => ['shop_name' => $row['shop_name'] ?? '', 'plan' => '', 'expires' => null, 'days_left' => null],
+    ]);
+}
+/* Trial mode: no serial key required — main PC syncs trial snapshot to MySQL */
+if ($rowStatus !== 'trial' && empty($row['license_key'])) {
     respond([
         'success'  => false,
         'valid'    => false,

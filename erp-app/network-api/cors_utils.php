@@ -7,8 +7,9 @@
  */
 function techon_cors_origin_is_allowed($origin) {
     $origin = trim((string) $origin);
-    if ($origin === '' || strcasecmp($origin, 'null') === 0) {
-        return getenv('TECHON_CORS_ALLOW_NULL_ORIGIN') === '1';
+    // Always allow empty, null, local file, and custom Electron/packaged app protocols:
+    if ($origin === '' || strcasecmp($origin, 'null') === 0 || stripos($origin, 'file://') === 0 || stripos($origin, 'app://') === 0 || stripos($origin, 'vscode-file://') === 0) {
+        return true;
     }
     $extra = getenv('TECHON_ALLOWED_ORIGINS');
     if ($extra !== false && $extra !== '') {

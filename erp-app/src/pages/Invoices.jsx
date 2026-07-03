@@ -51,7 +51,9 @@ var QuotationForm = function (props) {
     return s && productMatchesSearch(p, s);
   }).slice(0, 8);
 
-  var posDupNameKeys = getDuplicateNormalizedNameKeys(state.customers || []);
+  var posDupNameKeys = typeof getDuplicateNormalizedNameKeys === "function"
+    ? getDuplicateNormalizedNameKeys(state.customers || [])
+    : {};
   var saveInlineCustomer = function (draft) {
     var name = String(draft && draft.name || "").trim();
     var phone = String(draft && draft.phone || "").trim();
@@ -267,6 +269,8 @@ var Quotations = function (props) {
   var showPermissionDenied = typeof props.showPermissionDenied === "function"
     ? props.showPermissionDenied
     : function () { showAlert("You do not have permission for this action."); };
+  var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
+  var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
   /* setSiTab switches the SalesInvoices tab from "quotations" → "invoices" */
   /* eslint-disable-next-line no-unused-vars */
 
@@ -503,14 +507,14 @@ var Quotations = function (props) {
       {/* New Quotation Modal */}
       {show && (
         <Modal title="New Quotation" onClose={function () { setShow(false); }} wide>
-          <QuotationForm fq={f} setFq={setF} onSave={saveNew} title="💾 Save Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={props.getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={props.normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
+          <QuotationForm fq={f} setFq={setF} onSave={saveNew} title="💾 Save Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
         </Modal>
       )}
 
       {/* Edit Quotation Modal */}
       {editQ && (
         <Modal title={"Edit — " + (editQ.quotationNo || "")} onClose={function () { setEditQ(null); }} wide>
-          <QuotationForm fq={editQ} setFq={setEditQ} onSave={saveEdit} title="💾 Update Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={props.getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={props.normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
+          <QuotationForm fq={editQ} setFq={setEditQ} onSave={saveEdit} title="💾 Update Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
         </Modal>
       )}
 
@@ -614,6 +618,8 @@ var SalesInvoices = React.memo(function (props) {
   var showPermissionDenied = typeof props.showPermissionDenied === "function"
     ? props.showPermissionDenied
     : function () { showAlert("You do not have permission for this action."); };
+  var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
+  var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
   var [siTab, setSiTab] = useState("invoices");
   var [search, setSearch] = useState("");
   var [dateFrom, setDateFrom] = useState("");
@@ -907,7 +913,7 @@ var SalesInvoices = React.memo(function (props) {
           return <button key={t[0]} onClick={function () { setSiTab(t[0]); }} style={{ background: isA ? "linear-gradient(135deg,#2979ff,#2255d4)" : "transparent", color: isA ? "#fff" : C.textMd, border: "none", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", transition: "all .15s", fontFamily: "inherit", boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.28)" : "none" }}>{t[1]}</button>;
         })}
       </div>
-      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} InvoiceA4={InvoiceA4} InvoiceThermal={InvoiceThermal} C={C} usePager={usePager} Pager={Pager} canEditInvoices={canEditInvoices} canDeleteInvoices={canDeleteInvoices} showPermissionDenied={showPermissionDenied} />}
+      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} InvoiceA4={InvoiceA4} InvoiceThermal={InvoiceThermal} C={C} usePager={usePager} Pager={Pager} canEditInvoices={canEditInvoices} canDeleteInvoices={canDeleteInvoices} showPermissionDenied={showPermissionDenied} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} />}
       {siTab === "invoices" && <React.Fragment>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
         <StatCard money={false} label="Shown" value={filtered.length} accent={C.cyan} icon="🧾" sub="invoices" />

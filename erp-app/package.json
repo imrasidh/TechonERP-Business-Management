@@ -1,7 +1,7 @@
 {
   "name": "techon-erp",
   "private": true,
-  "version": "2.0.0",
+  "version": "2.0.1",
   "main": "main.cjs",
   "scripts": {
     "dev": "vite",
