@@ -168,7 +168,18 @@ export function mergeSettingsFromServer(local, remote) {
     if (netRole === "network_server" && !isBlank(local[k])) out[k] = local[k];
     else if (isBlank(remote[k]) && !isBlank(local[k])) out[k] = local[k];
   });
-  out.moduleToggles = Object.assign({}, local.moduleToggles || {}, remote.moduleToggles || {});
+  if (netRole === "network_client") {
+    out.mainModuleToggles = Object.assign({}, local.mainModuleToggles || local.moduleToggles || {}, remote.mainModuleToggles || remote.moduleToggles || {});
+    out.counterModuleToggles = Object.assign({}, remote.counterModuleToggles || {}, local.counterModuleToggles || {});
+    out.moduleToggles = out.mainModuleToggles;
+    if (remote.mainAdminPassHash) out.mainAdminPassHash = remote.mainAdminPassHash;
+  } else {
+    out.mainModuleToggles = Object.assign({}, remote.mainModuleToggles || remote.moduleToggles || {}, local.mainModuleToggles || local.moduleToggles || {});
+    out.counterModuleToggles = Object.assign({}, remote.counterModuleToggles || {}, local.counterModuleToggles || {});
+    out.moduleToggles = out.mainModuleToggles;
+    if (remote.mainAdminPassHash && !local.mainAdminPassHash) out.mainAdminPassHash = remote.mainAdminPassHash;
+    else if (local.mainAdminPassHash) out.mainAdminPassHash = local.mainAdminPassHash;
+  }
   return out;
 }
 

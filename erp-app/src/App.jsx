@@ -3,6 +3,7 @@ import { IS_PRODUCTION, COMPUTER_SHOP_EDITION, validateJsonBackupPayload, enforc
 import { defaultStrictPeriodLock } from "./productionDefaults.js";
 import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
+import { generateDocumentNumber } from "./utils/docNumbers.js";
 import {
   getInvoicePrintLabels,
   getAllowedInvoiceLangCodes,
@@ -88,7 +89,7 @@ import {
   glassInvoiceQtyCol,
   invoiceHasGlassLines,
 } from "./utils/glassProduct.js";
-import { hydrateFeatureFlagDefaults, isRepairsModuleEnabled, isNavModuleEnabled, CORE_NAV_IDS, getDefaultLandingNavId } from "./utils/featureFlags.js";
+import { hydrateFeatureFlagDefaults, isRepairsModuleEnabled, isNavModuleEnabled, CORE_NAV_IDS, getDefaultLandingNavId, listEnabledNavIds } from "./utils/featureFlags.js";
 import { formatGlassDimensionLine } from "./utils/glassDimensions.js";
 import { checkProductName as checkProductNameMatch } from "./utils/productNameMatch.js";
 
@@ -204,6 +205,7 @@ var normalizeLoginUsername = function (v) { return String(v || "").trim().toLowe
 var setLoginPassword = function (hashed, opts) {
   opts = opts || {};
   S.set("tc3_apppass", hashed);
+  syncMainAdminPassHashToSettings(hashed);
   var users = S.get("tc3_users", []);
   if (!Array.isArray(users)) users = [];
   var uname = normalizeLoginUsername(opts.username);
@@ -227,6 +229,15 @@ var setLoginPassword = function (hashed, opts) {
     return row;
   }
   return null;
+};
+/** Sync main admin password hash into settings so counter PCs can verify login/settings access. */
+var syncMainAdminPassHashToSettings = function (hashed) {
+  if (!hashed) return;
+  try {
+    var ns = Object.assign({}, S.get("tc3_settings", {}));
+    ns.mainAdminPassHash = hashed;
+    S.set("tc3_settings", ns);
+  } catch (_e2) { /* ignore */ }
 };
 var verifyLoginPassword = function (input, user) {
   var appHash = S.get("tc3_apppass", "");
@@ -798,18 +809,8 @@ var nextProductId = function (products) {
   var ids = (products || []).map(function (p) { return parseInt(p.productId) || 0; }).filter(function (n) { return n >= 1010; });
   return ids.length > 0 ? String(Math.max.apply(null, ids) + 1) : "1010";
 };
-var genInvNo = function (pfx) {
-  var p = pfx || "INV";
-  var now = new Date();
-  var yr = now.getFullYear();
-  var mo = String(now.getMonth() + 1).padStart(2, "0");
-  var dy = String(now.getDate()).padStart(2, "0");
-  var hh = String(now.getHours()).padStart(2, "0");
-  var mi = String(now.getMinutes()).padStart(2, "0");
-  var ss = String(now.getSeconds()).padStart(2, "0");
-  return p + "-" + yr + mo + dy + "-" + hh + mi + ss;
-};
-var genPurNo = function () { return genInvNo("PUR"); };
+var genInvNo = function (pfx) { return generateDocumentNumber(pfx || "INV"); };
+var genPurNo = function () { return generateDocumentNumber("PUR"); };
 
 /* --- IN-APP DIALOG (replaces alert/confirm to avoid Electron focus loss) -- */
 var _dialogState = { listeners: [] };
@@ -5509,6 +5510,24 @@ var LoginScreen = function (props) {
         role: ROLE_ADMIN,
       });
     };
+    var finishMainAdminLogin = function () {
+      finishLogin({
+        id: "main-admin-sync",
+        username: "admin",
+        name: S.get("tc3_admin_name", "Admin") || "Admin",
+        role: ROLE_ADMIN,
+      });
+    };
+    var tryMainServerLogin = function (password) {
+      if (!props.isNetworkClient) return Promise.resolve(false);
+      var st = S.get("tc3_settings", {}) || {};
+      if (!st.mainAdminPassHash) return Promise.resolve(false);
+      return pwMatchesAsync(password, st.mainAdminPassHash).then(function (ok) { return !!ok; });
+    };
+    var loginFailed = function (msg) {
+      setErr(msg || "Incorrect password. If you forgot it, use Forgot password below.");
+      setPw("");
+    };
     if (user) {
       verifyLoginPassword(pw, user).then(function (r) {
         if (r.ok) { finishLogin(r.user || user); return; }
@@ -5517,14 +5536,18 @@ var LoginScreen = function (props) {
             if (ok2) {
               setLoginPassword(stored, { userId: user.id, username: user.username || "admin" });
               finishLogin(user);
-            } else {
-              setErr("Incorrect password. If you forgot it, use Forgot password below.");
-              setPw("");
+              return;
             }
+            tryMainServerLogin(pw).then(function (mainOk) {
+              if (mainOk) finishMainAdminLogin();
+              else loginFailed();
+            });
           });
         } else {
-          setErr("Incorrect password. If you forgot it, use Forgot password below.");
-          setPw("");
+          tryMainServerLogin(pw).then(function (mainOk) {
+            if (mainOk) finishMainAdminLogin();
+            else loginFailed();
+          });
         }
       }).catch(function () {
         setErr("Login failed. Please restart the app and try again.");
@@ -5533,24 +5556,27 @@ var LoginScreen = function (props) {
       return;
     }
     pwMatchesAsync(pw, stored).then(function (ok) {
-      if (!ok || !stored) {
-        setErr(users.length ? "Incorrect username or password. Default username is admin." : "Incorrect password. Try again.");
-        setPw("");
+      if (ok && stored) {
+        if (!S.get("tc3_admin_name", "")) { setNeedName(true); setPw(""); return; }
+        var repaired = setLoginPassword(stored, {
+          user: {
+            id: "u_" + uid(),
+            username: uname || "admin",
+            name: S.get("tc3_admin_name", "Admin"),
+            role: ROLE_ADMIN,
+            passwordHash: stored,
+            active: true,
+            createdAt: new Date().toISOString(),
+          },
+        });
+        finishLogin(repaired);
         return;
       }
-      if (!S.get("tc3_admin_name", "")) { setNeedName(true); setPw(""); return; }
-      var repaired = setLoginPassword(stored, {
-        user: {
-          id: "u_" + uid(),
-          username: uname || "admin",
-          name: S.get("tc3_admin_name", "Admin"),
-          role: ROLE_ADMIN,
-          passwordHash: stored,
-          active: true,
-          createdAt: new Date().toISOString(),
-        },
+      tryMainServerLogin(pw).then(function (mainOk) {
+        if (mainOk) { finishMainAdminLogin(); return; }
+        setErr(users.length ? "Incorrect username or password. Default username is admin." : "Incorrect password. Try again.");
+        setPw("");
       });
-      finishLogin(repaired);
     });
   };
 
@@ -6020,6 +6046,11 @@ function App(props) {
   var [pinModal, setPinModal] = useState(false); /* show PIN entry */
   var [pinEntry, setPinEntry] = useState("");
   var [pinError, setPinError] = useState("");
+  var [settingsPwModal, setSettingsPwModal] = useState(false);
+  var [settingsPwPending, setSettingsPwPending] = useState(null);
+  var [settingsPwEntry, setSettingsPwEntry] = useState("");
+  var [settingsPwErr, setSettingsPwErr] = useState("");
+  var settingsPwBypassRef = useRef(false);
   var [masterPwEntry, setMasterPwEntry] = useState("");
   var [pinSupportMode, setPinSupportMode] = useState(false);
   var [supportChallengeCode, setSupportChallengeCode] = useState("");
@@ -6063,6 +6094,12 @@ function App(props) {
     appMountedRef.current = true;
     return function () { appMountedRef.current = false; };
   }, []);
+
+  useEffect(function () {
+    if (!loggedIn || isNetworkClient) return;
+    var h = S.get("tc3_apppass", "");
+    if (h) syncMainAdminPassHashToSettings(h);
+  }, [loggedIn, isNetworkClient]);
 
   /* Vite dev loads http://127.0.0.1 - a different web origin than file:// in the packaged app, so IDB/LS are empty vs .exe */
   useEffect(function () {
@@ -6681,9 +6718,10 @@ function App(props) {
 
   /* -- Sales Mode pages (always accessible) -- */
   var _activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
-  var _repairsModuleOn = isRepairsModuleEnabled(state && state.settings, businessType, _activeProfile);
-  var _navOn = function (id) { return isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id); };
-  var _landingNav = function () { return getDefaultLandingNavId(state && state.settings, businessType, _activeProfile); };
+  var _netRole = isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone");
+  var _repairsModuleOn = isRepairsModuleEnabled(state && state.settings, businessType, _activeProfile, _netRole);
+  var _navOn = function (id) { return isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id, _netRole); };
+  var _landingNav = function () { return getDefaultLandingNavId(state && state.settings, businessType, _activeProfile, _netRole); };
   var SALES_MODE_PAGES = ["pos"]
     .concat(_navOn("invoices") ? ["invoices"] : [])
     .concat(_navOn("customers") ? ["customers"] : [])
@@ -6723,43 +6761,69 @@ function App(props) {
     } catch (e) {}
   }, [normalizedCurrentUser, isNetworkClient, isNetworkServer]);
 
-  /* POS terminal (network_client): fixed page allow-list - repairs only for selected business types */
-  var CLIENT_POS_REPAIR_BT = { tech: true, jewelry: true, automotive: true, general: true };
-  var buildClientPosPages = function (bt) {
-    var pages = ["pos", "invoices", "customers", "returns", "settings"];
-    var btKnown = bt && BUSINESS_PROFILES[bt];
-    if (btKnown && CLIENT_POS_REPAIR_BT[bt] === true) {
-      var ri = pages.indexOf("returns");
-      pages.splice(ri, 0, "repairs");
-    }
-    return pages;
-  };
-  var clientPosPages = buildClientPosPages(businessType);
+  /* POS terminal: allowed sidebar pages from counterModuleToggles (configured on counter Settings → Modules). */
+  var clientPosPages = isNetworkClient
+    ? listEnabledNavIds(state && state.settings, businessType, _activeProfile, "network_client")
+    : [];
 
-  /* Hard-block routes that must never open on POS terminals */
-  var CLIENT_HARD_BLOCK_IDS = {
-    purchases: true, reports: true, accounts: true, dashboard: true, inventory: true, suppliers: true,
-    statements: true, receivables: true, payables: true, cheques: true, expenses: true,
-    barcodeprint: true, auditlog: true,
+  var openSettingsWithPassword = function (pendingNav) {
+    setSettingsPwPending(pendingNav || "settings");
+    setSettingsPwEntry("");
+    setSettingsPwErr("");
+    setSettingsPwModal(true);
+  };
+  var verifySettingsUnlockPassword = function (input) {
+    if (isNetworkClient) {
+      var st = S.get("tc3_settings", {}) || {};
+      if (st.mainAdminPassHash) return pwMatchesAsync(input, st.mainAdminPassHash);
+      return Promise.resolve(false);
+    }
+    var stored = S.get("tc3_apppass", "");
+    if (!stored) return Promise.resolve(false);
+    return pwMatchesAsync(input, stored);
+  };
+  var submitSettingsPassword = function () {
+    if (!settingsPwEntry) {
+      setSettingsPwErr(isNetworkClient ? "Enter the main PC admin password." : "Enter your admin password.");
+      return;
+    }
+    verifySettingsUnlockPassword(settingsPwEntry).then(function (ok) {
+      if (!ok) {
+        setSettingsPwErr(isNetworkClient
+          ? "Incorrect main PC password. Counter login passwords cannot open Settings."
+          : "Incorrect password.");
+        setSettingsPwEntry("");
+        return;
+      }
+      var dest = settingsPwPending || "settings";
+      setSettingsPwModal(false);
+      setSettingsPwPending(null);
+      setSettingsPwEntry("");
+      setSettingsPwErr("");
+      settingsPwBypassRef.current = true;
+      setActive(dest);
+    });
   };
 
   var setActive = function (id) {
+    if (id === "settings") {
+      if (!settingsPwBypassRef.current) {
+        openSettingsWithPassword(id);
+        return;
+      }
+      settingsPwBypassRef.current = false;
+    }
     if (isNetworkClient) {
-      if (CLIENT_HARD_BLOCK_IDS[id]) {
+      var allowedClient = listEnabledNavIds(state && state.settings, businessType, _activeProfile, "network_client");
+      if (allowedClient.indexOf(id) < 0) {
         if (tcIsDevEnv()) {
-          console.warn("[TC_CLIENT] blocked route:", id);
+          console.warn("[TC_CLIENT] blocked route (module off):", id);
         }
         _setActive("pos");
         return;
       }
-      var allowed = buildClientPosPages(businessType);
-      if (allowed.indexOf(id) < 0) {
-        if (tcIsDevEnv()) {
-          console.warn("[TC_CLIENT] blocked route (not in allowlist):", id);
-        }
-        _setActive("pos");
-        return;
-      }
+      _setActive(id);
+      return;
     }
     if (!canAccessPageByRole(normalizedCurrentUser, id)) {
       if (id === "reports" || id === "accounts" || id === "auditlog") showPermissionDenied("open reports");
@@ -6880,6 +6944,10 @@ function App(props) {
       showAlert("Please add your shop name and contact details in Settings before using sales and POS.");
       return;
     }
+    if (id === "settings") {
+      setActive(id);
+      return;
+    }
     if (isNetworkClient) {
       setActive(id);
       return;
@@ -6888,7 +6956,7 @@ function App(props) {
       showPermissionDenied("open this page");
       return;
     }
-    if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id)) {
+    if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id, _netRole)) {
       return;
     }
     /* Network server: full navigation - no sales/admin mode gate */
@@ -6902,7 +6970,7 @@ function App(props) {
   useEffect(function () {
     if (!loggedIn || !state || isNetworkClient) return;
     if (CORE_NAV_IDS.indexOf(active) >= 0) return;
-    if (isNavModuleEnabled(state.settings, businessType, _activeProfile, active)) return;
+    if (isNavModuleEnabled(state.settings, businessType, _activeProfile, active, _netRole)) return;
     setActive("pos");
   }, [loggedIn, state, active, businessType, isNetworkClient]);
 
@@ -6917,9 +6985,8 @@ function App(props) {
   /* POS terminal: never stay on a disallowed route */
   useEffect(function () {
     if (!loggedIn || !isNetworkClient) return;
-    if (buildClientPosPages(businessType).indexOf(active) >= 0) return;
-    setActive("pos");
-  }, [loggedIn, isNetworkClient, active, businessType]);
+    if (clientPosPages.indexOf(active) < 0) setActive("pos");
+  }, [loggedIn, isNetworkClient, active, businessType, state && state.settings]);
 
   useEffect(function () {
     if (!loggedIn || !idbReady) return;
@@ -6929,9 +6996,14 @@ function App(props) {
 
   useEffect(function () {
     if (!loggedIn) return;
+    if (isNetworkClient) {
+      if (clientPosPages.indexOf(active) >= 0) return;
+      setActive("pos");
+      return;
+    }
     if (canAccessPageByRole(normalizedCurrentUser, active)) return;
     setActive("pos");
-  }, [loggedIn, active, normalizedCurrentUser && normalizedCurrentUser.role]);
+  }, [loggedIn, active, normalizedCurrentUser && normalizedCurrentUser.role, isNetworkClient, clientPosPages.length]);
 
   useEffect(function () {
     if (!loggedIn) return;
@@ -7162,7 +7234,7 @@ function App(props) {
       }, 0);
       return null;
     }
-    return <LoginScreen key="login-ready" onLogin={handleLogin} />;
+    return <LoginScreen key="login-ready" onLogin={handleLogin} isNetworkClient={isNetworkClient} />;
   }
 
   var activeItem = null;
@@ -7220,13 +7292,12 @@ function App(props) {
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 10px 6px" }}>
             {NAV_GROUPS.map(function (group) {
               var activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
-              var navEnabled = function (id) { return isNavModuleEnabled(state.settings, businessType, activeProfile, id); };
+              var navEnabled = function (id) { return isNavModuleEnabled(state.settings, businessType, activeProfile, id, isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone")); };
               var groupItems = NAV_ITEMS.filter(function (n) {
                 if (group.ids.indexOf(n.id) < 0) return false;
-                /* POS terminal (network_client): fixed sidebar - no admin mode */
+                /* POS terminal: sidebar from synced counter module toggles */
                 if (isNetworkClient) {
                   if (clientPosPages.indexOf(n.id) < 0) return false;
-                  if (n.id === "repairs" && CLIENT_POS_REPAIR_BT[businessType] !== true) return false;
                   return true;
                 }
                 /* Network server: show full nav (settings + module toggles) */
@@ -7864,6 +7935,32 @@ function App(props) {
     )}
 
     {/* -- PIN Entry Modal -- */}
+    {settingsPwModal && (
+      <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100015, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ background: "#fff", borderRadius: 20, padding: "32px 36px", width: 400, maxWidth: "calc(100vw - 32px)", boxShadow: "0 32px 80px rgba(10,22,50,0.4)", border: "1.5px solid " + C.border }}>
+          <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 6 }}>Settings password</div>
+          <div style={{ fontSize: 13, color: C.muted, marginBottom: 18, lineHeight: 1.55 }}>
+            {isNetworkClient
+              ? "Enter the main PC admin password. Counter login passwords cannot open Settings."
+              : "Enter your admin password to open Settings."}
+          </div>
+          <input
+            type="password"
+            autoFocus
+            value={settingsPwEntry}
+            placeholder="Password"
+            onChange={function (e) { setSettingsPwEntry(e.target.value); setSettingsPwErr(""); }}
+            onKeyDown={function (e) { if (e.key === "Enter") submitSettingsPassword(); }}
+            style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 10, padding: "12px 14px", fontSize: 14, marginBottom: 10, outline: "none", fontFamily: "inherit" }}
+          />
+          {settingsPwErr ? <div style={{ background: "#fde8ed", color: C.red, borderRadius: 9, padding: "8px 12px", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>{settingsPwErr}</div> : null}
+          <div style={{ display: "flex", gap: 10 }}>
+            <button type="button" onClick={submitSettingsPassword} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Unlock</button>
+            <button type="button" onClick={function () { setSettingsPwModal(false); setSettingsPwPending(null); setSettingsPwEntry(""); setSettingsPwErr(""); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1.5px solid " + C.border, background: "#fff", color: C.textMd, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    )}
     {pinModal && (
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100020, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ background: "#fff", borderRadius: 20, padding: "36px 40px", width: pinSupportMode ? 430 : 380, maxWidth: "calc(100vw - 32px)", boxShadow: "0 32px 80px rgba(10,22,50,0.4)", border: "1.5px solid " + C.border, textAlign: "center" }}>

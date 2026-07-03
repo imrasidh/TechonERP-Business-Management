@@ -3,6 +3,7 @@ import { purchaseReturnUiStatus, displayStatusForPurchase } from "../utils/retur
 import { buildVoidPurchaseUpdates, isVoidedTxn, activePurchases, VOID_REASON_OPTIONS, voidPurchaseBlockReason } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import CloseIconButton from "../components/CloseIconButton.jsx";
+import { ensureUniqueDocumentNumber } from "../utils/docNumbers.js";
 import { validateExtraUnits, buildUnitsPersistFields, getProductUnitRows, factorForNamedUnit, isProductBaseUnitLabel } from "../units/productUnits.js";
 import {
   normalizePurchaseLineItem,
@@ -100,8 +101,6 @@ var Purchases = React.memo(function (props) {
   var getUnitSellPrice = props.getUnitSellPrice;
   var checkPeriodClose = props.checkPeriodClose;
   var setActive = props.setActive;
-  var systemConfig = props.systemConfig || {};
-  var isNetworkClient = systemConfig.role === "network_client";
   var SplitPaymentModal = props.SplitPaymentModal;
   var PaymentBreakdown = props.PaymentBreakdown;
   var BarcodeLabelSheet = props.BarcodeLabelSheet;
@@ -122,10 +121,6 @@ var Purchases = React.memo(function (props) {
   /* newProd declared here so the Ctrl++ useEffect below can safely reference setNewProd */
   var [newProd, setNewProd] = useState(null);
 
-  useEffect(function () {
-    if (!isNetworkClient || typeof setActive !== "function") return;
-    setActive("pos");
-  }, [isNetworkClient, setActive]);
   var [newProdKey, setNewProdKey] = useState(0);
   var newProductNameMatch = useMemo(function () {
     if (!newProd || !String(newProd.name || "").trim()) return null;
@@ -776,12 +771,9 @@ var Purchases = React.memo(function (props) {
 
   var doSavePurchase = function (withBarcode, forceSave, skipPackWarn) {
     if (!f.supplier || !f.items.length) return;
-    /* Fix 1: Use forceSave flag to skip duplicate check after user confirms.
-       Without this the confirm dialog would re-trigger itself infinitely. */
-    if (!forceSave && f.invoiceNo && state.purchases.find(function (p) { return p.invoiceNo === f.invoiceNo; })) {
-      showConfirm("Purchase invoice \"" + f.invoiceNo + "\" already exists. Save anyway?", function () { doSavePurchase(withBarcode, true, skipPackWarn); });
-      return;
-    }
+    var purInvNo = ensureUniqueDocumentNumber(f.invoiceNo, "PUR", state, {
+      excludePurchaseId: editPur ? editPur.id : null,
+    });
     var vi, vIt, vPr, vIu;
     for (vi = 0; vi < f.items.length; vi++) {
       vIt = f.items[vi];
@@ -850,7 +842,7 @@ var Purchases = React.memo(function (props) {
     }
     var purAmtErr = validateTxnAmounts("Purchase invoice", invoiceTotalSave, effPaid, effBal);
     if (purAmtErr) { showAlert("X " + purAmtErr); return; }
-    var purObj = { id: uid(), supplier: f.supplier, invoiceNo: f.invoiceNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave, taxMode: taxModeSave, createdAt: new Date().toISOString() };
+    var purObj = { id: uid(), supplier: f.supplier, invoiceNo: purInvNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave, taxMode: taxModeSave, createdAt: new Date().toISOString() };
     var np = state.products.slice();
     normalizedSaveItems.forEach(function (it) {
       var idx = np.findIndex(function (p) { return p.id === it.id; });

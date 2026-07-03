@@ -17,8 +17,10 @@ import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import {
   isFreeItemsEnabled,
   isRepairsModuleEnabled,
-  getModuleToggles,
-  persistModuleToggles,
+  getMainModuleToggles,
+  getCounterModuleToggles,
+  persistMainModuleToggles,
+  persistCounterModuleToggles,
   MODULE_TOGGLE_DEFS,
 } from "../utils/featureFlags.js";
 import { safeStr } from "../utils/syncDataNormalize.js";
@@ -84,7 +86,7 @@ var Settings = function (props) {
   var StatCard = props.StatCard;
   var [stab, setStab] = useState(function () {
     var sc = props.systemConfig || {};
-    return sc.role === "network_client" ? "pos" : "shop";
+    return sc.role === "network_client" ? "features" : "shop";
   });
   var [supBndFrom, setSupBndFrom] = useState(today().slice(0, 7) + "-01");
   var [supBndTo, setSupBndTo] = useState(today());
@@ -154,9 +156,11 @@ var Settings = function (props) {
     preventNegativeStock: state.settings.preventNegativeStock !== false,
     allowCostFallback: state.settings.allowCostFallback === true,
     glVatPostingEnabled: state.settings.glVatPostingEnabled !== false,
-    freeItemsEnabled: isFreeItemsEnabled(state.settings, businessType),
-    repairsModuleEnabled: isRepairsModuleEnabled(state.settings, businessType, getBusinessProfile()),
-    moduleToggles: getModuleToggles(state.settings, businessType, getBusinessProfile()),
+    freeItemsEnabled: isFreeItemsEnabled(state.settings, businessType, isNetworkClient ? "network_client" : systemConfig.role),
+    repairsModuleEnabled: isRepairsModuleEnabled(state.settings, businessType, getBusinessProfile(), isNetworkClient ? "network_client" : systemConfig.role),
+    mainModuleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
+    counterModuleToggles: getCounterModuleToggles(state.settings, businessType, getBusinessProfile()),
+    moduleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
   }));
   var [newAsset, setNewAsset] = useState(null);
   var [editAsset, setEditAsset] = useState(null);
@@ -560,17 +564,6 @@ var Settings = function (props) {
     } catch (e) { setBakMsg({ type: "error", text: "Export failed: " + e.message }); }
   };
 
-  var saveClientPosOptions = function () {
-    var ns = Object.assign({}, state.settings);
-    var toggles = Object.assign({}, ns.moduleToggles || {}, {
-      freeItems: !!(f.moduleToggles && f.moduleToggles.freeItems),
-    });
-    Object.assign(ns, persistModuleToggles(toggles));
-    S.set("tc3_settings", ns);
-    setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-    showAlert("POS options saved. Changes sync to the main server.");
-  };
-
   var criticalAccountingRef = useRef(null);
 
   var save = function (opts) {
@@ -581,7 +574,9 @@ var Settings = function (props) {
     ns.taxEnabled = ns.taxEnabled === true;
     ns.allowCostFallback = ns.allowCostFallback === true;
     ns.glVatPostingEnabled = ns.glVatPostingEnabled !== false;
-    Object.assign(ns, persistModuleToggles(f.moduleToggles || {}));
+    if (!isNetworkClient) {
+      Object.assign(ns, persistMainModuleToggles(f.mainModuleToggles || f.moduleToggles || {}));
+    }
     ns.strictPeriodLock = ns.strictPeriodLock === true;
     ns.purchaseReturnCostMode = ns.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac";
     ns.taxApplyBase = ns.taxApplyBase === "before_discount" ? "before_discount" : "after_discount";
@@ -601,6 +596,14 @@ var Settings = function (props) {
       glVatPostingEnabled: ns.glVatPostingEnabled !== false,
     };
     if (!silent) showAlert("Settings saved successfully.");
+  };
+
+  var saveCounterModules = function () {
+    var ns = Object.assign({}, state.settings);
+    Object.assign(ns, persistCounterModuleToggles(f.counterModuleToggles || {}));
+    S.set("tc3_settings", ns);
+    setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+    showAlert("Counter modules saved.");
   };
 
   var saveAccountingSettings = function () {
@@ -946,8 +949,78 @@ var Settings = function (props) {
   if (isNetworkServer || isNetworkClient) TABS.push(["network", "Network"]);
   TABS.push(["about", "About"]);
   if (isNetworkClient) {
-    TABS = [["network", "Network"], ["pos", "POS Options"]];
+    TABS = [["features", "Modules"], ["network", "Network"], ["about", "About"]];
   }
+
+  var renderModulePanel = function (toggleKey, title, sub) {
+    var groupNames = ["Main", "Stock", "People", "Finance", "Operations", "Insight", "POS options"];
+    return (
+      <Card key={toggleKey}>
+        <CardTitle sub={sub}>{title}</CardTitle>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 640 }}>
+          <div style={{ padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + C.border, background: "#f8fafc" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Always on</div>
+            {[
+              { label: "Sales", blurb: "Point of sale — create invoices, take payments, and hold orders." },
+              { label: "Settings", blurb: toggleKey === "counterModuleToggles" ? "Counter modules and network connection (main PC password required)." : "Shop setup, modules, backup, security, and accounting options." },
+            ].map(function (row) {
+              return (
+                <div key={row.label} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0", borderTop: "1px solid " + C.borderLight }}>
+                  <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: C.accent, background: C.accentSoft, padding: "3px 8px", borderRadius: 999, marginTop: 2 }}>On</span>
+                  <span>
+                    <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: C.text }}>{row.label}</span>
+                    <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{row.blurb}</span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {groupNames.map(function (groupName) {
+            var items = MODULE_TOGGLE_DEFS.filter(function (m) { return m.group === groupName; });
+            if (!items.length) return null;
+            return (
+              <div key={groupName}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>{groupName}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {items.map(function (m) {
+                    var toggles = f[toggleKey] || {};
+                    var on = toggles[m.id] === true;
+                    return (
+                      <label key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "11px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff" }}>
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={function (e) {
+                            var checked = e.target.checked;
+                            setF(function (x) {
+                              var nextToggles = Object.assign({}, x[toggleKey] || {}, { [m.id]: checked });
+                              var patch = {};
+                              patch[toggleKey] = nextToggles;
+                              if (toggleKey === "mainModuleToggles") {
+                                patch.moduleToggles = nextToggles;
+                                if (m.id === "freeItems") patch.freeItemsEnabled = checked;
+                                if (m.id === "repairs") patch.repairsModuleEnabled = checked;
+                              }
+                              return Object.assign({}, x, patch);
+                            });
+                          }}
+                          style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 2, flexShrink: 0 }}
+                        />
+                        <span>
+                          <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: on ? C.accent : C.text }}>{m.label}</span>
+                          <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{m.blurb}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    );
+  };
 
   var applyShopCountry = function (v) {
     var meta = getCountryMeta(v);
@@ -1284,71 +1357,12 @@ var Settings = function (props) {
 
       {stab === "features" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Card>
-            <CardTitle sub="Turn sidebar screens and Sales features on or off. Sales and Settings always stay available.">
-              Modules &amp; screens
-            </CardTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 640 }}>
-              <div style={{ padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + C.border, background: "#f8fafc" }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Always on</div>
-                {[
-                  { label: "Sales", blurb: "Point of sale — create invoices, take payments, and hold orders." },
-                  { label: "Settings", blurb: "Shop setup, modules, backup, security, and accounting options." },
-                ].map(function (row) {
-                  return (
-                    <div key={row.label} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0", borderTop: "1px solid " + C.borderLight }}>
-                      <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: C.accent, background: C.accentSoft, padding: "3px 8px", borderRadius: 999, marginTop: 2 }}>On</span>
-                      <span>
-                        <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: C.text }}>{row.label}</span>
-                        <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{row.blurb}</span>
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-              {["Main", "Stock", "People", "Finance", "Operations", "Insight", "Sales"].map(function (groupName) {
-                var items = MODULE_TOGGLE_DEFS.filter(function (m) { return m.group === groupName; });
-                if (!items.length) return null;
-                return (
-                  <div key={groupName}>
-                    <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>{groupName}</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {items.map(function (m) {
-                        var on = f.moduleToggles && f.moduleToggles[m.id] === true;
-                        return (
-                          <label key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "11px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff" }}>
-                            <input
-                              type="checkbox"
-                              checked={on}
-                              onChange={function (e) {
-                                var checked = e.target.checked;
-                                setF(function (x) {
-                                  var toggles = Object.assign({}, x.moduleToggles || {}, { [m.id]: checked });
-                                  return Object.assign({}, x, {
-                                    moduleToggles: toggles,
-                                    freeItemsEnabled: m.id === "freeItems" ? checked : x.freeItemsEnabled,
-                                    repairsModuleEnabled: m.id === "repairs" ? checked : x.repairsModuleEnabled,
-                                  });
-                                });
-                              }}
-                              style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 2, flexShrink: 0 }}
-                            />
-                            <span>
-                              <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: on ? C.accent : C.text }}>{m.label}</span>
-                              <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{m.blurb}</span>
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div style={{ marginTop: 16 }}>
-              <Btn col="blue" onClick={save}>Save modules</Btn>
-            </div>
-          </Card>
+          {isNetworkClient
+            ? renderModulePanel("counterModuleToggles", "Counter modules", "Screens shown on this counter terminal. Changes sync to the main PC. Data still syncs even when a module is hidden.")
+            : renderModulePanel("mainModuleToggles", "Main PC modules", "Screens shown on the main server PC sidebar. Sales and Settings always stay available.")}
+          <div>
+            <Btn col="blue" onClick={isNetworkClient ? saveCounterModules : save}>Save modules</Btn>
+          </div>
         </div>
       )}
 
@@ -3129,49 +3143,6 @@ var Settings = function (props) {
         </div>
       )}
 
-      {stab === "pos" && isNetworkClient && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Card>
-            <CardTitle sub="Sales screen options for this counter PC (synced with the main server)">
-              POS Options
-            </CardTitle>
-            {String(businessType || "").toLowerCase() === "glass" ? (
-              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
-                Complimentary free items are not used for glass businesses.
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 520 }}>
-                <label style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + (f.moduleToggles && f.moduleToggles.freeItems ? C.accent : C.border), background: f.moduleToggles && f.moduleToggles.freeItems ? C.accentSoft : "#fff" }}>
-                  <input
-                    type="checkbox"
-                    checked={!!(f.moduleToggles && f.moduleToggles.freeItems)}
-                    onChange={function (e) {
-                      var checked = e.target.checked;
-                      setF(function (x) {
-                        var toggles = Object.assign({}, x.moduleToggles || {}, { freeItems: checked });
-                        return Object.assign({}, x, {
-                          moduleToggles: toggles,
-                          freeItemsEnabled: checked,
-                        });
-                      });
-                    }}
-                    style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 2, flexShrink: 0 }}
-                  />
-                  <span>
-                    <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: C.text }}>Free items (complimentary)</span>
-                    <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>
-                      Show the complimentary gift section on the Sales screen. Turn off to hide free-item lines on this counter.
-                    </span>
-                  </span>
-                </label>
-                <div>
-                  <Btn col="blue" onClick={saveClientPosOptions}>Save POS options</Btn>
-                </div>
-              </div>
-            )}
-          </Card>
-        </div>
-      )}
 
       {stab === "network" && isNetworkClient && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -3179,7 +3150,7 @@ var Settings = function (props) {
             <CardTitle sub="Counter terminal sync">Sync status</CardTitle>
             <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
               Products, invoices, and customers sync from the main PC every few seconds. Changes you make here (sales, customers) sync back to the main PC automatically.
-              Use the <strong>POS Options</strong> tab to turn complimentary free items on or off for this counter.
+              Counter sidebar modules and complimentary free items are configured on this counter PC under <strong>Settings → Modules</strong> (main PC password required).
             </div>
           </Card>
           <Card>

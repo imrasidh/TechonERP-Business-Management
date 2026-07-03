@@ -9,6 +9,7 @@ import CustomerPicker from "../components/CustomerPicker.jsx";
 import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
 import { splitSaleItemsByFree, baseQtyInCartLines, FREE_ITEM_LABEL } from "../utils/posFreeItems.js";
 import { UI } from "../utils/uiIcons.js";
+import { ensureUniqueDocumentNumber } from "../utils/docNumbers.js";
 import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
 import {
   buildQuotationTaxExtras,
@@ -96,7 +97,7 @@ var POS = React.memo(function (props) {
   var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
   var isRestaurant = businessType === "restaurant";
   var glassIndustry = isGlassIndustry(businessType);
-  var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType);
+  var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
   var [posPageTab, setPosPageTab] = useState("sale");
   var isQuotationMode = posPageTab === "quotation" && !isRestaurant;
   var [restaurantProductFilter, setRestaurantProductFilter] = useState("all");
@@ -981,10 +982,7 @@ var POS = React.memo(function (props) {
       showAlert("\u274C Cannot sell below cost price.\n\n\"" + belowCostItem.name + "\" is priced at " + getCurrencySymbol() + " " + fmtNum(belowCostItem.price) + " but cost is " + getCurrencySymbol() + " " + fmtNum(minCost) + " per " + (belowCostItem.saleUnit || belowCostItem.unit || "Pcs") + ".\n\nPlease increase the price to at least " + getCurrencySymbol() + " " + fmtNum(minCost) + ".");
       return;
     }
-    var finalInvNo = invoiceNo;
-    if (state.sales.find(function (s) { return s.invoiceNo === finalInvNo && s.id !== editingSaleId; })) {
-      finalInvNo = genInvNo();
-    }
+    var finalInvNo = ensureUniqueDocumentNumber(invoiceNo, "INV", state, { excludeSaleId: editingSaleId });
     var custName = custMode === "existing" ? (function () { var c = state.customers.find(function (c) { return c.id === custId; }); return c ? c.name : "Walk-in"; }()) : (custMode === "new" ? newCust.name || "New Customer" : "Walk-in");
     var custPhone = custMode === "existing" ? (function () { var c = state.customers.find(function (c) { return c.id === custId; }); return c ? (c.phone || "") : ""; })() : (custMode === "new" ? newCust.phone || "" : "");
     /* Cheque: paidNum=0 until cheques clear; cheque records created after save */
@@ -1322,10 +1320,7 @@ var POS = React.memo(function (props) {
     if (!tcTrialGuard(state.quotations || [], "quotations")) return;
     setIsSavingQuotation(true);
     try {
-      var finalQtNo = quotationNo;
-      if ((state.quotations || []).find(function (q) { return q.quotationNo === finalQtNo; })) {
-        finalQtNo = genInvNo("QT");
-      }
+      var finalQtNo = ensureUniqueDocumentNumber(quotationNo, "QT", state);
       var cust = resolvePosCustomer();
       var items = cart.map(mapCartLineToQuotationItem);
       var taxExtra = buildQuotationTaxExtras(
