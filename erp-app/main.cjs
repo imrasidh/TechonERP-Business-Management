@@ -24,6 +24,9 @@ const https = require('https');
 const http = require('http');
 const { execFile, exec } = require('child_process');
 const { pathToFileURL } = require('url');
+const lanWsSync = require('./lan-ws-sync.cjs');
+const { buildLanAuthHeaders, stripInternalHeaders } = require('./lan-auth.cjs');
+const { createDeviceStore } = require('./device-store.cjs');
 
 /* Dev / unpackaged only: erp-app/.env → LICENSE_SECRET / TC_LIC_SERVER_SECRET.
  * Packaged .exe: set OS env LICENSE_SECRET (preferred) or TC_LIC_SERVER_SECRET, or tc_license_secret.txt beside .exe. */
@@ -87,6 +90,20 @@ function writeLogFile(level, message) {
     }
   } catch (_) {}
 }
+
+/* Suppress known LAN WebSocket teardown errors — must not crash the ERP UI */
+process.on('uncaughtException', function (err) {
+  var msg = err && err.message ? String(err.message) : String(err);
+  if (
+    msg.indexOf('handshake has timed out') !== -1 ||
+    msg.indexOf('closed before the connection was established') !== -1 ||
+    msg.indexOf('WebSocket is not open') !== -1
+  ) {
+    writeLogFile('warn', '[Main] Suppressed WS error: ' + msg);
+    return;
+  }
+  writeLogFile('error', '[Main] Uncaught: ' + msg);
+});
 
 let mainWindow = null;
 let splash     = null;
@@ -777,25 +794,46 @@ function checkGracePeriod(expiresStr) {
   return { inGrace: false, graceDaysLeft: 0 };
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   LAN HTTP HELPERS  (used by license sync — LAN API only)
-   ═══════════════════════════════════════════════════════════════════ */
+function getDeviceStore() {
+  return createDeviceStore(getCryptoRootSecret);
+}
+
+function resolveNetCfgArg(cfgOrKey) {
+  if (cfgOrKey && typeof cfgOrKey === 'object') return cfgOrKey;
+  return { apiKey: cfgOrKey || '' };
+}
+
+function buildLanHeaders(method, url, body, cfgOrKey, extraHeaders) {
+  const cfg = resolveNetCfgArg(cfgOrKey);
+  const bodyStr = body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body));
+  const forceLegacy = !!(cfg && cfg.forceLegacy);
+  return stripInternalHeaders(buildLanAuthHeaders({
+    method,
+    url,
+    body: bodyStr,
+    networkConfig: cfg,
+    deviceStore: getDeviceStore(),
+    userDataPath: app.getPath('userData'),
+    extraHeaders: extraHeaders || {},
+    forceLegacy: forceLegacy,
+  }));
+}
 
 /** GET a JSON endpoint on the LAN API. */
-function lanGet(url, apiKey) {
+function lanGet(url, cfgOrKey) {
   return new Promise((resolve, reject) => {
     try {
       const parsed = new URL(url);
       const lib    = parsed.protocol === 'https:' ? https : http;
+      const headers = Object.assign({
+        'Accept': 'application/json',
+      }, buildLanHeaders('GET', url, '', cfgOrKey));
       const opts   = {
         hostname : parsed.hostname,
         port     : parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
         path     : parsed.pathname + (parsed.search || ''),
         method   : 'GET',
-        headers  : {
-          'X-TC-KEY' : apiKey || '',
-          'Accept'   : 'application/json',
-        },
+        headers  : headers,
       };
       const req = lib.request(opts, (res) => {
         let data = '';
@@ -830,12 +868,15 @@ function applyVerifyPayloadToLicense(lic, resp, nowTs) {
 }
 
 /** POST JSON to a LAN API endpoint with optional extra headers. */
-function lanPost(url, body, extraHeaders) {
+function lanPost(url, body, extraHeaders, cfgOrKey) {
   return new Promise((resolve, reject) => {
     try {
       const parsed  = new URL(url);
       const bodyStr = JSON.stringify(body);
       const lib     = parsed.protocol === 'https:' ? https : http;
+      const cfg = extraHeaders && extraHeaders._tcNetCfg ? extraHeaders._tcNetCfg : cfgOrKey;
+      const extra = Object.assign({}, extraHeaders || {});
+      delete extra._tcNetCfg;
       const opts    = {
         hostname : parsed.hostname,
         port     : parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
@@ -845,7 +886,7 @@ function lanPost(url, body, extraHeaders) {
           'Content-Type'   : 'application/json',
           'Content-Length' : Buffer.byteLength(bodyStr),
           'Accept'         : 'application/json',
-        }, extraHeaders || {}),
+        }, buildLanHeaders('POST', url, bodyStr, cfg || loadNetworkConfig(), extra)),
       };
       const req = lib.request(opts, (res) => {
         let data = '';
@@ -875,10 +916,12 @@ async function _syncAttempt(payload, cfg, attempt) {
     await new Promise(function(r) { setTimeout(r, DELAYS[attempt]); });
   }
   try {
+    const headers = { 'X-TC-License-Sync': cfg.apiKey };
     const r = await lanPost(
       cfg.apiUrl + 'save_license.php',
       payload,
-      { 'X-TC-License-Sync': cfg.apiKey }
+      headers,
+      cfg
     );
     if (!r.success) throw new Error(r.message || 'save_license returned success:false');
 
@@ -955,7 +998,7 @@ async function syncTrialLicenseToMySQLNow(cfg) {
   }
   const payload = buildMysqlLicensePayload(getTrialLicenseSnapshot());
   try {
-    const r = await lanPost(cfg.apiUrl + 'save_license.php', payload, { 'X-TC-License-Sync': cfg.apiKey });
+    const r = await lanPost(cfg.apiUrl + 'save_license.php', payload, { 'X-TC-License-Sync': cfg.apiKey }, cfg);
     if (!r.success) throw new Error(r.message || 'save_license returned success:false');
     writeLogFile('info', '[LicenseSync] Trial synced to MySQL — max_clients=' + TRIAL_MAX_CLIENTS);
     return { ok: true, message: 'Trial license synced to server database.', max_clients: TRIAL_MAX_CLIENTS };
@@ -2303,7 +2346,10 @@ function createWindow() {
     }
   });
 
-  mainWindow.on('closed', function() { mainWindow = null; });
+  mainWindow.on('closed', function() {
+    try { lanWsSync.stopAll(); } catch (_e) {}
+    mainWindow = null;
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2328,7 +2374,29 @@ app.whenReady().then(() => {
   });
 
   getBackupDir();
+  lanWsSync.setLogFn(writeLogFile);
+  lanWsSync.setWsDeviceValidator(async function (msg) {
+    const cfg = loadNetworkConfig();
+    if (!cfg || !cfg.apiUrl) return { ok: false, message: 'no_config' };
+    try {
+      const r = await lanPost(
+        cfg.apiUrl + 'device_validate.php',
+        msg,
+        { 'X-TC-KEY': cfg.apiKey || '' },
+        Object.assign({}, cfg, { forceLegacy: true })
+      );
+      if (r && r.success) {
+        return { ok: true, client_id: (r.data && r.data.client_id) || msg.client_id || '' };
+      }
+      return { ok: false, message: (r && r.message) || 'validate_failed' };
+    } catch (e) {
+      return { ok: false, message: e && e.message ? e.message : String(e) };
+    }
+  });
   createWindow();
+  setTimeout(function () {
+    try { restartLanWebSocket('', undefined); } catch (_e) {}
+  }, 1500);
   /* Trial → MySQL sync for network server (counter PCs read shop_license, not local trial) */
   setTimeout(function () {
     const cfg = loadNetworkConfig();
@@ -2363,6 +2431,7 @@ app.on('before-quit', function(e) {
 });
 
 app.on('window-all-closed', function() {
+  try { lanWsSync.stopAll(); } catch (_e) {}
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -2399,6 +2468,201 @@ function clientModeBlockedIpc() {
   return { status: 'blocked', message: 'Restricted in client mode' };
 }
 
+function enrichNetworkCfg(cfg) {
+  if (!cfg) return cfg;
+  const creds = getDeviceStore().loadDeviceCredentials(app.getPath('userData'));
+  if (creds && creds.status === 'approved' && creds.device_secret) {
+    cfg._deviceCreds = creds;
+  }
+  return cfg;
+}
+
+let _lanWsRestartTimer = null;
+
+function restartLanWebSocket(clientId, lastRevision) {
+  return new Promise(function (resolve) {
+    if (_lanWsRestartTimer) clearTimeout(_lanWsRestartTimer);
+    _lanWsRestartTimer = setTimeout(function () {
+      _lanWsRestartTimer = null;
+      try {
+        const cfg = enrichNetworkCfg(loadNetworkConfig());
+        if (clientId) lanWsSync.setRuntimeClientId(clientId);
+        if (lastRevision != null) lanWsSync.setLastKnownRevision(lastRevision);
+        resolve(lanWsSync.restart(cfg, function () { return mainWindow; }, writeLogFile));
+      } catch (e) {
+        writeLogFile('warn', '[LanWS] restartLanWebSocket: ' + (e && e.message ? e.message : String(e)));
+        resolve({ ok: false, error: e && e.message ? e.message : String(e) });
+      }
+    }, 250);
+  });
+}
+
+ipcMain.handle('tc-ws-restart', (_event, opts) => {
+  const clientId = opts && opts.clientId ? String(opts.clientId) : '';
+  const lastRevision = opts && opts.lastRevision != null ? opts.lastRevision : undefined;
+  return restartLanWebSocket(clientId, lastRevision);
+});
+
+ipcMain.handle('tc-ws-stop', () => {
+  try { lanWsSync.stopAll(); } catch (_e) {}
+  return { ok: true };
+});
+
+ipcMain.handle('tc-ws-status', () => {
+  return lanWsSync.getStatus();
+});
+
+/** Signed LAN GET/POST from renderer (device auth or legacy fallback). */
+ipcMain.handle('tc-lan-request', async (_event, payload) => {
+  const cfg = loadNetworkConfig();
+  if (!cfg || !cfg.apiUrl || cfg.role === 'standalone') {
+    return { success: false, message: 'Not in network mode' };
+  }
+  const method = (payload && payload.method) ? String(payload.method).toUpperCase() : 'GET';
+  const relPath = (payload && payload.path) ? String(payload.path).replace(/^\//, '') : '';
+  const fullUrl = cfg.apiUrl + relPath;
+  const extra = Object.assign({}, (payload && payload.headers) || {});
+  if (payload && payload.clientId) extra['X-TC-Client-ID'] = String(payload.clientId);
+  try {
+    if (method === 'GET') {
+      const data = await lanGet(fullUrl, cfg);
+      return { success: true, data: data };
+    }
+    const body = (payload && payload.body) || {};
+    const data = await lanPost(fullUrl, body, extra, cfg);
+    return { success: true, data: data };
+  } catch (e) {
+    return { success: false, message: e && e.message ? e.message : String(e) };
+  }
+});
+
+/** Build auth headers only (no secret returned). For renderer fetch fallback. */
+ipcMain.handle('tc-device-auth-headers', (_event, payload) => {
+  const cfg = loadNetworkConfig();
+  const method = (payload && payload.method) ? String(payload.method) : 'GET';
+  const url = (payload && payload.url) ? String(payload.url) : '';
+  const body = (payload && payload.body != null) ? String(payload.body) : '';
+  const headers = buildLanHeaders(method, url, body, cfg, (payload && payload.extraHeaders) || {});
+  return { headers: headers, mode: headers['X-TC-DEVICE-ID'] ? 'device' : (cfg && cfg.apiKey ? 'legacy' : 'none') };
+});
+
+ipcMain.handle('tc-device-credentials-load', () => {
+  const store = getDeviceStore();
+  const creds = store.loadDeviceCredentials(app.getPath('userData'));
+  if (!creds) return { ok: true, credentials: null };
+  return {
+    ok: true,
+    credentials: {
+      device_id: creds.device_id,
+      device_name: creds.device_name,
+      status: creds.status,
+      token_id: creds.token_id,
+      permissions: creds.permissions,
+      computer_name: creds.computer_name,
+      registered_at: creds.registered_at,
+    },
+  };
+});
+
+ipcMain.handle('tc-device-credentials-save', (_event, payload) => {
+  const store = getDeviceStore();
+  const existing = store.loadDeviceCredentials(app.getPath('userData')) || {};
+  const merged = Object.assign({}, existing, payload || {});
+  if (!merged.device_id || !merged.device_secret) {
+    return { ok: false, message: 'device_id and device_secret required' };
+  }
+  return { ok: store.saveDeviceCredentials(app.getPath('userData'), merged) };
+});
+
+ipcMain.handle('tc-device-create-identity', (_event, payload) => {
+  const store = getDeviceStore();
+  const id = store.createLocalDeviceIdentity(
+    payload && payload.device_name,
+    payload && payload.computer_name,
+    payload && payload.software_version
+  );
+  store.saveDeviceCredentials(app.getPath('userData'), id);
+  return { ok: true, device_id: id.device_id, status: id.status };
+});
+
+ipcMain.handle('tc-device-register', async (_event, payload) => {
+  const cfg = loadNetworkConfig();
+  if (!cfg || !cfg.apiUrl) return { ok: false, message: 'Network not configured' };
+  const store = getDeviceStore();
+  let creds = store.loadDeviceCredentials(app.getPath('userData'));
+  if (!creds || !creds.device_id) {
+    creds = store.createLocalDeviceIdentity(
+      payload && payload.device_name,
+      getClientDeviceName(),
+      app.getVersion()
+    );
+    store.saveDeviceCredentials(app.getPath('userData'), creds);
+  }
+  try {
+    const r = await lanPost(cfg.apiUrl + 'device_register.php', {
+      device_id: creds.device_id,
+      device_name: creds.device_name || getClientDeviceName(),
+      computer_name: getClientDeviceName(),
+      software_version: app.getVersion(),
+      mac_address: payload && payload.mac_address ? payload.mac_address : null,
+    }, {}, cfg);
+    if (r && r.success) {
+      creds.status = 'pending';
+      store.saveDeviceCredentials(app.getPath('userData'), creds);
+      return { ok: true, device_id: creds.device_id, status: 'pending', message: r.message };
+    }
+    return { ok: false, message: (r && r.message) || 'Registration failed' };
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : String(e) };
+  }
+});
+
+ipcMain.handle('tc-device-poll-status', async () => {
+  const cfg = loadNetworkConfig();
+  const store = getDeviceStore();
+  const creds = store.loadDeviceCredentials(app.getPath('userData'));
+  if (!cfg || !cfg.apiUrl || !creds || !creds.device_id) {
+    return { ok: false, message: 'No device identity' };
+  }
+  try {
+    const url = cfg.apiUrl + 'device_status.php?device_id=' + encodeURIComponent(creds.device_id);
+    const r = await lanGet(url, cfg);
+    const d = (r && r.data) || {};
+    if (d.status === 'approved' && d.device_secret) {
+      creds.device_secret = d.device_secret;
+      creds.status = 'approved';
+      creds.token_id = d.token_id || creds.token_id;
+      creds.permissions = d.permissions || creds.permissions;
+      store.saveDeviceCredentials(app.getPath('userData'), creds);
+    } else if (d.status) {
+      creds.status = d.status;
+      store.saveDeviceCredentials(app.getPath('userData'), creds);
+    }
+    return { ok: true, status: d.status, device_id: creds.device_id, has_secret: !!creds.device_secret };
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : String(e) };
+  }
+});
+
+ipcMain.handle('tc-device-manage', async (_event, payload) => {
+  const cfg = loadNetworkConfig();
+  if (!cfg || !cfg.apiUrl || cfg.role !== 'network_server') {
+    return { ok: false, message: 'Main server only' };
+  }
+  const action = payload && payload.action;
+  try {
+    if (action === 'list' || action === 'list_pending') {
+      const qs = action === 'list_pending' ? '?pending=1' : '';
+      const r = await lanGet(cfg.apiUrl + 'device_manage.php' + qs, cfg);
+      return { ok: !!(r && r.success), data: r && r.data, message: r && r.message };
+    }
+    const r = await lanPost(cfg.apiUrl + 'device_manage.php', payload || {}, {}, cfg);
+    return { ok: !!(r && r.success), data: r && r.data, message: r && r.message };
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : String(e) };
+  }
+});
+
 ipcMain.handle('tc-network-config-load', () => {
   return loadNetworkConfig();
 });
@@ -2418,6 +2682,14 @@ ipcMain.handle('tc-client-machine-label', () => {
     return { hostname: '', deviceIdShort: '', deviceId: '' };
   }
 });
+
+function normalizeNetworkApiUrl(raw) {
+  var u = String(raw || '').trim();
+  if (!u) return u;
+  if (!u.endsWith('/')) u += '/';
+  if (u.indexOf('/api/') < 0) u += 'api/';
+  return u;
+}
 
 function sanitizeNetworkConfig(cfg) {
   if (!cfg || typeof cfg !== 'object') {
@@ -2464,9 +2736,48 @@ function sanitizeNetworkConfig(cfg) {
     apiKey: apiKeySan,
     xamppPath: typeof cfg.xamppPath === 'string' ? cfg.xamppPath.slice(0, 512) : '',
     port: Math.min(65535, Math.max(1, parseInt(cfg.port, 10) || 80)),
+    wsPort: Math.min(65535, Math.max(1024, parseInt(cfg.wsPort, 10) || lanWsSync.DEFAULT_WS_PORT)),
     wizardComplete: !!cfg.wizardComplete,
   };
 }
+
+/** Test server reachability + API key before saving network config (main-process HTTP — reliable in Electron). */
+ipcMain.handle('tc-network-test-connection', async (_event, payload) => {
+  const apiUrl = normalizeNetworkApiUrl(payload && payload.apiUrl);
+  const apiKey = (payload && payload.apiKey) ? String(payload.apiKey).trim() : '';
+  if (!apiUrl || apiUrl.indexOf('http') !== 0) {
+    return { ok: false, message: 'Address must start with http:// or https://' };
+  }
+  if (!apiKey) {
+    return { ok: false, message: 'Enter the Security Key from the server PC.' };
+  }
+  const testCfg = { apiUrl: apiUrl, apiKey: apiKey, forceLegacy: true, role: 'network_client' };
+  try {
+    const pingJson = await lanGet(apiUrl + 'ping.php', { forceLegacy: true });
+    if (!pingJson || pingJson.success !== true) {
+      return { ok: false, message: (pingJson && pingJson.message) ? pingJson.message : 'Server is not ready' };
+    }
+    const prodJson = await lanGet(apiUrl + 'get_products.php', testCfg);
+    if (!prodJson || prodJson.success === false) {
+      const m = String((prodJson && prodJson.message) || '').toLowerCase();
+      if (m.indexOf('unauthorized') >= 0 || m.indexOf('invalid api key') >= 0) {
+        return { ok: false, message: 'Security key is incorrect.' };
+      }
+      return { ok: false, message: (prodJson && prodJson.message) ? prodJson.message : 'Could not verify server key' };
+    }
+    const products = (prodJson && prodJson.products) || (prodJson.data && prodJson.data.products);
+    if (!Array.isArray(products)) {
+      return { ok: false, message: 'Invalid response from server.' };
+    }
+    return { ok: true, message: 'Connection OK', productCount: products.length };
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    if (msg.toLowerCase().indexOf('timeout') >= 0) {
+      return { ok: false, message: 'Connection timed out — check the server address and that XAMPP is running on the main PC.' };
+    }
+    return { ok: false, message: 'Cannot reach server: ' + msg };
+  }
+});
 
 ipcMain.handle('tc-network-config-save', (_event, cfg) => {
   const existing = loadNetworkConfig();
@@ -2476,6 +2787,9 @@ ipcMain.handle('tc-network-config-save', (_event, cfg) => {
   }
   const sanitized = sanitizeNetworkConfig(merged);
   const ok = saveNetworkConfig(sanitized);
+  if (ok) {
+    try { restartLanWebSocket('', undefined); } catch (_e) {}
+  }
   if (ok && sanitized.role === 'network_server' && isLocalTrialLicense()) {
     setTimeout(function () {
       syncTrialLicenseToMySQLNow(sanitized).catch(function () {});
@@ -2526,7 +2840,7 @@ ipcMain.handle('tc-connected-client-remove', async (_event, payload) => {
     if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl) return { ok: false, message: 'Not in network server mode.' };
     const deviceId = payload && payload.deviceId ? String(payload.deviceId) : '';
     if (!deviceId) return { ok: false, message: 'Missing deviceId.' };
-    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'remove_client', deviceId: deviceId }, { 'X-TC-KEY': cfg.apiKey || '' });
+    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'remove_client', deviceId: deviceId }, { 'X-TC-KEY': cfg.apiKey || '' }, cfg);
     return { ok: !!(res && res.success), message: (res && res.message) ? res.message : (res && res.success ? 'Removed' : 'Remove failed') };
   } catch (e) {
     return { ok: false, message: e && e.message ? e.message : 'Could not remove client.' };
@@ -2541,7 +2855,7 @@ ipcMain.handle('tc-connected-client-set-label', async (_event, payload) => {
     const deviceId = payload && payload.deviceId ? String(payload.deviceId) : '';
     const clientLabel = payload && payload.clientLabel != null ? String(payload.clientLabel) : '';
     if (!deviceId) return { ok: false, message: 'Missing deviceId.' };
-    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'set_client_label', deviceId, clientLabel: clientLabel.trim() }, { 'X-TC-KEY': cfg.apiKey || '' });
+    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'set_client_label', deviceId, clientLabel: clientLabel.trim() }, { 'X-TC-KEY': cfg.apiKey || '' }, cfg);
     return {
       ok: !!(res && res.success),
       message: (res && res.message) ? res.message : (res && res.success ? 'OK' : 'Update failed'),
@@ -2934,19 +3248,28 @@ ipcMain.handle('tc-sync-patch', async (_event, payload) => {
     if (!patches.length) {
       return { success: false, message: 'No patches provided' };
     }
-    const headers = { 'X-TC-KEY': cfg.apiKey || '' };
-    if (clientId) headers['X-TC-Client-ID'] = clientId;
     const postUrl = cfg.apiUrl + 'sync_patch.php';
+    const extra = {};
+    if (clientId) extra['X-TC-Client-ID'] = clientId;
     writeLogFile('info', '[SyncEngine:HTTP] POST ' + postUrl + ' keys=[' + keys + ']');
     const r = await lanPost(
       postUrl,
       { patches: patches, client_id: clientId },
-      headers
+      extra,
+      cfg
     );
     writeLogFile(
       r && r.success ? 'info' : 'error',
       '[SyncEngine] ' + cfg.role + ' pushed [' + keys + '] -> ' + (r && r.message ? r.message : (r && r.success ? 'ok' : 'failed'))
     );
+    if (r && r.success) {
+      const changedKeys = patches.map(function (p) { return p && p.key; }).filter(Boolean);
+      if (cfg.role === 'network_server') {
+        lanWsSync.broadcastAfterPatch(changedKeys, clientId);
+      } else if (cfg.role === 'network_client') {
+        lanWsSync.clientNotifyKeys(changedKeys, clientId);
+      }
+    }
     return r;
   } catch (e) {
     writeLogFile('error', '[SyncEngine] tc-sync-patch failed: ' + (e && e.message ? e.message : String(e)));

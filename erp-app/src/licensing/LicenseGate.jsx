@@ -1340,7 +1340,7 @@ function TrialLimitReadOnlyShell({ licStatus, usageCounts, networkConfig, showAc
 function readIdbKey(key) {
   return new Promise(function(resolve) {
     try {
-      var req = indexedDB.open('techon_erp_v1', 2);
+      var req = indexedDB.open('techon_erp_v1');
       req.onerror = function() { resolve(null); };
       req.onsuccess = function(e) {
         try {

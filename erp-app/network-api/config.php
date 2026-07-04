@@ -36,7 +36,10 @@ define('DB_USER', $dbUser);
 define('DB_PASS', $dbPass);
 
 function techon_apply_cors_headers() {
-    techon_apply_json_cors_headers('Content-Type, X-TC-KEY, X-TC-Client-ID, X-TC-License-Sync, Authorization');
+    techon_apply_json_cors_headers(
+        'Content-Type, X-TC-KEY, X-TC-Client-ID, X-TC-License-Sync, Authorization, '
+        . 'X-TC-DEVICE-ID, X-TC-TIMESTAMP, X-TC-NONCE, X-TC-SIGNATURE'
+    );
 }
 
 techon_apply_cors_headers();
@@ -58,10 +61,21 @@ function loadApiKey() {
 }
 
 /**
- * Open API without a key is only allowed when TECHON_ERP_OPEN_API=1 (local dev).
- * Production must ship network-api/tc_api_key.php from server setup.
+ * Cached raw request body (php://input is single-read).
  */
-function requireAuth() {
+function tcGetRawBody() {
+    static $cached = null;
+    if ($cached === null) {
+        $cached = file_get_contents('php://input');
+        if ($cached === false) $cached = '';
+    }
+    return $cached;
+}
+
+/**
+ * Legacy API key auth — kept for backward compatibility during device migration.
+ */
+function requireLegacyAuth() {
     $storedKey = loadApiKey();
     if ($storedKey === null) {
         if (getenv('TECHON_ERP_OPEN_API') === '1') {
@@ -77,7 +91,7 @@ function requireAuth() {
 
     $incoming = '';
     if (!empty($_SERVER['HTTP_X_TC_KEY'])) {
-        $incoming = trim($_SERVER['HTTP_X_TC_KEY']);
+        $incoming = trim((string) $_SERVER['HTTP_X_TC_KEY']);
     }
 
     if ($incoming === '' || !hash_equals($storedKey, $incoming)) {
@@ -85,6 +99,15 @@ function requireAuth() {
         echo json_encode(['success' => false, 'message' => 'Unauthorized — invalid API key']);
         exit();
     }
+}
+
+/**
+ * Dual auth: device HMAC when headers present, else legacy X-TC-KEY.
+ * Returns auth context array or exits on failure.
+ */
+function requireAuth() {
+    require_once __DIR__ . '/device_auth.php';
+    return tcRequireAuthDual();
 }
 
 // ── DB connection ────────────────────────────────────────────────────
@@ -122,7 +145,7 @@ function respond($data, $code = 200) {
 }
 
 function getInput() {
-    $raw = file_get_contents('php://input');
+    $raw = tcGetRawBody();
     if (strlen($raw) > 2097152) {
         respond(['success' => false, 'message' => 'Invalid request'], 413);
     }

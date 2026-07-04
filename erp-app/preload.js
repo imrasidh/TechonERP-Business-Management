@@ -196,6 +196,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('tc-network-config-save', cfg);
   },
 
+  /** Test server address + security key before saving (main-process HTTP). */
+  testNetworkConnection: function(cfg) {
+    return ipcRenderer.invoke('tc-network-test-connection', cfg || {});
+  },
+
   /** Delete network config — resets to first-run wizard on next launch */
   resetNetworkConfig: function() {
     return ipcRenderer.invoke('tc-network-config-reset');
@@ -284,6 +289,59 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Push key-value patches to LAN sync_patch.php (live sync — main + counter). */
   syncPatch: function(payload) {
     return ipcRenderer.invoke('tc-sync-patch', payload || {});
+  },
+
+  /** Start/restart LAN WebSocket sync (main process). */
+  restartLanWebSocket: function(opts) {
+    return ipcRenderer.invoke('tc-ws-restart', opts || {});
+  },
+
+  /** Stop LAN WebSocket sync (logout / mode change). */
+  stopLanWebSocket: function() {
+    return ipcRenderer.invoke('tc-ws-stop');
+  },
+
+  getLanWebSocketStatus: function() {
+    return ipcRenderer.invoke('tc-ws-status');
+  },
+
+  onLanWebSocketStatus: function(callback) {
+    if (typeof callback !== 'function') return function () {};
+    var handler = function (_event, payload) { callback(payload); };
+    ipcRenderer.on('tc-ws-status', handler);
+    return function () { ipcRenderer.removeListener('tc-ws-status', handler); };
+  },
+
+  onLanWebSocketKvChanged: function(callback) {
+    if (typeof callback !== 'function') return function () {};
+    var handler = function (_event, payload) { callback(payload); };
+    ipcRenderer.on('tc-ws-kv-changed', handler);
+    return function () { ipcRenderer.removeListener('tc-ws-kv-changed', handler); };
+  },
+
+  /** Signed LAN HTTP request via main process (device or legacy auth). */
+  lanRequest: function(payload) {
+    return ipcRenderer.invoke('tc-lan-request', payload || {});
+  },
+
+  getDeviceAuthHeaders: function(payload) {
+    return ipcRenderer.invoke('tc-device-auth-headers', payload || {});
+  },
+
+  loadDeviceCredentials: function() {
+    return ipcRenderer.invoke('tc-device-credentials-load');
+  },
+
+  registerDevice: function(payload) {
+    return ipcRenderer.invoke('tc-device-register', payload || {});
+  },
+
+  pollDeviceStatus: function() {
+    return ipcRenderer.invoke('tc-device-poll-status');
+  },
+
+  manageDevices: function(payload) {
+    return ipcRenderer.invoke('tc-device-manage', payload || {});
   },
 
   /** Open the logs folder in Explorer. */

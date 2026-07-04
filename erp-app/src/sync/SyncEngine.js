@@ -32,7 +32,7 @@ const CHUNK_SIZE        = 100;     // max array items per patch request
 const MAX_PAYLOAD_BYTES = 512_000; // 500 KB per request
 const QUEUE_IDB_KEY     = 'tc_sync_queue';
 const IDB_NAME          = 'techon_erp_v1';
-const IDB_VERSION       = 2;
+const IDB_VERSION       = 3;
 const IDB_STORE         = 'kv';
 
 /* ─── Module state ──────────────────────────────────────────────── */
@@ -240,6 +240,23 @@ function setStatus(s, extra = {}) {
   _statusCbs.forEach(cb => { try { cb(s, TC_SYNC); } catch (_) {} });
 }
 
+/** After direct push (syncStorageKeyNow), clear stuck "saving" when nothing left in flight. */
+function updateStatusAfterDirectPush() {
+  var pendingN = Object.keys(_pending).length;
+  var debounceN = Object.keys(_keyDebounceTimers).length;
+  var inflightN = Object.keys(_inflightKeys).length;
+  if (_queue.length > 0) return;
+  if (pendingN > 0 || debounceN > 0 || inflightN > 0) {
+    setStatus(SYNC_STATUS.SAVING, { pendingCount: pendingN + debounceN + inflightN });
+    return;
+  }
+  setStatus(SYNC_STATUS.SYNCED, {
+    lastSyncTime: new Date().toISOString(),
+    failedKeys: [],
+    pendingCount: 0,
+  });
+}
+
 /* ─── Client ID ─────────────────────────────────────────────────── */
 function getClientId() {
   if (_clientId) return _clientId;
@@ -250,6 +267,10 @@ function getClientId() {
   }
   _clientId = id;
   return id;
+}
+
+export function getSyncClientId() {
+  return getClientId();
 }
 
 /* ─── Logging (writes to main process via IPC) ──────────────────── */
@@ -267,15 +288,38 @@ function log(level, message) {
 /* ─── IDB helpers ───────────────────────────────────────────────── */
 function getIDB() {
   if (_idbDB) return Promise.resolve(_idbDB);
-  return new Promise((resolve) => {
-    const req = indexedDB.open(IDB_NAME, IDB_VERSION);
-    req.onupgradeneeded = e => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
-    };
-    req.onsuccess = e => { _idbDB = e.target.result; resolve(_idbDB); };
-    req.onerror   = () => resolve(null);
-  });
+  function openAt(ver) {
+    return new Promise((resolve) => {
+      const req = indexedDB.open(IDB_NAME, ver);
+      req.onupgradeneeded = e => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = e => { _idbDB = e.target.result; resolve(_idbDB); };
+      req.onerror = () => {
+        const err = req.error;
+        if (err && err.name === 'VersionError') {
+          const m = String(err.message || '').match(/existing version \((\d+)\)/i);
+          if (m) {
+            const existing = parseInt(m[1], 10);
+            if (existing > ver) {
+              openAt(existing).then(resolve);
+              return;
+            }
+          }
+        }
+        resolve(null);
+      };
+    });
+  }
+  if (typeof indexedDB !== 'undefined' && indexedDB.databases) {
+    return indexedDB.databases().then((list) => {
+      const row = (list || []).find((d) => d && d.name === IDB_NAME);
+      const existing = row && row.version ? Number(row.version) : 0;
+      return openAt(Math.max(IDB_VERSION, existing));
+    }).catch(() => openAt(IDB_VERSION));
+  }
+  return openAt(IDB_VERSION);
 }
 
 async function idbGet(key) {
@@ -467,8 +511,33 @@ async function get(endpoint) {
   const apiUrl = cfg && cfg.apiUrl;
   if (!apiUrl) throw new Error('API URL not configured');
 
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.lanRequest === 'function') {
+      const r = await window.electronAPI.lanRequest({
+        method: 'GET',
+        path: endpoint,
+        clientId: getClientId(),
+      });
+      if (r && r.success && r.data) return r.data;
+      if (r && r.data) return r.data;
+      throw new Error((r && r.message) || 'LAN GET failed');
+    }
+  } catch (e) {
+    log('warn', '[get:IPC] fallback to fetch: ' + (e && e.message ? e.message : e));
+  }
+
   const headers = { 'X-TC-Client-ID': getClientId() };
   if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
+  try {
+    if (window.electronAPI && window.electronAPI.getDeviceAuthHeaders) {
+      const ah = await window.electronAPI.getDeviceAuthHeaders({
+        method: 'GET',
+        url: apiUrl + endpoint.replace(/^\//, ''),
+        body: '',
+      });
+      if (ah && ah.headers) Object.assign(headers, ah.headers);
+    }
+  } catch (_e) { /* legacy only */ }
 
   const res = await fetch(apiUrl + endpoint, {
     headers,
@@ -661,12 +730,22 @@ export async function syncStorageKeyNow(key, optValue) {
         setTimeout(function () { syncStorageKeyNow(key, retryVal); }, 50);
       }
     }
+    updateStatusAfterDirectPush();
   }
 }
 
 /** Debounced direct push — call from S.set on every business-data write. */
 export function syncStorageKey(key, optValue) {
   if (!SYNC_KEY_SET[key]) return;
+  if (_syncPaused()) {
+    const cachePaused = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
+    const pausedVal = optValue !== undefined ? optValue : cachePaused[key];
+    if (pausedVal === undefined || pausedVal === null) return;
+    _keyPendingValues[key] = pausedVal;
+    _pending[key] = pausedVal;
+    _flushDeferred = true;
+    return;
+  }
 
   const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
   const value = optValue !== undefined ? optValue : cache[key];
@@ -677,16 +756,18 @@ export function syncStorageKey(key, optValue) {
 
   _keyPendingValues[key] = value;
   _pending[key] = value;
-  setStatus(SYNC_STATUS.SAVING, { pendingCount: Object.keys(_pending).length });
 
   var cfg = getActiveConfig();
   if (!cfg) {
     logConfigDebug('syncStorageKey:noCfg');
     ensureSyncConfigFromDisk().then(function (c) {
       if (c) syncStorageKey(key, _keyPendingValues[key] !== undefined ? _keyPendingValues[key] : value);
+      else updateStatusAfterDirectPush();
     });
     return;
   }
+
+  setStatus(SYNC_STATUS.SAVING, { pendingCount: Object.keys(_pending).length + Object.keys(_keyDebounceTimers).length });
 
   log('info', '[push:syncStorageKey] schedule key=' + key + ' role=' + cfg.role);
 
@@ -698,7 +779,9 @@ export function syncStorageKey(key, optValue) {
     delete _pending[key];
     var pushVal = _keyPendingValues[key] !== undefined ? _keyPendingValues[key] : captured;
     delete _keyPendingValues[key];
-    syncStorageKeyNow(key, pushVal);
+    syncStorageKeyNow(key, pushVal).finally(function () {
+      updateStatusAfterDirectPush();
+    });
   }, delay);
 }
 
@@ -754,9 +837,33 @@ export async function loadStateFromServer(apiUrl, keys = null, opts = null) {
     }
   }
   const url = path;
-  const headers = { 'X-TC-Client-ID': getClientId() };
   const cfg = (opts && opts.authConfig) || _config || {};
+
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.lanRequest === 'function') {
+      const r = await window.electronAPI.lanRequest({
+        method: 'GET',
+        path: url,
+        clientId: getClientId(),
+      });
+      const json = (r && r.data) || r;
+      if (json && json.success === false) throw new Error(json.message || 'Server state load failed');
+      if (json && json.data !== undefined) return json.data;
+      if (json && json.success && json.data) return json.data;
+    }
+  } catch (e) {
+    log('warn', '[loadState:IPC] fallback to fetch: ' + (e && e.message ? e.message : e));
+  }
+
+  const headers = { 'X-TC-Client-ID': getClientId() };
   if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
+  try {
+    if (window.electronAPI && window.electronAPI.getDeviceAuthHeaders) {
+      const fullUrl = apiUrl + url;
+      const ah = await window.electronAPI.getDeviceAuthHeaders({ method: 'GET', url: fullUrl, body: '' });
+      if (ah && ah.headers) Object.assign(headers, ah.headers);
+    }
+  } catch (_e) { /* legacy */ }
 
   const res = await fetch(apiUrl + url, { headers, signal: AbortSignal.timeout(20000) });
   if (!res.ok) throw new Error('Server returned HTTP ' + res.status);

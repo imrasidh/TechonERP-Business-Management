@@ -48,13 +48,14 @@ export function ActBtn(props) {
 
 export function ActBtnGroup(props) {
   var align = props.align || "right";
+  var gap = props.gap != null ? props.gap : 4;
   return (
     <div
       style={{
         display: "inline-flex",
         alignItems: "center",
         justifyContent: align === "left" ? "flex-start" : "flex-end",
-        gap: 4,
+        gap: gap,
         flexWrap: "nowrap",
       }}
       onClick={props.onClick}

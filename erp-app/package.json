@@ -1,7 +1,7 @@
 {
   "name": "techon-erp",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.0.2",
   "main": "main.cjs",
   "scripts": {
     "dev": "vite",
@@ -27,7 +27,8 @@
     "dotenv": "^16.6.1",
     "node-fetch": "^3.3.2",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -60,6 +61,10 @@
       "dist/**/*",
       "main.cjs",
       "preload.js",
+      "lan-ws-sync.cjs",
+      "lan-auth.cjs",
+      "device-crypto.cjs",
+      "device-store.cjs",
       "icons/**/*",
       "splash.html",
       "splash.png",
@@ -86,6 +91,7 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Techon ERP",

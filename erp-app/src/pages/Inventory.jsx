@@ -627,16 +627,16 @@ var Inventory = React.memo(function (props) {
     performEditSave();
   };
 
-  /* FIX 8: Reactivate a soft-deleted product - removes inactive status */
+  /* FIX 8: Reactivate a voided (inactive) product */
   var reactivateProduct = function (prodId) {
-    showConfirm("Reactivate this product? It will appear again in stock lists and selection menus.", function () {
+    showConfirm("Restore this voided product? It will appear again in stock lists and POS.", function () {
       var np = state.products.map(function (p) {
         if (p.id !== prodId) return p;
         var reactivated = Object.assign({}, p);
         delete reactivated.status; // remove inactive flag
         return reactivated;
       });
-      var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Reactivated", productId: prodId, productName: (state.products.find(function(p){return p.id===prodId;})||{}).name || "", qty: 0, reason: "Restored from inactive" }]);
+      var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Restored", productId: prodId, productName: (state.products.find(function(p){return p.id===prodId;})||{}).name || "", qty: 0, reason: "Restored from voided" }]);
       S.set("tc3_products", np); S.set("tc3_productLog", log);
       setState(function (s) { return Object.assign({}, s, { products: np, productLog: log }); });
     });
@@ -651,17 +651,24 @@ var Inventory = React.memo(function (props) {
       var dl = (state.damageLog || []).concat([{ id: uid(), date: today(), productId: p.id, productName: p.name, qty: qty, reason: reason }]);
       S.set("tc3_products", np2); S.set("tc3_damageLog", dl);
       setState(function (s) { return Object.assign({}, s, { products: np2, damageLog: dl }); });
-    } else if (actionP.deleteEntire) {
-      /* FIX 8: Soft-delete - mark product as inactive instead of permanently removing it.
-         This preserves historical invoices, reports, and purchase records that reference this product.
-         Inactive products will not appear in POS or purchase selection lists.
-         FIX 2: Also zero out stock so deleted products don't leave ghost financial values in DB. */
+    } else if (actionP.mode === "void") {
+      /* Zero-stock void — hide from POS/stock lists; record + ID kept for accounting. */
+      var voidDisplayId = p.productId || "";
       var np3 = state.products.map(function (x) {
-        return x.id === p.id ? Object.assign({}, x, { status: "inactive", stock: 0 }) : x;
+        return x.id === p.id ? Object.assign({}, x, { status: "inactive", stock: 0, damaged: 0 }) : x;
       });
-      var pl = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Deactivated", productId: p.id, productName: p.name, qty: p.stock, reason: reason }]);
+      var pl = (state.productLog || []).concat([{
+        id: uid(),
+        date: today(),
+        type: "Voided",
+        productId: p.id,
+        productName: p.name,
+        qty: 0,
+        reason: reason,
+      }]);
       S.set("tc3_products", np3); S.set("tc3_productLog", pl);
       setState(function (s) { return Object.assign({}, s, { products: np3, productLog: pl }); });
+      addAudit("Voided Product", p.name + (voidDisplayId ? (" (ID " + voidDisplayId + ")") : ""));
     } else {
       var removeQty = parseInt(dmgQty) || 1;
       var np4 = state.products.map(function (x) { return x.id === p.id ? Object.assign({}, x, { stock: Math.max(0, x.stock - removeQty) }) : x; });
@@ -1021,7 +1028,7 @@ var Inventory = React.memo(function (props) {
       {/* -- PRODUCTS TAB -- */}
       {itab === "products" && (
         <Card>
-          <CardTitle sub={showInactive ? (rows.length + " inactive products") : (rows.length.toLocaleString() + " of " + totalProducts.toLocaleString() + " products")}>
+          <CardTitle sub={showInactive ? (rows.length + " voided products") : (rows.length.toLocaleString() + " of " + totalProducts.toLocaleString() + " products")}>
             Products
           </CardTitle>
           <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
@@ -1041,14 +1048,14 @@ var Inventory = React.memo(function (props) {
               onClick={function () { setShowInactive(function (v) { return !v; }); setSearch(""); }}
               style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid " + (showInactive ? C.orange : C.border), background: showInactive ? "#fef3e2" : "#fff", color: showInactive ? C.orange : C.muted, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
             >
-              {showInactive ? "Red Showing Inactive - Click to go back" : "Show Inactive"}
+              {showInactive ? "Showing Voided — click to go back" : "Show Voided"}
             </button>
           </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><TH>ID</TH><TH>Product</TH><TH>Barcode</TH><TH>Category</TH><TH>Unit</TH><TH>Cost</TH><TH>Price</TH><TH>Margin</TH><TH>Stock</TH><TH>Stock Value</TH><TH>Damaged</TH><TH>Actions</TH></tr></thead>
+              <thead><tr><TH>ID</TH><TH>Product</TH><TH>Barcode</TH><TH>Category</TH><TH>Unit</TH><TH>Cost</TH><TH>Price</TH><TH>Margin</TH><TH>Stock</TH><TH>Stock Value</TH><TH>Damaged</TH><TH style={{ textAlign: "right", minWidth: 132 }}>Actions</TH></tr></thead>
               <tbody>
-                {rows.length === 0 && <tr><td colSpan={12} style={{ padding: 20, textAlign: "center", color: C.muted }}>{showInactive ? "No inactive products found" : "No products found"}</td></tr>}
+                {rows.length === 0 && <tr><td colSpan={12} style={{ padding: 20, textAlign: "center", color: C.muted }}>{showInactive ? "No voided products found" : "No products found"}</td></tr>}
                 {invPager.slice.map(function (p, i) {
                   var isService = isServiceProduct(p);
                   var isRaw = isRawMaterialProduct(p);
@@ -1060,7 +1067,7 @@ var Inventory = React.memo(function (props) {
                     <TR key={p.id} i={i}>
                       <td style={{ padding: "10px 14px" }}><span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: C.accent }}>{p.productId || "-"}</span></td>
                       <td style={{ padding: "10px 14px" }}>
-                        <div style={{ fontWeight: 700, color: showInactive ? C.orange : C.text }}>{p.name} {showInactive && <span style={{ fontSize: 10, background: "#fef3e2", color: C.orange, padding: "1px 6px", borderRadius: 10, marginLeft: 4 }}>INACTIVE</span>}</div>
+                        <div style={{ fontWeight: 700, color: showInactive ? C.orange : C.text }}>{p.name} {showInactive && <span style={{ fontSize: 10, background: "#fef3e2", color: C.orange, padding: "1px 6px", borderRadius: 10, marginLeft: 4 }}>VOIDED</span>}</div>
                         {p.description && <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{p.description.slice(0, 40)}</div>}
                       </td>
                       <TD><span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>{p.barcode}</span></TD>
@@ -1089,21 +1096,30 @@ var Inventory = React.memo(function (props) {
                       <TD color={isService ? C.muted : (isRaw ? C.orange : C.purple)}>{isService ? "-" : (getCurrencySymbol() + " " + fmtNum(stockVal))}</TD>
                       <TD color={(p.damaged || 0) > 0 ? C.orange : C.muted}>{p.damaged || 0}</TD>
                       <td style={actBtnCellStyle}>
-                        <ActBtnGroup>
+                        <ActBtnGroup gap={5}>
                           {showInactive ? (
-                            <ActBtn tone="green" title="Reactivate product" wide onClick={function () { reactivateProduct(p.id); }}>Restore</ActBtn>
+                            <ActBtn tone="green" title="Restore voided product" onClick={function () { reactivateProduct(p.id); }}>↩</ActBtn>
                           ) : (
                             <React.Fragment>
                               <ActBtn tone="cyan" title="View product" onClick={function () { setViewP(p); }}>🧾</ActBtn>
                               <ActBtn tone="blue" title="Edit product" onClick={function () { setEditP(Object.assign({}, p, { extraUnits: formExtraUnitsFromProduct(p) })); }}>✎</ActBtn>
-                              <ActBtn tone="orange" title="Log damage" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>Dmg</ActBtn>
-                              <ActBtn tone="red" title="Delete product" onClick={function () {
+                              <ActBtn tone="orange" title="Log damage" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>⚠</ActBtn>
+                              <ActBtn
+                                tone="red"
+                                title={(p.stock || 0) > 0 ? "Void — clear stock first" : ((p.damaged || 0) > 0 ? "Void — clear damaged qty first" : "Void product")}
+                                onClick={function () {
                                 if ((p.stock || 0) > 0) {
-                                  showAlert("X Cannot delete \"" + p.name + "\" - it has " + fmtStock(p.stock, p.unit) + " in stock.\n\nSell or remove all stock first, then delete.");
+                                  showAlert("Cannot void \"" + p.name + "\" — it has " + fmtStock(p.stock, p.unit) + " in stock.\n\nSell or remove all stock first, then void.");
                                   return;
                                 }
-                                setActionP({ product: p, mode: "delete", deleteEntire: false }); setDmgQty("1"); setReason("");
-                              }}>✕</ActBtn>
+                                if ((p.damaged || 0) > 0) {
+                                  showAlert("Cannot void \"" + p.name + "\" — it still has " + fmtStock(p.damaged, p.unit) + " marked as damaged.\n\nClear damaged stock first.");
+                                  return;
+                                }
+                                setActionP({ product: p, mode: "void" }); setReason("");
+                              }}
+                                style={((p.stock || 0) > 0 || (p.damaged || 0) > 0) ? { opacity: 0.35, cursor: "not-allowed" } : undefined}
+                              >✕</ActBtn>
                             </React.Fragment>
                           )}
                         </ActBtnGroup>
@@ -1853,12 +1869,21 @@ var Inventory = React.memo(function (props) {
       )}
 
       {actionP && (
-        <Modal title={actionP.mode === "damage" ? "Mark as Damaged - " + actionP.product.name : "Remove Stock - " + actionP.product.name} onClose={function () { setActionP(null); }}>
-          <div style={{ background: actionP.mode === "damage" ? "#fef9c3" : "#fee2e2", borderRadius: 8, padding: "12px 14px", marginBottom: 12, fontSize: 13, display: "flex", justifyContent: "space-between" }}>
+        <Modal title={actionP.mode === "damage" ? "Mark as Damaged - " + actionP.product.name : (actionP.mode === "void" ? "Void Product - " + actionP.product.name : "Remove Stock - " + actionP.product.name)} onClose={function () { setActionP(null); }}>
+          <div style={{ background: actionP.mode === "damage" ? "#fef9c3" : "#fee2e2", borderRadius: 8, padding: "12px 14px", marginBottom: 12, fontSize: 13, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
             <span>Product: <strong>{actionP.product.name}</strong></span>
-            <span>Current Stock: <strong style={{ color: C.blue }}>{getBulkDisplayParts(actionP.product) ? fmtStockDual(actionP.product) : fmtStock(actionP.product.stock || 0, actionP.product.unit)}</strong></span>
+            {actionP.mode === "void" ? (
+              <span>Product ID: <strong style={{ color: C.accent, fontFamily: "monospace" }}>{actionP.product.productId || "—"}</strong></span>
+            ) : (
+              <span>Current Stock: <strong style={{ color: C.blue }}>{getBulkDisplayParts(actionP.product) ? fmtStockDual(actionP.product) : fmtStock(actionP.product.stock || 0, actionP.product.unit)}</strong></span>
+            )}
           </div>
-          {!actionP.deleteEntire && (
+          {actionP.mode === "void" ? (
+            <div style={{ background: "#f0f4ff", border: "1.5px solid #c7d8ff", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 12, color: C.textMd, lineHeight: 1.5 }}>
+              This product will be <strong>voided</strong> — hidden from POS and stock lists, but kept in the system with the same ID for invoices and reports. You can restore it later from <strong>Show Voided</strong>. Past invoices are not affected.
+            </div>
+          ) : null}
+          {actionP.mode !== "void" && actionP.mode !== "damage" && (
             <div style={{ marginBottom: 10 }}>
               <Input label="Quantity" type="number" value={dmgQty} onChange={function (e) { setDmgQty(e.target.value); }} />
             </div>
@@ -1868,7 +1893,7 @@ var Inventory = React.memo(function (props) {
             <textarea value={reason} onChange={function (e) { setReason(e.target.value); }} rows={3} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 7, padding: "8px 11px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Enter reason..." />
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <Btn col={actionP.mode === "damage" ? "orange" : "red"} onClick={confirmAction} disabled={!reason.trim()}>Confirm</Btn>
+            <Btn col={actionP.mode === "damage" ? "orange" : "red"} onClick={confirmAction} disabled={!reason.trim()}>{actionP.mode === "void" ? "Void Product" : "Confirm"}</Btn>
             <Btn col="gray" onClick={function () { setActionP(null); }}>Cancel</Btn>
           </div>
         </Modal>

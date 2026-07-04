@@ -82,6 +82,51 @@ CREATE TABLE IF NOT EXISTS connected_clients (
   INDEX idx_last_seen (`last_seen`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ─── Trusted LAN devices (per-counter authentication) ───────────────
+CREATE TABLE IF NOT EXISTS trusted_devices (
+  `device_id`         VARCHAR(64)   NOT NULL,
+  `device_name`       VARCHAR(255)  DEFAULT NULL,
+  `device_secret_enc` TEXT          NOT NULL,
+  `token_id`          VARCHAR(64)   DEFAULT NULL,
+  `status`            VARCHAR(20)   NOT NULL DEFAULT 'pending',
+  `permissions`       JSON          DEFAULT NULL,
+  `computer_name`     VARCHAR(255)  DEFAULT NULL,
+  `ip_address`        VARCHAR(64)   DEFAULT NULL,
+  `mac_address`       VARCHAR(64)   DEFAULT NULL,
+  `software_version`  VARCHAR(64)   DEFAULT NULL,
+  `first_connected`   TIMESTAMP     NULL DEFAULT NULL,
+  `last_seen`         TIMESTAMP     NULL DEFAULT NULL,
+  `approved_at`       TIMESTAMP     NULL DEFAULT NULL,
+  `secret_delivered`  TINYINT(1)    NOT NULL DEFAULT 0,
+  `created_at`        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`device_id`),
+  INDEX idx_status (`status`),
+  INDEX idx_last_seen (`last_seen`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ─── Device auth nonces (replay protection) ────────────────────────
+CREATE TABLE IF NOT EXISTS device_nonces (
+  `nonce`       VARCHAR(64)  NOT NULL,
+  `device_id`   VARCHAR(64)  NOT NULL,
+  `created_at`  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`nonce`),
+  INDEX idx_created (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ─── Device authentication audit log ─────────────────────────────────
+CREATE TABLE IF NOT EXISTS device_audit_log (
+  `id`          BIGINT       NOT NULL AUTO_INCREMENT,
+  `device_id`   VARCHAR(64)  DEFAULT NULL,
+  `event`       VARCHAR(64)  NOT NULL,
+  `detail`      TEXT         DEFAULT NULL,
+  `ip`          VARCHAR(64)  DEFAULT NULL,
+  `created_at`  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX idx_device (`device_id`),
+  INDEX idx_event (`event`),
+  INDEX idx_created (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ─── Seed default keys so first load is safe ─────────────────────────
 INSERT IGNORE INTO kv_store (store_key, value) VALUES
   ('tc3_settings',        '{}'),

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { IS_PRODUCTION, COMPUTER_SHOP_EDITION, validateJsonBackupPayload, enforceProductionStrictPeriodLock } from "./productionConfig.js";
 import { defaultStrictPeriodLock } from "./productionDefaults.js";
-import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS } from "./sync/SyncEngine.js";
+import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
 import { generateDocumentNumber } from "./utils/docNumbers.js";
 import {
@@ -812,9 +812,9 @@ var WABtn = function (props) {
   );
 };
 var genBarcode = function () { return "BC" + Date.now().toString().slice(-8) + Math.floor(Math.random() * 100).toString().padStart(2, "0"); };
-/* FIX 11: nextProductId handles products with missing productId field */
+/* FIX 11: nextProductId — always issue a new ID (never reuse; keeps audit/report history clear). */
 var nextProductId = function (products) {
-  var ids = (products || []).map(function (p) { return parseInt(p.productId) || 0; }).filter(function (n) { return n >= 1010; });
+  var ids = (products || []).map(function (p) { return parseInt(p.productId, 10) || 0; }).filter(function (n) { return n >= 1010; });
   return ids.length > 0 ? String(Math.max.apply(null, ids) + 1) : "1010";
 };
 var genInvNo = function (pfx) { return generateDocumentNumber(pfx || "INV"); };
@@ -1023,7 +1023,7 @@ var encodeCost = function (cost, key) {
 var _idbCache = {};  /* in-memory cache - S.get reads from here synchronously */
 var _idbDB    = null; /* IndexedDB connection, set after initAndLoadIDB() */
 var _IDB_NAME  = "techon_erp_v1";
-var _IDB_VERSION = 2;
+var _IDB_VERSION = 3;
 var _IDB_STORE = "kv";
 var _idbStartupMeta = {
   dbName: _IDB_NAME,
@@ -1065,6 +1065,22 @@ function _idbWriteStartupLog(meta) {
   } catch (_e) {}
 }
 
+function _idbResolveOpenVersion() {
+  return new Promise(function (resolve) {
+    try {
+      if (typeof indexedDB !== "undefined" && indexedDB.databases) {
+        indexedDB.databases().then(function (list) {
+          var row = (list || []).find(function (d) { return d && d.name === _IDB_NAME; });
+          var existing = row && row.version ? Number(row.version) : 0;
+          resolve(Math.max(_IDB_VERSION, existing));
+        }).catch(function () { resolve(_IDB_VERSION); });
+        return;
+      }
+    } catch (_e) {}
+    resolve(_IDB_VERSION);
+  });
+}
+
 function _idbOpenDb(version, meta, createStoreOnUpgrade) {
   return new Promise(function (resolve, reject) {
     try {
@@ -1080,7 +1096,18 @@ function _idbOpenDb(version, meta, createStoreOnUpgrade) {
         }
       };
       req.onerror = function () {
-        reject(req.error || new Error("indexedDB.open failed for " + _IDB_NAME));
+        var err = req.error;
+        if (err && err.name === "VersionError") {
+          var m = String(err.message || "").match(/existing version \((\d+)\)/i);
+          if (m) {
+            var existing = parseInt(m[1], 10);
+            if (existing > version) {
+              _idbOpenDb(existing, meta, createStoreOnUpgrade).then(resolve).catch(reject);
+              return;
+            }
+          }
+        }
+        reject(err || new Error("indexedDB.open failed for " + _IDB_NAME));
       };
       req.onsuccess = function (e) {
         try {
@@ -1128,7 +1155,9 @@ function _idbEnsureSchema() {
     recoveryExecuted: false,
     recreated: false,
   };
-  return _idbOpenDb(_IDB_VERSION, meta, true).then(function (db) {
+  return _idbResolveOpenVersion().then(function (openVer) {
+    meta.requestedVersion = openVer;
+    return _idbOpenDb(openVer, meta, true).then(function (db) {
     meta.initialStores = _idbStoreList(db);
     if (db.objectStoreNames.contains(_IDB_STORE)) {
       meta.finalStores = _idbStoreList(db);
@@ -1137,7 +1166,7 @@ function _idbEnsureSchema() {
       return db;
     }
     meta.recoveryExecuted = true;
-    var nextVersion = Math.max(Number(db.version) || 0, _IDB_VERSION) + 1;
+    var nextVersion = Math.max(Number(db.version) || 0, openVer) + 1;
     try { db.close(); } catch (_closeErr1) {}
     return _idbOpenDb(nextVersion, meta, true).then(function (upgradedDb) {
       meta.finalStores = _idbStoreList(upgradedDb);
@@ -1160,6 +1189,7 @@ function _idbEnsureSchema() {
           return recreatedDb;
         });
       });
+    });
     });
   });
 }
@@ -6102,6 +6132,9 @@ function App(props) {
   var [clientError, setClientError] = useState(null);
   /* Connection status for header indicator */
   var [connStatus, setConnStatus] = useState('unknown'); // 'connected'|'disconnected'|'reconnecting'|'unknown'
+  var [wsConnStatus, setWsConnStatus] = useState('disconnected'); // 'connected'|'connecting'|'disconnected'|'reconnecting'
+  var lastWsRevisionRef = useRef(0);
+  var lastWsMsgIdRef = useRef(Object.create(null));
   var [clientMachineLabel, setClientMachineLabel] = useState('');
   var connAudioPrevRef = useRef(null);
   var [lastSyncTime, setLastSyncTime] = useState(null); /* HH:MM AM/PM of last successful sync */
@@ -6557,42 +6590,107 @@ function App(props) {
     if (isNetworkClient && connStatus === 'disconnected') return;
 
     var cancelled = false;
+    var pullInFlight = false;
+    var wsLive = wsConnStatus === 'connected';
+    /* Main server must keep polling: counter changes land in MySQL via HTTP
+       and WS notify from counter often fails when counter WS is reconnecting. */
+    var usePolling = !wsLive || isNetworkServer;
 
-    function pullFromServer() {
-      if (cancelled) return Promise.resolve();
-      return loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
-        .then(function (data) {
-          if (cancelled || !data) return;
-          setSyncHydrating(true);
-          setSyncPullPaused(true);
-          try {
-            var merged = mergeServerStateWithLocal(_idbCache, data);
-            _writeMergedServerStateToCache(merged);
-            setState(loadState());
-            if (isNetworkClient) setClientError(null);
-          } finally {
-            setSyncPullPaused(false);
-            setSyncHydrating(false);
-          }
-        })
+    function applyServerData(data) {
+      if (cancelled || !data) return;
+      setSyncHydrating(true);
+      setSyncPullPaused(true);
+      try {
+        var merged = mergeServerStateWithLocal(_idbCache, data);
+        _writeMergedServerStateToCache(merged);
+        setState(loadState());
+        if (isNetworkClient) setClientError(null);
+      } finally {
+        setSyncPullPaused(false);
+        setSyncHydrating(false);
+      }
+    }
+
+    function pullFromServer(keys) {
+      if (cancelled || pullInFlight) return Promise.resolve();
+      pullInFlight = true;
+      return loadStateFromServer(systemConfig.apiUrl, keys && keys.length ? keys : null, { authConfig: systemConfig })
+        .then(function (data) { applyServerData(data); })
         .catch(function (err) {
           if (!cancelled && tcIsDevEnv()) {
             try { console.warn('[TC_NET] Pull from server failed:', err.message); } catch (e2) {}
           }
-        });
+        })
+        .finally(function () { pullInFlight = false; });
     }
 
     setSyncFlushCallback(function () {
-      if (!cancelled) pullFromServer();
+      if (!cancelled) pullFromServer(null);
     });
-    pullFromServer();
-    var pullTimer = setInterval(pullFromServer, CLIENT_PULL_INTERVAL_MS);
+    pullFromServer(null);
+
+    var pullTimer = null;
+    if (usePolling) {
+      pullTimer = setInterval(function () { pullFromServer(null); }, CLIENT_PULL_INTERVAL_MS);
+    }
+
+    var unsubWs = null;
+    var api = window.electronAPI;
+    if (api && api.onLanWebSocketKvChanged) {
+      unsubWs = api.onLanWebSocketKvChanged(function (payload) {
+        if (cancelled || !payload) return;
+        if (payload.msg_id && lastWsMsgIdRef.current[payload.msg_id]) return;
+        if (payload.type === 'sync_catchup' || payload.needs_full_sync) {
+          if (payload.msg_id) lastWsMsgIdRef.current[payload.msg_id] = true;
+          if (payload.revision) lastWsRevisionRef.current = Math.max(lastWsRevisionRef.current, payload.revision);
+          pullFromServer(null);
+          return;
+        }
+        if (payload.type !== 'kv_changed') return;
+        if (payload.revision && payload.revision <= lastWsRevisionRef.current) return;
+        if (payload.msg_id) lastWsMsgIdRef.current[payload.msg_id] = true;
+        if (payload.revision) lastWsRevisionRef.current = payload.revision;
+        var myId = getSyncClientId();
+        var keys = Array.isArray(payload.keys) ? payload.keys.filter(Boolean) : null;
+        if (payload.source_client_id && payload.source_client_id === myId && keys && keys.length) {
+          var allPending = keys.every(function (k) {
+            return window.TC_SYNC && window.TC_SYNC.isKeyPending && window.TC_SYNC.isKeyPending(k);
+          });
+          if (allPending) return;
+        }
+        pullFromServer(keys && keys.length ? keys : null);
+      });
+    }
+
     return function () {
       cancelled = true;
       setSyncFlushCallback(null);
-      clearInterval(pullTimer);
+      if (pullTimer) clearInterval(pullTimer);
+      if (unsubWs) unsubWs();
     };
-  }, [isNetworkMode, isNetworkClient, isNetworkServer, loggedIn, systemConfig.apiUrl, systemConfig.apiKey, connStatus]);
+  }, [isNetworkMode, isNetworkClient, isNetworkServer, loggedIn, systemConfig.apiUrl, systemConfig.apiKey, connStatus, wsConnStatus]);
+
+  /* -- LAN WebSocket: start + status (polling stays as fallback when disconnected) -- */
+  useEffect(function () {
+    if (!isNetworkMode || !loggedIn) return;
+    var api = window.electronAPI;
+    if (!api || !api.restartLanWebSocket) return;
+    api.restartLanWebSocket({ clientId: getSyncClientId(), lastRevision: lastWsRevisionRef.current }).catch(function () {});
+    if (api.getLanWebSocketStatus) {
+      api.getLanWebSocketStatus().then(function (st) {
+        if (st && st.status) setWsConnStatus(st.status);
+      }).catch(function () {});
+    }
+  }, [isNetworkMode, loggedIn, systemConfig.apiUrl, systemConfig.role]);
+
+  useEffect(function () {
+    if (!isNetworkMode) return;
+    var api = window.electronAPI;
+    if (!api || !api.onLanWebSocketStatus) return;
+    return api.onLanWebSocketStatus(function (payload) {
+      if (payload && payload.status) setWsConnStatus(payload.status);
+    });
+  }, [isNetworkMode]);
 
   /* -- Counter PC: pull immediately when connection is restored -- */
   var connPrevRef = useRef(connStatus);
@@ -6648,8 +6746,20 @@ function App(props) {
 
     async function ping() {
       try {
-        var r = await fetch(pingUrl, { headers: pingHeaders, signal: AbortSignal.timeout(5000) });
-        var j = await r.json();
+        var api = window.electronAPI;
+        if (api && typeof api.lanRequest === 'function') {
+          var r = await api.lanRequest({ method: 'GET', path: 'ping.php' });
+          var body = (r && r.data) || r;
+          if (r && r.success !== false && body && body.success) {
+            failCount = 0;
+            setConnStatus('connected');
+            setClientError(null);
+            return;
+          }
+          throw new Error('not ready');
+        }
+        var res = await fetch(pingUrl, { headers: pingHeaders, signal: AbortSignal.timeout(5000) });
+        var j = await res.json();
         if (j.success) {
           failCount = 0;
           setConnStatus('connected');
@@ -6757,6 +6867,10 @@ function App(props) {
   var switchUser = function (reason) {
     var why = reason || "switch_user";
     addAudit("User Logout", (normalizedCurrentUser && (normalizedCurrentUser.username || normalizedCurrentUser.name)) || "unknown", { reason: why });
+    try {
+      var api = window.electronAPI;
+      if (api && api.stopLanWebSocket) api.stopLanWebSocket().catch(function () {});
+    } catch (e) {}
     try {
       sessionStorage.removeItem("tc3_current_user");
       sessionStorage.setItem("tc3_force_login_once", "1");
@@ -7347,20 +7461,18 @@ function App(props) {
             </div>
           </div>
 
-          {/* Network Mode Banner - shown below logo */}
-          {isNetworkServer && (
-            <div style={{ padding: "6px 14px", background: "rgba(15,158,110,0.18)", borderBottom: "1px solid rgba(15,158,110,0.3)", display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22d88f", boxShadow: "0 0 6px #22d88f", flexShrink: 0 }}></div>
-              <span style={{ color: "#22d88f", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.12em" }}>Server Mode</span>
-              <span style={{ color: "rgba(34,216,143,0.6)", fontSize: 9, marginLeft: "auto" }}>MySQL</span>
-            </div>
-          )}
-          {isNetworkClient && (
-            <div style={{ padding: "6px 14px", background: "rgba(41,121,255,0.18)", borderBottom: "1px solid rgba(41,121,255,0.3)", display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#5ca8ff", boxShadow: "0 0 6px #5ca8ff", flexShrink: 0 }}></div>
-              <span style={{ color: "#5ca8ff", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.12em" }}>POS Terminal</span>
-            </div>
-          )}
+          {/* Mode banner — below logo */}
+          {(function () {
+            var bannerLabel = isNetworkServer ? "Server Mode" : (isNetworkClient ? "POS MODE" : "STANDALONE MODE");
+            var bannerSuffix = isNetworkServer ? "MySQL" : (isNetworkClient ? "LAN" : "Local");
+            return (
+              <div style={{ padding: "6px 14px", background: "rgba(15,158,110,0.18)", borderBottom: "1px solid rgba(15,158,110,0.3)", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22d88f", boxShadow: "0 0 6px #22d88f", flexShrink: 0 }}></div>
+                <span style={{ color: "#22d88f", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.12em" }}>{bannerLabel}</span>
+                <span style={{ color: "rgba(34,216,143,0.6)", fontSize: 9, marginLeft: "auto" }}>{bannerSuffix}</span>
+              </div>
+            );
+          })()}
 
           {/* Nav */}
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 10px 6px" }}>
@@ -7488,15 +7600,8 @@ function App(props) {
                 </div>
               )}
               {(function () {
-                var canToggleSalesAdmin = !COMPUTER_SHOP_EDITION && !isNetworkServer && !isNetworkClient;
-                var roleLabel = canToggleSalesAdmin ? (isAdminMode ? "Admin" : "Sales") : _hdrRoleLbl;
-                var clientDisp = "";
-                if (isNetworkClient) {
-                  var lic = licenseInfo || {};
-                  clientDisp = (lic.clientLabel && String(lic.clientLabel).trim()) || clientMachineLabel || "";
-                }
-                var modeLabel = isNetworkClient ? "Counter" : (isNetworkServer ? "Main Server" : "Standalone");
-                var modeColor = isNetworkClient ? "#1d4ed8" : (isNetworkServer ? "#15803d" : "#475569");
+                var modeLabel = isNetworkClient ? "CounterPC-Mode" : (isNetworkServer ? "MainServer-Mode" : "Standalone-Mode");
+                var modeColor = "#15803d";
                 var connMap = {
                   connected: { dot: "#22c55e", label: "Connected" },
                   reconnecting: { dot: "#f59e0b", label: "Connecting" },
@@ -7512,32 +7617,22 @@ function App(props) {
                 };
                 var connCfg = connMap[connStatus] || connMap.unknown;
                 var syncCfg = syncMap[syncStatus] || syncMap.idle;
-                var netDot = connStatus === "disconnected" ? connCfg.dot : (syncStatus === "saving" ? "#f59e0b" : (connStatus === "connected" ? syncCfg.dot : "#f59e0b"));
-                var netLabel = (isNetworkClient && connStatus === "disconnected") ? "Offline" : syncCfg.label;
+                var netDot = connStatus === "disconnected" ? connCfg.dot : (syncStatus === "saving" ? "#f59e0b" : (wsConnStatus === "connected" ? "#22c55e" : (connStatus === "connected" ? "#22c55e" : "#f59e0b")));
+                var netLabel = (function () {
+                  if (isNetworkClient && connStatus === "disconnected") return "Offline";
+                  if (syncStatus === "saving") return "Saving";
+                  if (isNetworkMode && wsConnStatus === "connected") return "Live sync";
+                  if (isNetworkMode && (connStatus === "connected" || isNetworkServer)) return "Polling";
+                  if (wsConnStatus === "connecting" || wsConnStatus === "reconnecting") return "Connecting";
+                  if (isNetworkMode) return "Polling";
+                  return syncCfg.label;
+                })();
                 var netTitle = isNetworkClient
-                  ? (connCfg.label + " · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""))
-                  : ("Online · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""));
+                  ? (connCfg.label + " · WS: " + wsConnStatus + " · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""))
+                  : ("Online · WS: " + wsConnStatus + " · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""));
                 var metaParts = [
                   { key: "mode", text: modeLabel, emphasis: true, color: modeColor },
                 ];
-                if (isNetworkClient && clientDisp) {
-                  metaParts.push({ key: "client", text: clientDisp, maxWidth: 120 });
-                }
-                metaParts.push({ key: "user", text: _hdrNm || "User", maxWidth: 100 });
-                metaParts.push({
-                  key: "role",
-                  text: roleLabel,
-                  emphasis: true,
-                  color: _hdrNr === ROLE_CASHIER ? "#1d4ed8" : "#b45309",
-                  onClick: canToggleSalesAdmin ? function () {
-                    if (isAdminMode) { lockToSalesMode(); }
-                    else {
-                      var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4;
-                      if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); }
-                      else { setIsAdminMode(true); }
-                    }
-                  } : undefined,
-                });
                 return (
                   <React.Fragment>
                     <time dateTime={today()} style={{ fontSize: 12, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.01em", whiteSpace: "nowrap", padding: "2px 0" }}>
@@ -7562,7 +7657,7 @@ function App(props) {
                     <HeaderMetaChip
                       parts={metaParts}
                       maxWidth={360}
-                      title={modeLabel + " · " + (_hdrNm || "User") + " · " + roleLabel}
+                      title={modeLabel}
                     />
                   </React.Fragment>
                 );

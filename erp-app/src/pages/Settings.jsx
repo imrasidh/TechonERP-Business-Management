@@ -207,6 +207,10 @@ var Settings = function (props) {
   var [dataPushBusy, setDataPushBusy] = useState(false);
   var [clientSlotsBusy, setClientSlotsBusy] = useState(false);
   var [clientSlots, setClientSlots] = useState({ max_clients: 0, connected: 0, clients: [] });
+  var [trustedDevices, setTrustedDevices] = useState([]);
+  var [trustedDevicesBusy, setTrustedDevicesBusy] = useState(false);
+  var [deviceCredStatus, setDeviceCredStatus] = useState(null);
+  var [deviceRegBusy, setDeviceRegBusy] = useState(false);
   var [clientLabelDrafts, setClientLabelDrafts] = useState({});
   var [clientLabelFlashDk, setClientLabelFlashDk] = useState(null);
   var [clientLabelAdjustedHintDk, setClientLabelAdjustedHintDk] = useState(null);
@@ -214,6 +218,7 @@ var Settings = function (props) {
   var [clientNetKey, setClientNetKey] = useState("");
   var [clientNetBusy, setClientNetBusy] = useState(false);
   var [clientNetErr, setClientNetErr] = useState(null);
+  var [clientNetStep, setClientNetStep] = useState("");
   var [users, setUsers] = useState(function () {
     var list = S.get("tc3_users", []);
     return Array.isArray(list) ? list : [];
@@ -385,6 +390,29 @@ var Settings = function (props) {
   useEffect(function () {
     if (stab === "network" && isNetworkServer) refreshConnectedClients();
   }, [stab, isNetworkServer]);
+
+  function refreshTrustedDevices() {
+    var api = window.electronAPI;
+    if (!api || !api.manageDevices || !isNetworkServer) return;
+    setTrustedDevicesBusy(true);
+    api.manageDevices({ action: "list" }).then(function (r) {
+      if (r && r.ok && r.data && r.data.devices) setTrustedDevices(r.data.devices);
+    }).finally(function () { setTrustedDevicesBusy(false); });
+  }
+
+  useEffect(function () {
+    if (stab === "network" && isNetworkServer) refreshTrustedDevices();
+  }, [stab, isNetworkServer]);
+
+  useEffect(function () {
+    if (!isNetworkClient) return;
+    var api = window.electronAPI;
+    if (!api || !api.loadDeviceCredentials) return;
+    api.loadDeviceCredentials().then(function (r) {
+      if (r && r.credentials) setDeviceCredStatus(r.credentials.status || "none");
+      else setDeviceCredStatus("none");
+    });
+  }, [isNetworkClient, stab]);
 
   /* Background sync (App.jsx) can succeed after a failed “Sync Now” — clear stale error banner */
   useEffect(function () {
@@ -1243,25 +1271,40 @@ var Settings = function (props) {
     if (!clientNetKey.trim()) { setClientNetErr("Enter the Security Key from the server PC."); return; }
     setClientNetBusy(true);
     setClientNetErr(null);
-    fetch(apiUrl + "ping.php", { signal: AbortSignal.timeout(8000) })
-      .then(function (pingRes) {
-        if (!pingRes.ok) throw new Error("Server returned HTTP " + pingRes.status);
-        return pingRes.json();
-      })
-      .then(function (pingJson) {
-        if (!pingJson.success) throw new Error("Server is not ready: " + (pingJson.message || "unknown"));
-        return fetch(apiUrl + "get_products.php", {
-          headers: { "X-TC-KEY": clientNetKey.trim() },
-          signal: AbortSignal.timeout(8000),
-        });
-      })
-      .then(function (prodRes) {
-        if (prodRes.status === 401) throw new Error("Security Key is incorrect.");
-        if (!prodRes.ok) throw new Error("Server returned HTTP " + prodRes.status);
-        return prodRes.json();
-      })
-      .then(function (prodJson) {
-        if (!Array.isArray(prodJson.products)) throw new Error("Invalid response from server.");
+    setClientNetStep("Testing connection…");
+
+    var testPromise = (api.testNetworkConnection
+      ? api.testNetworkConnection({ apiUrl: apiUrl, apiKey: clientNetKey.trim() })
+      : fetch(apiUrl + "ping.php", { signal: AbortSignal.timeout(8000) })
+          .then(function (pingRes) {
+            if (!pingRes.ok) throw new Error("Server returned HTTP " + pingRes.status);
+            return pingRes.json();
+          })
+          .then(function (pingJson) {
+            if (!pingJson.success) throw new Error("Server is not ready: " + (pingJson.message || "unknown"));
+            return fetch(apiUrl + "get_products.php", {
+              headers: { "X-TC-KEY": clientNetKey.trim() },
+              signal: AbortSignal.timeout(8000),
+            });
+          })
+          .then(function (prodRes) {
+            if (prodRes.status === 401) throw new Error("Security key is incorrect.");
+            if (!prodRes.ok) throw new Error("Server returned HTTP " + prodRes.status);
+            return prodRes.json();
+          })
+          .then(function (prodJson) {
+            var products = prodJson.products || (prodJson.data && prodJson.data.products);
+            if (!Array.isArray(products)) throw new Error("Invalid response from server.");
+            return { ok: true };
+          })
+    );
+
+    Promise.resolve(testPromise)
+      .then(function (testResult) {
+        if (testResult && testResult.ok === false) {
+          throw new Error(testResult.message || "Cannot connect.");
+        }
+        setClientNetStep("Saving settings…");
         return api.saveNetworkConfig({
           role: "network_client",
           apiUrl: apiUrl,
@@ -1269,12 +1312,17 @@ var Settings = function (props) {
           wizardComplete: true,
         });
       })
-      .then(function () {
+      .then(function (saveResult) {
+        if (!saveResult || saveResult.ok === false) {
+          throw new Error((saveResult && saveResult.message) ? saveResult.message : "Could not save network settings.");
+        }
+        setClientNetStep("Connected — reloading…");
         window.location.reload();
       })
       .catch(function (err) {
         setClientNetErr(err && err.message ? err.message : "Cannot connect.");
         setClientNetBusy(false);
+        setClientNetStep("");
       });
   };
 
@@ -3252,28 +3300,27 @@ var Settings = function (props) {
             <CardTitle sub="POS terminal connection">Network</CardTitle>
             {(function () {
               var st = clientConnStatus;
-              var row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Connecting" };
+              var row = { emoji: "🟡", bg: "#f0f4ff", border: C.border, title: "Checking connection…" };
               if (clientNetBusy) {
-                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Connecting" };
+                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: clientNetStep || "Connecting…" };
               } else if (st === "connected") {
-                row = { emoji: "🟢", bg: "#e6f7f2", border: "#9ee8ce", title: "Connected" };
+                row = { emoji: "🟢", bg: "#e6f7f2", border: "#9ee8ce", title: "Connected to server" };
               } else if (st === "disconnected") {
-                row = { emoji: "🔴", bg: "#fde8ed", border: "#f9a8ba", title: "Disconnected" };
+                row = { emoji: "🔴", bg: "#fde8ed", border: "#f9a8ba", title: "Cannot reach server" };
               } else if (st === "reconnecting") {
-                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Connecting" };
-              } else {
-                row = { emoji: "🟡", bg: "#f0f4ff", border: C.border, title: "Connecting" };
+                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Reconnecting…" };
               }
               return (
                 <div
                   title={row.title}
                   style={{
-                    display: "flex", alignItems: "center", justifyContent: "center",
+                    display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6,
                     marginBottom: 12, padding: "10px 14px", borderRadius: 10,
                     border: "1.5px solid " + row.border, background: row.bg,
                   }}
                 >
                   <span style={{ fontSize: 20, lineHeight: 1 }} aria-hidden="true">{row.emoji}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{row.title}</span>
                 </div>
               );
             })()}
@@ -3312,6 +3359,39 @@ var Settings = function (props) {
                   }
                 });
               }} disabled={clientNetBusy}>Reset Connection</Btn>
+            </div>
+          </Card>
+          <Card>
+            <CardTitle sub="Register this counter as a trusted device">Device Authentication</CardTitle>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+              Status: <strong style={{ color: C.text }}>{deviceCredStatus || "none"}</strong>.
+              {" "}Use the legacy security key until approved, then this PC switches to device credentials automatically.
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <Btn col="blue" disabled={deviceRegBusy} onClick={function () {
+                var api = window.electronAPI;
+                if (!api || !api.registerDevice) { showAlert("Device registration not available."); return; }
+                setDeviceRegBusy(true);
+                api.registerDevice({ device_name: "Counter PC" }).then(function (r) {
+                  if (r && r.ok) {
+                    showAlert("Registration sent. Ask the administrator to approve this device on the Main PC.");
+                    setDeviceCredStatus("pending");
+                  } else showAlert((r && r.message) || "Registration failed");
+                }).finally(function () { setDeviceRegBusy(false); });
+              }}>{deviceRegBusy ? "Sending…" : "Register Device"}</Btn>
+              <Btn col="green" disabled={deviceRegBusy} onClick={function () {
+                var api = window.electronAPI;
+                if (!api || !api.pollDeviceStatus) return;
+                setDeviceRegBusy(true);
+                api.pollDeviceStatus().then(function (r) {
+                  if (r && r.ok) {
+                    setDeviceCredStatus(r.status || "unknown");
+                    if (r.status === "approved" && r.has_secret) showAlert("Device approved — secure credentials saved.");
+                    else if (r.status === "pending") showAlert("Still awaiting administrator approval.");
+                    else showAlert("Status: " + (r.status || "unknown"));
+                  } else showAlert((r && r.message) || "Could not check status");
+                }).finally(function () { setDeviceRegBusy(false); });
+              }}>Check Approval</Btn>
             </div>
           </Card>
         </div>
@@ -3536,6 +3616,82 @@ var Settings = function (props) {
                 </table>
               </div>
             </Card>
+
+          <Card>
+            <CardTitle sub="Per-counter device authentication (legacy security key still supported)">Trusted Devices</CardTitle>
+            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+              Approve new counter PCs here. Each receives a unique device secret. The shared security key remains active until all counters are migrated.
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              <Btn sm col="blue" onClick={refreshTrustedDevices} disabled={trustedDevicesBusy}>{trustedDevicesBusy ? "Loading…" : "Refresh"}</Btn>
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: "#f8faff", borderBottom: "1px solid " + C.border }}>
+                    {["Name", "Computer", "Status", "Last seen", "Version", "Actions"].map(function (h) {
+                      return <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontWeight: 800, color: C.muted }}>{h}</th>;
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(trustedDevices || []).map(function (d) {
+                    var st = d.status || "pending";
+                    var stColor = st === "approved" ? "#0f9e6e" : (st === "pending" ? "#d97706" : "#b91c1c");
+                    return (
+                      <tr key={d.device_id} style={{ borderBottom: "1px solid " + C.border }}>
+                        <td style={{ padding: "8px 10px", fontWeight: 700 }}>{d.device_name || "—"}</td>
+                        <td style={{ padding: "8px 10px" }}>{d.computer_name || "—"}</td>
+                        <td style={{ padding: "8px 10px", fontWeight: 800, color: stColor }}>{st}</td>
+                        <td style={{ padding: "8px 10px", color: C.muted }}>{d.last_seen || "—"}</td>
+                        <td style={{ padding: "8px 10px", color: C.muted }}>{d.software_version || "—"}</td>
+                        <td style={{ padding: "8px 10px" }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {st === "pending" ? (
+                              <Btn sm col="green" onClick={function () {
+                                var api = window.electronAPI;
+                                if (!api || !api.manageDevices) return;
+                                api.manageDevices({ action: "approve", device_id: d.device_id }).then(function (r) {
+                                  if (r && r.ok) { showAlert("Device approved."); refreshTrustedDevices(); }
+                                  else showAlert((r && r.message) || "Approve failed");
+                                });
+                              }}>Approve</Btn>
+                            ) : null}
+                            {st === "approved" ? (
+                              <Btn sm col="orange" onClick={function () {
+                                var api = window.electronAPI;
+                                if (!api || !api.manageDevices) return;
+                                showConfirm("Disable this device?\n\n" + (d.device_name || d.device_id), function () {
+                                  api.manageDevices({ action: "disable", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
+                                });
+                              }}>Disable</Btn>
+                            ) : null}
+                            {st === "disabled" ? (
+                              <Btn sm col="green" onClick={function () {
+                                var api = window.electronAPI;
+                                if (!api || !api.manageDevices) return;
+                                api.manageDevices({ action: "enable", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
+                              }}>Enable</Btn>
+                            ) : null}
+                            <Btn sm col="red" onClick={function () {
+                              var api = window.electronAPI;
+                              if (!api || !api.manageDevices) return;
+                              showConfirm("Remove this trusted device?", function () {
+                                api.manageDevices({ action: "remove", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
+                              });
+                            }}>Remove</Btn>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {(!trustedDevices || trustedDevices.length === 0) && (
+                    <tr><td colSpan={6} style={{ padding: 14, color: C.muted, textAlign: "center" }}>{trustedDevicesBusy ? "Loading…" : "No trusted devices yet."}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
 
           {/* ── Server Actions (server only) ── */}
             <Card>
