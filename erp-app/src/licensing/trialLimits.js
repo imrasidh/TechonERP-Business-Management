@@ -159,6 +159,23 @@ export function evaluateLicenseStorageWrite(storageKey, newVal, oldVal) {
   var oldLen = countArrayLength(oldVal);
   var newLen = countArrayLength(newVal);
   if (newLen <= oldLen) return { blocked: false };
+
+  /* Network client: enforce using server counts from main PC MySQL kv_store */
+  try {
+    var netRole = typeof window !== "undefined" ? window._tcNetRole : "";
+    if (netRole === "network_client" && info.serverCounts && typeof info.serverCounts === "object") {
+      var sc = info.serverCounts[mod.key];
+      if (typeof sc === "number" && sc >= max) {
+        return {
+          blocked: true,
+          message: trialLimitBlockMessage(mod.label, sc, max) +
+            "\n\nActivate the license on the main server PC to continue.",
+        };
+      }
+      return { blocked: false };
+    }
+  } catch (eNet) { /* fall through to local length check */ }
+
   if (newLen > max || oldLen >= max) {
     return {
       blocked: true,

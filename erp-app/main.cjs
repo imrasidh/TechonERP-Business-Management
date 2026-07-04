@@ -1048,8 +1048,11 @@ async function forceCloudLicenseSync(manualTrigger) {
   const now = Date.now();
   const resp = await tcRequest('/verify', { license_key: lic.key, device_id: deviceId });
   if (!isCloudVerifySuccess(resp.status)) {
-    if (resp.status === 'EXPIRED') return { ok: false, message: 'License expired on cloud. Please renew.' };
-    if (resp.status === 'INVALID') return { ok: false, message: 'License invalid on cloud. Please reactivate.' };
+    if (resp.status === 'EXPIRED') return { ok: false, needsReactivation: true, message: 'License expired on cloud. Please renew.' };
+    if (resp.status === 'INVALID') {
+      try { fs.unlinkSync(LIC_FILE); } catch (_e) {}
+      return { ok: false, needsReactivation: true, message: 'License invalid on cloud. Please reactivate.' };
+    }
     return { ok: false, message: resp.message || 'License sync failed.' };
   }
   applyVerifyPayloadToLicense(lic, resp, now);
@@ -1061,6 +1064,169 @@ async function forceCloudLicenseSync(manualTrigger) {
   );
   writeLogFile('info', '[LicenseSync] Cloud sync OK' + (manualTrigger ? ' (manual)' : ' (background)'));
   return { ok: true, plan: lic.plan || null, expires: lic.expires || null, max_clients: lic.max_clients || null, syncedAt: now };
+}
+
+/** Force online license check (Settings → About). Ignores periodic verify interval. */
+async function verifyLicenseOnlineNow() {
+  const cfg = loadNetworkConfig();
+  const checkedAt = new Date().toLocaleString('en-US', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+
+  if (cfg && cfg.role === 'network_client' && cfg.apiUrl) {
+    try {
+      const _devId = generateDeviceId();
+      const qs = '?deviceId=' + encodeURIComponent(_devId) +
+        '&deviceName=' + encodeURIComponent(getClientDeviceName());
+      const data = await lanGet(cfg.apiUrl + 'check_license.php' + qs, cfg.apiKey);
+      const d = data.data || {};
+      let mappedStatus = 'locked';
+      if (data.success && data.valid) {
+        mappedStatus = data.status || 'activated';
+      } else if (data.status === 'blocked') {
+        mappedStatus = 'blocked';
+      } else if (data.status === 'expired') {
+        const { inGrace } = checkGracePeriod(d.expires);
+        mappedStatus = inGrace ? 'grace' : 'expired';
+      }
+      const graceDaysLeft = mappedStatus === 'grace'
+        ? checkGracePeriod(d.expires).graceDaysLeft
+        : undefined;
+      const status = {
+        status         : mappedStatus,
+        shopName       : d.shop_name || '',
+        plan           : d.plan || '',
+        expires        : d.expires || null,
+        daysLeft       : d.days_left !== undefined ? d.days_left : null,
+        graceDaysLeft  : graceDaysLeft,
+        fromServer     : true,
+        checkedAt      : checkedAt,
+        message        : data.message || '',
+        networkRole    : 'network_client',
+        deviceId       : _devId,
+      };
+      if (['activated', 'trial', 'grace'].indexOf(mappedStatus) !== -1) {
+        saveClientLicCache(status);
+      }
+      const needsReactivation = ['locked', 'expired', 'blocked'].includes(mappedStatus);
+      return {
+        ok: true,
+        status,
+        needsReactivation,
+        message: needsReactivation
+          ? (data.message || 'Server license is not active. Reactivate on the Main PC.')
+          : 'License verified with the main server.',
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        message: 'Cannot reach the main server. Check that the Main PC is running and connected.',
+      };
+    }
+  }
+
+  const lic = loadLicense();
+  if (!lic || lic.mode !== 'activated' || !lic.key) {
+    return {
+      ok: true,
+      status: { status: 'trial', checkedAt },
+      needsReactivation: true,
+      message: 'No activated license found on this PC. Enter a license key to activate.',
+    };
+  }
+
+  const deviceId = generateDeviceId();
+  const now = Date.now();
+  try {
+    const resp = await tcRequest('/verify', { license_key: lic.key, device_id: deviceId });
+
+    if (resp.status === 'INVALID') {
+      try { fs.unlinkSync(LIC_FILE); } catch (_e) {}
+      const reason = 'License deactivated or reset. Please reactivate with a valid key.';
+      writeLogFile('warn', '[LicenseVerifyNow] Cloud returned INVALID — local license cleared.');
+      return {
+        ok: true,
+        status: { status: 'locked', reason, checkedAt },
+        needsReactivation: true,
+        message: reason,
+      };
+    }
+
+    if (resp.status === 'EXPIRED') {
+      const _expiresStr = resp.expires || lic.expires || null;
+      const { inGrace, graceDaysLeft } = checkGracePeriod(_expiresStr);
+      if (inGrace) {
+        return {
+          ok: true,
+          status: {
+            status: 'grace',
+            shopName: lic.shopName,
+            key: lic.key,
+            plan: resp.plan || lic.plan || null,
+            expires: _expiresStr,
+            graceDaysLeft,
+            deviceId,
+            checkedAt,
+          },
+          needsReactivation: false,
+          message: 'License expired but you are still in the grace period (' + graceDaysLeft + ' day(s) left).',
+        };
+      }
+      const reason = 'Your Techon ERP license has expired. Please renew or reactivate.';
+      return {
+        ok: true,
+        status: { status: 'expired', reason, plan: lic.plan || null, expires: _expiresStr, checkedAt },
+        needsReactivation: true,
+        message: reason,
+      };
+    }
+
+    if (!isCloudVerifySuccess(resp.status)) {
+      return { ok: false, message: resp.message || 'License verification failed.' };
+    }
+
+    applyVerifyPayloadToLicense(lic, resp, now);
+    lic.lastVerify = now;
+    lic.lastSuccessfulSyncTime = now;
+    saveLicense(lic);
+    saveLastVerifiedTime();
+    saveLastKnownTime(now);
+    syncLicenseToMySQL(
+      {
+        status: 'activated',
+        shopName: lic.shopName,
+        key: lic.key,
+        plan: lic.plan,
+        expires: lic.expires,
+        maxClients: lic.max_clients,
+        readOnly: false,
+      },
+      cfg
+    );
+    writeLogFile('info', '[LicenseVerifyNow] Cloud verify OK');
+    return {
+      ok: true,
+      status: {
+        status: 'activated',
+        shopName: lic.shopName,
+        key: lic.key,
+        plan: lic.plan || null,
+        expires: lic.expires || null,
+        deviceId,
+        maxClients: lic.max_clients != null ? parseInt(lic.max_clients, 10) || 0 : null,
+        checkedAt,
+      },
+      needsReactivation: false,
+      message: 'License verified with Techon cloud. Your license is active.',
+    };
+  } catch (e) {
+    const msg = (e && e.message) ? String(e.message) : 'Network error';
+    writeLogFile('warn', '[LicenseVerifyNow] ' + msg);
+    return {
+      ok: false,
+      message: 'Cannot reach the license server. Check your internet connection and try again.',
+    };
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1128,7 +1294,7 @@ ipcMain.handle('tc-license-status', async () => {
         if (data.status === 'blocked') {
           mappedStatus = 'blocked';
         } else if (data.status === 'read_only') {
-          mappedStatus = 'activated';
+          mappedStatus = (d.read_only_reason === 'trial_limit_reached') ? 'trial' : 'activated';
         } else
         if (data.valid) {
           mappedStatus = data.status || 'activated';
@@ -2812,6 +2978,14 @@ ipcMain.handle('tc-license-sync-now', async () => {
     return await forceCloudLicenseSync(true);
   } catch (e) {
     return { ok: false, message: e && e.message ? e.message : 'Cloud sync failed.' };
+  }
+});
+
+ipcMain.handle('tc-license-verify-now', async () => {
+  try {
+    return await verifyLicenseOnlineNow();
+  } catch (e) {
+    return { ok: false, message: e && e.message ? e.message : 'Verification failed.' };
   }
 });
 

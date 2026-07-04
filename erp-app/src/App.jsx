@@ -57,7 +57,7 @@ import { buildInventoryReplayWindow } from "./utils/inventoryReplayDebug.js";
 import { appendFinancialMutationLog, MUTATION_ENTITY_BY_STORAGE_KEY } from "./accounting/mutationAudit.js";
 import { mergeRebuildWithImmutableHistory, mergeJournalLinesByTransactionId } from "./accounting/journalMerge.js";
 import { getOrCreateDeviceId } from "./accounting/ids.js";
-import { evaluateLicenseStorageWrite } from "./licensing/trialLimits.js";
+import { evaluateLicenseStorageWrite, readOnlyBlockMessage } from "./licensing/trialLimits.js";
 import { mergeServerStateWithLocal } from "./utils/mergeRecordArrays.js";
 import { normalizeStorageKeyFromSync, safeTrim } from "./utils/syncDataNormalize.js";
 import { runCreatedAtBackfillMigration } from "./utils/recordTimestampMigration.js";
@@ -4243,13 +4243,18 @@ var checkPeriodClose = function (recordDate, settings, onProceed) {
 var AboutTab = function (props) {
   var licenseInfo = props.licenseInfo;
   var onActivate = props.onActivate;
+  var onLicenseRefresh = props.onLicenseRefresh;
+  var isNetworkClient = props.isNetworkClient === true;
   var C = props.C;
 
   var [updateState, setUpdateState] = useState("idle");
   var [updateInfo, setUpdateInfo] = useState(null);
   var [showUpdateModal, setShowUpdateModal] = useState(false);
-  /* Dynamic version loaded from Electron app.getVersion() on mount */
   var [appVersion, setAppVersion] = useState("-");
+  var [licCheckState, setLicCheckState] = useState("idle");
+  var [licCheckMsg, setLicCheckMsg] = useState("");
+  var [licCheckNeedsReactivate, setLicCheckNeedsReactivate] = useState(false);
+  var [licCheckedAt, setLicCheckedAt] = useState(null);
 
   useEffect(function () {
     if (window.electronAPI && window.electronAPI.getAppVersion) {
@@ -4302,6 +4307,50 @@ var AboutTab = function (props) {
       window.open(url, "_blank");
     }
   };
+
+  var checkLicenseStatus = function () {
+    setLicCheckState("checking");
+    setLicCheckMsg("");
+    var api = window.electronAPI;
+    var run = (api && api.verifyLicenseNow)
+      ? api.verifyLicenseNow()
+      : (api && api.getLicenseStatus ? api.getLicenseStatus().then(function (s) {
+          return {
+            ok: true,
+            status: s,
+            needsReactivation: s && (s.status === "locked" || s.status === "expired"),
+            message: (s && s.reason) ? s.reason : "",
+          };
+        }) : Promise.resolve({ ok: false, message: "License check is not available in this environment." }));
+    Promise.resolve(run).then(function (r) {
+      if (!r || r.ok === false) {
+        setLicCheckState("error");
+        setLicCheckMsg((r && r.message) ? r.message : "Could not verify license.");
+        return;
+      }
+      setLicCheckState("done");
+      setLicCheckMsg(r.message || "");
+      setLicCheckNeedsReactivate(!!r.needsReactivation);
+      setLicCheckedAt(new Date().toLocaleString());
+      /* Update parent only when still valid — invalid stays on About so user can reactivate without a full-app crash */
+      if (r.status && onLicenseRefresh && !r.needsReactivation) {
+        onLicenseRefresh(r.status);
+      }
+    }).catch(function (e) {
+      setLicCheckState("error");
+      setLicCheckMsg((e && e.message) ? e.message : "Verification failed.");
+    });
+  };
+
+  var licStatusVal = licenseInfo && licenseInfo.status;
+  var needsReactivate = licCheckNeedsReactivate ||
+    licStatusVal === "locked" ||
+    licStatusVal === "expired" ||
+    licStatusVal === "blocked";
+  var isActivatedGood = licStatusVal === "activated" && !needsReactivate;
+  var isGrace = licStatusVal === "grace";
+  var isTrial = !licStatusVal || licStatusVal === "trial";
+  var canLocalReactivate = !isNetworkClient;
 
   return (
     <div style={{ width: "100%", maxWidth: 1040, margin: "0 auto", padding: "8px 12px 28px", boxSizing: "border-box" }}>
@@ -4452,8 +4501,72 @@ var AboutTab = function (props) {
 
             <div style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column" }}>
               {(function () {
-                var isActivated = licenseInfo && licenseInfo.status === "activated";
-                if (isActivated) {
+                if (needsReactivate) {
+                  return (
+                    <div style={{ background: "linear-gradient(135deg,#fde8ed,#fff5f7)", border: "1.5px solid #fca5a5", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#dc2626", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, color: "#fff" }}>{UI.warn}</div>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 13.5, color: "#b91c1c" }}>License Not Valid</div>
+                          <div style={{ fontSize: 10.5, color: "#dc2626", fontWeight: 600 }}>Reactivation required</div>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12.5, color: "#991b1b", marginBottom: 12, lineHeight: 1.55 }}>
+                        {licCheckMsg || (licenseInfo && licenseInfo.reason) || (isNetworkClient
+                          ? "The license on the Main Server is not active. Open Techon ERP on the Main PC and reactivate, or contact Techon support."
+                          : "This license is no longer valid on Techon cloud (deactivated, deleted, or expired). Enter a new or corrected license key.")}
+                      </div>
+                      {canLocalReactivate ? (
+                        <button onClick={function () { if (onActivate) onActivate(); }}
+                          style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#dc2626,#ef4444)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(220,38,38,0.28)", marginBottom: 10 }}>
+                          Reactivate License
+                        </button>
+                      ) : null}
+                      <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
+                        style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: licCheckState === "checking" ? "#5a78a5" : "#b91c1c", border: "1.5px solid #fca5a5", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                        {licCheckState === "checking" ? UI.wait + " Checking..." : "Check License Status"}
+                      </button>
+                      {licCheckedAt ? (
+                        <div style={{ marginTop: 8, fontSize: 11, color: "#9ca3af", fontWeight: 600 }}>Last checked: {licCheckedAt}</div>
+                      ) : null}
+                    </div>
+                  );
+                }
+                if (isGrace) {
+                  return (
+                    <div style={{ background: "linear-gradient(135deg,#fef3e2,#fff8ed)", border: "1.5px solid #fcd34d", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, color: "#fff" }}>!</div>
+                        <div>
+                          <div style={{ fontWeight: 800, fontSize: 13.5, color: "#92400e" }}>Grace Period</div>
+                          <div style={{ fontSize: 10.5, color: "#b45309", fontWeight: 600 }}>License expired — renew soon</div>
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 12.5, color: "#92400e", marginBottom: 12, lineHeight: 1.55 }}>
+                        {(licenseInfo && licenseInfo.graceDaysLeft != null)
+                          ? licenseInfo.graceDaysLeft + " day" + (licenseInfo.graceDaysLeft !== 1 ? "s" : "") + " left in grace period."
+                          : "Your license has expired. Please renew or reactivate."}
+                      </div>
+                      {canLocalReactivate ? (
+                        <button onClick={function () { if (onActivate) onActivate(); }}
+                          style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", marginBottom: 10 }}>
+                          Renew / Reactivate
+                        </button>
+                      ) : null}
+                      <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
+                        style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: "#92400e", border: "1.5px solid #fcd34d", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                        {licCheckState === "checking" ? UI.wait + " Checking..." : "Check License Status"}
+                      </button>
+                      {licCheckState === "done" && licCheckMsg ? (
+                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#0a7a53", fontWeight: 600, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 10px" }}>{UI.ok} {licCheckMsg}</div>
+                      ) : null}
+                      {licCheckState === "error" && licCheckMsg ? (
+                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 10px" }}>{licCheckMsg}</div>
+                      ) : null}
+                    </div>
+                  );
+                }
+                if (isActivatedGood) {
                   return (
                     <div style={{ background: "linear-gradient(135deg,#e6f7f2,#f0fdf8)", border: "1.5px solid #9ee8ce", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
@@ -4463,7 +4576,7 @@ var AboutTab = function (props) {
                           <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 600 }}>Full version - all features unlocked</div>
                         </div>
                       </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5 }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5, marginBottom: 12 }}>
                         {[["Licensed To", licenseInfo.shopName || "-", "#0a7a53"], ["License Key", licenseInfo.key || "-", "#047857"], ["Device ID", (licenseInfo.deviceId || "-").slice(0, 18) + "-", C.muted]].map(function (row) {
                           return (
                             <div key={row[0]} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, background: "rgba(255,255,255,0.65)", borderRadius: 7, padding: "6px 10px" }}>
@@ -4473,6 +4586,19 @@ var AboutTab = function (props) {
                           );
                         })}
                       </div>
+                      <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
+                        style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: "#0a7a53", border: "1.5px solid #9ee8ce", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                        {licCheckState === "checking" ? UI.wait + " Checking with Techon cloud..." : "Check License Status"}
+                      </button>
+                      {licCheckState === "done" && licCheckMsg ? (
+                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#0a7a53", fontWeight: 600, background: "rgba(255,255,255,0.8)", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 10px" }}>{UI.ok} {licCheckMsg}</div>
+                      ) : null}
+                      {licCheckState === "error" && licCheckMsg ? (
+                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 10px" }}>{licCheckMsg}</div>
+                      ) : null}
+                      {licCheckedAt ? (
+                        <div style={{ marginTop: 6, fontSize: 11, color: "#9ca3af", fontWeight: 600 }}>Last checked: {licCheckedAt}</div>
+                      ) : null}
                     </div>
                   );
                 }
@@ -4491,8 +4617,14 @@ var AboutTab = function (props) {
                         : "Free trial period active."}
                       {" "}Activate a license key to unlock the full version permanently.
                     </div>
-                    <button onClick={function () { if (onActivate) onActivate(); }}
-                      style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(245,158,11,0.32)" }}>Activate Now
+                    {canLocalReactivate ? (
+                      <button onClick={function () { if (onActivate) onActivate(); }}
+                        style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(245,158,11,0.32)", marginBottom: 10 }}>Activate Now
+                      </button>
+                    ) : null}
+                    <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
+                      style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: "#92400e", border: "1.5px solid #fcd34d", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                      {licCheckState === "checking" ? UI.wait + " Checking..." : "Check License Status"}
                     </button>
                   </div>
                 );
@@ -5989,8 +6121,12 @@ function _tcLog(level, msg) {
 
 function tcTrialGuard(localArray, moduleKey, isActiveCheckout) {
   var info = window._tcLicInfo;
-  if (!info || info.status !== 'trial') return true;  /* not in trial - allow */
-  if (info.isReadOnly) return false;                  /* already read-only - block silently */
+  if (!info) return true;
+  if (info.isReadOnly) {
+    try { showAlert(readOnlyBlockMessage(info)); } catch (_e) {}
+    return false;
+  }
+  if (info.status !== 'trial') return true;           /* licensed — allow */
   var MAX = info.trialMaxRecords || 20;
 
   /* -- Network Client: server is the single source of truth ----------------
@@ -7723,6 +7859,7 @@ function App(props) {
               setActive={safeSetActive}
               licenseInfo={props.licenseInfo}
               onActivate={props.onActivate}
+              onLicenseRefresh={props.onLicenseRefresh}
               systemConfig={systemConfig}
               clientConnStatus={connStatus}
               isNetworkClient={isNetworkClient}

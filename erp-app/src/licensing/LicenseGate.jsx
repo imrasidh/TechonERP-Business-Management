@@ -1299,7 +1299,7 @@ async function loadUsageCountsFromIdb() {
   return counts;
 }
 
-function TrialLimitReadOnlyShell({ licStatus, usageCounts, networkConfig, showActivation, setShowActivation, handleActivated, exceeded }) {
+function TrialLimitReadOnlyShell({ licStatus, usageCounts, networkConfig, showActivation, setShowActivation, handleActivated, handleLicenseRefresh, exceeded }) {
   var limitLicInfo = Object.assign({}, licStatus, {
     status: 'expired',
     isReadOnly: true,
@@ -1324,7 +1324,7 @@ function TrialLimitReadOnlyShell({ licStatus, usageCounts, networkConfig, showAc
         }}>Activate License</button>
       </div>
       <div style={ERP_APP_SHELL_STYLE}>
-        <App licenseInfo={limitLicInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+        <App licenseInfo={limitLicInfo} onActivate={function() { setShowActivation(true); }} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
       </div>
       {showActivation && (
         <ActivationScreen
@@ -1570,6 +1570,10 @@ export default function LicenseGate() {
     return function() { clearInterval(tick); };
   }, [isTampered]); /* eslint-disable-line react-hooks/exhaustive-deps */
 
+  function handleLicenseRefresh(newStatus) {
+    if (newStatus) setLicStatus(newStatus);
+  }
+
   function handleActivated(shopName) {
     setShowActivation(false);
     (async function () {
@@ -1726,19 +1730,33 @@ export default function LicenseGate() {
         />
       );
     }
+    var clientTrialLimitRo = !!(licStatus.isReadOnly && licStatus.readOnlyReason === 'trial_limit_reached');
+    var clientLicInfo = clientTrialLimitRo
+      ? Object.assign({}, licStatus, { status: 'trial', isReadOnly: true, readOnlyReason: 'trial_limit_reached' })
+      : licStatus;
     return (
       <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        {clientTrialLimitRo ? (
+          <div style={{
+            background: 'linear-gradient(90deg,#e03151,#c82040)', color: '#fff',
+            padding: '10px 20px', display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between', gap: 12, flexShrink: 0,
+            fontSize: 13, fontWeight: 700, fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif",
+          }}>
+            <span>🔒 Trial limit reached on main server — view only. Activate the license on the main PC to add new records.</span>
+          </div>
+        ) : null}
         <ClientStatusStrip
-          shopName={licStatus.shopName}
-          plan={licStatus.plan}
-          status={licStatus.status}
-          checkedAt={licStatus.checkedAt}
-          fromCache={licStatus.fromCache}
-          cacheWarning={licStatus.cacheWarning}
-          graceDaysLeft={licStatus.graceDaysLeft}
+          shopName={clientLicInfo.shopName}
+          plan={clientLicInfo.plan}
+          status={clientLicInfo.status}
+          checkedAt={clientLicInfo.checkedAt}
+          fromCache={clientLicInfo.fromCache}
+          cacheWarning={clientLicInfo.cacheWarning}
+          graceDaysLeft={clientLicInfo.graceDaysLeft}
         />
         <div style={ERP_APP_SHELL_STYLE}>
-          <App licenseInfo={licStatus} systemConfig={networkConfig} />
+          <App licenseInfo={clientLicInfo} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
         </div>
       </div>
     );
@@ -1795,7 +1813,7 @@ export default function LicenseGate() {
           onActivate={function() { setShowActivation(true); }}
         />
         <div style={ERP_APP_SHELL_STYLE}>
-          <App licenseInfo={graceRo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+          <App licenseInfo={graceRo} onActivate={function() { setShowActivation(true); }} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
         </div>
         {showActivation && (
           <ActivationScreen
@@ -1815,7 +1833,7 @@ export default function LicenseGate() {
       <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
         <ExpiredReadOnlyBanner onActivate={function() { setShowActivation(true); }} />
         <div style={ERP_APP_SHELL_STYLE}>
-          <App licenseInfo={roInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+          <App licenseInfo={roInfo} onActivate={function() { setShowActivation(true); }} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
         </div>
         {showActivation && (
           <ActivationScreen
@@ -1864,7 +1882,7 @@ export default function LicenseGate() {
       <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
         <ExpiredReadOnlyBanner onActivate={function() { setShowActivation(true); }} />
         <div style={ERP_APP_SHELL_STYLE}>
-          <App licenseInfo={expiredLicInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+          <App licenseInfo={expiredLicInfo} onActivate={function() { setShowActivation(true); }} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
         </div>
         {showActivation && (
           <ActivationScreen
@@ -1901,6 +1919,7 @@ export default function LicenseGate() {
           showActivation={showActivation}
           setShowActivation={setShowActivation}
           handleActivated={handleActivated}
+          handleLicenseRefresh={handleLicenseRefresh}
           exceeded={exceeded}
         />
       );
@@ -1937,7 +1956,7 @@ export default function LicenseGate() {
           />
         )}
         <div style={ERP_APP_SHELL_STYLE}>
-          <App licenseInfo={licStatus} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+          <App licenseInfo={licStatus} onActivate={function() { setShowActivation(true); }} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
         </div>
         {showActivation && (
           <ActivationScreen
@@ -1966,7 +1985,7 @@ export default function LicenseGate() {
       <div style={{ position: 'relative', width: '100vw', height: '100vh', display: 'flex', flexDirection: 'column' }}>
         <ExpiredReadOnlyBanner onActivate={function() { setShowActivation(true); }} />
         <div style={ERP_APP_SHELL_STYLE}>
-          <App licenseInfo={pastDueInfo} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+          <App licenseInfo={pastDueInfo} onActivate={function() { setShowActivation(true); }} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
         </div>
         <ActivationScreen
           onActivated={handleActivated}
@@ -1997,7 +2016,7 @@ export default function LicenseGate() {
         />
       )}
       <div style={ERP_APP_SHELL_STYLE}>
-        <App licenseInfo={licStatus} onActivate={function() { setShowActivation(true); }} systemConfig={networkConfig} />
+        <App licenseInfo={licStatus} onActivate={function() { setShowActivation(true); }} onLicenseRefresh={handleLicenseRefresh} systemConfig={networkConfig} />
       </div>
       {showActivationOverlay && (
         <ActivationScreen

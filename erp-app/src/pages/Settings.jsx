@@ -40,6 +40,7 @@ var Settings = function (props) {
   var setState = props.setState;
   var licenseInfo = props.licenseInfo || null;
   var onActivate = props.onActivate || null;
+  var onLicenseRefresh = props.onLicenseRefresh || null;
   var wizardUi = props.wizardUi === true;
   var onWizardBack = props.onWizardBack;
   /* Network config — passed down from App via systemConfig prop */
@@ -3864,7 +3865,7 @@ var Settings = function (props) {
             padding: "16px 0 24px",
           }}
         >
-          <AboutTab licenseInfo={licenseInfo} onActivate={onActivate} C={C} />
+          <AboutTab licenseInfo={licenseInfo} onActivate={onActivate} onLicenseRefresh={onLicenseRefresh} isNetworkClient={isNetworkClient} C={C} />
         </div>
       )}
 

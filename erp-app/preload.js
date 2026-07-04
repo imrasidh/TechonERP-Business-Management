@@ -94,6 +94,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   syncLicenseNow: guardClientMethod('syncLicenseNow', function() {
     return ipcRenderer.invoke('tc-license-sync-now');
   }),
+
+  /** Force online license check (Settings → About). Returns { ok, status, needsReactivation, message }. */
+  verifyLicenseNow: function() {
+    return ipcRenderer.invoke('tc-license-verify-now');
+  },
   getConnectedClients: guardClientMethod('getConnectedClients', function() {
     return ipcRenderer.invoke('tc-connected-clients-list');
   }),

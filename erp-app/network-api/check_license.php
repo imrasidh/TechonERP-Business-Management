@@ -378,32 +378,73 @@ $connectedCount = count($clients);
 
 /* ── If server is in trial mode, include actual module counts so network
    clients can enforce limits against server data (not local cache).
-   Clients MUST use these counts — never their own local array lengths.  */
+   Data lives in kv_store JSON arrays — NOT separate tc3_* tables.       */
 $serverCounts     = null;
 $trialMaxRecords  = 20;
+$readOnlyReason   = $isReadOnly ? 'offline_timeout' : '';
+$trialLimitReached = false;
+
+/**
+ * Count records in a kv_store JSON array (mirrors IndexedDB tc3_* keys).
+ */
+function tc_kv_array_count($pdo, $storeKey) {
+    try {
+        $st = $pdo->prepare('SELECT `value` FROM kv_store WHERE store_key = ? LIMIT 1');
+        $st->execute([(string)$storeKey]);
+        $row = $st->fetch(PDO::FETCH_ASSOC);
+        if (!$row || !isset($row['value'])) return 0;
+        $decoded = json_decode((string)$row['value'], true);
+        return is_array($decoded) ? count($decoded) : 0;
+    } catch (Exception $e) {
+        return 0;
+    }
+}
 
 if ($finalStatus === 'trial') {
     $trialMaxRecords = 20; /* keep in sync with TRIAL_MAX_RECORDS in main.cjs */
-    $countTables = [
-        'sales'     => 'tc3_sales',
-        'products'  => 'tc3_products',
-        'customers' => 'tc3_customers',
-        'expenses'  => 'tc3_expenses',
-        'purchases' => 'tc3_purchases',
-        'suppliers' => 'tc3_suppliers',
-        'quotations'=> 'tc3_quotations',
-        'repairs'   => 'tc3_repairs',
+    $countKeys = [
+        'sales'             => 'tc3_sales',
+        'products'          => 'tc3_products',
+        'customers'         => 'tc3_customers',
+        'expenses'          => 'tc3_expenses',
+        'purchases'         => 'tc3_purchases',
+        'suppliers'         => 'tc3_suppliers',
+        'quotations'        => 'tc3_quotations',
+        'repairs'           => 'tc3_repairs',
+        'salesReturns'      => 'tc3_salesReturns',
+        'purchaseReturns'   => 'tc3_purchaseReturns',
+        'cheques'           => 'tc3_cheques',
+        'assets'            => 'tc3_assets',
+        'manualReceivables' => 'tc3_manualReceivables',
+        'manualPayables'    => 'tc3_manualPayables',
     ];
     $serverCounts = [];
-    foreach ($countTables as $key => $table) {
-        try {
-            $cnt = $pdo->query("SELECT COUNT(*) FROM `{$table}`")->fetchColumn();
-            $serverCounts[$key] = (int)$cnt;
-        } catch (Exception $e) {
-            $serverCounts[$key] = 0; /* table missing = 0 records */
+    foreach ($countKeys as $key => $storeKey) {
+        $serverCounts[$key] = tc_kv_array_count($pdo, $storeKey);
+        if ($serverCounts[$key] >= $trialMaxRecords) {
+            $trialLimitReached = true;
         }
     }
-    serverLog('info', '[check_license] Trial counts: ' . json_encode($serverCounts));
+    if ($trialLimitReached) {
+        $isReadOnly = true;
+        $readOnlyReason = 'trial_limit_reached';
+    }
+    serverLog('info', '[check_license] Trial kv_store counts: ' . json_encode($serverCounts) .
+        ' limitReached=' . ($trialLimitReached ? '1' : '0'));
+}
+
+/* Response status: trial stays "trial" even when read-only (trial limit). */
+$responseStatus = $finalStatus;
+if ($isReadOnly && $readOnlyReason === 'offline_timeout') {
+    $responseStatus = 'read_only';
+}
+$responseMessage = 'License valid';
+if ($readOnlyReason === 'trial_limit_reached') {
+    $responseMessage = 'Trial limit reached on the main server. Activate the license on the main PC to add new records.';
+} elseif ($isReadOnly) {
+    $responseMessage = 'Server is in read-only mode until license sync succeeds.';
+} elseif ($isExpired) {
+    $responseMessage = 'Server license has expired. Please renew.';
 }
 
 /* Resolved display name for this device (admin label > auto device_name > hostname param > short id) */
@@ -434,8 +475,8 @@ if ($deviceId !== '' && !$listOnly) {
 respond([
     'success'        => true,
     'valid'          => !$isExpired && !$isReadOnly,
-    'status'         => $isReadOnly ? 'read_only' : $finalStatus,
-    'message'        => $isReadOnly ? 'Server is in read-only mode until license sync succeeds.' : ($isExpired ? 'Server license has expired. Please renew.' : 'License valid'),
+    'status'         => $responseStatus,
+    'message'        => $responseMessage,
     /* supportsCounts tells clients this server version can supply module counts.
        Clients use this flag to distinguish "server is old" from "server is offline". */
     'supportsCounts' => true,
@@ -446,11 +487,12 @@ respond([
         'days_left'      => $daysLeft,
         'serverCounts'   => $serverCounts,    /* null when not trial */
         'trialMaxRecords'=> $trialMaxRecords,
+        'trial_limit_reached' => $trialLimitReached ? 1 : 0,
         'max_clients'    => $maxClients,
         'connected_clients' => $connectedCount,
         'clients'        => $listOnly ? $clients : [],
         'read_only'      => $isReadOnly ? 1 : 0,
-        'read_only_reason' => $isReadOnly ? 'offline_timeout' : '',
+        'read_only_reason' => $readOnlyReason,
         'client_label'   => $resolvedClientLabel,
     ],
 ]);
