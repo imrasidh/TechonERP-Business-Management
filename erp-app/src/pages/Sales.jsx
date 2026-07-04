@@ -16,7 +16,7 @@ import {
   mapCartLineToQuotationItem,
   quotationToPrintInv,
 } from "../utils/quotationDocument.js";
-import { GlassRateInput, glassCartCellLabel, glassCartFieldStyle, GlassCutFields, GlassLineExtras } from "../components/GlassCartLine.jsx";
+import { GlassRateInput, glassCartFieldStyle, GlassCutFields, GlassLineExtras, GLASS_CART_FIELD_H } from "../components/GlassCartLine.jsx";
 import {
   isGlassProduct,
   recalcGlassCartLine,
@@ -322,6 +322,11 @@ var POS = React.memo(function (props) {
         focusPosSearch();
         return;
       }
+      /* Newest line (row 0): after last field, add next product — not older rows */
+      if (row === 0) {
+        focusPosSearch();
+        return;
+      }
       var nextRow = row + 1;
       var nextPrice = document.querySelector("[data-cartrow='" + nextRow + "'][data-cartcol='0']");
       if (nextPrice) {
@@ -351,11 +356,23 @@ var POS = React.memo(function (props) {
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      if (col === 0) focusCartField(row, 1);
-      else if (col >= 1 && col < 4) focusCartField(row, col + 1);
-      else focusPosSearch();
+      var line = cart[row];
+      var isGlass = !!(line && line.isGlassLine);
+      if (col === 0) {
+        focusCartField(row, 1);
+      } else if (col === 1 && !isGlass) {
+        /* Standard product: price → qty → add next product */
+        focusPosSearch();
+      } else if (isGlass && col >= 1 && col < 4) {
+        focusCartField(row, col + 1);
+      } else if (isGlass && col === 4) {
+        focusPosSearch();
+      } else {
+        focusPosSearch();
+      }
+      return;
     }
-  }, [focusCartField, focusPosSearch]);
+  }, [focusCartField, focusPosSearch, cart]);
 
   useEffect(function () {
     if (!freeItemsEnabled && freeCart.length) setFreeCart([]);
@@ -2448,21 +2465,21 @@ var POS = React.memo(function (props) {
           </div>
           {/* Cart ? keyboard navigable like a spreadsheet */}
           {cart.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 8, tableLayout: "fixed", transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6, tableLayout: "fixed", transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
               <colgroup>
                 <col />
-                <col style={{ width: glassCartLayout ? 180 : 88 }} />
-                <col style={{ width: glassCartLayout ? 300 : 168 }} />
-                <col style={{ width: 96 }} />
-                <col style={{ width: 76 }} />
+                <col style={{ width: glassCartLayout ? 148 : 132 }} />
+                <col style={{ width: glassCartLayout ? 248 : 120 }} />
+                <col style={{ width: 84 }} />
+                <col style={{ width: 64 }} />
               </colgroup>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
-                  <th style={{ textAlign: "left", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Item</th>
-                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? (cartMixedGlassLayout ? "Price" : "Rate / Sq Ft") : "Price"}</th>
-                  <th style={{ textAlign: "center", padding: "8px 6px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? (cartMixedGlassLayout ? "Qty / Cut" : "Cut (W×H)") : "Qty"}</th>
-                  <th style={{ textAlign: "right", padding: "8px 8px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap" }}>Total</th>
-                  <th style={{ padding: "8px 6px", borderBottom: "2px solid " + C.border }}></th>
+                  <th style={{ textAlign: "left", padding: "3px 6px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>Item</th>
+                  <th style={{ textAlign: "center", padding: "3px 5px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? (cartMixedGlassLayout ? "Price" : "Rate / Sq Ft") : "Price"}</th>
+                  <th style={{ textAlign: "center", padding: "3px 5px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout && !cartMixedGlassLayout ? "W · H · Unit · Pcs" : (glassCartLayout ? "Qty / Cut" : "Qty")}</th>
+                  <th style={{ textAlign: "right", padding: "3px 6px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>Total</th>
+                  <th style={{ padding: "3px 4px", borderBottom: "1px solid " + C.border }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -2473,47 +2490,37 @@ var POS = React.memo(function (props) {
                     ? getGlassCostPerSqFt(prodRow)
                     : (prodRow ? getPosCostPerSaleUnit(prodRow, saleU) : (item.cost || 0));
                   var showLineComment = !isRestaurant && !item.isGlassLine && posLineCommentsEnabled;
-                  var commentInDetail = glassCartLayout && showLineComment;
+                  var commentInDetail = showLineComment;
+                  var unitForDetail = item.saleUnit || item.unit || "Pcs";
+                  var prodForDetail = state.products.find(function (p) { return p.id === item.id; });
+                  var unitRowsForDetail = prodForDetail ? getProductUnitRows(prodForDetail) : [];
+                  var unitOptsForDetail = unitRowsForDetail.map(function (r) { return r.name; });
+                  var hasSecondaryForDetail = unitOptsForDetail.length > 1;
+                  var quickAmtsForDetail = getQuickAmounts(unitForDetail);
+                  var baseUForDetail = unitRowsForDetail[0] && unitRowsForDetail[0].name ? unitRowsForDetail[0].name : "Pcs";
+                  var fCurForDetail = prodForDetail ? factorForNamedUnit(prodForDetail, unitForDetail) : null;
+                  var convHintForDetail = fCurForDetail != null && fCurForDetail > 1
+                    ? "1 " + unitForDetail + " = " + (fCurForDetail % 1 === 0 ? fCurForDetail : parseFloat(fCurForDetail.toFixed(4))) + " " + baseUForDetail
+                    : null;
+                  var hasNonGlassExtras = !item.isGlassLine && (hasSecondaryForDetail || quickAmtsForDetail.length > 0 || !!prodForDetail || !!convHintForDetail);
                   var isNewestRow = i === 0;
                   var rowBg = isNewestRow ? "#eef5ff" : "#fafbfc";
                   var detailBg = isNewestRow ? "#f3f8ff" : "#f4f6f9";
-                  var hasDetailRow = item.isGlassLine || commentInDetail || (glassCartLayout && !item.isGlassLine);
+                  var hasDetailRow = item.isGlassLine || commentInDetail || hasNonGlassExtras;
+                  var cartQtyInputStyle = Object.assign({}, glassCartFieldStyle(C), { width: 56, maxWidth: "100%", margin: "0 auto", fontSize: 12, fontWeight: 700 });
                   return (
                     <React.Fragment key={String(cartLineKey(item)) + "-" + i}>
-                    <tr style={{ borderBottom: hasDetailRow ? "none" : ("1px solid " + C.border), background: rowBg, boxShadow: isNewestRow ? ("inset 3px 0 0 " + C.accent) : "none" }}
+                    <tr style={{ borderBottom: hasDetailRow ? "none" : ("1px solid " + C.border), background: rowBg, boxShadow: isNewestRow ? ("inset 2px 0 0 " + C.accent) : "none" }}
                       onMouseEnter={function (e) { e.currentTarget.style.background = isNewestRow ? "#e5efff" : "#f3f7ff"; }}
                       onMouseLeave={function (e) { e.currentTarget.style.background = rowBg; }}>
-                      <td style={{ padding: "10px 8px", fontSize: 13, verticalAlign: "top" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 2 }}>
-                          <div style={{ fontWeight: 700, color: C.text, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
+                      <td style={{ padding: "2px 6px", fontSize: 12, verticalAlign: "middle", lineHeight: 1.25 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", minHeight: GLASS_CART_FIELD_H }}>
+                          <div style={{ fontWeight: 600, color: C.text, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
                           {isNewestRow ? (
-                            <span style={{ fontSize: 9, fontWeight: 800, color: "#fff", background: C.accent, padding: "2px 8px", borderRadius: 999, letterSpacing: "0.08em", textTransform: "uppercase", flexShrink: 0 }}>Adding</span>
+                            <span style={{ fontSize: 8, fontWeight: 800, color: "#fff", background: C.accent, padding: "1px 5px", borderRadius: 999, letterSpacing: "0.06em", textTransform: "uppercase", flexShrink: 0 }}>Adding</span>
                           ) : null}
                         </div>
-                        {item.description && <div style={{ fontSize: 10, color: C.muted }}>{item.description}</div>}
-                        {showLineComment && !commentInDetail && (
-                          <div style={{ marginTop: 6, maxWidth: 220 }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMd, marginBottom: 3 }}>
-                              {DEFAULT_PRODUCT_COMMENT_LABEL}
-                            </div>
-                            <input
-                              type="text"
-                              data-cartrow={i}
-                              data-cartcol="2"
-                              value={item.comment || ""}
-                              onChange={function (e) {
-                                var v = e.target.value;
-                                var lk = cartLineKey(item);
-                                setCart(function (prev) {
-                                  return prev.map(function (x) { return cartLineKey(x) === lk ? Object.assign({}, x, { comment: v }) : x; });
-                                });
-                              }}
-                              onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
-                              placeholder="Serial, IMEI, note…"
-                              style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit", outline: "none" }}
-                            />
-                          </div>
-                        )}
+                        {item.description && <div style={{ fontSize: 9, color: C.muted, marginTop: 1, lineHeight: 1.2 }}>{item.description}</div>}
                         {isRestaurant && (
                           <div style={{ marginTop: 6, maxWidth: 220 }}>
                             <div style={{ fontSize: 10, fontWeight: 700, color: C.textMd, marginBottom: 3 }}>
@@ -2536,13 +2543,13 @@ var POS = React.memo(function (props) {
                           <div style={{ fontSize: 9, color: C.accent, fontWeight: 700 }}>{item.unit}</div>
                         )}
                       </td>
-                      <td style={{ padding: "10px 8px", verticalAlign: "top", textAlign: "center", minWidth: item.isGlassLine || glassCartLayout ? 168 : undefined, overflow: "visible" }}>
-                        {glassCartLayout ? glassCartCellLabel(item.isGlassLine ? "Rate / Sq Ft" : "Price", C) : null}
+                      <td style={{ padding: "2px 5px", verticalAlign: "middle", textAlign: "center", width: glassCartLayout ? 148 : 132, overflow: "hidden" }}>
                         {item.isGlassLine ? (
-                        <React.Fragment>
                         <GlassRateInput
                           C={C}
+                          compact={true}
                           currencySymbol={getCurrencySymbol()}
+                          unitNote={false}
                           belowCost={item.price < lineCost}
                           value={item.glassRatePerSqFt != null ? item.glassRatePerSqFt : (prodRow ? getGlassSellRatePerSqFt(prodRow) : item.price)}
                           disabled={selectedTableLocked}
@@ -2568,16 +2575,10 @@ var POS = React.memo(function (props) {
                             });
                           }}
                         />
-                        {item.price < lineCost && (
-                          <div style={{ fontSize: 9, color: C.red, fontWeight: 700, whiteSpace: "nowrap", marginTop: 4, textAlign: "center" }}>
-                            Below cost!
-                          </div>
-                        )}
-                        </React.Fragment>
-                        ) : glassCartLayout ? (
-                        <React.Fragment>
+                        ) : (
                         <GlassRateInput
                           C={C}
+                          compact={true}
                           currencySymbol={getCurrencySymbol()}
                           unitNote={false}
                           belowCost={item.price < lineCost}
@@ -2596,236 +2597,47 @@ var POS = React.memo(function (props) {
                             });
                           }}
                         />
-                        {item.price < lineCost && (
-                          <div style={{ fontSize: 9, color: C.red, fontWeight: 700, whiteSpace: "nowrap", marginTop: 4, textAlign: "center" }}>
-                            Below cost!
-                          </div>
-                        )}
-                        </React.Fragment>
-                        ) : (
-                        <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 2, width: "100%", maxWidth: 72 }}>
-                        <input
-                          data-cartrow={i} data-cartcol="0"
-                          type="number"
-                          value={item.price}
-                          disabled={selectedTableLocked}
-                          onChange={function (e) {
-                            var v = parseFloat(e.target.value) || 0;
-                            var lk = cartLineKey(item);
-                            setCart(function (prev) {
-                              return prev.map(function (x) {
-                                if (cartLineKey(x) !== lk) return x;
-                                return Object.assign({}, x, { price: v, customPrice: true });
-                              });
-                            });
-                          }}
-                          onFocus={function (e) { e.target.select(); }}
-                          onKeyDown={function (e) { handleCartFieldKey(e, i, 0); }}
-                          style={{
-                            width: 72,
-                            maxWidth: 72,
-                            boxSizing: "border-box",
-                            border: "1.5px solid " + (item.price < lineCost ? C.red : C.border),
-                            borderRadius: 6,
-                            padding: "5px 6px",
-                            fontSize: 13,
-                            textAlign: "right",
-                            fontFamily: "inherit",
-                            outline: "none",
-                            background: item.price < lineCost ? "#fde8ed" : "#fff",
-                          }}
-                          onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + (item.price < lineCost ? C.red : C.accent); e.target.style.background = item.price < lineCost ? "#fde8ed" : "#f0f4ff"; }}
-                          onBlur={function (e) { e.target.style.border = "1.5px solid " + (item.price < lineCost ? C.red : C.border); e.target.style.background = item.price < lineCost ? "#fde8ed" : "#fff"; }}
-                          title={item.price < lineCost ? "Selling below cost! Cost: " + getCurrencySymbol() + " " + fmtNum(lineCost) + (" per " + saleU) : ""}
-                        />
-                        {item.price < lineCost && (
-                          <div style={{ fontSize: 9, color: C.red, fontWeight: 700, whiteSpace: "nowrap" }}>
-                            Below cost!
-                          </div>
-                        )}
-                        </div>
                         )}
                       </td>
                       <td style={{
-                        padding: "8px 8px",
-                        verticalAlign: "top",
+                        padding: "2px 5px",
+                        verticalAlign: "middle",
                         textAlign: "center",
                       }}>
-                        {(function () {
-                          if (item.isGlassLine) {
-                            return (
-                              <GlassCutFields
-                                item={item}
-                                product={prodRow}
-                                C={C}
-                                rowIndex={i}
-                                onFieldKey={handleCartFieldKey}
-                                disabled={selectedTableLocked}
-                                onChange={function (next) { updateGlassCartItem(cartLineKey(item), next); }}
-                              />
-                            );
-                          }
-                          var unit = item.saleUnit || item.unit || "Pcs";
-                          var prodForUnit = state.products.find(function (p) { return p.id === item.id; });
-                          var unitRows = prodForUnit ? getProductUnitRows(prodForUnit) : [];
-                          var unitOpts = unitRows.map(function (r) { return r.name; });
-                          var hasSecondary = unitOpts.length > 1;
-                          var quickAmts = getQuickAmounts(unit);
-                          var baseU = unitRows[0] && unitRows[0].name ? unitRows[0].name : "Pcs";
-                          var fCur = prodForUnit ? factorForNamedUnit(prodForUnit, unit) : null;
-                          var convHint = fCur != null && fCur > 1
-                            ? "1 " + unit + " = " + (fCur % 1 === 0 ? fCur : parseFloat(fCur.toFixed(4))) + " " + baseU
-                            : null;
-                          if (glassCartLayout) {
-                            return (
-                              <div style={{ display: "grid", gridTemplateColumns: "minmax(56px, 1fr) minmax(56px, 1fr) 76px 56px", gap: 10, alignItems: "end", width: "100%" }}>
-                                <div>
-                                  {glassCartCellLabel("Qty", C)}
-                                  <input
-                                    data-cartrow={i} data-cartcol="1"
-                                    type="number"
-                                    min="0"
-                                    step={isDecimalUnit(unit) ? "0.001" : "1"}
-                                    value={item.qty}
-                                    disabled={selectedTableLocked}
-                                    onChange={function (e) {
-                                      var v = parseFloat(e.target.value);
-                                      updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
-                                    }}
-                                    onFocus={function (e) { e.target.select(); }}
-                                    onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
-                                    style={Object.assign({}, glassCartFieldStyle(C), { fontSize: 14, fontWeight: 800 })}
-                                    onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
-                                    onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
-                                  />
-                                </div>
-                              </div>
-                            );
-                          }
-                          return (
-                            <div style={{ minWidth: 0, width: "100%", boxSizing: "border-box" }}>
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", justifyContent: "center" }}>
-                                <input
-                                  data-cartrow={i} data-cartcol="1"
-                                  type="number"
-                                  min="0"
-                                  step={isDecimalUnit(unit) ? "0.001" : "1"}
-                                  value={item.qty}
-                                  disabled={selectedTableLocked}
-                                  onChange={function (e) {
-                                    var v = parseFloat(e.target.value);
-                                    updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
-                                  }}
-                                  onFocus={function (e) { e.target.select(); }}
-                                  onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
-                                  style={{ width: 56, border: "1.5px solid " + C.border, borderRadius: 6, padding: "4px 5px", fontSize: 12, textAlign: "center", fontFamily: "inherit", outline: "none", background: "#fff", fontWeight: 700 }}
-                                  onFocusCapture={function (e) { e.target.style.border = "1.5px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
-                                  onBlur={function (e) { e.target.style.border = "1.5px solid " + C.border; e.target.style.background = "#fff"; }}
-                                />
-                                {hasSecondary && (
-                                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, justifyContent: "center" }}>
-                                    <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Unit</span>
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
-                                      {unitOpts.map(function (uOpt) {
-                                        var activeUnit = unit === uOpt;
-                                        var fOpt = prodForUnit ? factorForNamedUnit(prodForUnit, uOpt) : 1;
-                                        var label = uOpt + (fOpt != null && fOpt > 1 ? " (" + (fOpt % 1 === 0 ? fOpt : parseFloat(fOpt.toFixed(2))) + " " + baseU + ")" : "");
-                                        return (
-                                          <button
-                                            key={uOpt}
-                                            type="button"
-                                            onClick={function () {
-                                              if (selectedTableLocked) return;
-                                              setCart(function (prev) {
-                                                return prev.map(function (x) {
-                                                  if (cartLineKey(x) !== cartLineKey(item)) return x;
-                                                  return Object.assign({}, x, {
-                                                    saleUnit: uOpt,
-                                                    price: getPosSellPricePerSaleUnit(prodForUnit, uOpt),
-                                                    cost: getPosCostPerSaleUnit(prodForUnit, uOpt),
-                                                    customPrice: false,
-                                                  });
-                                                });
-                                              });
-                                            }}
-                                            title={label}
-                                            style={{
-                                              fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
-                                              background: activeUnit ? "#3b82f6" : "#fff", color: activeUnit ? "#fff" : "#4b5563", boxShadow: activeUnit ? "0 1px 2px rgba(0,0,0,0.06)" : "none", whiteSpace: "nowrap"
-                                            }}
-                                            disabled={selectedTableLocked}
-                                          >
-                                            {uOpt}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                    {unitRows.filter(function (r) { return r.factor > 1; }).map(function (r) {
-                                      return (
-                                        <button
-                                          key={"qb-" + r.name}
-                                          type="button"
-                                          onClick={function () {
-                                            if (selectedTableLocked) return;
-                                            setCart(function (prev) {
-                                              return prev.map(function (x) {
-                                                if (cartLineKey(x) !== cartLineKey(item)) return x;
-                                                var q = parseFloat(x.qty) || 0;
-                                                return Object.assign({}, x, {
-                                                  saleUnit: r.name,
-                                                  qty: q + 1,
-                                                  price: getPosSellPricePerSaleUnit(prodForUnit, r.name),
-                                                  cost: getPosCostPerSaleUnit(prodForUnit, r.name),
-                                                  customPrice: false,
-                                                });
-                                              });
-                                            });
-                                          }}
-                                          style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-                                        >
-                                          +1 {r.name}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </div>
-                              {convHint && (
-                                <div style={{ fontSize: 10, color: C.muted, marginTop: 3, textAlign: "center" }}>{convHint}</div>
-                              )}
-                              {quickAmts.length > 0 && !hasSecondary && (
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 4, justifyContent: "center" }}>
-                                  {quickAmts.map(function (qa) {
-                                    var active = item.qty === qa.qty;
-                                    return (
-                                      <button key={qa.label} disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), qa.qty); }} style={{
-                                        fontSize: 9, padding: "2px 6px", borderRadius: 10,
-                                        border: "1px solid " + (active ? C.accent : C.border),
-                                        background: active ? C.accentSoft : "#fff",
-                                        color: active ? C.accent : C.muted,
-                                        fontWeight: active ? 800 : 600,
-                                        cursor: selectedTableLocked ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
-                                        opacity: selectedTableLocked ? 0.5 : 1,
-                                      }}>{qa.label}</button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                              {prodForUnit && (
-                                <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.35, textAlign: "center" }}>
-                                  <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span>{" "}
-                                  {getBulkDisplayParts(prodForUnit) ? fmtStockDual(prodForUnit) : fmtStock(prodForUnit.stock || 0, prodForUnit.unit || "Pcs")}
-                                  {" | "}
-                                  <span style={{ fontWeight: 600, color: C.textMd }}>After sale:</span>{" "}
-                                  {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForUnit, cart, freeCart), prodForUnit)}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })()}
+                        {item.isGlassLine ? (
+                          <GlassCutFields
+                            item={item}
+                            product={prodRow}
+                            C={C}
+                            compact={true}
+                            rowIndex={i}
+                            onFieldKey={handleCartFieldKey}
+                            disabled={selectedTableLocked}
+                            onChange={function (next) { updateGlassCartItem(cartLineKey(item), next); }}
+                          />
+                        ) : (
+                          <input
+                            data-cartrow={i}
+                            data-cartcol="1"
+                            type="number"
+                            min="0"
+                            step={isDecimalUnit(unitForDetail) ? "0.001" : "1"}
+                            value={item.qty}
+                            disabled={selectedTableLocked}
+                            onChange={function (e) {
+                              var v = parseFloat(e.target.value);
+                              updateQty(cartLineKey(item), isNaN(v) ? 0 : v);
+                            }}
+                            onFocus={function (e) { e.target.select(); }}
+                            onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
+                            style={cartQtyInputStyle}
+                            onFocusCapture={function (e) { e.target.style.border = "1px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
+                            onBlur={function (e) { e.target.style.border = "1px solid " + C.border; e.target.style.background = "#fff"; }}
+                          />
+                        )}
                       </td>
-                      <td style={{ padding: "8px 8px", fontWeight: 700, color: C.blue, fontSize: 13, whiteSpace: "nowrap", verticalAlign: "top", textAlign: "right" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
-                      <td style={{ padding: "8px 6px", whiteSpace: "nowrap", verticalAlign: "top", textAlign: "right" }}>
+                      <td style={{ padding: "2px 6px", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right", lineHeight: 1.2 }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
+                      <td style={{ padding: "2px 4px", whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right" }}>
                         {isRestaurant && (
                           <button
                             type="button"
@@ -2837,18 +2649,20 @@ var POS = React.memo(function (props) {
                             +
                           </button>
                         )}
-                        <button disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), 0); }} style={{ background: "none", border: "none", color: C.red, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px", opacity: selectedTableLocked ? 0.5 : 1 }}>Remove</button>
+                        <button disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), 0); }} style={{ background: "none", border: "none", color: C.red, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 11, lineHeight: 1, padding: "0 2px", opacity: selectedTableLocked ? 0.5 : 1 }}>Remove</button>
                       </td>
                     </tr>
                     {hasDetailRow ? (
                       <tr style={{ borderBottom: "1px solid " + C.border, background: detailBg }}>
-                        <td colSpan={5} style={{ padding: "6px 12px 10px", verticalAlign: "top" }}>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-start" }}>
+                        <td colSpan={5} style={{ padding: "3px 8px 5px", verticalAlign: "top" }}>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-start" }}>
                             {commentInDetail && (
-                              <div style={{ flex: "1 1 200px", minWidth: 160, maxWidth: 320 }}>
-                                <div style={{ fontSize: 9, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Comment</div>
+                              <div style={{ flex: "1 1 180px", minWidth: 140, maxWidth: 280 }}>
+                                <div style={{ fontSize: 8, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>{DEFAULT_PRODUCT_COMMENT_LABEL}</div>
                                 <input
                                   type="text"
+                                  data-cartrow={i}
+                                  data-cartcol="2"
                                   value={item.comment || ""}
                                   disabled={selectedTableLocked}
                                   onChange={function (e) {
@@ -2862,9 +2676,12 @@ var POS = React.memo(function (props) {
                                   }}
                                   onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
                                   placeholder="Serial, IMEI, note…"
-                                  style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, fontFamily: "inherit", outline: "none", background: "#fff" }}
+                                  style={{ width: "100%", boxSizing: "border-box", border: "1px solid " + C.border, borderRadius: 4, padding: "3px 6px", fontSize: 11, fontFamily: "inherit", outline: "none", background: "#fff", height: 24 }}
                                 />
                               </div>
+                            )}
+                            {item.price < lineCost && (
+                              <div style={{ fontSize: 9, color: C.red, fontWeight: 700, alignSelf: "center" }}>Below cost</div>
                             )}
                             {item.isGlassLine ? (
                               <div style={{ flex: "1 1 260px" }}>
@@ -2879,117 +2696,104 @@ var POS = React.memo(function (props) {
                                 />
                               </div>
                             ) : null}
-                            {glassCartLayout && !item.isGlassLine ? (function () {
-                              var unit = item.saleUnit || item.unit || "Pcs";
-                              var prodForUnit = state.products.find(function (p) { return p.id === item.id; });
-                              var unitRows = prodForUnit ? getProductUnitRows(prodForUnit) : [];
-                              var unitOpts = unitRows.map(function (r) { return r.name; });
-                              var hasSecondary = unitOpts.length > 1;
-                              var quickAmts = getQuickAmounts(unit);
-                              var baseU = unitRows[0] && unitRows[0].name ? unitRows[0].name : "Pcs";
-                              var fCur = prodForUnit ? factorForNamedUnit(prodForUnit, unit) : null;
-                              var convHint = fCur != null && fCur > 1
-                                ? "1 " + unit + " = " + (fCur % 1 === 0 ? fCur : parseFloat(fCur.toFixed(4))) + " " + baseU
-                                : null;
-                              return (
-                                <div style={{ flex: "1 1 280px" }}>
-                                  {hasSecondary && (
-                                    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                                      <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Unit</span>
-                                      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
-                                        {unitOpts.map(function (uOpt) {
-                                          var activeUnit = unit === uOpt;
-                                          return (
-                                            <button
-                                              key={uOpt}
-                                              type="button"
-                                              onClick={function () {
-                                                if (selectedTableLocked) return;
-                                                setCart(function (prev) {
-                                                  return prev.map(function (x) {
-                                                    if (cartLineKey(x) !== cartLineKey(item)) return x;
-                                                    return Object.assign({}, x, {
-                                                      saleUnit: uOpt,
-                                                      price: getPosSellPricePerSaleUnit(prodForUnit, uOpt),
-                                                      cost: getPosCostPerSaleUnit(prodForUnit, uOpt),
-                                                      customPrice: false,
-                                                    });
-                                                  });
-                                                });
-                                              }}
-                                              style={{
-                                                fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
-                                                background: activeUnit ? "#3b82f6" : "#fff", color: activeUnit ? "#fff" : "#4b5563", whiteSpace: "nowrap"
-                                              }}
-                                              disabled={selectedTableLocked}
-                                            >
-                                              {uOpt}
-                                            </button>
-                                          );
-                                        })}
-                                      </div>
-                                      {unitRows.filter(function (r) { return r.factor > 1; }).map(function (r) {
+                            {hasNonGlassExtras ? (
+                              <div style={{ flex: "1 1 280px" }}>
+                                {hasSecondaryForDetail && (
+                                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                                    <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Unit</span>
+                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
+                                      {unitOptsForDetail.map(function (uOpt) {
+                                        var activeUnit = unitForDetail === uOpt;
                                         return (
                                           <button
-                                            key={"qb-d-" + r.name}
+                                            key={uOpt}
                                             type="button"
                                             onClick={function () {
                                               if (selectedTableLocked) return;
                                               setCart(function (prev) {
                                                 return prev.map(function (x) {
                                                   if (cartLineKey(x) !== cartLineKey(item)) return x;
-                                                  var q = parseFloat(x.qty) || 0;
                                                   return Object.assign({}, x, {
-                                                    saleUnit: r.name,
-                                                    qty: q + 1,
-                                                    price: getPosSellPricePerSaleUnit(prodForUnit, r.name),
-                                                    cost: getPosCostPerSaleUnit(prodForUnit, r.name),
+                                                    saleUnit: uOpt,
+                                                    price: getPosSellPricePerSaleUnit(prodForDetail, uOpt),
+                                                    cost: getPosCostPerSaleUnit(prodForDetail, uOpt),
                                                     customPrice: false,
                                                   });
                                                 });
                                               });
                                             }}
-                                            style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                                            style={{
+                                              fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
+                                              background: activeUnit ? "#3b82f6" : "#fff", color: activeUnit ? "#fff" : "#4b5563", whiteSpace: "nowrap"
+                                            }}
+                                            disabled={selectedTableLocked}
                                           >
-                                            +1 {r.name}
+                                            {uOpt}
                                           </button>
                                         );
                                       })}
                                     </div>
-                                  )}
-                                  {convHint && (
-                                    <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>{convHint}</div>
-                                  )}
-                                  {quickAmts.length > 0 && !hasSecondary && (
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
-                                      {quickAmts.map(function (qa) {
-                                        var active = item.qty === qa.qty;
-                                        return (
-                                          <button key={qa.label} disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), qa.qty); }} style={{
-                                            fontSize: 9, padding: "2px 6px", borderRadius: 10,
-                                            border: "1px solid " + (active ? C.accent : C.border),
-                                            background: active ? C.accentSoft : "#fff",
-                                            color: active ? C.accent : C.muted,
-                                            fontWeight: active ? 800 : 600,
-                                            cursor: selectedTableLocked ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
-                                            opacity: selectedTableLocked ? 0.5 : 1,
-                                          }}>{qa.label}</button>
-                                        );
-                                      })}
-                                    </div>
-                                  )}
-                                  {prodForUnit && (
-                                    <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.35 }}>
-                                      <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span>{" "}
-                                      {getBulkDisplayParts(prodForUnit) ? fmtStockDual(prodForUnit) : fmtStock(prodForUnit.stock || 0, prodForUnit.unit || "Pcs")}
-                                      {" | "}
-                                      <span style={{ fontWeight: 600, color: C.textMd }}>After sale:</span>{" "}
-                                      {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForUnit, cart, freeCart), prodForUnit)}
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })() : null}
+                                    {unitRowsForDetail.filter(function (r) { return r.factor > 1; }).map(function (r) {
+                                      return (
+                                        <button
+                                          key={"qb-d-" + r.name}
+                                          type="button"
+                                          onClick={function () {
+                                            if (selectedTableLocked) return;
+                                            setCart(function (prev) {
+                                              return prev.map(function (x) {
+                                                if (cartLineKey(x) !== cartLineKey(item)) return x;
+                                                var q = parseFloat(x.qty) || 0;
+                                                return Object.assign({}, x, {
+                                                  saleUnit: r.name,
+                                                  qty: q + 1,
+                                                  price: getPosSellPricePerSaleUnit(prodForDetail, r.name),
+                                                  cost: getPosCostPerSaleUnit(prodForDetail, r.name),
+                                                  customPrice: false,
+                                                });
+                                              });
+                                            });
+                                          }}
+                                          style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                                        >
+                                          +1 {r.name}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {convHintForDetail && (
+                                  <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>{convHintForDetail}</div>
+                                )}
+                                {quickAmtsForDetail.length > 0 && !hasSecondaryForDetail && (
+                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginBottom: 6 }}>
+                                    {quickAmtsForDetail.map(function (qa) {
+                                      var active = item.qty === qa.qty;
+                                      return (
+                                        <button key={qa.label} disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), qa.qty); }} style={{
+                                          fontSize: 9, padding: "2px 6px", borderRadius: 10,
+                                          border: "1px solid " + (active ? C.accent : C.border),
+                                          background: active ? C.accentSoft : "#fff",
+                                          color: active ? C.accent : C.muted,
+                                          fontWeight: active ? 800 : 600,
+                                          cursor: selectedTableLocked ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+                                          opacity: selectedTableLocked ? 0.5 : 1,
+                                        }}>{qa.label}</button>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                                {prodForDetail && (
+                                  <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.35 }}>
+                                    <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span>{" "}
+                                    {getBulkDisplayParts(prodForDetail) ? fmtStockDual(prodForDetail) : fmtStock(prodForDetail.stock || 0, prodForDetail.unit || "Pcs")}
+                                    {" | "}
+                                    <span style={{ fontWeight: 600, color: C.textMd }}>After sale:</span>{" "}
+                                    {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForDetail, cart, freeCart), prodForDetail)}
+                                  </div>
+                                )}
+                              </div>
+                            ) : null}
                           </div>
                         </td>
                       </tr>

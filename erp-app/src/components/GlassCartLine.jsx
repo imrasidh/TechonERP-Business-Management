@@ -3,7 +3,7 @@ import { GLASS_DIMENSION_UNITS } from "../utils/glassDimensions.js";
 import { recalcGlassCartLine, glassAvailableSqFt, glassLineAmount } from "../utils/glassProduct.js";
 import GlassCostDetailsModal from "./GlassCostDetailsModal.jsx";
 
-export var GLASS_CART_FIELD_H = 38;
+export var GLASS_CART_FIELD_H = 26;
 
 export var glassCartCellLabel = function (text, C) {
   return (
@@ -15,22 +15,23 @@ export var glassCartCellLabel = function (text, C) {
 
 export var glassCartFieldStyle = function (C, overrides) {
   return Object.assign({
-    border: "1.5px solid " + C.border,
-    borderRadius: 8,
-    padding: "8px 10px",
-    fontSize: 14,
+    border: "1px solid " + C.border,
+    borderRadius: 4,
+    padding: "2px 5px",
+    fontSize: 12,
     fontFamily: "inherit",
-    fontWeight: 700,
+    fontWeight: 600,
     textAlign: "center",
     width: "100%",
     minHeight: GLASS_CART_FIELD_H,
+    height: GLASS_CART_FIELD_H,
     boxSizing: "border-box",
     background: "#fff",
     outline: "none",
     minWidth: 0,
     display: "block",
     color: C.text || "#0f172a",
-    lineHeight: 1.25,
+    lineHeight: 1.2,
   }, overrides || {});
 };
 
@@ -46,28 +47,29 @@ export var GlassRateInput = function (props) {
   var dataProps = props.dataProps || {};
   var unitNote = props.unitNote;
   if (unitNote === undefined) unitNote = "per Sq Ft";
+  var compact = props.compact === true;
   var borderCol = belowCost ? C.red : C.border;
   var bgCol = belowCost ? "#fde8ed" : "#fff";
 
   var displayVal = value != null && value !== "" ? String(value) : "";
 
   return (
-    <div style={{ width: "100%", minWidth: 148, boxSizing: "border-box" }}>
-      <div style={{ display: "flex", alignItems: "stretch", width: "100%" }}>
+    <div style={{ width: "100%", minWidth: compact ? 0 : 148, maxWidth: "100%", boxSizing: "border-box", margin: "0 auto" }}>
+      <div style={{ display: "flex", alignItems: "stretch", width: "100%", minHeight: GLASS_CART_FIELD_H }}>
         <span style={{
           flexShrink: 0,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          minWidth: 38,
-          padding: "0 8px",
-          fontSize: 12,
-          fontWeight: 800,
+          minWidth: compact ? 28 : 32,
+          padding: compact ? "0 4px" : "0 6px",
+          fontSize: compact ? 10 : 11,
+          fontWeight: 700,
           color: C.muted,
           background: "#f1f5f9",
-          border: "1.5px solid " + borderCol,
+          border: "1px solid " + borderCol,
           borderRight: "none",
-          borderRadius: "8px 0 0 8px",
+          borderRadius: compact ? "4px 0 0 4px" : "6px 0 0 6px",
         }}>{currencySymbol}</span>
         <input
           type="text"
@@ -84,27 +86,29 @@ export var GlassRateInput = function (props) {
           {...dataProps}
           style={{
             flex: "1 1 auto",
-            minWidth: 80,
+            minWidth: compact ? 36 : 64,
             width: 0,
-            border: "1.5px solid " + borderCol,
-            borderRadius: "0 8px 8px 0",
-            padding: "8px 10px",
-            fontSize: 14,
-            fontWeight: 800,
+            minHeight: GLASS_CART_FIELD_H,
+            height: GLASS_CART_FIELD_H,
+            border: "1px solid " + borderCol,
+            borderRadius: compact ? "0 4px 4px 0" : "0 6px 6px 0",
+            padding: compact ? "2px 5px" : "4px 8px",
+            fontSize: compact ? 12 : 13,
+            fontWeight: 700,
             textAlign: "right",
             fontFamily: "'JetBrains Mono', 'Consolas', monospace",
             outline: "none",
             background: bgCol,
             color: C.text || "#0f172a",
             boxSizing: "border-box",
-            lineHeight: 1.25,
+            lineHeight: 1.2,
           }}
           onFocusCapture={function (e) {
-            e.target.style.border = "1.5px solid " + (belowCost ? C.red : C.accent);
+            e.target.style.border = "1px solid " + (belowCost ? C.red : C.accent);
             e.target.style.background = belowCost ? "#fde8ed" : "#f0f4ff";
           }}
           onBlur={function (e) {
-            e.target.style.border = "1.5px solid " + borderCol;
+            e.target.style.border = "1px solid " + borderCol;
             e.target.style.background = bgCol;
           }}
           title={props.title || ""}
@@ -112,9 +116,7 @@ export var GlassRateInput = function (props) {
       </div>
       {unitNote !== false ? (
         <div style={{ fontSize: 9, color: C.muted, fontWeight: 700, marginTop: 4, textAlign: "center", minHeight: 13 }}>{unitNote || "per Sq Ft"}</div>
-      ) : (
-        <div style={{ marginTop: 4, minHeight: 13 }} aria-hidden="true" />
-      )}
+      ) : null}
     </div>
   );
 };
@@ -135,6 +137,7 @@ var GlassCutFields = function (props) {
   var rowIndex = props.rowIndex;
   var disabled = !!props.disabled;
   var product = props.product;
+  var compact = props.compact === true;
 
   var patch = function (fields) {
     onChange(recalcGlassCartLine(Object.assign({}, item, fields), product));
@@ -147,35 +150,43 @@ var GlassCutFields = function (props) {
       disabled: disabled,
       onKeyDown: onFieldKey ? function (e) { onFieldKey(e, rowIndex, col); } : undefined,
       onFocus: function (e) {
-        e.target.style.border = "1.5px solid " + C.accent;
+        e.target.style.border = "1px solid " + C.accent;
         e.target.style.background = "#f0f4ff";
       },
       onBlur: function (e) {
-        e.target.style.border = "1.5px solid " + C.border;
+        e.target.style.border = "1px solid " + C.border;
         e.target.style.background = "#fff";
       },
     };
   };
 
+  var gridStyle = {
+    display: "grid",
+    gridTemplateColumns: compact ? "minmax(38px, 1fr) minmax(38px, 1fr) 50px 38px" : "minmax(56px, 1fr) minmax(56px, 1fr) 76px 56px",
+    gap: compact ? 4 : 10,
+    alignItems: "center",
+    width: "100%",
+  };
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(56px, 1fr) minmax(56px, 1fr) 76px 56px", gap: 10, alignItems: "end", width: "100%" }}>
+    <div style={gridStyle}>
       <div>
-        {cellLabel("Width", C)}
-        <input type="number" min="0" step="any" placeholder="0" value={item.glassWidth != null && item.glassWidth !== "" ? item.glassWidth : ""} onChange={function (e) { patch({ glassWidth: e.target.value }); }} style={fieldStyle(C)} {...keyProps(1)} />
+        {!compact && cellLabel("Width", C)}
+        <input type="number" min="0" step="any" placeholder={compact ? "W" : "0"} value={item.glassWidth != null && item.glassWidth !== "" ? item.glassWidth : ""} onChange={function (e) { patch({ glassWidth: e.target.value }); }} style={fieldStyle(C)} {...keyProps(1)} />
       </div>
       <div>
-        {cellLabel("Height", C)}
-        <input type="number" min="0" step="any" placeholder="0" value={item.glassLength != null && item.glassLength !== "" ? item.glassLength : ""} onChange={function (e) { patch({ glassLength: e.target.value }); }} style={fieldStyle(C)} {...keyProps(2)} />
+        {!compact && cellLabel("Height", C)}
+        <input type="number" min="0" step="any" placeholder={compact ? "H" : "0"} value={item.glassLength != null && item.glassLength !== "" ? item.glassLength : ""} onChange={function (e) { patch({ glassLength: e.target.value }); }} style={fieldStyle(C)} {...keyProps(2)} />
       </div>
       <div>
-        {cellLabel("Unit", C)}
-        <select value={item.glassDimensionUnit || "mm"} onChange={function (e) { patch({ glassDimensionUnit: e.target.value }); }} style={Object.assign({}, fieldStyle(C), { padding: "8px 6px", lineHeight: 1.25 })} {...keyProps(3)}>
+        {!compact && cellLabel("Unit", C)}
+        <select value={item.glassDimensionUnit || "mm"} onChange={function (e) { patch({ glassDimensionUnit: e.target.value }); }} style={Object.assign({}, fieldStyle(C), { padding: compact ? "2px 3px" : "8px 6px", lineHeight: 1.2, fontSize: compact ? 11 : 14 })} {...keyProps(3)}>
           {GLASS_DIMENSION_UNITS.map(function (u) { return <option key={u} value={u}>{u}</option>; })}
         </select>
       </div>
       <div>
-        {cellLabel("Pcs", C)}
-        <input type="number" min="1" step="1" placeholder="1" value={item.glassPieces != null ? item.glassPieces : 1} onChange={function (e) { patch({ glassPieces: e.target.value }); }} style={fieldStyle(C)} {...keyProps(4)} />
+        {!compact && cellLabel("Pcs", C)}
+        <input type="number" min="1" step="1" placeholder={compact ? "Pcs" : "1"} value={item.glassPieces != null ? item.glassPieces : 1} onChange={function (e) { patch({ glassPieces: e.target.value }); }} style={fieldStyle(C)} {...keyProps(4)} />
       </div>
     </div>
   );
@@ -197,8 +208,8 @@ var GlassLineExtras = function (props) {
   var sym = getCurrencySymbol ? getCurrencySymbol() : "Rs";
 
   return (
-    <div style={{ padding: "4px 0 2px" }}>
-      <div style={{ fontSize: 11, fontWeight: 800, color: usedSqFt > 0 ? C.blue : C.muted }}>
+    <div style={{ padding: "2px 0 0" }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: usedSqFt > 0 ? C.blue : C.muted }}>
         {usedSqFt > 0 ? (fmtNum(usedSqFt) + " Sq Ft · " + sym + " " + fmtNum(glassLineAmount(live))) : "Enter width & height"}
       </div>
       {product && (
