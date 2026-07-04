@@ -4,6 +4,7 @@
  * Sales (pos) and Settings always stay on; every other sidebar screen is toggleable.
  */
 import { hydrateCategoryGroupSettings } from "./categoryGroups.js";
+import { COMPUTER_SHOP_EDITION } from "../productionConfig.js";
 
 /** Nav page ids that cannot be disabled. */
 export var CORE_NAV_IDS = ["pos", "settings"];
@@ -28,12 +29,14 @@ export var MODULE_TOGGLE_DEFS = [
   { id: "barcodeprint", label: "Barcodes", group: "Insight", blurb: "Design label layouts and print product barcode stickers.", profileKey: "barcode" },
   { id: "auditlog", label: "Audit Log", group: "Insight", blurb: "Who changed what and when — security and traceability." },
   { id: "freeItems", label: "Free items (complimentary)", group: "POS options", blurb: "Allow complimentary gift lines on the Sales screen.", navId: null },
+  { id: "posLineComments", label: "Line comments (serial / note)", group: "POS options", blurb: "Show a comment field on each Sales cart line for serial numbers, IMEI, or notes.", navId: null },
 ];
 
 function defaultForModule(id, businessType, profile) {
   var def = MODULE_TOGGLE_DEFS.find(function (m) { return m.id === id; });
   if (!def) return true;
   if (id === "freeItems") return String(businessType || "").toLowerCase() !== "glass";
+  if (id === "posLineComments") return !!COMPUTER_SHOP_EDITION;
   if (def.profileKey && profile && profile.modules) {
     return !!profile.modules[def.profileKey];
   }
@@ -45,6 +48,7 @@ function defaultCounterModule(id, businessType, profile) {
   if (id === "invoices" || id === "customers" || id === "returns") return true;
   if (id === "repairs") return defaultForModule("repairs", businessType, profile);
   if (id === "freeItems") return defaultForModule("freeItems", businessType, profile);
+  if (id === "posLineComments") return defaultForModule("posLineComments", businessType, profile);
   return false;
 }
 
@@ -84,6 +88,7 @@ export function getMainModuleToggles(settings, businessType, profile) {
   var stored = readStoredMap(settings, "mainModuleToggles", "moduleToggles");
   var legacyFree = settings && settings.freeItemsEnabled;
   var legacyRepairs = settings && settings.repairsModuleEnabled;
+  var legacyPosComments = settings && settings.posLineCommentsEnabled;
   var out = buildToggleMap(stored, businessType, profile, null);
   MODULE_TOGGLE_DEFS.forEach(function (m) {
     if (stored[m.id] === true || stored[m.id] === false) return;
@@ -92,6 +97,9 @@ export function getMainModuleToggles(settings, businessType, profile) {
     }
     if (m.id === "repairs" && legacyRepairs !== undefined && stored.repairs === undefined) {
       out[m.id] = legacyRepairs === true;
+    }
+    if (m.id === "posLineComments" && legacyPosComments !== undefined && stored.posLineComments === undefined) {
+      out[m.id] = legacyPosComments === true;
     }
     if (stored[m.id] === undefined && out[m.id] === undefined) {
       out[m.id] = defaultForModule(m.id, businessType, profile);
@@ -145,6 +153,10 @@ export function isFreeItemsEnabled(settings, businessType, netRole) {
   return isModuleEnabled(settings, businessType, null, "freeItems", netRole);
 }
 
+export function isPosLineCommentsEnabled(settings, businessType, netRole) {
+  return isModuleEnabled(settings, businessType, null, "posLineComments", netRole);
+}
+
 export function isRepairsModuleEnabled(settings, businessType, profile, netRole) {
   return isModuleEnabled(settings, businessType, profile, "repairs", netRole);
 }
@@ -158,6 +170,7 @@ export function hydrateFeatureFlagDefaults(settings, businessType, profile) {
   next.moduleToggles = mainToggles;
   next.freeItemsEnabled = mainToggles.freeItems === true;
   next.repairsModuleEnabled = mainToggles.repairs === true;
+  next.posLineCommentsEnabled = mainToggles.posLineComments === true;
   return hydrateCategoryGroupSettings(next, businessType);
 }
 
@@ -176,6 +189,7 @@ export function persistMainModuleToggles(formToggles) {
     mainModuleToggles: toggles,
     freeItemsEnabled: toggles.freeItems === true,
     repairsModuleEnabled: toggles.repairs === true,
+    posLineCommentsEnabled: toggles.posLineComments === true,
   };
 }
 

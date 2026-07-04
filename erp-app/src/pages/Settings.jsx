@@ -16,6 +16,7 @@ import { COMPUTER_SHOP_EDITION, validateJsonBackupPayload } from "../productionC
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import {
   isFreeItemsEnabled,
+  isPosLineCommentsEnabled,
   isRepairsModuleEnabled,
   getMainModuleToggles,
   getCounterModuleToggles,
@@ -163,6 +164,7 @@ var Settings = function (props) {
     allowCostFallback: state.settings.allowCostFallback === true,
     glVatPostingEnabled: state.settings.glVatPostingEnabled !== false,
     freeItemsEnabled: isFreeItemsEnabled(state.settings, businessType, isNetworkClient ? "network_client" : systemConfig.role),
+    posLineCommentsEnabled: isPosLineCommentsEnabled(state.settings, businessType, isNetworkClient ? "network_client" : systemConfig.role),
     repairsModuleEnabled: isRepairsModuleEnabled(state.settings, businessType, getBusinessProfile(), isNetworkClient ? "network_client" : systemConfig.role),
     mainModuleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
     counterModuleToggles: getCounterModuleToggles(state.settings, businessType, getBusinessProfile()),
@@ -1042,6 +1044,7 @@ var Settings = function (props) {
                               if (toggleKey === "mainModuleToggles") {
                                 patch.moduleToggles = nextToggles;
                                 if (m.id === "freeItems") patch.freeItemsEnabled = checked;
+                                if (m.id === "posLineComments") patch.posLineCommentsEnabled = checked;
                                 if (m.id === "repairs") patch.repairsModuleEnabled = checked;
                               }
                               return Object.assign({}, x, patch);

@@ -2978,6 +2978,67 @@ var Btn = function (props) {
   );
 };
 
+var HeaderMetaChip = function (props) {
+  var parts = props.parts || [];
+  return (
+    <div
+      title={props.title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 0,
+        padding: "6px 12px",
+        borderRadius: 999,
+        background: "#f1f5f9",
+        border: "1px solid #e8edf4",
+        maxWidth: props.maxWidth,
+        minWidth: 0,
+        flexWrap: "nowrap",
+      }}
+    >
+      {parts.map(function (part, idx) {
+        if (!part || !part.text) return null;
+        var clickable = !!part.onClick;
+        return (
+          <React.Fragment key={part.key || String(idx)}>
+            {idx > 0 ? <span style={{ color: "#cbd5e1", fontSize: 10, padding: "0 7px", userSelect: "none" }} aria-hidden="true">·</span> : null}
+            <span
+              onClick={part.onClick}
+              style={{
+                fontSize: 11,
+                fontWeight: part.emphasis ? 800 : 600,
+                color: part.color || "#475569",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: part.maxWidth,
+                cursor: clickable ? "pointer" : "default",
+              }}
+            >
+              {part.dot ? (
+                <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: part.dot, marginRight: 6, verticalAlign: "middle" }} aria-hidden="true" />
+              ) : null}
+              {part.text}
+            </span>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+};
+
+var HeaderNetDot = function (props) {
+  var dot = props.dot || "#94a3b8";
+  var label = props.label || "";
+  var title = props.title || label;
+  return (
+    <span title={title} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: "#64748b", whiteSpace: "nowrap" }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: dot, flexShrink: 0 }} aria-hidden="true" />
+      {label}
+    </span>
+  );
+};
+
 var Badge = function (props) {
   var s = props.status || "";
   var MAP = {
@@ -7419,104 +7480,91 @@ function App(props) {
                   Logged in as: <span style={{ color: C.text, fontWeight: 800 }}>{posHeaderRestaurantLoggedIn}</span>
                 </div>
               )}
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end", flexDirection: "row-reverse" }}>
               {dbHealthError && isNetworkServer && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fde8ed", border: "1px solid #f9a8ba", borderRadius: 8, padding: "5px 12px", fontSize: 11, color: "#9b1c34" }}>
                   <span>Server database issue - {dbHealthError}. Please restore from backup.</span>
                   <button onClick={function () { setDbHealthError(null); }} style={{ background: "none", border: "none", color: "#9b1c34", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>-</button>
                 </div>
               )}
-              {isNetworkClient ? (
-                <div
-                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 11px", borderRadius: 7, border: "1px solid #bfdbfe", background: "#f8fafc", cursor: "default", flexWrap: "wrap", maxWidth: "min(420px, 100%)" }}
-                  title={connStatus === "connected" ? "Connected to server" : (connStatus === "reconnecting" || connStatus === "unknown" ? "Connecting to server" : "Server disconnected")}
-                >
-                  <span style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, background: connStatus === "connected" ? "#22c55e" : (connStatus === "reconnecting" || connStatus === "unknown" ? "#f59e0b" : "#ef4444") }} aria-hidden="true" />
-                  <span style={{ fontSize: 11, fontWeight: 700, color: "#334155", letterSpacing: "0.04em" }}>POS Client</span>
-                  {(function () {
-                    var lic = licenseInfo || {};
-                    var disp = (lic.clientLabel && String(lic.clientLabel).trim()) || clientMachineLabel || "";
-                    if (!disp) return null;
-                    return (
-                      <span style={{ fontSize: 11, fontWeight: 500, color: "#64748b", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={disp}>
-                        {disp}
-                      </span>
-                    );
-                  })()}
-                </div>
-              ) : (
-                <React.Fragment>
-                  {(isNetworkServer || COMPUTER_SHOP_EDITION || isAdminMode || !isNetworkMode) ? (
-                    <div
-                      style={{
-                        display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 7,
-                        border: "1px solid " + ((isNetworkServer || COMPUTER_SHOP_EDITION || isAdminMode) ? "#fde68a" : "#e2e8f0"),
-                        background: (isNetworkServer || COMPUTER_SHOP_EDITION || isAdminMode) ? "#fffbeb" : "#f8fafc",
-                        cursor: (!COMPUTER_SHOP_EDITION && !isNetworkServer) ? "pointer" : "default",
-                      }}
-                      title={isNetworkServer || COMPUTER_SHOP_EDITION || isAdminMode ? "Full access enabled" : "Click to unlock admin mode"}
-                      onClick={(!COMPUTER_SHOP_EDITION && !isNetworkServer) ? function () {
-                        if (isAdminMode) { lockToSalesMode(); }
-                        else {
-                          var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4;
-                          if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); }
-                          else { setIsAdminMode(true); }
-                        }
-                      } : undefined}
-                    >
-                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: (isNetworkServer || COMPUTER_SHOP_EDITION || isAdminMode) ? "#f59e0b" : "#94a3b8", flexShrink: 0 }} aria-hidden="true" />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: (isNetworkServer || COMPUTER_SHOP_EDITION || isAdminMode) ? "#92400e" : "#475569", letterSpacing: "0.03em" }}>
-                        {(isNetworkServer || COMPUTER_SHOP_EDITION || isAdminMode) ? "Admin" : "Sales"}
-                      </span>
-                    </div>
-                  ) : null}
-                  {isNetworkServer ? (
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 7, border: "1px solid #bbf7d0", background: "#f0fdf4" }} title="Network server mode">
-                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#22c55e", flexShrink: 0 }} aria-hidden="true" />
-                      <span style={{ fontSize: 11, fontWeight: 700, color: "#166534" }}>Server</span>
-                    </div>
-                  ) : null}
-                </React.Fragment>
-              )}
-              <button
-                onClick={function () {
-                  showConfirm("Switch user now?\n\nAny saved data remains safe. You will return to the login screen.", function () {
-                    switchUser("manual_switch");
-                  });
-                }}
-                style={{ display: "inline-flex", alignItems: "center", padding: "5px 11px", borderRadius: 7, border: "1px solid " + C.border, background: "#fff", color: C.textMd, fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
-                title="Switch User"
-              >Switch user</button>
-              <div style={{ fontSize: 12, color: "#64748b", fontWeight: 500, padding: "5px 2px", whiteSpace: "nowrap" }}>{fmtDateFull(today())}</div>
-              {isNetworkMode && !isNetworkClient ? (function () {
-                var connCfg = {
-                  connected:    { dot: "#22c55e", label: "Online", border: "#bbf7d0", bg: "#f0fdf4", text: "#166534" },
-                  reconnecting: { dot: "#f59e0b", label: "Connecting", border: "#fde68a", bg: "#fffbeb", text: "#92400e" },
-                  disconnected: { dot: "#ef4444", label: "Offline", border: "#fecaca", bg: "#fef2f2", text: "#b91c1c" },
-                  unknown:      { dot: "#94a3b8", label: "Connecting", border: "#e2e8f0", bg: "#f8fafc", text: "#64748b" },
-                }[connStatus] || { dot: "#94a3b8", label: "Connecting", border: "#e2e8f0", bg: "#f8fafc", text: "#64748b" };
-                return (
-                  <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 7, border: "1px solid " + connCfg.border, background: connCfg.bg }} title={connCfg.label}>
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: connCfg.dot, flexShrink: 0 }} aria-hidden="true" />
-                    <span style={{ fontSize: 11, fontWeight: 600, color: connCfg.text }}>{connCfg.label}</span>
-                  </div>
-                );
-              })() : null}
-              {isNetworkMode && (function () {
-                var syncCfg = {
-                  saving: { dot: "#f59e0b", label: "Saving", border: "#fde68a", bg: "#fffbeb", text: "#92400e" },
-                  synced: { dot: "#22c55e", label: "Synced", border: "#bbf7d0", bg: "#f0fdf4", text: "#166534" },
-                  error:  { dot: "#ef4444", label: "Sync failed", border: "#fecaca", bg: "#fef2f2", text: "#b91c1c" },
-                  failed: { dot: "#ef4444", label: "Sync failed", border: "#fecaca", bg: "#fef2f2", text: "#b91c1c" },
-                  idle:   { dot: "#94a3b8", label: "Ready", border: "#e2e8f0", bg: "#f8fafc", text: "#64748b" },
+              {(function () {
+                var canToggleSalesAdmin = !COMPUTER_SHOP_EDITION && !isNetworkServer && !isNetworkClient;
+                var roleLabel = canToggleSalesAdmin ? (isAdminMode ? "Admin" : "Sales") : _hdrRoleLbl;
+                var clientDisp = "";
+                if (isNetworkClient) {
+                  var lic = licenseInfo || {};
+                  clientDisp = (lic.clientLabel && String(lic.clientLabel).trim()) || clientMachineLabel || "";
+                }
+                var modeLabel = isNetworkClient ? "Counter" : (isNetworkServer ? "Main Server" : "Standalone");
+                var modeColor = isNetworkClient ? "#1d4ed8" : (isNetworkServer ? "#15803d" : "#475569");
+                var connMap = {
+                  connected: { dot: "#22c55e", label: "Connected" },
+                  reconnecting: { dot: "#f59e0b", label: "Connecting" },
+                  disconnected: { dot: "#ef4444", label: "Offline" },
+                  unknown: { dot: "#94a3b8", label: "Connecting" },
                 };
-                var sc = syncCfg[syncStatus] || syncCfg.idle;
+                var syncMap = {
+                  saving: { dot: "#f59e0b", label: "Saving" },
+                  synced: { dot: "#22c55e", label: "Synced" },
+                  error: { dot: "#ef4444", label: "Sync failed" },
+                  failed: { dot: "#ef4444", label: "Sync failed" },
+                  idle: { dot: "#94a3b8", label: "Ready" },
+                };
+                var connCfg = connMap[connStatus] || connMap.unknown;
+                var syncCfg = syncMap[syncStatus] || syncMap.idle;
+                var netDot = connStatus === "disconnected" ? connCfg.dot : (syncStatus === "saving" ? "#f59e0b" : (connStatus === "connected" ? syncCfg.dot : "#f59e0b"));
+                var netLabel = (isNetworkClient && connStatus === "disconnected") ? "Offline" : syncCfg.label;
+                var netTitle = isNetworkClient
+                  ? (connCfg.label + " · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""))
+                  : ("Online · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""));
+                var metaParts = [
+                  { key: "mode", text: modeLabel, emphasis: true, color: modeColor },
+                ];
+                if (isNetworkClient && clientDisp) {
+                  metaParts.push({ key: "client", text: clientDisp, maxWidth: 120 });
+                }
+                metaParts.push({ key: "user", text: _hdrNm || "User", maxWidth: 100 });
+                metaParts.push({
+                  key: "role",
+                  text: roleLabel,
+                  emphasis: true,
+                  color: _hdrNr === ROLE_CASHIER ? "#1d4ed8" : "#b45309",
+                  onClick: canToggleSalesAdmin ? function () {
+                    if (isAdminMode) { lockToSalesMode(); }
+                    else {
+                      var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4;
+                      if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); }
+                      else { setIsAdminMode(true); }
+                    }
+                  } : undefined,
+                });
                 return (
-                  <div style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 7, border: "1px solid " + sc.border, background: sc.bg }}>
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: sc.dot, flexShrink: 0 }} aria-hidden="true" />
-                    <span style={{ fontSize: 11, fontWeight: 600, color: sc.text }}>{sc.label}</span>
-                    {lastSyncTime ? <span style={{ color: sc.text, fontSize: 10, opacity: 0.75 }}>{lastSyncTime}</span> : null}
-                  </div>
+                  <React.Fragment>
+                    <time dateTime={today()} style={{ fontSize: 12, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.01em", whiteSpace: "nowrap", padding: "2px 0" }}>
+                      {fmtDateFull(today())}
+                    </time>
+                    <button
+                      onClick={function () {
+                        showConfirm("Switch user now?\n\nAny saved data remains safe. You will return to the login screen.", function () {
+                          switchUser("manual_switch");
+                        });
+                      }}
+                      style={{ display: "inline-flex", alignItems: "center", padding: "5px 10px", borderRadius: 999, border: "none", background: "transparent", color: "#64748b", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                      title="Switch user"
+                      onMouseEnter={function (e) { e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#334155"; }}
+                      onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#64748b"; }}
+                    >
+                      Switch user
+                    </button>
+                    {isNetworkMode ? (
+                      <HeaderNetDot dot={netDot} label={netLabel} title={netTitle} />
+                    ) : null}
+                    <HeaderMetaChip
+                      parts={metaParts}
+                      maxWidth={360}
+                      title={modeLabel + " · " + (_hdrNm || "User") + " · " + roleLabel}
+                    />
+                  </React.Fragment>
                 );
               })()}
               </div>

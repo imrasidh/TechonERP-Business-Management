@@ -10,7 +10,7 @@ import { productMatchesSearch, productMatchesSearchExact } from "../utils/produc
 import { splitSaleItemsByFree, baseQtyInCartLines, FREE_ITEM_LABEL } from "../utils/posFreeItems.js";
 import { UI } from "../utils/uiIcons.js";
 import { ensureUniqueDocumentNumber } from "../utils/docNumbers.js";
-import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import { DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
 import {
   buildQuotationTaxExtras,
   mapCartLineToQuotationItem,
@@ -27,7 +27,7 @@ import {
   getGlassSellRatePerSqFt,
   getGlassCostPerSqFt,
 } from "../utils/glassProduct.js";
-import { isFreeItemsEnabled } from "../utils/featureFlags.js";
+import { isFreeItemsEnabled, isPosLineCommentsEnabled } from "../utils/featureFlags.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
 var POS = React.memo(function (props) {
@@ -97,6 +97,7 @@ var POS = React.memo(function (props) {
   var isRestaurant = businessType === "restaurant";
   var shopSettings = state.settings || {};
   var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
+  var posLineCommentsEnabled = isPosLineCommentsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
   var [posPageTab, setPosPageTab] = useState("sale");
   var isQuotationMode = posPageTab === "quotation" && !isRestaurant;
   var [restaurantProductFilter, setRestaurantProductFilter] = useState("all");
@@ -626,7 +627,7 @@ var POS = React.memo(function (props) {
       description: p.description || "",
       comment: "",
       commentLabel: lbl || "Comment",
-      requireComment: COMPUTER_SHOP_EDITION || !!p.require_comment,
+      requireComment: posLineCommentsEnabled,
       itemNote: "",
       customPrice: true,
       isFree: true,
@@ -650,7 +651,7 @@ var POS = React.memo(function (props) {
     }
     try { sessionStorage.setItem("tc3_dirty", "pos"); } catch (e) { }
     var step = isDecimalUnit(p.unit) ? 0.5 : 1;
-    var needLinePerUnit = COMPUTER_SHOP_EDITION || !!p.require_comment;
+    var needLinePerUnit = posLineCommentsEnabled;
     setFreeCart(function (prev) {
       if (!needLinePerUnit) {
         var ex = prev.find(function (x) { return x.id === p.id; });
@@ -762,7 +763,7 @@ var POS = React.memo(function (props) {
     }
     try { sessionStorage.setItem("tc3_dirty", "pos"); } catch (e) { }
     var step = isDecimalUnit(p.unit) ? 0.5 : 1;
-    var needLinePerUnit = COMPUTER_SHOP_EDITION || !!p.require_comment;
+    var needLinePerUnit = posLineCommentsEnabled;
     var prevSnapshot = cart.map(function (x) { return Object.assign({}, x); });
     setCart(function (prev) {
       if (!needLinePerUnit && !isGlass) {
@@ -1938,7 +1939,7 @@ var POS = React.memo(function (props) {
         description: (p && p.description) || "",
         comment: "",
         commentLabel: (p && String(p.comment_label || "").trim()) || "Comment",
-        requireComment: COMPUTER_SHOP_EDITION || !!(p && p.require_comment),
+        requireComment: posLineCommentsEnabled,
         itemNote: "",
         customPrice: true,
         restaurantNote: it.note || "",
@@ -1985,7 +1986,7 @@ var POS = React.memo(function (props) {
         description: (p && p.description) || "",
         comment: "",
         commentLabel: (p && String(p.comment_label || "").trim()) || "Comment",
-        requireComment: COMPUTER_SHOP_EDITION || !!(p && p.require_comment),
+        requireComment: posLineCommentsEnabled,
         itemNote: "",
         customPrice: true,
       };
@@ -2471,7 +2472,7 @@ var POS = React.memo(function (props) {
                   var lineCost = item.isGlassLine && prodRow
                     ? getGlassCostPerSqFt(prodRow)
                     : (prodRow ? getPosCostPerSaleUnit(prodRow, saleU) : (item.cost || 0));
-                  var showLineComment = !isRestaurant && !item.isGlassLine && (COMPUTER_SHOP_EDITION || (prodRow && prodRow.require_comment));
+                  var showLineComment = !isRestaurant && !item.isGlassLine && posLineCommentsEnabled;
                   var commentInDetail = glassCartLayout && showLineComment;
                   var isNewestRow = i === 0;
                   var rowBg = isNewestRow ? "#eef5ff" : "#fafbfc";
@@ -2493,7 +2494,7 @@ var POS = React.memo(function (props) {
                         {showLineComment && !commentInDetail && (
                           <div style={{ marginTop: 6, maxWidth: 220 }}>
                             <div style={{ fontSize: 10, fontWeight: 700, color: C.textMd, marginBottom: 3 }}>
-                              {COMPUTER_SHOP_EDITION ? DEFAULT_PRODUCT_COMMENT_LABEL : (String((prodRow && prodRow.comment_label) || item.commentLabel || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL)}
+                              {DEFAULT_PRODUCT_COMMENT_LABEL}
                             </div>
                             <input
                               type="text"
@@ -2508,7 +2509,7 @@ var POS = React.memo(function (props) {
                                 });
                               }}
                               onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
-                              placeholder={COMPUTER_SHOP_EDITION ? "Serial, IMEI, note…" : (String(prodRow.comment_label || "").trim() || "Optional")}
+                              placeholder="Serial, IMEI, note…"
                               style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit", outline: "none" }}
                             />
                           </div>

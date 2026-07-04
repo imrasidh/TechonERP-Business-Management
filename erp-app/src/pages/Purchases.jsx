@@ -76,7 +76,7 @@ var Purchases = React.memo(function (props) {
     return Object.assign({
       name: "", barcode: genBarcode(), category: cat, unit: unit, type: "stock",
       cost: "", price: "", description: "", stock: "0", extraUnits: [],
-      require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
+      require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
     }, extra || {});
   };
   var uid = props.uid;
@@ -1209,7 +1209,7 @@ var Purchases = React.memo(function (props) {
           price: parseFloat(newProd.price) || 0,
           stock: 0,
           damaged: 0,
-          require_comment: true,
+          require_comment: false,
           comment_label: String(newProd.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         },
         unitFields

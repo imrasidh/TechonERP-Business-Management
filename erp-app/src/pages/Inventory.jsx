@@ -77,7 +77,7 @@ var Inventory = React.memo(function (props) {
     return Object.assign({
       name: "", barcode: genBarcode(), category: cat, unit: unit, type: "stock",
       description: "", cost: "", price: "", stock: "", extraUnits: [],
-      require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
+      require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
     }, extra || {});
   };
   var onProductCategoryChange = function (setForm, cat) {
@@ -532,7 +532,7 @@ var Inventory = React.memo(function (props) {
           price: parseFloat(newP.price) || 0,
           stock: isGlassNew ? (parseFloat(newP.stock) || 0) : (parseInt(newP.stock) || 0),
           damaged: 0,
-          require_comment: true,
+          require_comment: false,
           comment_label: String(newP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         },
         unitFields
@@ -607,7 +607,7 @@ var Inventory = React.memo(function (props) {
           cost: parseFloat(editP.cost) || 0,
           price: parseFloat(editP.price) || 0,
           stock: origStock,
-          require_comment: true,
+          require_comment: false,
           comment_label: String(editP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         }, unitFieldsEdit), editP, shopSettings);
       });

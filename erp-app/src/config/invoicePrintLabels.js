@@ -79,7 +79,7 @@ var BASE = {
   amount: "Amount",
   notesTerms: "Notes / Terms:",
   quotationFooter:
-    "Thank you for your interest. We look forward to doing business with you.",
+    "Thank you. We look forward to serving you.",
   tableIndex: "#",
   poweredBy: "Powered By Techon Computers | +94 70 1234678",
   unknownProduct: "Unknown Product",

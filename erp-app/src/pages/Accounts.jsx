@@ -60,7 +60,7 @@ var Accounts = function (props) {
       cost: "",
       price: "",
       qty: "",
-      require_comment: true,
+      require_comment: false,
       comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
     }, extra || {});
   };
@@ -236,7 +236,7 @@ var Accounts = function (props) {
   var [obAssetModal, setObAssetModal] = useState(false);
   var [obRecvForm, setObRecvForm] = useState({ person: "", amount: "", note: "" });
   var [obPayForm, setObPayForm] = useState({ source: "", amount: "", note: "" });
-  var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+  var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
   var [obAssetForm, setObAssetForm] = useState({ name: "", category: "Equipment / Machinery", value: "", note: "" });
   var obProductNameMatch = useMemo(function () {
     if (!String(obStockForm.name || "").trim()) return null;
@@ -298,7 +298,7 @@ var Accounts = function (props) {
         }
       } else {
         // New product - create it
-        var npBase = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true, require_comment: true, comment_label: String(s.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL };
+        var npBase = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true, require_comment: false, comment_label: String(s.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL };
         var np = Array.isArray(s.units) && s.units.length > 0
           ? Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", units: s.units, bulkEnabled: false, bulkUnit: "", bulkConversion: 0, bulkPrice: 0, bulkCost: 0 })
           : Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", bulkEnabled: !!(s.bulkUnit && (parseFloat(s.bulkConversion) || 0) > 0), bulkUnit: s.bulkUnit || "", bulkConversion: parseFloat(s.bulkConversion) || 0, bulkCost: parseFloat(s.bulkCost) || 0, bulkPrice: parseFloat(s.bulkPrice) || 0 });
@@ -1844,7 +1844,7 @@ var Accounts = function (props) {
                           price: parseFloat(obStockForm.price) || parseFloat(obStockForm.cost),
                           qty: obQtyToUse,
                           _isNew: true,
-                          require_comment: true,
+                          require_comment: false,
                           comment_label: String(obStockForm.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
                         }, unitFieldsOb, glassRowFields)]) });
                         setObStockModal(false); setObStockForm(blankObStockForm());
@@ -2306,7 +2306,7 @@ var Accounts = function (props) {
                                   if (Array.isArray(existProd.units) && existProd.units.length > 0) obRow2.units = existProd.units;
                                   setD({ stock: (d.stock || []).concat([obRow2]) });
                                 } else {
-                                  setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }]) });
+                                  setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }]) });
                                 }
                                 setObStockSearch(""); setObStockQty("1"); setObStockCost(""); setObStockSell("");
                                 setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
@@ -2327,7 +2327,7 @@ var Accounts = function (props) {
                               if (Array.isArray(existProd.units) && existProd.units.length > 0) obRow3.units = existProd.units;
                               setD({ stock: (d.stock || []).concat([obRow3]) });
                             } else {
-                              setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: true, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }]) });
+                              setD({ stock: (d.stock || []).concat([{ name: obStockSearch.trim(), barcode: genBarcode(), category: "General", description: "", cost: cost, price: sell, qty: qty, require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL }]) });
                             }
                             setObStockSearch(""); setObStockQty("1"); setObStockCost(""); setObStockSell("");
                             setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
