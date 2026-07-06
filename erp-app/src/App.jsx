@@ -926,6 +926,8 @@ var PayMatchToast = function () {
 var AppDialog = function () {
   var [dlg, setDlg] = useState(null);
   var [dupPickSel, setDupPickSel] = useState("");
+  var okBtnRef = useRef(null);
+  var alertDismissLockRef = useRef(false);
   useEffect(function () {
     var fn = function (d) { setDlg(d); };
     _dialogState.listeners.push(fn);
@@ -943,9 +945,40 @@ var AppDialog = function () {
       setDupPickSel("");
     }
   }, [dlg]);
+  useEffect(function () {
+    if (!dlg || dlg.type !== "alert") return;
+    alertDismissLockRef.current = false;
+    var dismissAlert = function () {
+      if (alertDismissLockRef.current) return;
+      alertDismissLockRef.current = true;
+      var onOk = dlg.onOk;
+      setDlg(null);
+      _setDialog(null);
+      if (onOk) onOk();
+    };
+    var onKey = function (e) {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      dismissAlert();
+    };
+    var focusTimer = setTimeout(function () {
+      if (okBtnRef.current) okBtnRef.current.focus();
+    }, 30);
+    window.addEventListener("keydown", onKey, true);
+    return function () {
+      clearTimeout(focusTimer);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [dlg]);
   if (!dlg) return null;
   var close = function () { setDlg(null); _setDialog(null); };
-  var handleOk = function () { if (dlg.onOk) dlg.onOk(); close(); };
+  var handleOk = function () {
+    if (alertDismissLockRef.current) return;
+    alertDismissLockRef.current = true;
+    if (dlg.onOk) dlg.onOk();
+    close();
+  };
   var handleYes = function () { close(); if (dlg.onYes) dlg.onYes(); };
   var handleNo = function () { close(); if (dlg.onNo) dlg.onNo(); };
   var handlePayDupBackdrop = function () { close(); if (dlg.type === "payDupPick" && dlg.onSkip) dlg.onSkip(); };
@@ -993,7 +1026,7 @@ var AppDialog = function () {
             <div style={{ fontSize: 14, color: "#0d1b3e", lineHeight: 1.6, marginBottom: 22, whiteSpace: "pre-wrap" }}>{dlg.msg}</div>
             {dlg.type === "alert" && (
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button onClick={handleOk} style={{ background: "#2979ff", color: "#fff", border: "none", borderRadius: 8, padding: "9px 26px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>OK</button>
+                <button ref={okBtnRef} type="button" autoFocus onClick={handleOk} style={{ background: "#2979ff", color: "#fff", border: "none", borderRadius: 8, padding: "9px 26px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>OK</button>
               </div>
             )}
             {dlg.type === "confirm" && (
@@ -2986,9 +3019,10 @@ var Btn = function (props) {
   var col = props.col || "blue";
   var sm = props.sm;
   var full = props.full;
+  var stack = props.stack;
   var children = props.children;
   var rest = Object.assign({}, props);
-  delete rest.col; delete rest.sm; delete rest.full; delete rest.children;
+  delete rest.col; delete rest.sm; delete rest.full; delete rest.stack; delete rest.children;
   var COLS = {
     blue: { bg: "linear-gradient(135deg,#2979ff,#2255d4)", hov: "#1a47c2", txt: "#fff", shadow: "0 2px 8px rgba(41,121,255,0.32)" },
     cyan: { bg: "linear-gradient(135deg,#0088f0,#0065c0)", hov: "#005baa", txt: "#fff", shadow: "0 2px 8px rgba(0,136,240,0.32)" },
@@ -3002,7 +3036,7 @@ var Btn = function (props) {
   var handleLeave = function (e) { if (!props.disabled) { e.currentTarget.style.opacity = "1"; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; } };
   return (
     <button {...rest} type={props.type != null ? props.type : "button"} onMouseEnter={handleEnter} onMouseLeave={handleLeave}
-      style={{ background: cc.bg, color: cc.txt, border: "none", borderRadius: 8, padding: sm ? "6px 14px" : "9px 18px", fontSize: sm ? 12 : 13, fontWeight: 700, cursor: props.disabled ? "not-allowed" : "pointer", display: "inline-flex", alignItems: "center", gap: 6, width: full ? "100%" : "auto", justifyContent: "center", opacity: props.disabled ? 0.45 : 1, whiteSpace: "nowrap", transition: "all .15s cubic-bezier(.22,1,.36,1)", fontFamily: "inherit", letterSpacing: "0.01em" }}>
+      style={{ background: cc.bg, color: cc.txt, border: "none", borderRadius: 8, padding: stack ? "8px 14px 7px" : (sm ? "6px 14px" : "9px 18px"), fontSize: sm ? 12 : 13, fontWeight: 700, cursor: props.disabled ? "not-allowed" : "pointer", display: "inline-flex", flexDirection: stack ? "column" : "row", alignItems: "center", gap: stack ? 0 : 6, width: full ? "100%" : "auto", justifyContent: "center", opacity: props.disabled ? 0.45 : 1, whiteSpace: stack ? "normal" : "nowrap", transition: "all .15s cubic-bezier(.22,1,.36,1)", fontFamily: "inherit", letterSpacing: "0.01em" }}>
       {children}
     </button>
   );

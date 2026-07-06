@@ -271,12 +271,16 @@ var POS = React.memo(function (props) {
   var [printMode, setPrintMode] = useState(null);
   var [invoice, setInvoice] = useState(null);
   var [waSharePicker, setWaSharePicker] = useState(false);
+  var [waSharePickerKind, setWaSharePickerKind] = useState("sale");
+  var [posPrintPicker, setPosPrintPicker] = useState(false);
+  var [posPrintPickerKind, setPosPrintPickerKind] = useState("sale");
   var [dropPos, setDropPos] = useState(null);
   var [pendingPrint, setPendingPrint] = useState(null);
   var [posDropIdx, setPosDropIdx] = useState(-1);
   var searchRef = useRef(null);
   var pendingCartFocusRef = useRef(null);
   var waPendingRef = useRef(false); /* true when Save+WhatsApp was clicked */
+  var posShortcutRef = useRef({});
   var lastBeepAtRef = useRef(0);
   var cartPulseTimerRef = useRef(null);
   var [cartPulse, setCartPulse] = useState(false);
@@ -1249,6 +1253,7 @@ var POS = React.memo(function (props) {
     if (!cart.length) return;
     if (posIsSavingRef.current || isCheckingOut) return;
     if (posSetupBlocksCriticalActions()) return;
+    setWaSharePickerKind("sale");
     setWaSharePicker(true);
   };
   var saveAndWhatsAppWithMode = function (mode) {
@@ -1260,6 +1265,49 @@ var POS = React.memo(function (props) {
     }
     waPendingRef.current = true; /* signal useEffect to share instead of print */
     setWaSharePicker(false);
+    saveAndFinish(true, mode);
+  };
+
+  var openQuotationWhatsApp = function () {
+    if (!cart.length || isSavingQuotation) return;
+    if (!canEditInvoices) return;
+    setWaSharePickerKind("quotation");
+    setWaSharePicker(true);
+  };
+  var saveQuotationWhatsAppWithMode = function (mode) {
+    if (isSavingQuotation) return;
+    setWaSharePicker(false);
+    waPendingRef.current = true;
+    saveQuotation(true, mode, true);
+  };
+
+  var openPosPrintPicker = function () {
+    if (!cart.length) return;
+    if (posIsSavingRef.current || isCheckingOut) return;
+    if (posSetupBlocksCriticalActions()) return;
+    setPosPrintPickerKind("sale");
+    setPosPrintPicker(true);
+  };
+  var openQuotationPrintPicker = function () {
+    if (!cart.length || isSavingQuotation) return;
+    if (!canEditInvoices) return;
+    setPosPrintPickerKind("quotation");
+    setPosPrintPicker(true);
+  };
+  var saveAndPrintWithMode = function (mode) {
+    if (posPrintPickerKind === "quotation") {
+      if (isSavingQuotation) return;
+      setPosPrintPicker(false);
+      saveQuotation(true, mode, false);
+      return;
+    }
+    if (posIsSavingRef.current || isCheckingOut) return;
+    if (posSetupBlocksCriticalActions()) {
+      setPosPrintPicker(false);
+      showAlert(getCoreStartupIdentityAlertMessage(validateCoreStartupIdentity(S.get("tc3_settings")).missing));
+      return;
+    }
+    setPosPrintPicker(false);
     saveAndFinish(true, mode);
   };
 
@@ -1396,12 +1444,6 @@ var POS = React.memo(function (props) {
     }
   };
 
-  var saveQuotationWhatsApp = function (mode) {
-    if (!cart.length || isSavingQuotation) return;
-    waPendingRef.current = true;
-    saveQuotation(true, mode, true);
-  };
-
   var resetForm = function () {
     setCart([]); setFreeCart([]); setFreeSearch(""); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId("");
     setEditingSaleId("");
@@ -1514,6 +1556,114 @@ var POS = React.memo(function (props) {
     clearCartAfterHold(isQuot);
     showAlert(kindLabel + " held. Open it anytime from On Hold below.");
   };
+
+  posShortcutRef.current = {
+    isQuotationMode: isQuotationMode,
+    isRestaurant: isRestaurant,
+    cartLength: cart.length,
+    freeCartLength: freeCart.length,
+    canCheckout: cart.length > 0 && !posSetupBlocksCriticalActions() && !isCheckingOut && !posIsSavingRef.current,
+    canQuotationAction: cart.length > 0 && !isSavingQuotation && canEditInvoices,
+    posPrintPicker: posPrintPicker,
+    waSharePicker: waSharePicker,
+    saveOnly: function () { saveAndFinish(false); },
+    saveQuotationOnly: function () { saveQuotation(false); },
+    openPrintPicker: openPosPrintPicker,
+    openQuotationPrintPicker: openQuotationPrintPicker,
+    openWhatsApp: saveAndWhatsApp,
+    openQuotationWhatsApp: openQuotationWhatsApp,
+    holdCart: holdCurrentCart,
+    printA4: function () { saveAndPrintWithMode(state.settings.invoiceDefaultSize || "a4"); },
+    printThermal: function () { saveAndPrintWithMode(state.settings.invoiceThermalSize || "thermal80"); },
+    waShareA4: function () {
+      var mode = state.settings.invoiceDefaultSize || "a4";
+      if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(mode);
+      else saveAndWhatsAppWithMode(mode);
+    },
+    waShareThermal: function () {
+      var mode = state.settings.invoiceThermalSize || "thermal80";
+      if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(mode);
+      else saveAndWhatsAppWithMode(mode);
+    },
+    closePrintPicker: function () { setPosPrintPicker(false); },
+    closeWaSharePicker: function () { setWaSharePicker(false); },
+    waSharePickerKind: waSharePickerKind,
+  };
+
+  useEffect(function () {
+    var onKey = function (e) {
+      var s = posShortcutRef.current;
+      if (s.posPrintPicker) {
+        var pk = e.key.toLowerCase();
+        if (pk === "a") {
+          e.preventDefault();
+          s.printA4();
+        } else if (pk === "t") {
+          e.preventDefault();
+          s.printThermal();
+        } else if (pk === "escape") {
+          e.preventDefault();
+          s.closePrintPicker();
+        }
+        return;
+      }
+      if (s.waSharePicker) {
+        var wk = e.key.toLowerCase();
+        if (wk === "a") {
+          e.preventDefault();
+          s.waShareA4();
+        } else if (wk === "t") {
+          e.preventDefault();
+          s.waShareThermal();
+        } else if (wk === "escape") {
+          e.preventDefault();
+          s.closeWaSharePicker();
+        }
+        return;
+      }
+      var mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      var key = e.key.toLowerCase();
+      if (key === "h") {
+        if (s.isRestaurant || (s.cartLength < 1 && s.freeCartLength < 1)) return;
+        e.preventDefault();
+        s.holdCart();
+        return;
+      }
+      if (s.isRestaurant) return;
+      if (s.isQuotationMode) {
+        if (key === "s") {
+          if (!s.canQuotationAction) return;
+          e.preventDefault();
+          s.saveQuotationOnly();
+        } else if (key === "p") {
+          if (!s.canQuotationAction) return;
+          e.preventDefault();
+          s.openQuotationPrintPicker();
+        } else if (key === "w") {
+          if (!s.canQuotationAction) return;
+          e.preventDefault();
+          s.openQuotationWhatsApp();
+        }
+        return;
+      }
+      if (key === "s") {
+        if (!s.canCheckout) return;
+        e.preventDefault();
+        s.saveOnly();
+      } else if (key === "p") {
+        if (!s.canCheckout) return;
+        e.preventDefault();
+        s.openPrintPicker();
+      } else if (key === "w") {
+        if (!s.canCheckout) return;
+        e.preventDefault();
+        s.openWhatsApp();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return function () { document.removeEventListener("keydown", onKey); };
+  }, []);
 
   var deleteHeldInvoice = function (id) {
     var updated = S.get("tc3_held_invoices", []).filter(function (x) { return x.id !== id; });
@@ -2206,6 +2356,90 @@ var POS = React.memo(function (props) {
     });
     return { totalCost: totalCost, negativeCount: negativeCount };
   }, [isRestaurant, state.rawMaterialCounts, state.products, state.purchases, today]);
+
+  var PosShortcutBtnContent = function (p) {
+    var busy = !!p.busy;
+    var busyText = p.busyText || "Processing...";
+    return (
+      <span style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, lineHeight: 1.15, whiteSpace: "normal", textAlign: "center", width: "100%" }}>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>{busy ? busyText : p.label}</span>
+        {!busy && p.shortcut ? (
+          <span style={{
+            fontSize: 9,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            opacity: p.onDark ? 0.88 : 1,
+            color: p.onDark ? "rgba(255,255,255,0.88)" : C.muted,
+          }}>{p.shortcut}</span>
+        ) : null}
+      </span>
+    );
+  };
+
+  var PosWhatsAppBtnContent = function (p) {
+    var busy = !!p.busy;
+    return (
+      <span style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, lineHeight: 1.15, width: "100%" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zm-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884zm8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+          </svg>
+          <span style={{ fontSize: 13, fontWeight: 700 }}>{busy ? (p.busyText || "Processing...") : "WhatsApp"}</span>
+        </span>
+        {!busy ? (
+          <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.04em", opacity: 0.88, color: "rgba(255,255,255,0.88)" }}>Ctrl + W</span>
+        ) : null}
+      </span>
+    );
+  };
+
+  var renderPosWhatsAppBtn = function (opts) {
+    var disabled = !!opts.disabled;
+    return (
+      <button
+        type="button"
+        onClick={opts.onClick}
+        disabled={disabled}
+        aria-describedby={opts.ariaDescribedby}
+        title={opts.title || ""}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          background: disabled ? "#9ca3af" : "linear-gradient(135deg,#25d366,#128c7e)",
+          color: "#fff",
+          border: "none",
+          borderRadius: 8,
+          padding: "8px 16px 7px",
+          fontSize: 13,
+          fontWeight: 700,
+          cursor: disabled ? "not-allowed" : "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "inherit",
+          letterSpacing: "0.01em",
+          boxShadow: disabled ? "none" : "0 2px 10px rgba(37,211,102,0.35)",
+          opacity: disabled ? 0.45 : 1,
+          transition: "opacity .15s, transform .15s, box-shadow .15s",
+        }}
+        onMouseEnter={function (e) {
+          if (!disabled) {
+            e.currentTarget.style.boxShadow = "0 4px 14px rgba(37,211,102,0.45)";
+            e.currentTarget.style.transform = "translateY(-1px)";
+          }
+        }}
+        onMouseLeave={function (e) {
+          if (!disabled) {
+            e.currentTarget.style.boxShadow = "0 2px 10px rgba(37,211,102,0.35)";
+            e.currentTarget.style.transform = "none";
+          }
+        }}
+      >
+        <PosWhatsAppBtnContent busy={opts.busy} busyText={opts.busyText} />
+      </button>
+    );
+  };
+
   return (
     <React.Fragment>
     {clientPosOfflineBar ? (
@@ -2260,7 +2494,7 @@ var POS = React.memo(function (props) {
           onClick={holdCurrentCart}
           disabled={!cart.length}
           style={{
-            padding: "10px 18px",
+            padding: "9px 16px 8px",
             borderRadius: 10,
             border: "1.5px solid " + (!cart.length ? "#f3b7c1" : "#d11a42"),
             background: !cart.length ? "#fde8ed" : "linear-gradient(135deg,#f04464,#c81e45)",
@@ -2273,7 +2507,11 @@ var POS = React.memo(function (props) {
             minWidth: 140,
           }}
         >
-          {isQuotationMode ? "Hold Quotation" : "Hold Invoice"}
+          <PosShortcutBtnContent
+            label={isQuotationMode ? "Hold Quotation" : "Hold Invoice"}
+            shortcut="Ctrl + H"
+            onDark={true}
+          />
         </button>
       </div>
     )}
@@ -3611,45 +3849,19 @@ var POS = React.memo(function (props) {
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.borderLight }}>
                 <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Save quotation</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <Btn onClick={function () { saveQuotation(false); }} disabled={!cart.length || isSavingQuotation} col="blue" full>{isSavingQuotation ? "Saving..." : "Save Quotation"}</Btn>
-                  {(function () {
-                    var paperSize = state.settings.invoiceDefaultSize || "a4";
-                    var thermalSize = state.settings.invoiceThermalSize || "thermal80";
-                    var paperLabel = paperSize === "a5" ? "Save + A5" : "Save + A4";
-                    var thermalLabel = thermalSize === "thermal58" ? "Save + Thermal (58mm)" : "Save + Thermal (80mm)";
-                    var qtDisabled = !cart.length || isSavingQuotation;
-                    return (
-                      <React.Fragment>
-                        <Btn onClick={function () { saveQuotation(true, paperSize); }} disabled={qtDisabled} col="gray" full>{isSavingQuotation ? "Saving..." : paperLabel}</Btn>
-                        <Btn onClick={function () { saveQuotation(true, thermalSize); }} disabled={qtDisabled} col="gray" full>{isSavingQuotation ? "Saving..." : thermalLabel}</Btn>
-                        <button
-                          type="button"
-                          onClick={function () { saveQuotationWhatsApp(paperSize); }}
-                          disabled={qtDisabled}
-                          style={{
-                            width: "100%",
-                            boxSizing: "border-box",
-                            background: qtDisabled ? "#9ca3af" : "linear-gradient(135deg,#25d366,#128c7e)",
-                            color: "#fff",
-                            border: "none",
-                            borderRadius: 8,
-                            padding: "10px 16px",
-                            fontSize: 13,
-                            fontWeight: 700,
-                            cursor: qtDisabled ? "not-allowed" : "pointer",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            gap: 8,
-                            fontFamily: "inherit",
-                            opacity: qtDisabled ? 0.45 : 1,
-                          }}
-                        >
-                          {isSavingQuotation ? "Saving..." : "WhatsApp"}
-                        </button>
-                      </React.Fragment>
-                    );
-                  })()}
+                  <Btn stack={true} onClick={function () { saveQuotation(false); }} disabled={!cart.length || isSavingQuotation || !canEditInvoices} col="blue" full>
+                    <PosShortcutBtnContent label="Save Only" shortcut="Ctrl + S" busy={isSavingQuotation} busyText="Saving..." onDark={true} />
+                  </Btn>
+                  <Btn stack={true} onClick={openQuotationPrintPicker} disabled={!cart.length || isSavingQuotation || !canEditInvoices} col="gray" full>
+                    <PosShortcutBtnContent label="Print" shortcut="Ctrl + P to print" busy={isSavingQuotation} busyText="Saving..." />
+                  </Btn>
+                  {renderPosWhatsAppBtn({
+                    onClick: openQuotationWhatsApp,
+                    disabled: !cart.length || isSavingQuotation || !canEditInvoices,
+                    busy: isSavingQuotation,
+                    busyText: "Saving...",
+                    title: "Save quotation and share as PDF via WhatsApp",
+                  })}
                 </div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 10, lineHeight: 1.45 }}>
                   Saved quotations appear under <strong>Invoices → Quotations</strong>. Convert to invoice when the customer confirms.
@@ -3712,65 +3924,26 @@ var POS = React.memo(function (props) {
           <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.borderLight }}>
             <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Complete sale</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <Btn onClick={function () { saveAndFinish(false); }} disabled={!cart.length || posSetupBlocked || isCheckingOut} aria-describedby={posCheckoutAriaDesc} title={posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : undefined} col="blue" full>{isCheckingOut ? "Processing..." : "Save Only"}</Btn>
+              <Btn stack={true} onClick={function () { saveAndFinish(false); }} disabled={!cart.length || posSetupBlocked || isCheckingOut} aria-describedby={posCheckoutAriaDesc} title={posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : undefined} col="blue" full>
+                <PosShortcutBtnContent label="Save Only" shortcut="Ctrl + S" busy={isCheckingOut} onDark={true} />
+              </Btn>
 
               {(function () {
-                var paperSize = state.settings.invoiceDefaultSize || "a4";
-                var thermalSize = state.settings.invoiceThermalSize || "thermal80";
-                var paperLabel = paperSize === "a5" ? "Save + A5" : "Save + A4";
-                var thermalLabel = thermalSize === "thermal58" ? "Save + Thermal (58mm)" : "Save + Thermal (80mm)";
                 var checkoutDisabled = !cart.length || posSetupBlocked || isCheckingOut;
                 var checkoutTitle = posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : undefined;
                 var waTitle = posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : "Save invoice and share as PDF via WhatsApp";
                 return (
                   <React.Fragment>
-                    <Btn onClick={function () { saveAndFinish(true, paperSize); }} disabled={checkoutDisabled} aria-describedby={posCheckoutAriaDesc} title={checkoutTitle} col="gray" full>{isCheckingOut ? "Processing..." : paperLabel}</Btn>
-                    <Btn onClick={function () { saveAndFinish(true, thermalSize); }} disabled={checkoutDisabled} aria-describedby={posCheckoutAriaDesc} title={checkoutTitle} col="gray" full>{isCheckingOut ? "Processing..." : thermalLabel}</Btn>
-                    <button
-                      type="button"
-                      onClick={saveAndWhatsApp}
-                      disabled={checkoutDisabled}
-                      aria-describedby={posCheckoutAriaDesc}
-                      title={waTitle}
-                      style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        background: checkoutDisabled ? "#9ca3af" : "linear-gradient(135deg,#25d366,#128c7e)",
-                        color: "#fff",
-                        border: "none",
-                        borderRadius: 8,
-                        padding: "10px 16px",
-                        fontSize: 13,
-                        fontWeight: 700,
-                        cursor: checkoutDisabled ? "not-allowed" : "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 8,
-                        fontFamily: "inherit",
-                        letterSpacing: "0.01em",
-                        boxShadow: checkoutDisabled ? "none" : "0 2px 10px rgba(37,211,102,0.35)",
-                        opacity: checkoutDisabled ? 0.45 : 1,
-                        transition: "opacity .15s, transform .15s, box-shadow .15s",
-                      }}
-                      onMouseEnter={function (e) {
-                        if (!checkoutDisabled) {
-                          e.currentTarget.style.boxShadow = "0 4px 14px rgba(37,211,102,0.45)";
-                          e.currentTarget.style.transform = "translateY(-1px)";
-                        }
-                      }}
-                      onMouseLeave={function (e) {
-                        if (!checkoutDisabled) {
-                          e.currentTarget.style.boxShadow = "0 2px 10px rgba(37,211,102,0.35)";
-                          e.currentTarget.style.transform = "none";
-                        }
-                      }}
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                        <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zm-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884zm8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
-                      </svg>
-                      {isCheckingOut ? "Processing..." : "WhatsApp"}
-                    </button>
+                    <Btn stack={true} onClick={openPosPrintPicker} disabled={checkoutDisabled} aria-describedby={posCheckoutAriaDesc} title={checkoutTitle} col="gray" full>
+                      <PosShortcutBtnContent label="Print" shortcut="Ctrl + P to print" busy={isCheckingOut} />
+                    </Btn>
+                    {renderPosWhatsAppBtn({
+                      onClick: saveAndWhatsApp,
+                      disabled: checkoutDisabled,
+                      busy: isCheckingOut,
+                      ariaDescribedby: posCheckoutAriaDesc,
+                      title: waTitle,
+                    })}
                   </React.Fragment>
                 );
               })()}
@@ -3929,18 +4102,44 @@ var POS = React.memo(function (props) {
       )}
 
       {waSharePicker && (
-        <Modal title="Share Invoice via WhatsApp" onClose={function () { setWaSharePicker(false); }}>
+        <Modal title={waSharePickerKind === "quotation" ? "Share Quotation via WhatsApp" : "Share Invoice via WhatsApp"} onClose={function () { setWaSharePicker(false); }}>
           {(function () {
             var paperSize = state.settings.invoiceDefaultSize || "a4";
             var thermalSize = state.settings.invoiceThermalSize || "thermal80";
-            var paperLabel = paperSize === "a5" ? "A5 Invoice PDF" : "A4 Invoice PDF";
-            var thermalLabel = thermalSize === "thermal58" ? "Thermal 58mm Invoice PDF" : "Thermal 80mm Invoice PDF";
+            var paperLabel = paperSize === "a5" ? "A5 PDF" : "A4 PDF";
+            var thermalLabel = thermalSize === "thermal58" ? "Thermal 58mm PDF" : "Thermal 80mm PDF";
+            var docWord = waSharePickerKind === "quotation" ? "quotation" : "invoice";
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 12, color: C.muted }}>Choose which invoice format to generate and share on WhatsApp.</div>
-                <Btn col="blue" onClick={function () { saveAndWhatsAppWithMode(paperSize); }}>{paperLabel}</Btn>
-                <Btn col="cyan" onClick={function () { saveAndWhatsAppWithMode(thermalSize); }}>{thermalLabel}</Btn>
-                <Btn col="gray" onClick={function () { setWaSharePicker(false); }}>Cancel</Btn>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>Choose which {docWord} format to share on WhatsApp. Press <strong>A</strong> for A4 or <strong>T</strong> for thermal.</div>
+                <Btn col="blue" onClick={function () {
+                  if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(paperSize);
+                  else saveAndWhatsAppWithMode(paperSize);
+                }}>{paperLabel} (A)</Btn>
+                <Btn col="cyan" onClick={function () {
+                  if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(thermalSize);
+                  else saveAndWhatsAppWithMode(thermalSize);
+                }}>{thermalLabel} (T)</Btn>
+                <Btn col="gray" onClick={function () { setWaSharePicker(false); }}>Cancel (Esc)</Btn>
+              </div>
+            );
+          })()}
+        </Modal>
+      )}
+
+      {posPrintPicker && (
+        <Modal title={posPrintPickerKind === "quotation" ? "Print Quotation" : "Print Invoice"} onClose={function () { setPosPrintPicker(false); }}>
+          {(function () {
+            var paperSize = state.settings.invoiceDefaultSize || "a4";
+            var thermalSize = state.settings.invoiceThermalSize || "thermal80";
+            var paperLabel = paperSize === "a5" ? "A5 Print" : "A4 Print";
+            var thermalLabel = thermalSize === "thermal58" ? "Thermal 58mm Print" : "Thermal 80mm Print";
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>Choose print format. Press <strong>A</strong> for A4 or <strong>T</strong> for thermal.</div>
+                <Btn col="blue" onClick={function () { saveAndPrintWithMode(paperSize); }}>{paperLabel} (A)</Btn>
+                <Btn col="cyan" onClick={function () { saveAndPrintWithMode(thermalSize); }}>{thermalLabel} (T)</Btn>
+                <Btn col="gray" onClick={function () { setPosPrintPicker(false); }}>Cancel (Esc)</Btn>
               </div>
             );
           })()}
