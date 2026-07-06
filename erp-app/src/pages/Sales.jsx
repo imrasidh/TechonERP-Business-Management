@@ -27,7 +27,8 @@ import {
   getGlassSellRatePerSqFt,
   getGlassCostPerSqFt,
 } from "../utils/glassProduct.js";
-import { isFreeItemsEnabled, isPosLineCommentsEnabled } from "../utils/featureFlags.js";
+import { isFreeItemsEnabled, isPosLineCommentsEnabled, isCodSalesTrackEnabled } from "../utils/featureFlags.js";
+import { emptyCodTrackForm, buildCodRecordFromSale, shouldPersistCodRecord, COD_SALE_TYPES, validateCodCheckout, isCodCustomerReady } from "../utils/codTracking.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
 var POS = React.memo(function (props) {
@@ -97,6 +98,7 @@ var POS = React.memo(function (props) {
   var isRestaurant = businessType === "restaurant";
   var shopSettings = state.settings || {};
   var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
+  var codSalesTrackEnabled = isCodSalesTrackEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
   var posLineCommentsEnabled = isPosLineCommentsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
   var [posPageTab, setPosPageTab] = useState("sale");
   var isQuotationMode = posPageTab === "quotation" && !isRestaurant;
@@ -204,6 +206,7 @@ var POS = React.memo(function (props) {
     return [];
   });
   var [freeCart, setFreeCart] = useState([]);
+  var [codTrack, setCodTrack] = useState(function () { return emptyCodTrackForm(); });
   var [freeSearch, setFreeSearch] = useState("");
   var [freeDropPos, setFreeDropPos] = useState(null);
   var [freeDropIdx, setFreeDropIdx] = useState(-1);
@@ -383,6 +386,21 @@ var POS = React.memo(function (props) {
   }, [freeItemsEnabled]);
 
   useEffect(function () {
+    if (!codSalesTrackEnabled && codTrack.trackInCod) setCodTrack(emptyCodTrackForm());
+  }, [codSalesTrackEnabled]);
+
+  var codCustomerReady = isCodCustomerReady(custMode, custId, newCust, state.customers);
+
+  useEffect(function () {
+    if (codTrack.saleType === "COD" && !codCustomerReady) {
+      setCodTrack(function (x) {
+        if (x.saleType !== "COD") return x;
+        return Object.assign({}, x, { saleType: "Direct Sale" });
+      });
+    }
+  }, [codCustomerReady, codTrack.saleType]);
+
+  useEffect(function () {
     if (!pendingCartFocusRef.current) return;
     var pending = pendingCartFocusRef.current;
     pendingCartFocusRef.current = null;
@@ -413,9 +431,10 @@ var POS = React.memo(function (props) {
       includeWarranty: includeWarranty, posSplitRows: posSplitRows,
       paidAmt: paidAmt, payMode: payMode,
       editingSaleId: editingSaleId,
+      codTrack: codTrack,
       _activeHeldId: activeHeldId
     };
-  }, [cart, freeCart, custId, custMode, custSearch, newCust, discount, includeWarranty, posSplitRows, invoiceNo, quotationNo, quotationNotes, isQuotationMode, paidAmt, payMode, editingSaleId, fromRepairId, fromQuotationId, activeHeldId]);
+  }, [cart, freeCart, custId, custMode, custSearch, newCust, discount, includeWarranty, posSplitRows, invoiceNo, quotationNo, quotationNotes, isQuotationMode, paidAmt, payMode, editingSaleId, fromRepairId, fromQuotationId, activeHeldId, codTrack]);
 
   /* Clear snapshot on unmount, refresh held invoices on mount */
   useEffect(function () {
@@ -964,6 +983,13 @@ var POS = React.memo(function (props) {
     /* Trial guard: block new sales if trial limit reached (editing existing sales is allowed).
        Pass cart.length > 0 as isActiveCheckout so a mid-sale server dropout gets cart grace. */
     if (!editingSaleId && !tcTrialGuard(state.sales, 'sales', cart.length > 0)) return;
+    if (codSalesTrackEnabled && shouldPersistCodRecord(codTrack)) {
+      var codCheckoutErr = validateCodCheckout(codTrack, custMode, custId, newCust, state.customers);
+      if (codCheckoutErr) {
+        showAlert(codCheckoutErr);
+        return;
+      }
+    }
     /* Block walk-in customers from making unpaid or partial invoices */
     var isWalkIn = custMode === "walkin" || (custMode === "existing" && !custId) || (custMode === "new" && !newCust.name);
     if (isWalkIn) {
@@ -1142,6 +1168,36 @@ var POS = React.memo(function (props) {
         : [saleObj].concat(state.sales),
       repairs: nr, quotations: nq,
     });
+
+    var codRecords = state.codRecords || S.get("tc3_codRecords", []) || [];
+    if (codSalesTrackEnabled) {
+      if (shouldPersistCodRecord(codTrack)) {
+        var existingCod = codRecords.find(function (r) { return r.saleId === saleObj.id; });
+        var codRec = buildCodRecordFromSale({
+          form: codTrack,
+          sale: saleObj,
+          cart: chronoCart,
+          freeCart: freeCart,
+          products: np,
+          getCostPerUnit: getPosCostPerSaleUnit,
+          uid: uid,
+          existing: existingCod || null,
+        });
+        var nextCod = codRecords.slice();
+        var cix = nextCod.findIndex(function (r) { return r.saleId === saleObj.id; });
+        if (cix >= 0) nextCod[cix] = codRec;
+        else nextCod.unshift(codRec);
+        S.set("tc3_codRecords", nextCod);
+        codRecords = nextCod;
+      } else if (editingSaleId) {
+        var filteredCod = codRecords.filter(function (r) { return r.saleId !== saleObj.id; });
+        if (filteredCod.length !== codRecords.length) {
+          S.set("tc3_codRecords", filteredCod);
+          codRecords = filteredCod;
+        }
+      }
+    }
+    newState = Object.assign({}, newState, { codRecords: codRecords });
     /* If split mode has cheque rows, create cheque records */
     if (posSplitRows && posSplitRows.length > 0) {
       var splitChequeRows = posSplitRows.filter(function (r) { return r.method === "Cheque" && parseFloat(r.amount) > 0; });
@@ -1231,7 +1287,7 @@ var POS = React.memo(function (props) {
     var finalSaleForPrint = (newState.sales || []).find(function (s) { return s.id === saleObj.id; }) || saleObj;
     if (withPrint) {
       setPendingPrint({ sale: finalSaleForPrint, mode: mode || "thermal", settings: Object.assign({}, state.settings), warranty: includeWarranty, invoiceLang: "en" });
-      setCart([]); setFreeCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId(""); setFreeSearch("");
+      setCart([]); setFreeCart([]); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId(""); setFreeSearch("");
       try { sessionStorage.removeItem("tc3_dirty"); } catch (e2) { }
       focusPosSearch();
     } else {
@@ -1445,7 +1501,7 @@ var POS = React.memo(function (props) {
   };
 
   var resetForm = function () {
-    setCart([]); setFreeCart([]); setFreeSearch(""); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId("");
+    setCart([]); setFreeCart([]); setFreeSearch(""); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId("");
     setEditingSaleId("");
     focusPosSearch();
   };
@@ -1474,6 +1530,8 @@ var POS = React.memo(function (props) {
     if (h.fromRepairId) setFromRepairId(h.fromRepairId);
     if (h.fromQuotationId) setFromQuotationId(h.fromQuotationId);
     if (h.editingSaleId) setEditingSaleId(h.editingSaleId);
+    if (h.codTrack) setCodTrack(Object.assign(emptyCodTrackForm(), h.codTrack));
+    else setCodTrack(emptyCodTrackForm());
     setActiveHeldId(h.id);
     try { sessionStorage.setItem("tc3_dirty", "pos"); } catch (e) {}
     focusPosSearch();
@@ -2548,7 +2606,7 @@ var POS = React.memo(function (props) {
               {[["walkin", "Walk-in"], ["customer", "Customer"]].map(function (item) {
                 var v = item[0]; var l = item[1];
                 var active = v === "walkin" ? custMode === "walkin" : custMode !== "walkin";
-                return <button key={v} onClick={function () { if (v === "walkin") { setCustMode("walkin"); setCustId(""); setCustSearch(""); setNewCust({ name: "", phone: "", address: "" }); } else { setCustMode("existing"); setCustId(""); if (custMode === "new" && newCust.name) setCustSearch(newCust.name + (newCust.phone ? (" - " + newCust.phone) : "")); } }} style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid " + (active ? C.cyan : C.border), background: active ? "#e0f2fe" : "transparent", color: active ? C.cyan : C.textMd, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>;
+                return <button type="button" key={v} onClick={function () { if (v === "walkin") { setCustMode("walkin"); setCustId(""); setCustSearch(""); setNewCust({ name: "", phone: "", address: "" }); } else { setCustMode("existing"); setCustId(""); if (custMode === "new" && newCust.name) setCustSearch(newCust.name + (newCust.phone ? (" - " + newCust.phone) : "")); } }} style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid " + (active ? C.cyan : C.border), background: active ? "#e0f2fe" : "transparent", color: active ? C.cyan : C.textMd, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>;
               })}
             </div>
             {custMode !== "walkin" && (
@@ -2569,6 +2627,7 @@ var POS = React.memo(function (props) {
                   setNewCust({ name: "", phone: "", address: "" });
                 }}
                 onCreateCustomer={savePosInlineCustomer}
+                onAfterSelect={focusPosSearch}
                 duplicateNameKeys={posDupNameKeys}
                 normalizeNameKey={normalizePaymentCustomerName}
                 C={C}
@@ -2627,10 +2686,12 @@ var POS = React.memo(function (props) {
                   var list = filteredProds.slice(0, 10);
                   if (e.key === "ArrowDown") { e.preventDefault(); setPosDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
                   if (e.key === "ArrowUp") { e.preventDefault(); setPosDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                  }
                   if (e.key === "Enter" && list.length > 0) {
                     var pick = posDropIdx >= 0 ? list[posDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, search); }) || list[0]);
                     addToCart(pick); setPosDropIdx(-1);
-                    e.preventDefault();
                   }
                   if (e.key === "Escape") { setSearch(""); setDropPos(null); setPosDropIdx(-1); }
                 }}
@@ -2706,10 +2767,10 @@ var POS = React.memo(function (props) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6, tableLayout: "fixed", transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
               <colgroup>
                 <col />
-                <col style={{ width: glassCartLayout ? 148 : 132 }} />
+                <col style={{ width: glassCartLayout ? 160 : 168 }} />
                 <col style={{ width: glassCartLayout ? 248 : 120 }} />
-                <col style={{ width: 84 }} />
-                <col style={{ width: 64 }} />
+                <col style={{ width: 88 }} />
+                <col style={{ width: isRestaurant ? 48 : 30 }} />
               </colgroup>
               <thead>
                 <tr style={{ background: "#f8fafc" }}>
@@ -2781,7 +2842,7 @@ var POS = React.memo(function (props) {
                           <div style={{ fontSize: 9, color: C.accent, fontWeight: 700 }}>{item.unit}</div>
                         )}
                       </td>
-                      <td style={{ padding: "2px 5px", verticalAlign: "middle", textAlign: "center", width: glassCartLayout ? 148 : 132, overflow: "hidden" }}>
+                      <td style={{ padding: "2px 5px", verticalAlign: "middle", textAlign: "center", width: glassCartLayout ? 160 : 168, overflow: "hidden" }}>
                         {item.isGlassLine ? (
                         <GlassRateInput
                           C={C}
@@ -2874,20 +2935,27 @@ var POS = React.memo(function (props) {
                           />
                         )}
                       </td>
-                      <td style={{ padding: "2px 6px", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right", lineHeight: 1.2 }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
-                      <td style={{ padding: "2px 4px", whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right" }}>
+                      <td style={{ padding: "2px 6px", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
+                      <td style={{ padding: "2px 2px", whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "center", width: isRestaurant ? 48 : 30 }}>
                         {isRestaurant && (
                           <button
                             type="button"
                             disabled={selectedTableLocked}
                             onClick={function () { duplicateCartItem(cartLineKey(item)); }}
                             title="Duplicate item"
-                            style={{ background: "#eef2ff", border: "1px solid " + C.border, color: C.accent, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 800, lineHeight: 1, padding: "2px 7px", borderRadius: 6, opacity: selectedTableLocked ? 0.5 : 1, marginRight: 6 }}
+                            style={{ background: "#eef2ff", border: "1px solid " + C.border, color: C.accent, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 800, lineHeight: 1, padding: "2px 5px", borderRadius: 6, opacity: selectedTableLocked ? 0.5 : 1, marginRight: 2 }}
                           >
                             +
                           </button>
                         )}
-                        <button disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), 0); }} style={{ background: "none", border: "none", color: C.red, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 11, lineHeight: 1, padding: "0 2px", opacity: selectedTableLocked ? 0.5 : 1 }}>Remove</button>
+                        <button
+                          type="button"
+                          disabled={selectedTableLocked}
+                          onClick={function () { updateQty(cartLineKey(item), 0); }}
+                          title="Remove item"
+                          aria-label="Remove item"
+                          style={{ background: "none", border: "none", color: C.red, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 17, fontWeight: 700, lineHeight: 1, padding: 0, width: 22, height: 22, opacity: selectedTableLocked ? 0.5 : 1 }}
+                        >×</button>
                       </td>
                     </tr>
                     {hasDetailRow ? (
@@ -3151,6 +3219,116 @@ var POS = React.memo(function (props) {
               </table>
             ) : (
               <div style={{ textAlign: "center", padding: "14px 0", color: C.muted, fontSize: 12 }}>{cart.length ? "No free items yet" : "Add paid items first, then add complimentary gifts here"}</div>
+            )}
+          </Card>
+        )}
+        {!isRestaurant && !isQuotationMode && codSalesTrackEnabled && (
+          <Card>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: C.blue }}>COD / Delivery track</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Optional — saves to COD Database when checked</div>
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={!!codTrack.trackInCod}
+                  disabled={!cart.length}
+                  onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { trackInCod: e.target.checked }); }); }}
+                />
+                Record in COD database
+              </label>
+            </div>
+            {codTrack.trackInCod ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                {!codCustomerReady && (
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 12px" }}>
+                    COD requires a customer with <strong>name and phone</strong>. Select <strong>Customer</strong> above — walk-in is not allowed for Cash on Delivery.
+                  </div>
+                )}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 4 }}>Sale type</label>
+                  <select
+                    value={codTrack.saleType}
+                    onChange={function (e) {
+                      var v = e.target.value;
+                      if (v === "COD" && !codCustomerReady) {
+                        showAlert("Cash on Delivery (COD) requires a saved customer with name and phone number.\n\nSelect Customer above and choose or create a customer first.");
+                        return;
+                      }
+                      setCodTrack(function (x) { return Object.assign({}, x, { saleType: v }); });
+                    }}
+                    style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", background: "#fff" }}
+                  >
+                    {COD_SALE_TYPES.map(function (t) {
+                      var codDisabled = t === "COD" && !codCustomerReady;
+                      return <option key={t} value={t} disabled={codDisabled}>{t}{codDisabled ? " (customer required)" : ""}</option>;
+                    })}
+                  </select>
+                </div>
+                {(codTrack.saleType === "COD" || codTrack.saleType === "Direct Delivery") && (
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 4 }}>Customer address</label>
+                    <input
+                      value={codTrack.address}
+                      onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }}
+                      placeholder="Delivery address"
+                      style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                    />
+                  </div>
+                )}
+                {codTrack.saleType === "COD" && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 4 }}>Tracking number</label>
+                      <input
+                        value={codTrack.trackingNumber}
+                        onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { trackingNumber: e.target.value }); }); }}
+                        placeholder="Courier tracking (optional)"
+                        style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 4 }}>Alt phone (optional)</label>
+                      <input
+                        value={codTrack.altPhone}
+                        onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { altPhone: e.target.value }); }); }}
+                        placeholder="Second contact number"
+                        style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                      />
+                    </div>
+                  </div>
+                )}
+                {(codTrack.saleType === "COD" || codTrack.saleType === "Direct Delivery") && (
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 4 }}>Courier / delivery cost ({getCurrencySymbol()})</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={codTrack.courierCost}
+                      onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { courierCost: e.target.value }); }); }}
+                      placeholder="0"
+                      style={{ width: "100%", maxWidth: 200, border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                    />
+                  </div>
+                )}
+                {codTrack.saleType === "Direct Sale" && (
+                  <div>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 4 }}>Reference / tracking (optional)</label>
+                    <input
+                      value={codTrack.trackingNumber}
+                      onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { trackingNumber: e.target.value }); }); }}
+                      placeholder="Internal reference if needed"
+                      style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ textAlign: "center", padding: "14px 0", color: C.muted, fontSize: 12 }}>
+                {cart.length ? "Check the box above to track this sale in COD Database" : "Add items to the cart first"}
+              </div>
             )}
           </Card>
         )}

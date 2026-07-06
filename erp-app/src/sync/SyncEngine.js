@@ -70,6 +70,9 @@ export const NETWORK_KV_KEYS = [
   'tc3_journal_lines', 'tc3_gl_accounts', 'tc3_gl_mode', 'tc3_gl_audit',
   'tc3_journal_hash', 'tc3_gl_last_error', 'tc3_stock_movements',
   'tc3_inv_reconciliation', 'tc3_inventory_layers', 'tc3_financial_snapshots',
+  'tc3_codRecords', 'tc3_codPartners',
+  'tc3_codProfitSettings',
+  'tc3_codWithdrawals',
 ];
 
 const SYNC_KEY_SET = {};

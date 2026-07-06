@@ -1027,7 +1027,7 @@ var Settings = function (props) {
   }
 
   var renderModulePanel = function (toggleKey, title, sub) {
-    var groupNames = ["Main", "Stock", "People", "Finance", "Operations", "Insight", "POS options"];
+    var groupNames = ["Main", "Stock", "People", "Finance", "Operations", "COD Database", "Insight", "POS options"];
     return (
       <Card key={toggleKey}>
         <CardTitle sub={sub}>{title}</CardTitle>
@@ -1058,16 +1058,21 @@ var Settings = function (props) {
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {items.map(function (m) {
                     var toggles = f[toggleKey] || {};
-                    var on = toggles[m.id] === true;
+                    var parentOff = m.parentModule && toggles[m.parentModule] !== true;
+                    var on = toggles[m.id] === true && !parentOff;
                     return (
-                      <label key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "11px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff" }}>
+                      <label key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: parentOff ? "not-allowed" : "pointer", padding: "11px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff", opacity: parentOff ? 0.55 : 1, marginLeft: m.parentModule ? 18 : 0 }}>
                         <input
                           type="checkbox"
                           checked={on}
+                          disabled={parentOff}
                           onChange={function (e) {
                             var checked = e.target.checked;
                             setF(function (x) {
                               var nextToggles = Object.assign({}, x[toggleKey] || {}, { [m.id]: checked });
+                              if (m.id === "coddatabase" && !checked) {
+                                nextToggles.codCostProfit = false;
+                              }
                               var patch = {};
                               patch[toggleKey] = nextToggles;
                               if (toggleKey === "mainModuleToggles") {

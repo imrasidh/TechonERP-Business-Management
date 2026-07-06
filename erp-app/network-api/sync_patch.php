@@ -80,6 +80,10 @@ $ALLOWED = [
     'tc3_inv_reconciliation' => 'any',
     'tc3_inventory_layers'   => 'object',
     'tc3_financial_snapshots' => 'array',
+    'tc3_codRecords'         => 'array',
+    'tc3_codPartners'        => 'array',
+    'tc3_codProfitSettings'  => 'object',
+    'tc3_codWithdrawals'     => 'array',
 ];
 
 function validatePatchValue($key, $value, $expectedType) {

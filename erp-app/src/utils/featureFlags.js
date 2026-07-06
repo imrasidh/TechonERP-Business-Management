@@ -30,6 +30,9 @@ export var MODULE_TOGGLE_DEFS = [
   { id: "auditlog", label: "Audit Log", group: "Insight", blurb: "Who changed what and when — security and traceability." },
   { id: "freeItems", label: "Free items (complimentary)", group: "POS options", blurb: "Allow complimentary gift lines on the Sales screen.", navId: null },
   { id: "posLineComments", label: "Line comments (serial / note)", group: "POS options", blurb: "Show a comment field on each Sales cart line for serial numbers, IMEI, or notes.", navId: null },
+  { id: "codSalesTrack", label: "COD track (Sales)", group: "POS options", blurb: "Show COD / delivery tracking fields on the Sales screen. Saved sales copy into COD Database when enabled.", navId: null },
+  { id: "coddatabase", label: "COD Database (tracker)", group: "COD Database", blurb: "Sidebar page for COD and delivery order tracking, status, and address labels.", navId: "coddatabase" },
+  { id: "codCostProfit", label: "Costs & profit", group: "COD Database", blurb: "Costs & profit tab — order costs, shop & partner balances, withdrawals, and partner settings. COD-only; does not touch main ERP accounts.", navId: null, parentModule: "coddatabase" },
 ];
 
 function defaultForModule(id, businessType, profile) {
@@ -37,6 +40,7 @@ function defaultForModule(id, businessType, profile) {
   if (!def) return true;
   if (id === "freeItems") return String(businessType || "").toLowerCase() !== "glass";
   if (id === "posLineComments") return !!COMPUTER_SHOP_EDITION;
+  if (id === "codSalesTrack" || id === "coddatabase" || id === "codCostProfit") return false;
   if (def.profileKey && profile && profile.modules) {
     return !!profile.modules[def.profileKey];
   }
@@ -52,9 +56,24 @@ function defaultCounterModule(id, businessType, profile) {
   return false;
 }
 
+function readLegacyCodCostProfit(stored) {
+  if (!stored || typeof stored !== "object") return undefined;
+  if (stored.codCostProfit === true || stored.codCostProfit === false) return stored.codCostProfit;
+  if (stored.codCostBreakdown === true || stored.codProfitSharing === true) return true;
+  if (stored.codCostBreakdown === false && stored.codProfitSharing === false) return false;
+  return undefined;
+}
+
 function buildToggleMap(stored, businessType, profile, defaultFn) {
   var out = {};
   MODULE_TOGGLE_DEFS.forEach(function (m) {
+    if (m.id === "codCostProfit") {
+      var legacy = readLegacyCodCostProfit(stored);
+      if (legacy === true || legacy === false) {
+        out[m.id] = legacy;
+        return;
+      }
+    }
     if (stored[m.id] === true || stored[m.id] === false) {
       out[m.id] = stored[m.id];
       return;
@@ -155,6 +174,29 @@ export function isFreeItemsEnabled(settings, businessType, netRole) {
 
 export function isPosLineCommentsEnabled(settings, businessType, netRole) {
   return isModuleEnabled(settings, businessType, null, "posLineComments", netRole);
+}
+
+export function isCodSalesTrackEnabled(settings, businessType, netRole) {
+  return isModuleEnabled(settings, businessType, null, "codSalesTrack", netRole);
+}
+
+export function isCodDatabaseEnabled(settings, businessType, profile, netRole) {
+  return isModuleEnabled(settings, businessType, profile, "coddatabase", netRole);
+}
+
+export function isCodCostProfitEnabled(settings, businessType, profile, netRole) {
+  if (!isCodDatabaseEnabled(settings, businessType, profile, netRole)) return false;
+  return isModuleEnabled(settings, businessType, profile, "codCostProfit", netRole);
+}
+
+/** @deprecated use isCodCostProfitEnabled */
+export function isCodCostBreakdownEnabled(settings, businessType, profile, netRole) {
+  return isCodCostProfitEnabled(settings, businessType, profile, netRole);
+}
+
+/** @deprecated use isCodCostProfitEnabled */
+export function isCodProfitSharingEnabled(settings, businessType, profile, netRole) {
+  return isCodCostProfitEnabled(settings, businessType, profile, netRole);
 }
 
 export function isRepairsModuleEnabled(settings, businessType, profile, netRole) {

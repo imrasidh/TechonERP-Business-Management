@@ -7,6 +7,7 @@ var CustomerPicker = function (props) {
   var onValueChange = props.onValueChange;
   var onSelectCustomer = props.onSelectCustomer;
   var onCreateCustomer = props.onCreateCustomer;
+  var onAfterSelect = props.onAfterSelect;
   var duplicateNameKeys = props.duplicateNameKeys || {};
   var normalizeNameKey = props.normalizeNameKey;
   var C = props.C;
@@ -24,11 +25,18 @@ var CustomerPicker = function (props) {
     }).slice(0, 10);
   }, [customers, value]);
 
+  var focusAfterSelect = function () {
+    if (typeof onAfterSelect === "function") {
+      setTimeout(function () { onAfterSelect(); }, 0);
+    }
+  };
+
   var handleSelect = function (customer) {
     if (!customer) return;
     onSelectCustomer(customer);
     setDropIdx(-1);
     setShowCreate(false);
+    focusAfterSelect();
   };
 
   var handleCreate = function () {
@@ -42,6 +50,7 @@ var CustomerPicker = function (props) {
       setCreateForm({ name: "", phone: "" });
       setShowCreate(false);
       setDropIdx(-1);
+      focusAfterSelect();
     }
   };
 
@@ -60,13 +69,20 @@ var CustomerPicker = function (props) {
           if (e.key === "ArrowDown") { e.preventDefault(); setDropIdx(function (i) { return Math.min(i + 1, canCreate ? list.length : Math.max(list.length - 1, 0)); }); return; }
           if (e.key === "ArrowUp") { e.preventDefault(); setDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
           if (e.key === "Enter") {
+            e.preventDefault();
+            if (selectedCustomerId) {
+              focusAfterSelect();
+              return;
+            }
             if (dropIdx >= 0 && list[dropIdx]) {
-              e.preventDefault();
               handleSelect(list[dropIdx]);
               return;
             }
+            if (list.length > 0) {
+              handleSelect(list[0]);
+              return;
+            }
             if (canCreate && dropIdx === list.length) {
-              e.preventDefault();
               setShowCreate(true);
               setCreateForm({ name: String(value || "").trim(), phone: "" });
             }

@@ -153,4 +153,8 @@ INSERT IGNORE INTO kv_store (store_key, value) VALUES
   ('tc3_assetLog',        '[]'),
   ('tc3_openBal',         'null'),
   ('tc3_labelDesigns',    '[]'),
-  ('tc3_businessType',    '"tech"');
+  ('tc3_businessType',    '"tech"'),
+  ('tc3_codRecords',      '[]'),
+  ('tc3_codPartners',     '[]'),
+  ('tc3_codProfitSettings', '{"totalInvestment":0,"shareholders":[]}'),
+  ('tc3_codWithdrawals',    '[]');

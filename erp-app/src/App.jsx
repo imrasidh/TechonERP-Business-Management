@@ -73,6 +73,7 @@ import Customers from "./pages/Customers.jsx";
 import Suppliers from "./pages/Suppliers.jsx";
 import Expenses from "./pages/Expenses.jsx";
 import Repairs from "./pages/Repairs.jsx";
+import CodDatabase from "./pages/CodDatabase.jsx";
 import AuditLog from "./pages/AuditLog.jsx";
 import Barcodes from "./pages/Barcodes.jsx";
 import Purchases from "./pages/Purchases.jsx";
@@ -1547,7 +1548,7 @@ var S = {
 /* Expose S globally so SyncEngine can patch S.set for network sync */
 window._tcS = S;
 
-var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
 
 /** JSON backup download before GL/inventory repair - same key set as auto-backup. */
 var downloadPreRepairJsonBackup = function () {
@@ -2292,6 +2293,10 @@ var loadState = function () {
     rawMaterialUsages: S.get("tc3_raw_material_usage", []),
     expenses: S.get("tc3_expenses", SEED.expenses),
     repairs: S.get("tc3_repairs", SEED.repairs),
+    codRecords: S.get("tc3_codRecords", []),
+    codPartners: S.get("tc3_codPartners", []),
+    codProfitSettings: S.get("tc3_codProfitSettings", null),
+    codWithdrawals: S.get("tc3_codWithdrawals", []),
     assets: S.get("tc3_assets", SEED.assets),
     damageLog: S.get("tc3_damageLog", SEED.damageLog),
     productLog: S.get("tc3_productLog", SEED.productLog),
@@ -4690,6 +4695,7 @@ var NAV_ICONS = {
   receivables: "M20 12V22H4V12M22 7H2v5h20V7zM12 22V7M12 7H7.5a2.5 2.5 0 010-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 000-5C13 2 12 7 12 7z",
   payables: "M12 1v22M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6",
   repairs: "M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z",
+  coddatabase: "M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16zM3.27 6.96L12 12.01l8.73-5.05M12 22.08V12",
   expenses: "M12 2a10 10 0 100 20A10 10 0 0012 2zm1 14.93V18h-2v-1.07A5 5 0 017 12h2a3 3 0 006 0 1 1 0 00-1-1h-2a3 3 0 01-3-3 3 3 0 012-2.83V4h2v1.17A3 3 0 0115 8h-2a1 1 0 00-1 1 1 1 0 001 1h2a3 3 0 013 3 5 5 0 01-4 4.93z",
   returns: "M9 14l-4-4 4-4M5 10h11a4 4 0 010 8h-1",
   cheques: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4",
@@ -5651,6 +5657,7 @@ var NAV_ITEMS = [
   { id: "accounts", label: "Accounts", icon: "accounts" },
   { id: "cheques", label: "Cheques", icon: "cheques" },
   { id: "repairs", label: "Repairs", icon: "repairs" },
+  { id: "coddatabase", label: "COD Database", icon: "coddatabase" },
   { id: "expenses", label: "Expenses", icon: "expenses" },
   { id: "returns", label: "Returns", icon: "returns" },
   { id: "reports", label: "Reports", icon: "reports" },
@@ -5663,7 +5670,7 @@ var NAV_GROUPS = [
   { label: "STOCK", ids: ["purchases", "inventory"] },
   { label: "PEOPLE", ids: ["customers", "suppliers", "statements"] },
   { label: "FINANCE", ids: ["receivables", "payables", "accounts", "cheques"] },
-  { label: "OPS", ids: ["repairs", "expenses", "returns"] },
+  { label: "OPS", ids: ["repairs", "coddatabase", "expenses", "returns"] },
   { label: "INSIGHT", ids: ["reports", "barcodeprint", "auditlog", "settings"] }
 ];
 
@@ -7365,7 +7372,7 @@ function App(props) {
 
   useEffect(function () {
     if (!loggedIn) return;
-    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
     var buildBackup = function () {
       var st = S.get("tc3_settings", null);
       var sn = st ? (st.shopName || "Techon") : "Techon";
@@ -7457,7 +7464,7 @@ function App(props) {
       clearTimeout(window._bakDebounce);
       window._bakDebounce = setTimeout(function () {
         try {
-          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation"];
+          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
           var st = _idbCache["tc3_settings"] || {};
           var sn = st.shopName || "Techon";
           var bk = { version: 2, timestamp: new Date().toISOString(), shopName: sn, data: {} };
@@ -7603,7 +7610,7 @@ function App(props) {
     inventory: Inventory, purchases: Purchases, customers: Customers,
     suppliers: Suppliers, statements: Statements, receivables: Receivables, payables: Payables,
     accounts: Accounts,
-    repairs: Repairs, expenses: Expenses, returns: Returns, cheques: Cheques, reports: Reports,
+    repairs: Repairs, coddatabase: CodDatabase, expenses: Expenses, returns: Returns, cheques: Cheques, reports: Reports,
     barcodeprint: Barcodes, auditlog: AuditLog, settings: Settings
   };
   var ActivePage = PAGE_COMPONENTS[active] || Dashboard;
@@ -7699,7 +7706,7 @@ function App(props) {
                         <div style={{ width: 32, height: 32, borderRadius: 9, background: isActive ? "linear-gradient(135deg,#2979ff,#5591ff)" : "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .15s", boxShadow: isActive ? "0 3px 10px rgba(41,121,255,0.4)" : "none" }}>
                           <NavIcon id={item.icon} size={16} color={isActive ? "#ffffff" : "rgba(138,170,212,0.75)"} />
                         </div>
-                        <span style={{ fontSize: 13.5, fontWeight: isActive ? 700 : 500, color: isActive ? "#ffffff" : "rgba(138,170,212,0.85)", letterSpacing: "-0.005em", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>{item.label}</span>
+                        <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: isActive ? 700 : 500, color: isActive ? "#ffffff" : "rgba(138,170,212,0.85)", letterSpacing: "-0.005em", lineHeight: 1.25, fontFamily: "'Plus Jakarta Sans',sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</span>
                         {isActive && <div style={{ marginLeft: "auto", width: 5, height: 5, borderRadius: "50%", background: "#5ca8ff", boxShadow: "0 0 8px rgba(92,168,255,0.9)", flexShrink: 0 }}></div>}
                       </button>
                     );
@@ -8193,73 +8200,161 @@ function App(props) {
 
 
     {/* -- Hold Invoice Modal - shown when user tries to leave POS with active cart -- */}
-    {holdModal && (
-      <div style={{ position: "fixed", inset: 0, background: "rgba(10,22,50,0.75)", backdropFilter: "blur(8px)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ background: "#fff", borderRadius: 20, padding: "32px 36px", width: 420, boxShadow: "0 32px 80px rgba(10,22,50,0.4)", border: "1.5px solid #e1e8f5" }}>
-          <div style={{ fontSize: 36, textAlign: "center", marginBottom: 12 }}>{UI.clipboard}</div>
-          <div style={{ fontSize: 19, fontWeight: 900, color: "#0d1b3e", textAlign: "center", marginBottom: 6 }}>Invoice In Progress</div>
-          <div style={{ fontSize: 13, color: "#6b82a8", textAlign: "center", marginBottom: 24, lineHeight: 1.6 }}>
-            You have an unfinished invoice. What would you like to do?
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <button onClick={function () {
-              /* Hold - save/update in IDB persistently */
-              var posState = window._techon_pos_snapshot || null;
-              if (posState && posState.cart && posState.cart.length > 0) {
-                var held = S.get("tc3_held_invoices", []);
-                var existingId = posState._activeHeldId;
-                var custLabel = posState.custSearch || (posState.custMode === "walkin" ? "Walk-in" : (posState.newCust && posState.newCust.name ? posState.newCust.name : "Walk-in"));
-                var entry = Object.assign({}, posState, {
-                  label: custLabel + " - " + (posState.cart || []).length + " item(s)",
-                  heldAt: new Date().toISOString()
-                });
-                if (existingId) {
-                  /* Update existing held entry - preserve same ID */
-                  entry.id = existingId;
-                  held = held.map(function (h) { return h.id === existingId ? entry : h; });
-                  /* If somehow not found, add it */
-                  if (!held.find(function (h) { return h.id === existingId; })) held = held.concat([entry]);
-                } else {
-                  /* New hold */
-                  entry.id = "held_" + Date.now();
-                  held = held.concat([entry]);
-                }
-                S.set("tc3_held_invoices", held);
-              }
-              sessionStorage.removeItem("tc3_dirty");
-              var dest = holdModal;
-              setHoldModal(null);
-              safeSetActive(dest);
-            }} style={{ padding: "13px 20px", borderRadius: 12, border: "2px solid #2979ff", background: "#e8eeff", color: "#2979ff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 22 }}>{UI.hold}</span>
-              <div>
-                <div>Hold Invoice</div>
-                <div style={{ fontSize: 11, fontWeight: 500, color: "#6b82a8", marginTop: 2 }}>Save your cart and come back to continue later</div>
+    {holdModal && (function () {
+      var posState = window._techon_pos_snapshot || {};
+      var cartLines = posState.cart || [];
+      var isQuotation = posState.posPageTab === "quotation" || posState.holdKind === "quotation";
+      var docLabel = isQuotation ? "Quotation" : "Invoice";
+      var custLabel = posState.custSearch || (posState.custMode === "walkin" ? "Walk-in" : ((posState.newCust && posState.newCust.name) ? posState.newCust.name : "Walk-in"));
+      var itemCount = cartLines.length + ((posState.freeCart || []).length);
+      var refNo = isQuotation ? (posState.quotationNo || "—") : (posState.invoiceNo || "—");
+      var cartTotal = cartLines.reduce(function (a, it) {
+        var amt = (Number(it.price) || 0) * (Number(it.qty) || 0);
+        if (it.isGlassLine && it.glassTotalSqFt) amt = (Number(it.price) || 0) * (Number(it.glassTotalSqFt) || 0);
+        return a + amt;
+      }, 0);
+      var destNav = NAV_ITEMS.find(function (n) { return n.id === holdModal; });
+      var destLabel = destNav ? destNav.label : "another page";
+
+      var holdBtnStyle = {
+        width: "100%",
+        padding: "12px 14px",
+        borderRadius: 10,
+        border: "1.5px solid #bfdbfe",
+        background: "#f8fbff",
+        color: C.blue,
+        fontWeight: 800,
+        fontSize: 13,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        textAlign: "left",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        outline: "none",
+        transition: "background .15s, border-color .15s",
+      };
+      var discardBtnStyle = Object.assign({}, holdBtnStyle, {
+        border: "1.5px solid #fecaca",
+        background: "#fffafa",
+        color: C.red,
+      });
+      var continueBtnStyle = {
+        width: "100%",
+        padding: "12px 14px",
+        borderRadius: 10,
+        border: "none",
+        background: "linear-gradient(135deg,#2979ff,#2255d4)",
+        color: "#fff",
+        fontWeight: 800,
+        fontSize: 14,
+        cursor: "pointer",
+        fontFamily: "inherit",
+        outline: "none",
+        boxShadow: "0 4px 14px rgba(41,121,255,0.28)",
+        transition: "transform .12s, box-shadow .12s",
+      };
+
+      var runHold = function () {
+        if (posState && posState.cart && posState.cart.length > 0) {
+          var held = S.get("tc3_held_invoices", []);
+          var existingId = posState._activeHeldId;
+          var entry = Object.assign({}, posState, {
+            label: custLabel + " - " + cartLines.length + " item(s)",
+            heldAt: new Date().toISOString(),
+          });
+          if (existingId) {
+            entry.id = existingId;
+            held = held.map(function (h) { return h.id === existingId ? entry : h; });
+            if (!held.find(function (h) { return h.id === existingId; })) held = held.concat([entry]);
+          } else {
+            entry.id = "held_" + Date.now();
+            held = held.concat([entry]);
+          }
+          S.set("tc3_held_invoices", held);
+        }
+        sessionStorage.removeItem("tc3_dirty");
+        var dest = holdModal;
+        setHoldModal(null);
+        safeSetActive(dest);
+      };
+
+      var runDiscard = function () {
+        window._techon_pos_snapshot = null;
+        sessionStorage.removeItem("tc3_dirty");
+        var dest = holdModal;
+        setHoldModal(null);
+        safeSetActive("pos");
+        if (dest !== "pos") setTimeout(function () { safeSetActive(dest); }, 80);
+      };
+
+      return (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(10,22,50,0.55)", backdropFilter: "blur(6px)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+          onClick={function () { setHoldModal(null); }}
+        >
+          <div
+            style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 400, boxShadow: "0 24px 64px rgba(10,22,50,0.28)", border: "1px solid " + C.border, overflow: "hidden" }}
+            onClick={function (e) { e.stopPropagation(); }}
+          >
+            <div style={{ padding: "22px 22px 16px", borderBottom: "1px solid " + C.borderLight, background: "linear-gradient(180deg,#f8fbff 0%,#fff 100%)" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#2979ff,#5591ff)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 4px 12px rgba(41,121,255,0.25)", fontSize: 20 }}>
+                  {UI.clipboard}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 17, fontWeight: 900, color: C.text, letterSpacing: "-0.02em", lineHeight: 1.25 }}>Unsaved {docLabel.toLowerCase()}</div>
+                  <div style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
+                    You are leaving Sales for <strong style={{ color: C.textMd }}>{destLabel}</strong>. Choose what to do with this cart.
+                  </div>
+                </div>
               </div>
-            </button>
-            <button onClick={function () {
-              /* Cancel - clear window bridge so POS mounts fresh */
-              window._techon_pos_snapshot = null;
-              sessionStorage.removeItem("tc3_dirty");
-              var dest = holdModal;
-              setHoldModal(null);
-              safeSetActive("pos");
-              if (dest !== "pos") setTimeout(function () { safeSetActive(dest); }, 80);
-            }} style={{ padding: "13px 20px", borderRadius: 12, border: "2px solid #e03151", background: "#fde8ed", color: "#e03151", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 22 }}>{UI.cancel}</span>
-              <div>
-                <div>Cancel Invoice</div>
-                <div style={{ fontSize: 11, fontWeight: 500, color: "#9f1239", marginTop: 2 }}>Discard this invoice and leave the page</div>
+            </div>
+
+            <div style={{ padding: "14px 22px", background: "#f8fafc", borderBottom: "1px solid " + C.borderLight }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Customer</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{custLabel}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{docLabel} #</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{refNo}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Items</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{itemCount}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Cart total</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: C.blue }}>{getCurrencySymbol()} {fmtNum(cartTotal)}</div>
+                </div>
               </div>
-            </button>
-            <button onClick={function () { setHoldModal(null); }}
-              style={{ padding: "11px 20px", borderRadius: 12, border: "1.5px solid #e1e8f5", background: "#f8fafc", color: "#6b82a8", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
-              {UI.stay} Stay and continue invoice
-            </button>
+            </div>
+
+            <div style={{ padding: "18px 22px 22px", display: "flex", flexDirection: "column", gap: 10 }}>
+              <button type="button" onClick={function () { setHoldModal(null); }} style={continueBtnStyle}>
+                Continue {docLabel.toLowerCase()}
+              </button>
+              <button type="button" onClick={runHold} style={holdBtnStyle}>
+                <span style={{ width: 32, height: 32, borderRadius: 8, background: "#e8f0fe", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{UI.hold}</span>
+                <span>
+                  <span style={{ display: "block" }}>Hold {docLabel.toLowerCase()}</span>
+                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, color: C.muted, marginTop: 2 }}>Save cart and open {destLabel}</span>
+                </span>
+              </button>
+              <button type="button" onClick={runDiscard} style={discardBtnStyle}>
+                <span style={{ width: 32, height: 32, borderRadius: 8, background: "#fee2e2", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{UI.cancel}</span>
+                <span>
+                  <span style={{ display: "block" }}>Discard {docLabel.toLowerCase()}</span>
+                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, color: "#b91c1c", marginTop: 2 }}>Clear cart and leave Sales</span>
+                </span>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    )}
+      );
+    })()}
 
     {/* -- PIN Entry Modal -- */}
     {settingsPwModal && (
