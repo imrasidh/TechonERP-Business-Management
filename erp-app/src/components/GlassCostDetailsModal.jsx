@@ -1,6 +1,7 @@
 import React from "react";
 import { glassProductEconomicsDetails } from "../utils/glassProduct.js";
 import CloseIconButton from "./CloseIconButton.jsx";
+import { modalHeaderBarStyle, modalShellStyle, modalBodyStyle } from "./modalChrome.js";
 
 var statCard = function (label, value, accent) {
   return (
@@ -55,29 +56,20 @@ var GlassCostDetailsModal = function (props) {
     >
       <div
         onClick={function (e) { e.stopPropagation(); }}
-        style={{
-          background: "#fff",
-          borderRadius: 16,
-          width: "100%",
-          maxWidth: 620,
-          maxHeight: "92vh",
-          overflow: "auto",
-          boxShadow: "0 28px 64px rgba(15,23,42,0.22)",
-          border: "1px solid #e2e8f0",
-        }}
+        style={modalShellStyle({ width: "100%", maxWidth: 620, maxHeight: "92vh" })}
       >
-        <div style={{ padding: "20px 24px", borderBottom: "1px solid #eef2f7", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, background: "linear-gradient(180deg, #f8fbff 0%, #fff 100%)" }}>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.1em" }}>Glass pricing</div>
-            <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a", marginTop: 6, lineHeight: 1.25 }}>{d.name}</div>
-            <div style={{ fontSize: 13, color: "#64748b", marginTop: 6 }}>
-              Full sheet: <strong style={{ color: "#334155" }}>{d.sheetSize}</strong>
-            </div>
+        <div style={modalHeaderBarStyle()}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, color: "rgba(255,255,255,0.75)", textTransform: "uppercase", letterSpacing: "0.1em" }}>Glass pricing</div>
+            <div style={{ fontSize: 17, fontWeight: 800, color: "#fff", marginTop: 4, lineHeight: 1.25, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</div>
           </div>
-          <CloseIconButton onClick={onClose} size={36} tone="muted" />
+          <CloseIconButton onClick={onClose} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
         </div>
 
-        <div style={{ padding: "20px 24px 24px" }}>
+        <div style={modalBodyStyle({ padding: "20px 24px 24px" })}>
+          <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
+            Full sheet: <strong style={{ color: "#334155" }}>{d.sheetSize}</strong>
+          </div>
           <div style={{ fontSize: 11, fontWeight: 800, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>One full sheet equals</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 20 }}>
             {statCard("Sq Ft", d.areas.sqFt > 0 ? d.fn(d.areas.sqFt) : "—", accent)}

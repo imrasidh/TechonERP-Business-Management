@@ -91,6 +91,7 @@ import { ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, canAccessPageByRole, hasPermissi
 import { showPermissionDenied as showPermissionDeniedUi } from "./utils/permissionUi.js";
 import { UI } from "./utils/uiIcons.js";
 import CloseIconButton from "./components/CloseIconButton.jsx";
+import { MODAL_HEADER_BG, modalHeaderBarStyle, modalBodyStyle, modalShellStyle } from "./components/modalChrome.js";
 import {
   glassInvoiceLineTotal,
   glassInvoiceRateLabel,
@@ -983,8 +984,9 @@ var AppDialog = function () {
   var handleYes = function () { close(); if (dlg.onYes) dlg.onYes(); };
   var handleNo = function () { close(); if (dlg.onNo) dlg.onNo(); };
   var handlePayDupBackdrop = function () { close(); if (dlg.type === "payDupPick" && dlg.onSkip) dlg.onSkip(); };
+  var dlgTitle = dlg.type === "confirm" ? "Confirm" : dlg.type === "payDupPick" ? "Select customer" : "Notice";
   return (
-    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.55)", zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center" }}
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.55)", zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
       onClick={function (e) {
         if (e.target === e.currentTarget) {
           if (dlg.type === "alert") handleOk();
@@ -992,11 +994,33 @@ var AppDialog = function () {
           else handleNo();
         }
       }}>
-      <div style={{ background: "#fff", borderRadius: 14, padding: "28px 32px", maxWidth: dlg.type === "payDupPick" ? 520 : 420, width: "calc(100vw - 48px)", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
-        onClick={function (e) { e.stopPropagation(); }}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        style={modalShellStyle({
+          maxWidth: dlg.type === "payDupPick" ? 520 : 420,
+          width: "calc(100vw - 48px)",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+        })}
+        onClick={function (e) { e.stopPropagation(); }}
+      >
+        <div style={modalHeaderBarStyle()}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>{dlgTitle}</div>
+          <CloseIconButton
+            onClick={function () {
+              if (dlg.type === "alert") handleOk();
+              else if (dlg.type === "payDupPick") handlePayDupBackdrop();
+              else handleNo();
+            }}
+            size={32}
+            bg="rgba(255,255,255,0.12)"
+            color="#fff"
+            borderRadius={8}
+          />
+        </div>
+        <div style={{ padding: "22px 24px 24px" }}>
         {dlg.type === "payDupPick" ? (
           <React.Fragment>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#0d1b3e", marginBottom: 6 }}>Select the correct customer</div>
             <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>Same name on multiple records - pick who should receive this payment, or skip to use the previous behavior (all name matches).</div>
             <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #e2e8f0", borderRadius: 10, marginBottom: 16 }}>
               {(dlg.candidates || []).map(function (c) {
@@ -1038,6 +1062,7 @@ var AppDialog = function () {
             )}
           </React.Fragment>
         )}
+        </div>
       </div>
     </div>
   );
@@ -3189,14 +3214,34 @@ var CardTitle = function (props) {
 
 var Modal = function (props) {
   var wide = props.wide;
+  var title = props.title;
+  var onClose = props.onClose;
+  var shellWidth = wide ? "1160px" : props.medium ? "720px" : "500px";
   return (
-    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.5)", backdropFilter: "blur(4px)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-      <div style={{ background: "#fff", borderRadius: 16, width: wide ? "1160px" : props.medium ? "720px" : "500px", maxWidth: "96vw", maxHeight: "92vh", overflow: "auto", padding: 28, boxShadow: "0 24px 80px rgba(13,27,62,0.28)", border: "1.5px solid " + C.border }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, paddingBottom: 16, borderBottom: "1.5px solid " + C.border }}>
-          <div style={{ fontWeight: 800, fontSize: 16.5, color: C.text, letterSpacing: "-0.01em" }}>{props.title}</div>
-          <CloseIconButton onClick={props.onClose} size={32} />
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.5)", backdropFilter: "blur(4px)", zIndex: props.zIndex || 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        style={modalShellStyle({ width: shellWidth, maxWidth: "96vw", maxHeight: "92vh" })}
+      >
+        <div style={modalHeaderBarStyle(props.headerBg)}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: "#fff", letterSpacing: "-0.01em", flex: 1, minWidth: 0, lineHeight: 1.35 }}>
+            {title}
+          </div>
+          {onClose ? (
+            <CloseIconButton
+              onClick={onClose}
+              size={32}
+              bg="rgba(255,255,255,0.12)"
+              color="#fff"
+              borderRadius={8}
+              ariaLabel="Close dialog"
+            />
+          ) : null}
         </div>
-        {props.children}
+        <div style={modalBodyStyle()}>
+          {props.children}
+        </div>
       </div>
     </div>
   );
@@ -4417,16 +4462,15 @@ var AboutTab = function (props) {
   return (
     <div style={{ width: "100%", maxWidth: 1040, margin: "0 auto", padding: "8px 12px 28px", boxSizing: "border-box" }}>
       {showUpdateModal && updateInfo && (
-        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.6)", zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center" }}
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.6)", zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
           onClick={function (e) { if (e.target === e.currentTarget) setShowUpdateModal(false); }}>
-          <div style={{ background: "#fff", borderRadius: 16, padding: "32px 36px", maxWidth: 440, width: "calc(100vw - 48px)", boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#2979ff,#5ca8ff)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>UPD</div>
-              <div>
-                <div style={{ fontSize: 17, fontWeight: 900, color: "#0d1b3e", letterSpacing: "-0.02em" }}>New Version Available!</div>
-                <div style={{ fontSize: 12, color: "#5a78a5", fontWeight: 500, marginTop: 2 }}>A newer version of TechonERP is ready</div>
-              </div>
+          <div style={modalShellStyle({ maxWidth: 440, width: "calc(100vw - 48px)" })} onClick={function (e) { e.stopPropagation(); }}>
+            <div style={modalHeaderBarStyle()}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>New version available</div>
+              <CloseIconButton onClick={function () { setShowUpdateModal(false); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
             </div>
+            <div style={modalBodyStyle({ padding: "22px 24px 24px" })}>
+            <div style={{ fontSize: 12, color: "#5a78a5", fontWeight: 500, marginBottom: 16 }}>A newer version of TechonERP is ready</div>
             <div style={{ background: "#f0f4ff", borderRadius: 10, padding: "14px 16px", marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
                 <span style={{ color: "#5a78a5", fontWeight: 600 }}>Current Version</span>
@@ -4455,6 +4499,7 @@ var AboutTab = function (props) {
                 style={{ padding: "11px 20px", background: "#f0f4ff", color: "#3d5280", border: "1.5px solid #c7d7f8", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
                 Cancel
               </button>
+            </div>
             </div>
           </div>
         </div>
@@ -8219,10 +8264,13 @@ function App(props) {
 
     {/* -- Sync Pending Close Warning Modal -- */}
     {showCloseWarn && (
-      <div style={{ position: "fixed", inset: 0, background: "rgba(10,22,50,0.82)", backdropFilter: "blur(8px)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ background: "#fff", borderRadius: 20, padding: "36px 40px", width: 420, boxShadow: "0 32px 80px rgba(10,22,50,0.4)", textAlign: "center" }}>
-          <div style={{ fontSize: 42, marginBottom: 10 }}>{UI.sync}</div>
-          <div style={{ fontSize: 19, fontWeight: 900, color: C.text, marginBottom: 8 }}>Data Still Syncing</div>
+      <div style={{ position: "fixed", inset: 0, background: "rgba(10,22,50,0.82)", backdropFilter: "blur(8px)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+        <div style={modalShellStyle({ width: 420, maxWidth: "calc(100vw - 32px)" })}>
+          <div style={modalHeaderBarStyle()}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>Data still syncing</div>
+            <CloseIconButton onClick={function () { setShowCloseWarn(false); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+          </div>
+          <div style={modalBodyStyle({ padding: "24px 28px 28px", textAlign: "center" })}>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6 }}>
             Some of your data hasn't been saved to the server yet. Please wait a moment.
           </div>
@@ -8239,6 +8287,7 @@ function App(props) {
             <button onClick={function () { setShowCloseWarn(false); }} style={{ flex: 1, padding: "11px 0", background: "#f0f4ff", color: C.textMd, border: "1.5px solid " + C.border, borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
               Dismiss
             </button>
+          </div>
           </div>
         </div>
       </div>
@@ -8340,24 +8389,20 @@ function App(props) {
           onClick={function () { setHoldModal(null); }}
         >
           <div
-            style={{ background: "#fff", borderRadius: 16, width: "100%", maxWidth: 400, boxShadow: "0 24px 64px rgba(10,22,50,0.28)", border: "1px solid " + C.border, overflow: "hidden" }}
+            style={modalShellStyle({ width: "100%", maxWidth: 400 })}
             onClick={function (e) { e.stopPropagation(); }}
           >
-            <div style={{ padding: "22px 22px 16px", borderBottom: "1px solid " + C.borderLight, background: "linear-gradient(180deg,#f8fbff 0%,#fff 100%)" }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
-                <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#2979ff,#5591ff)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 4px 12px rgba(41,121,255,0.25)", fontSize: 20 }}>
-                  {UI.clipboard}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 17, fontWeight: 900, color: C.text, letterSpacing: "-0.02em", lineHeight: 1.25 }}>Unsaved {docLabel.toLowerCase()}</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 4, lineHeight: 1.5 }}>
-                    You are leaving Sales for <strong style={{ color: C.textMd }}>{destLabel}</strong>. Choose what to do with this cart.
-                  </div>
-                </div>
+            <div style={modalHeaderBarStyle()}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#fff", flex: 1, minWidth: 0 }}>
+                Unsaved {docLabel.toLowerCase()}
               </div>
+              <CloseIconButton onClick={function () { setHoldModal(null); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
             </div>
 
-            <div style={{ padding: "14px 22px", background: "#f8fafc", borderBottom: "1px solid " + C.borderLight }}>
+            <div style={{ padding: "16px 22px", background: "#f8fafc", borderBottom: "1px solid " + C.borderLight }}>
+              <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+                You are leaving Sales for <strong style={{ color: C.textMd }}>{destLabel}</strong>. Choose what to do with this cart.
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <div>
                   <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Customer</div>
@@ -8404,9 +8449,13 @@ function App(props) {
 
     {/* -- PIN Entry Modal -- */}
     {settingsPwModal && (
-      <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100015, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ background: "#fff", borderRadius: 20, padding: "32px 36px", width: 400, maxWidth: "calc(100vw - 32px)", boxShadow: "0 32px 80px rgba(10,22,50,0.4)", border: "1.5px solid " + C.border }}>
-          <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 6 }}>Settings password</div>
+      <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100015, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+        <div style={modalShellStyle({ width: 400, maxWidth: "calc(100vw - 32px)" })}>
+          <div style={modalHeaderBarStyle()}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>Settings password</div>
+            <CloseIconButton onClick={function () { setSettingsPwModal(false); setSettingsPwPending(null); setSettingsPwEntry(""); setSettingsPwErr(""); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+          </div>
+          <div style={modalBodyStyle({ padding: "22px 24px 24px" })}>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 18, lineHeight: 1.55 }}>
             {isNetworkClient
               ? "Enter the main PC admin password. Counter login passwords cannot open Settings."
@@ -8426,16 +8475,22 @@ function App(props) {
             <button type="button" onClick={submitSettingsPassword} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Unlock</button>
             <button type="button" onClick={function () { setSettingsPwModal(false); setSettingsPwPending(null); setSettingsPwEntry(""); setSettingsPwErr(""); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1.5px solid " + C.border, background: "#fff", color: C.textMd, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
           </div>
+          </div>
         </div>
       </div>
     )}
     {pinModal && (
-      <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100020, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ background: "#fff", borderRadius: 20, padding: "36px 40px", width: pinSupportMode ? 430 : 380, maxWidth: "calc(100vw - 32px)", boxShadow: "0 32px 80px rgba(10,22,50,0.4)", border: "1.5px solid " + C.border, textAlign: "center" }}>
+      <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100020, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+        <div style={modalShellStyle({ width: pinSupportMode ? 430 : 380, maxWidth: "calc(100vw - 32px)" })}>
+          <div style={modalHeaderBarStyle()}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>
+              {pinSupportMode ? "Support unlock" : "Admin Mode"}
+            </div>
+            <CloseIconButton onClick={function () { setPinModal(false); resetPinModalUi(); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+          </div>
+          <div style={modalBodyStyle({ padding: "28px 32px 32px", textAlign: "center" })}>
           {pinSupportMode ? (
             <React.Fragment>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>LOCK</div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 6 }}>Support unlock</div>
               <div style={{ fontSize: 13, color: C.muted, marginBottom: 16, lineHeight: 1.55 }}>
                 Tell Techon support this <strong>challenge code</strong>. They will give you a 6-character unlock code derived from it.
               </div>
@@ -8502,8 +8557,6 @@ function App(props) {
             </React.Fragment>
           ) : (
             <React.Fragment>
-          <div style={{ fontSize: 42, marginBottom: 10 }}>PIN</div>
-          <div style={{ fontSize: 20, fontWeight: 900, color: C.text, marginBottom: 4 }}>Admin Mode</div>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 24 }}>Enter your PIN or admin login password to unlock</div>
 
           {/* PIN dots */}
@@ -8593,6 +8646,7 @@ function App(props) {
           </button>
             </React.Fragment>
           )}
+          </div>
         </div>
       </div>
     )}

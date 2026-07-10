@@ -25,6 +25,8 @@ import {
 import { sortNewestFirst } from "../utils/listPage.js";
 import { isCodCostProfitEnabled } from "../utils/featureFlags.js";
 import { printCodAddressLabel, codAddressLabelTotal, buildCodAddressLabelHtml, codAddressLabelStyleTag } from "../utils/codAddressLabelPrint.js";
+import CloseIconButton from "../components/CloseIconButton.jsx";
+import { modalHeaderBarStyle, modalShellStyle, modalBodyStyle } from "../components/modalChrome.js";
 
 var STATUS_COLORS = { Accepted: "#2979ff", Dispatched: "#f59e0b", Delivered: "#16a34a", Returned: "#dc2626", All: "#64748b" };
 var STATUS_ICONS = { All: "📋", Accepted: "📥", Dispatched: "🚚", Delivered: "✅", Returned: "↩️" };
@@ -1080,8 +1082,12 @@ var CodDatabase = function (props) {
 
       {editRow && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={function () { setEditRow(null); setEditRowOrigStatus(""); }}>
-          <div style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 520, maxHeight: "90vh", overflowY: "auto", padding: 20, boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={function (e) { e.stopPropagation(); }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 4 }}>Edit COD record</div>
+          <div style={modalShellStyle({ width: "100%", maxWidth: 520, maxHeight: "90vh" })} onClick={function (e) { e.stopPropagation(); }}>
+            <div style={modalHeaderBarStyle()}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>Edit COD record</div>
+              <CloseIconButton onClick={function () { setEditRow(null); setEditRowOrigStatus(""); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+            </div>
+            <div style={modalBodyStyle({ padding: "18px 20px 20px" })}>
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 16 }}>{editRow.invoiceNo} · {editRow.customerName}</div>
             {isCodStatusLocked(editRowOrigStatus) && (
               <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>
@@ -1135,18 +1141,23 @@ var CodDatabase = function (props) {
               <Btn col="green" onClick={saveEditRow}>Save</Btn>
               </div>
             </div>
+            </div>
           </div>
         </div>
       )}
 
       {wdModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 10003, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={function () { setWdModal(null); }}>
-          <div style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 440, padding: 22, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }} onClick={function (e) { e.stopPropagation(); }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 4 }}>
-              {wdForm.withdrawFrom === "yourProfit" ? "Shop profit withdrawal" :
-                wdForm.withdrawFrom === "profit" ? "Partner profit withdrawal" :
-                "Cost recovery withdrawal"}
+          <div style={modalShellStyle({ width: "100%", maxWidth: 440 })} onClick={function (e) { e.stopPropagation(); }}>
+            <div style={modalHeaderBarStyle()}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>
+                {wdForm.withdrawFrom === "yourProfit" ? "Shop profit withdrawal" :
+                  wdForm.withdrawFrom === "profit" ? "Partner profit withdrawal" :
+                  "Cost recovery withdrawal"}
+              </div>
+              <CloseIconButton onClick={function () { setWdModal(null); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
             </div>
+            <div style={modalBodyStyle({ padding: "18px 22px 22px" })}>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>
               COD-only payout — does not affect main ERP Accounts or cash.
             </div>
@@ -1200,23 +1211,26 @@ var CodDatabase = function (props) {
               <Btn col="gray" onClick={function () { setWdModal(null); }}>Cancel</Btn>
               <Btn col="green" onClick={addWithdrawal}>Record withdrawal</Btn>
             </div>
+            </div>
           </div>
         </div>
       )}
 
       {labelPreview && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", zIndex: 10002, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={function () { setLabelPreview(null); }}>
-          <div style={{ background: "#fff", borderRadius: 14, width: "100%", maxWidth: 920, maxHeight: "92vh", overflow: "auto", padding: 20, boxShadow: "0 24px 64px rgba(0,0,0,0.22)" }} onClick={function (e) { e.stopPropagation(); }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 17, fontWeight: 900, color: C.text }}>Address label — print preview</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+          <div style={modalShellStyle({ width: "100%", maxWidth: 920, maxHeight: "92vh" })} onClick={function (e) { e.stopPropagation(); }}>
+            <div style={modalHeaderBarStyle()}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>Address label — print preview</div>
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.75)", marginTop: 4 }}>
                   A5 landscape · printable area margins: 1&nbsp;cm top/bottom, 0.5&nbsp;cm left/right
                 </div>
               </div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>
-                {labelPreview.invoiceNo} · {sym} {fmtNum(codAddressLabelTotal(labelPreview))}
-              </div>
+              <CloseIconButton onClick={function () { setLabelPreview(null); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+            </div>
+            <div style={modalBodyStyle({ padding: "16px 20px 20px" })}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 12 }}>
+              {labelPreview.invoiceNo} · {sym} {fmtNum(codAddressLabelTotal(labelPreview))}
             </div>
             <div style={{ background: "#f1f5f9", borderRadius: 10, padding: 14, marginBottom: 14 }}>
               <iframe
@@ -1235,14 +1249,19 @@ var CodDatabase = function (props) {
               <Btn col="gray" onClick={function () { setLabelPreview(null); }}>Close</Btn>
               <Btn col="green" onClick={function () { runLabelPrint(labelPreview); }}>Print</Btn>
             </div>
+            </div>
           </div>
         </div>
       )}
 
       {statusPwModal && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 10001, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
-          <div style={{ background: "#fff", borderRadius: 12, width: "100%", maxWidth: 380, padding: 22, boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
-            <div style={{ fontSize: 16, fontWeight: 900, marginBottom: 6 }}>Admin password required</div>
+          <div style={modalShellStyle({ width: "100%", maxWidth: 380 })}>
+            <div style={modalHeaderBarStyle()}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>Admin password required</div>
+              <CloseIconButton onClick={function () { setStatusPwModal(null); setStatusPwEntry(""); setStatusPwErr(""); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+            </div>
+            <div style={modalBodyStyle({ padding: "18px 22px 22px" })}>
             <div style={{ fontSize: 12, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
               Change status from <strong>{statusPwModal.fromStatus}</strong> to <strong>{statusPwModal.newStatus}</strong>?
             </div>
@@ -1257,6 +1276,7 @@ var CodDatabase = function (props) {
             <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
               <Btn col="gray" onClick={function () { setStatusPwModal(null); setStatusPwEntry(""); setStatusPwErr(""); }}>Cancel</Btn>
               <Btn col="blue" onClick={submitStatusPassword}>Confirm</Btn>
+            </div>
             </div>
           </div>
         </div>
