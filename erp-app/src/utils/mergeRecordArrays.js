@@ -56,6 +56,27 @@ export function mergeRecordArraysByNewest(localArr, remoteArr) {
 
 var RECENT_LOCAL_WRITE_MS = 10000;
 
+function readRestoreGraceUntil() {
+  try {
+    if (typeof window !== "undefined" && window._idbCache && window._idbCache.tc3_restore_grace_until) {
+      return String(window._idbCache.tc3_restore_grace_until);
+    }
+    if (typeof window !== "undefined" && window.localStorage) {
+      var raw = window.localStorage.getItem("tc3_restore_grace_until");
+      if (raw) {
+        try { return String(JSON.parse(raw)); } catch (_e) { return String(raw); }
+      }
+    }
+  } catch (_e) {}
+  return "";
+}
+
+function isRestoreGraceActive() {
+  var until = readRestoreGraceUntil();
+  if (!until) return false;
+  try { return new Date(until).getTime() > Date.now(); } catch (_e) { return false; }
+}
+
 function isRecentLocalWrite(storageKey) {
   var recent = {};
   try {
@@ -119,7 +140,39 @@ function mergeRecordArraysServerMembership(localArr, remoteArr, storageKey) {
   return result.concat(noId);
 }
 
+/** During backup restore, local arrays replace server membership until grace expires. */
+function mergeRecordArraysLocalMembership(localArr, remoteArr) {
+  var remoteById = {};
+  (remoteArr || []).forEach(function (row) {
+    if (row && row.id != null) remoteById[String(row.id)] = row;
+  });
+
+  var result = [];
+  var noId = [];
+  (localArr || []).forEach(function (row) {
+    if (!row || typeof row !== "object") return;
+    if (row.id == null) {
+      noId.push(row);
+      return;
+    }
+    var id = String(row.id);
+    var remote = remoteById[id];
+    if (!remote) {
+      result.push(row);
+      return;
+    }
+    var pts = recordSortTs(row);
+    var rts = recordSortTs(remote);
+    result.push(pts >= rts ? row : remote);
+  });
+
+  return result.concat(noId);
+}
+
 function mergeRecordArraysForPull(localArr, remoteArr, storageKey) {
+  if (isRestoreGraceActive()) {
+    return mergeRecordArraysLocalMembership(localArr, remoteArr);
+  }
   if (isRecentLocalWrite(storageKey)) {
     var merged = mergeRecordArraysByNewest(localArr, remoteArr);
     return applyRecentLocalMembership(localArr, merged, storageKey);

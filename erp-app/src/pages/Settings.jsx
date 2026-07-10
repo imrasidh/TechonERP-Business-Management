@@ -547,8 +547,11 @@ var Settings = function (props) {
             });
           };
           restoreFn(backup.data).then(function () {
-            setBakMsg({ type: "success", text: "Restore complete (" + salesCount + " sales). Reloading in 2 seconds..." });
-            setTimeout(function () { window.location.reload(); }, 2000);
+            var msg = "Restore complete (" + salesCount + " sales)";
+            if (isNetworkMode) msg += " — uploaded to MySQL server";
+            msg += ". Reloading in 3 seconds...";
+            setBakMsg({ type: "success", text: msg });
+            setTimeout(function () { window.location.reload(); }, 3000);
           }).catch(function (err) {
             setBakMsg({ type: "error", text: "Restore failed: " + (err && err.message ? err.message : String(err)) });
           });

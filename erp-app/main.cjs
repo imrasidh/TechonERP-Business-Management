@@ -15,7 +15,7 @@
  *      anyway — they only accelerate the user's own trial expiry.
  */
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -2499,6 +2499,22 @@ function createWindow() {
 
   loadMainRenderer(mainWindow);
   mainWindow.removeMenu();
+  /* Native right-click menu for text copy/paste in renderer fields. */
+  mainWindow.webContents.on('context-menu', function (_event, params) {
+    const hasSelection = !!(params && params.selectionText && params.selectionText.trim());
+    const isEditable = !!(params && params.isEditable);
+    if (!hasSelection && !isEditable) return;
+    const menuTemplate = [
+      { role: 'copy', enabled: hasSelection },
+      { role: 'selectAll' }
+    ];
+    if (isEditable) {
+      menuTemplate.unshift({ role: 'paste' });
+      menuTemplate.unshift({ role: 'cut', enabled: hasSelection });
+    }
+    const menu = Menu.buildFromTemplate(menuTemplate);
+    menu.popup({ window: mainWindow });
+  });
 
   mainWindow.once('ready-to-show', () => {
     mainReadyToShow = true;

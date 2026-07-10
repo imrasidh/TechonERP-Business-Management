@@ -377,8 +377,11 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     }
     (s.paymentHistory || []).forEach(function (ph) {
       var a = round2(ph.amount || 0);
-      if (a <= 0) return;
-      parts.push({ accountId: cashBankFromMethod(ph.cashMethod), debit: a, credit: 0, memo: ph.note || "Payment" });
+      if (a > 0) {
+        parts.push({ accountId: cashBankFromMethod(ph.cashMethod), debit: a, credit: 0, memo: ph.note || "Payment" });
+      } else if (a < 0) {
+        parts.push({ accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: -a, memo: ph.note || "Payment reversal" });
+      }
     });
     var phSum = (s.paymentHistory || []).reduce(function (a, ph) { return a + round2(ph.amount || 0); }, 0);
     var arAmt = round2(tot - phSum);
@@ -435,11 +438,17 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     add(dt, "purchase", p.id, pp, "Purchase " + (p.purchaseNo || ""));
     (p.paymentHistory || []).forEach(function (ph, j) {
       var a = round2(ph.amount || 0);
-      if (a <= 0) return;
-      add(ph.date || dt, "purchase_payment", p.id + "-pay-" + j, [
-        { accountId: GL.AP, debit: a, credit: 0 },
-        { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: a },
-      ], "Supplier pay");
+      if (a > 0) {
+        add(ph.date || dt, "purchase_payment", p.id + "-pay-" + j, [
+          { accountId: GL.AP, debit: a, credit: 0 },
+          { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: a },
+        ], "Supplier pay");
+      } else if (a < 0) {
+        add(ph.date || dt, "purchase_payment", p.id + "-pay-" + j, [
+          { accountId: cashBankFromMethod(ph.cashMethod), debit: -a, credit: 0 },
+          { accountId: GL.AP, debit: 0, credit: -a },
+        ], "Supplier payment reversal");
+      }
     });
   });
 
@@ -473,27 +482,40 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     if (mp._isOpening) {
       (mp.paymentHistory || []).forEach(function (ph, j) {
         var a = round2(ph.amount || 0);
-        if (a <= 0) return;
-        add(ph.date || "", "manual_payable_pay", mp.id + "-ph-" + j, [
-          { accountId: GL.AP, debit: a, credit: 0 },
-          { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: a },
-        ], "Pay loan");
+        if (a > 0) {
+          add(ph.date || "", "manual_payable_pay", mp.id + "-ph-" + j, [
+            { accountId: GL.AP, debit: a, credit: 0 },
+            { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: a },
+          ], "Pay loan");
+        } else if (a < 0) {
+          add(ph.date || "", "manual_payable_pay", mp.id + "-ph-" + j, [
+            { accountId: cashBankFromMethod(ph.cashMethod), debit: -a, credit: 0 },
+            { accountId: GL.AP, debit: 0, credit: -a },
+          ], "Loan payment reversal");
+        }
       });
       return;
     }
     var amt = round2(mp.amount || 0);
     if (amt <= 0) return;
+    var invLinked = !!(mp && mp.productId);
     add(mp.date || "", "manual_payable", mp.id, [
-      { accountId: cashBankFromMethod(mp.paymentMethod), debit: amt, credit: 0, memo: "Borrowed" },
+      { accountId: invLinked ? GL.INV : cashBankFromMethod(mp.paymentMethod), debit: amt, credit: 0, memo: invLinked ? "Inventory inflow via payable" : "Borrowed" },
       { accountId: GL.AP, debit: 0, credit: amt },
     ], mp.source || "Manual payable");
     (mp.paymentHistory || []).forEach(function (ph, j) {
       var a = round2(ph.amount || 0);
-      if (a <= 0) return;
-      add(ph.date || "", "manual_payable_pay", mp.id + "-ph-" + j, [
-        { accountId: GL.AP, debit: a, credit: 0 },
-        { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: a },
-      ], "Repay");
+      if (a > 0) {
+        add(ph.date || "", "manual_payable_pay", mp.id + "-ph-" + j, [
+          { accountId: GL.AP, debit: a, credit: 0 },
+          { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: a },
+        ], "Repay");
+      } else if (a < 0) {
+        add(ph.date || "", "manual_payable_pay", mp.id + "-ph-" + j, [
+          { accountId: cashBankFromMethod(ph.cashMethod), debit: -a, credit: 0 },
+          { accountId: GL.AP, debit: 0, credit: -a },
+        ], "Repay reversal");
+      }
     });
   });
 
@@ -501,11 +523,17 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     if (mr._isOpening) {
       (mr.paymentHistory || []).forEach(function (ph, j) {
         var a = round2(ph.amount || 0);
-        if (a <= 0) return;
-        add(ph.date || "", "manual_receivable_coll", mr.id + "-ph-" + j, [
-          { accountId: cashBankFromMethod(ph.cashMethod), debit: a, credit: 0 },
-          { accountId: GL.AR, debit: 0, credit: a },
-        ], "Collect");
+        if (a > 0) {
+          add(ph.date || "", "manual_receivable_coll", mr.id + "-ph-" + j, [
+            { accountId: cashBankFromMethod(ph.cashMethod), debit: a, credit: 0 },
+            { accountId: GL.AR, debit: 0, credit: a },
+          ], "Collect");
+        } else if (a < 0) {
+          add(ph.date || "", "manual_receivable_coll", mr.id + "-ph-" + j, [
+            { accountId: GL.AR, debit: -a, credit: 0 },
+            { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: -a },
+          ], "Collection reversal");
+        }
       });
       return;
     }
@@ -517,11 +545,17 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     ], mr.person || "Manual receivable");
     (mr.paymentHistory || []).forEach(function (ph, j) {
       var a = round2(ph.amount || 0);
-      if (a <= 0) return;
-      add(ph.date || "", "manual_receivable_coll", mr.id + "-ph-" + j, [
-        { accountId: cashBankFromMethod(ph.cashMethod), debit: a, credit: 0 },
-        { accountId: GL.AR, debit: 0, credit: a },
-      ], "Collect");
+      if (a > 0) {
+        add(ph.date || "", "manual_receivable_coll", mr.id + "-ph-" + j, [
+          { accountId: cashBankFromMethod(ph.cashMethod), debit: a, credit: 0 },
+          { accountId: GL.AR, debit: 0, credit: a },
+        ], "Collect");
+      } else if (a < 0) {
+        add(ph.date || "", "manual_receivable_coll", mr.id + "-ph-" + j, [
+          { accountId: GL.AR, debit: -a, credit: 0 },
+          { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: -a },
+        ], "Collect reversal");
+      }
     });
   });
 

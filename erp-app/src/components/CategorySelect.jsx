@@ -43,8 +43,27 @@ export default function CategorySelect(props) {
     hint = "Enable category groups in Settings → Categories (Main PC).";
   }
 
+  var focusSubAfterGroupChange = !!props.focusSubAfterGroupChange;
+  var onSubSelected = props.onSubSelected;
+  var mainSelectProps = props.mainSelectProps || {};
+  var subSelectProps = props.subSelectProps || {};
+
   var mainSelect = (
-    <Sel label={mainLabel} value={groupId} onChange={handleGroupChange} disabled={!groups.length}>
+    <Sel
+      label={mainLabel}
+      value={groupId}
+      onChange={function (e) {
+        handleGroupChange(e);
+        if (focusSubAfterGroupChange && subSelectProps.id) {
+          setTimeout(function () {
+            var el = document.getElementById(subSelectProps.id);
+            if (el && typeof el.focus === "function") el.focus();
+          }, 0);
+        }
+      }}
+      disabled={!groups.length}
+      {...mainSelectProps}
+    >
       {groups.length === 0 && <option value="">—</option>}
       {groups.map(function (grp) {
         return (
@@ -57,7 +76,16 @@ export default function CategorySelect(props) {
   );
 
   var subSelect = (
-    <Sel label={subLabel} value={subValue} onChange={handleSubChange} disabled={!groups.length}>
+    <Sel
+      label={subLabel}
+      value={subValue}
+      onChange={function (e) {
+        handleSubChange(e);
+        if (typeof onSubSelected === "function") onSubSelected(e.target.value);
+      }}
+      disabled={!groups.length}
+      {...subSelectProps}
+    >
       {subOpts.map(function (c) {
         return <option key={groupId + "-" + c} value={c}>{c}</option>;
       })}

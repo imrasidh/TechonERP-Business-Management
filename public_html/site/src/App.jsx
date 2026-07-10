@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import {
-  BASE_CLIENT_PRICING_LKR,
   BASE_PRICING_LKR,
   DEFAULT_COUNTRY,
   PLAN_PERIODS,
@@ -16,6 +15,28 @@ import {
 } from "./config/currencyMapping";
 
 const goto = (id) => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+
+const SectionLabel = ({ children }) => (
+  <span className="section-label mb-4">{children}</span>
+);
+
+const TrustBar = () => (
+  <section className="border-y border-indigo-100/80 bg-gradient-to-r from-indigo-50/80 via-white to-violet-50/80">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-5 grid grid-cols-2 sm:grid-cols-4 gap-4 sm:gap-6">
+      {[
+        ["📴", "Works offline"],
+        ["🖥️", "Windows 10 / 11"],
+        ["🌍", "26+ currencies"],
+        ["🔒", "Data stays on your PC"],
+      ].map(([icon, label]) => (
+        <div key={label} className="flex items-center justify-center sm:justify-start gap-2.5 text-sm font-semibold text-gray-700">
+          <span className="text-lg" aria-hidden>{icon}</span>
+          <span>{label}</span>
+        </div>
+      ))}
+    </div>
+  </section>
+);
 
 /* ─── LOGO SVG ──────────────────────────────────────────────────── */
 const LOGO_SRC = "data:image/png;base64,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";
@@ -425,10 +446,10 @@ const Navbar = () => {
     obs.observe(hero);
     return () => obs.disconnect();
   }, []);
-  const links = [["Features","features"],["Screenshots","screenshots"],["Pricing","pricing"],["How It Works","howitworks"],["Contact","footer"]];
-  const navBg   = onDark ? "rgba(8,6,20,0.60)"        : "rgba(255,255,255,0.97)";
+  const links = [["Features","features"],["Pricing","pricing"],["Contact","footer"]];
+  const navBg   = onDark ? "rgba(8,6,20,0.75)"        : "rgba(255,255,255,0.97)";
   const shadow  = onDark ? "none"                      : "0 2px 24px rgba(99,102,241,0.10)";
-  const blur    = onDark ? "blur(0px)"                 : "blur(18px)";
+  const blur    = onDark ? "blur(12px)"                : "blur(18px)";
   const txtMain = onDark ? "#ffffff"                   : "#111827";
   const txtSub  = onDark ? "rgba(255,255,255,0.55)"    : "#9ca3af";
   const txtNav  = onDark ? "#ffffff"                   : "#374151";
@@ -496,560 +517,159 @@ const Navbar = () => {
 
 /* ─── HERO ──────────────────────────────────────────────────────── */
 const Hero = () => (
-  <section id="hero" className="relative min-h-screen flex flex-col justify-center overflow-hidden"
-    style={{background:"linear-gradient(160deg,#0a0818 0%,#160d3a 45%,#1a1245 100%)"}}>
-    {/* Ambient glow layers — soft, no hard edges */}
-    <div className="absolute inset-0 pointer-events-none overflow-hidden">
-      <div style={{position:"absolute",top:"-10%",left:"-5%",width:"60%",height:"70%",background:"radial-gradient(ellipse,rgba(99,51,255,0.18) 0%,transparent 70%)"}}/>
-      <div style={{position:"absolute",bottom:"-10%",right:"-5%",width:"55%",height:"65%",background:"radial-gradient(ellipse,rgba(56,106,255,0.15) 0%,transparent 70%)"}}/>
-      <div style={{position:"absolute",top:"40%",left:"40%",width:"40%",height:"40%",background:"radial-gradient(ellipse,rgba(139,92,246,0.10) 0%,transparent 70%)"}}/>
+  <section id="hero" className="relative overflow-hidden pt-24 pb-0 sm:pt-28"
+    style={{background:"linear-gradient(165deg,#08061a 0%,#120a32 40%,#1a1048 100%)"}}>
+    <div className="absolute inset-0 pointer-events-none">
+      <div className="absolute top-0 left-1/4 h-96 w-96 rounded-full bg-violet-600/20 blur-[100px]" />
+      <div className="absolute bottom-0 right-1/4 h-80 w-80 rounded-full bg-indigo-500/15 blur-[90px]" />
     </div>
 
-    {/* Main content */}
-    <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full pt-20 sm:pt-24 pb-12 sm:pb-16">
+    <div className="relative max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 sm:pb-20">
+      <div className="lg:grid lg:grid-cols-2 lg:gap-12 lg:items-center">
+        <div className="text-center lg:text-left">
+          <SectionLabel>Offline-first ERP</SectionLabel>
+          <h1 className="font-black text-white tracking-tight mb-4 leading-[1.08]"
+            style={{fontSize:"clamp(2rem,5vw,3.5rem)"}}>
+            Run your shop on{" "}
+            <span className="bg-gradient-to-r from-violet-300 via-indigo-300 to-blue-300 bg-clip-text text-transparent">
+              one Windows app
+            </span>
+          </h1>
+          <p className="text-white/60 leading-relaxed mb-8 max-w-xl mx-auto lg:mx-0 text-lg">
+            Sales, stock, invoices, repairs and accounts — on your PC, no internet required. Add cloud view when you need it.
+          </p>
 
-      {/* Badge */}
-      <div className="flex justify-center mb-6 sm:mb-10">
-        <div className="inline-flex items-center gap-2 border border-white/10 text-white/60 font-medium rounded-full"
-          style={{background:"rgba(255,255,255,0.05)",backdropFilter:"blur(12px)",fontSize:"0.65rem",padding:"6px 14px"}}>
-          <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse flex-shrink-0"/>
-          <span className="hidden sm:inline">Offline-First Desktop App · Optional Online Sync · Windows 10 / 11</span>
-          <span className="sm:hidden">Offline-First · Optional Online Sync · Windows 10/11</span>
-        </div>
-      </div>
-
-      {/* Logo + Headline */}
-      <div className="text-center mb-8 sm:mb-12">
-        <div className="flex justify-center mb-4 sm:mb-6">
-          <img src={LOGO_SRC} alt="TechonERP" style={{width:72,height:72,borderRadius:"22%",boxShadow:"0 0 50px rgba(139,92,246,0.5)"}} className="sm:w-24 sm:h-24"/>
-        </div>
-        <h1 className="font-black text-white tracking-tight mb-4"
-          style={{fontSize:"clamp(2rem,8vw,4.5rem)",lineHeight:1.05}}>
-          All-in-One Smart ERP<br/>
-          <span style={{background:"linear-gradient(95deg,#c4b5fd 0%,#818cf8 40%,#60a5fa 100%)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
-            for Every Business
-          </span>
-        </h1>
-        <p className="text-white/55 mx-auto leading-relaxed mb-6 px-2"
-          style={{fontSize:"clamp(0.875rem,3.5vw,1.125rem)",maxWidth:"38rem"}}>
-          Sales · Inventory · Invoices · Repairs · Accounts — all in one Windows .exe.
-          Works 100% offline. Optional Online Sync to view your data from anywhere.
-        </p>
-
-        {/* CTA Buttons */}
-        <div className="flex flex-col sm:flex-row justify-center gap-3 sm:gap-4 px-4 sm:px-0">
-          <a href="https://techon.lk/downloads/latest.zip" target="_blank" rel="noreferrer"
-            className="flex items-center justify-center gap-2 font-bold rounded-2xl text-white transition-all duration-200 hover:scale-105"
-            style={{padding:"14px 28px",background:"linear-gradient(135deg,#6d28d9,#4f46e5)",boxShadow:"0 8px 32px rgba(99,51,255,0.45)",fontSize:"0.9rem"}}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Download Free Trial
-          </a>
-          <button onClick={()=>goto("screenshots")}
-            className="flex items-center justify-center gap-2 font-bold rounded-2xl text-white/80 border border-white/20 hover:border-white/40 hover:text-white transition-all duration-200"
-            style={{padding:"14px 28px",background:"rgba(255,255,255,0.06)",backdropFilter:"blur(10px)",fontSize:"0.9rem"}}>
-            <span className="text-violet-400">▶</span>See Screenshots
-          </button>
-        </div>
-      </div>
-
-      {/* Stats strip */}
-      <div className="flex flex-wrap justify-center gap-x-8 gap-y-4 sm:gap-x-12 mb-10 sm:mb-14 px-4 sm:px-0">
-        {[["20+","Modules"],["26+","Currencies"],["Offline","+ Sync"],["7 Days","Free Trial"],["Win 10/11","Support"]].map(([v,l])=>(
-          <div key={l} className="text-center" style={{minWidth:60}}>
-            <p className="text-lg sm:text-xl font-black text-white leading-none">{v}</p>
-            <p className="text-white/40 mt-0.5 tracking-wide" style={{fontSize:"0.65rem"}}>{l}</p>
+          <div className="flex flex-col sm:flex-row justify-center lg:justify-start gap-3">
+            <a href="https://techon.lk/downloads/latest.zip" target="_blank" rel="noreferrer" className="btn-primary">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download free trial
+            </a>
+            <button type="button" onClick={() => goto("pricing")}
+              className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/20 bg-white/5 px-6 py-3 text-sm font-semibold text-white backdrop-blur-sm transition-colors hover:bg-white/10">
+              View pricing
+            </button>
           </div>
-        ))}
-      </div>
 
-      {/* Dashboard Preview — hidden on very small, shown from sm up */}
-      <div className="relative mx-auto hidden sm:block" style={{maxWidth:960}}>
-        <div style={{position:"absolute",inset:"-20px",background:"radial-gradient(ellipse at 50% 60%,rgba(99,51,255,0.25) 0%,transparent 70%)",pointerEvents:"none"}}/>
-        <div className="relative rounded-2xl overflow-hidden border border-white/10"
-          style={{boxShadow:"0 40px 120px rgba(0,0,20,0.8),0 0 0 1px rgba(255,255,255,0.06)",transform:"perspective(1200px) rotateX(4deg)"}}>
-          <div className="flex items-center gap-2 px-5 py-3 border-b border-white/5"
-            style={{background:"rgba(15,10,40,0.95)",backdropFilter:"blur(20px)"}}>
-            <div className="w-3 h-3 rounded-full bg-red-500/80"/>
-            <div className="w-3 h-3 rounded-full bg-yellow-500/80"/>
-            <div className="w-3 h-3 rounded-full bg-green-500/80"/>
-            <div className="flex-1 mx-4">
-              <div className="mx-auto w-48 bg-white/5 border border-white/10 rounded-full px-3 py-1 text-[9px] text-white/30 text-center">TechonERP — Dashboard</div>
+          <p className="mt-5 text-white/35 text-sm">7-day trial · No credit card · Human support on WhatsApp</p>
+        </div>
+
+        <div className="relative mt-12 lg:mt-0 mx-auto w-full max-w-lg lg:max-w-none">
+          <div className="absolute -inset-4 rounded-2xl bg-indigo-500/20 blur-2xl" aria-hidden />
+          <div className="relative rounded-xl overflow-hidden border border-white/10 shadow-2xl shadow-black/40">
+            <div className="flex items-center gap-2 px-4 py-2.5 border-b border-white/5 bg-[#0f0a28]/95">
+              <div className="w-2.5 h-2.5 rounded-full bg-red-500/80" />
+              <div className="w-2.5 h-2.5 rounded-full bg-yellow-500/80" />
+              <div className="w-2.5 h-2.5 rounded-full bg-green-500/80" />
+              <span className="flex-1 text-center text-[10px] text-white/40">TechonERP — Dashboard</span>
+              <span className="text-[9px] font-medium text-emerald-400">● Live</span>
             </div>
-            <span className="text-[9px] font-semibold px-2.5 py-1 rounded-full" style={{background:"rgba(34,197,94,0.15)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.2)"}}>● Online</span>
-            <span className="hidden sm:inline text-[9px] font-semibold px-2.5 py-1 rounded-full ml-2" style={{background:"rgba(99,102,241,0.15)",color:"#818cf8",border:"1px solid rgba(129,140,248,0.2)"}}>🔒 Admin Mode</span>
-          </div>
-          <div style={{height:400,background:"#f8fafc"}}>
-            <DashboardScreen/>
+            <div className="h-56 sm:h-72 bg-gray-50">
+              <DashboardScreen />
+            </div>
           </div>
         </div>
       </div>
-
-      {/* Mobile: show 3 floating feature pills instead of dashboard */}
-      <div className="sm:hidden grid grid-cols-1 gap-3 px-2">
-        {[
-          {icon:"📊",text:"Live Dashboard — Cash, Sales & Profit"},
-          {icon:"🛒",text:"POS Sales — Scan Barcode & Invoice"},
-          {icon:"🔧",text:"Repair Jobs — Track Every Device"},
-        ].map((item,i)=>(
-          <div key={i} className="flex items-center gap-3 px-4 py-3 rounded-2xl border border-white/10"
-            style={{background:"rgba(255,255,255,0.06)",backdropFilter:"blur(12px)"}}>
-            <span className="text-2xl flex-shrink-0">{item.icon}</span>
-            <span className="text-white/80 text-sm font-medium">{item.text}</span>
-          </div>
-        ))}
-        <p className="text-center text-white/30 text-xs mt-2">+ 17 more modules included</p>
-      </div>
     </div>
 
-    {/* Smooth wave into white section */}
-    <div className="absolute bottom-0 inset-x-0">
-      <svg viewBox="0 0 1440 80" preserveAspectRatio="none" className="w-full">
-        <path d="M0 80 C360 40 720 20 1080 50 C1260 65 1380 72 1440 80 L1440 80 L0 80Z" fill="white" opacity="0.06"/>
-        <path d="M0 80 C480 50 960 60 1440 44 L1440 80 L0 80Z" fill="white"/>
+    <div className="absolute bottom-0 inset-x-0 pointer-events-none">
+      <svg viewBox="0 0 1440 64" preserveAspectRatio="none" className="w-full h-8 sm:h-12">
+        <path d="M0 64 C360 20 720 48 1440 24 L1440 64 L0 64Z" fill="white" />
       </svg>
     </div>
   </section>
 );
 
 /* ─── FEATURES ──────────────────────────────────────────────────── */
-const featureGroups = [
-  {
-    id:"dashboard", icon:"📊", label:"Dashboard",
-    headline:"Your Business at a Glance",
-    summary:"See everything that matters the moment you open the app.",
-    color:"from-indigo-500 to-violet-600",
-    light:"bg-indigo-50 text-indigo-700 border-indigo-100",
-    items:[
-      {icon:"💵", title:"Cash & Bank Balance", desc:"Live view of cash in hand and bank balance, always up to date."},
-      {icon:"📈", title:"Today's Sales & Profit", desc:"See today's revenue and net profit at the top of every session."},
-      {icon:"📋", title:"Recent Sales Feed", desc:"Latest 5 transactions with customer name, amount and status."},
-      {icon:"⚠️", title:"Low Stock Alerts", desc:"Instantly see which products are running low or out of stock."},
-      {icon:"💳", title:"Receivables & Payables", desc:"Outstanding money owed to you and by you — visible at all times."},
-    ]
-  },
-  {
-    id:"sales", icon:"🛒", label:"Sales & Invoicing",
-    headline:"Sell Fast. Invoice in Seconds.",
-    summary:"A smooth POS experience built for speed and accuracy.",
-    color:"from-blue-500 to-indigo-600",
-    light:"bg-blue-50 text-blue-700 border-blue-100",
-    items:[
-      {icon:"🔍", title:"Search or Scan to Add Products", desc:"Add items by product name, code or USB barcode scanner — instantly."},
-      {icon:"👤", title:"Walk-in, New or Existing Customer", desc:"Choose customer type in one click. No bottlenecks at the counter."},
-      {icon:"🖨️", title:"A4, A5 & Thermal Print", desc:"Print invoices in any format — laser, inkjet or 80mm thermal receipt."},
-      {icon:"📝", title:"Quotations", desc:"Create quotes and convert them to invoices with a single click."},
-      {icon:"🛡️", title:"Warranty Policy on Invoice", desc:"Enable or disable warranty text on any invoice automatically."},
-      {icon:"💰", title:"Instant Payment Tracking", desc:"Mark invoices as paid, partial or outstanding. Track every rupee."},
-    ]
-  },
-  {
-    id:"inventory", icon:"📦", label:"Inventory",
-    headline:"Know Your Stock. Know Your Margins.",
-    summary:"Full visibility into what you have, what it's worth and what's low.",
-    color:"from-violet-500 to-purple-600",
-    light:"bg-violet-50 text-violet-700 border-violet-100",
-    items:[
-      {icon:"💲", title:"Cost vs Retail Value", desc:"See total stock value at purchase price and selling price side by side."},
-      {icon:"📉", title:"Profit Margin Per Category", desc:"Understand which categories earn most — with percentage breakdown."},
-      {icon:"🗂️", title:"Category-wise Overview", desc:"Group products by type. View units, value and margin per category."},
-      {icon:"🚨", title:"Low Stock & Out-of-Stock Alerts", desc:"Get instant visibility on items needing reorder."},
-      {icon:"💔", title:"Damaged Item Tracking", desc:"Record and monitor damaged goods separately from sellable stock."},
-    ]
-  },
-  {
-    id:"purchases", icon:"🏪", label:"Purchases & Suppliers",
-    headline:"Stay on Top of Every Order.",
-    summary:"Manage what you buy and who you buy from — all in one place.",
-    color:"from-emerald-500 to-teal-600",
-    light:"bg-emerald-50 text-emerald-700 border-emerald-100",
-    items:[
-      {icon:"🏢", title:"Supplier Profiles", desc:"Store supplier contact, location and full transaction history."},
-      {icon:"🧾", title:"Purchase Records", desc:"Log every purchase with invoice number, items, cost and date."},
-      {icon:"⏳", title:"Outstanding Payment Tracking", desc:"See exactly how much you owe each supplier and what's been cleared."},
-      {icon:"📊", title:"Purchase History", desc:"Full chronological history of all purchases per supplier."},
-    ]
-  },
-  {
-    id:"customers", icon:"👥", label:"Customers",
-    headline:"Build Better Customer Relationships.",
-    summary:"Everything you need to know about your customers — always ready.",
-    color:"from-orange-500 to-amber-500",
-    light:"bg-orange-50 text-orange-700 border-orange-100",
-    items:[
-      {icon:"📇", title:"Customer Profiles", desc:"Store name, phone, address and custom notes for every customer."},
-      {icon:"🕑", title:"Full Purchase History", desc:"View all past invoices for any customer in seconds."},
-      {icon:"💳", title:"Credit Balance Tracking", desc:"Monitor outstanding balances and credit given to each customer."},
-      {icon:"💸", title:"Total Spent Overview", desc:"See lifetime spending for any customer at a glance."},
-    ]
-  },
-  {
-    id:"finance", icon:"📒", label:"Accounts & Finance",
-    headline:"Complete Financial Control.",
-    summary:"Real accounting built in — no separate software needed.",
-    color:"from-indigo-600 to-blue-600",
-    light:"bg-indigo-50 text-indigo-700 border-indigo-100",
-    items:[
-      {icon:"🏦", title:"Cash in Hand & Bank Balance", desc:"Track physical cash and bank account balances separately."},
-      {icon:"📤", title:"Receivables & Payables", desc:"Full ledger of money owed to you and money you owe others."},
-      {icon:"📋", title:"Capital & Opening Balance", desc:"Record business capital invested and set opening balances."},
-      {icon:"🏷️", title:"Expense Tracking", desc:"Categorise and monitor all operational expenses over time."},
-      {icon:"🔖", title:"Cheque Register", desc:"Track cheques by party, bank, amount and status — Pending, Cleared, Bounced."},
-      {icon:"📊", title:"Net Profit Overview", desc:"See gross profit, total expenses and available profit at any time."},
-    ]
-  },
-  {
-    id:"reports", icon:"📈", label:"Reports & Analytics",
-    headline:"Insights That Drive Decisions.",
-    summary:"Nine report types covering every angle of your business.",
-    color:"from-cyan-500 to-blue-500",
-    light:"bg-cyan-50 text-cyan-700 border-cyan-100",
-    items:[
-      {icon:"📑", title:"Profit & Loss Summary", desc:"Clear P&L view: revenue, cost of goods, expenses and net profit."},
-      {icon:"📅", title:"Daily & Monthly Reports", desc:"Track sales and performance over any day or month."},
-      {icon:"🏭", title:"Inventory Report", desc:"Full stock value, category breakdown and margin analysis."},
-      {icon:"👥", title:"Customer Report", desc:"Top customers, total spent and outstanding balances."},
-      {icon:"🔧", title:"Repairs & Expenses Reports", desc:"Revenue from service jobs and full expense breakdown."},
-      {icon:"📃", title:"Full Business Report", desc:"One comprehensive report covering every aspect of your business."},
-    ]
-  },
-  {
-    id:"repairs", icon:"🔧", label:"Repairs",
-    headline:"Run Your Repair Workshop Professionally.",
-    summary:"Every job tracked from intake to delivery — nothing falls through the cracks.",
-    color:"from-rose-500 to-pink-600",
-    light:"bg-rose-50 text-rose-700 border-rose-100",
-    items:[
-      {icon:"📥", title:"Job Intake", desc:"Log device, brand, model, customer and problem description at intake."},
-      {icon:"🔄", title:"Status Pipeline", desc:"Move jobs through Pending → Repairing → Ready → Delivered."},
-      {icon:"💵", title:"Estimated Cost Tracking", desc:"Set and update repair cost estimates for each job."},
-      {icon:"🖨️", title:"Job Card Printing", desc:"Print a repair receipt for the customer with full job details."},
-      {icon:"📊", title:"Repair Analytics", desc:"Track total jobs, revenue from repairs and completion rates."},
-    ]
-  },
-  {
-    id:"returns", icon:"↩️", label:"Returns",
-    headline:"Handle Returns Without the Hassle.",
-    summary:"Process refunds and restocks cleanly — for both sales and purchases.",
-    color:"from-amber-500 to-orange-500",
-    light:"bg-amber-50 text-amber-700 border-amber-100",
-    items:[
-      {icon:"🔙", title:"Sales Returns", desc:"Accept returned items from customers and issue refunds instantly."},
-      {icon:"🏭", title:"Auto Restock", desc:"Returned items are automatically added back to inventory."},
-      {icon:"🏪", title:"Purchase Returns", desc:"Record items returned to suppliers with reason and amount."},
-      {icon:"📋", title:"Return History", desc:"Full log of all returns with original invoice reference."},
-    ]
-  },
-  {
-    id:"barcode", icon:"🏷️", label:"Barcode System",
-    headline:"Label Every Product Professionally.",
-    summary:"Print clean barcode labels for any product in your inventory.",
-    color:"from-slate-600 to-gray-700",
-    light:"bg-slate-50 text-slate-700 border-slate-100",
-    items:[
-      {icon:"🔍", title:"Search & Select Products", desc:"Find any product by name or code and queue it for printing."},
-      {icon:"🖨️", title:"Batch Label Printing", desc:"Set quantity and print multiple labels in one go."},
-      {icon:"🎨", title:"Label Design Customisation", desc:"Customise label layout and content to match your brand."},
-    ]
-  },
-  {
-    id:"audit", icon:"📋", label:"Audit Log",
-    headline:"Total Transparency. Zero Blind Spots.",
-    summary:"Every action in the system is tracked and searchable.",
-    color:"from-purple-600 to-indigo-700",
-    light:"bg-purple-50 text-purple-700 border-purple-100",
-    items:[
-      {icon:"🛒", title:"Sales Event Log", desc:"Every sale, edit and deletion is recorded with timestamp."},
-      {icon:"📦", title:"Purchase Event Log", desc:"All purchase entries and edits logged automatically."},
-      {icon:"💳", title:"Payment Event Log", desc:"Track every payment received or made — fully auditable."},
-      {icon:"🔍", title:"Searchable History", desc:"Filter logs by type — Sale, Purchase, Product, Repair or Payment."},
-    ]
-  },
-  {
-    id:"settings", icon:"⚙️", label:"Settings",
-    headline:"Fully Configured for Your Business.",
-    summary:"Set up once and the system works exactly the way you need.",
-    color:"from-gray-600 to-slate-700",
-    light:"bg-gray-50 text-gray-700 border-gray-100",
-    items:[
-      {icon:"🏪", title:"Shop Information", desc:"Set your shop name, address, phone, email, website and currency."},
-      {icon:"🧾", title:"Invoice Design", desc:"Customise invoice layout, footer message and display options."},
-      {icon:"🛡️", title:"Warranty Policy", desc:"Define warranty terms that auto-print on every invoice."},
-      {icon:"☁️", title:"Backup & Restore", desc:"One-click data backup with restore support for any Windows PC."},
-      {icon:"🔒", title:"Security & Access", desc:"Admin and Sales mode to control staff access to sensitive data."},
-    ]
-  },
-  {
-    id:"sync", icon:"🌐", label:"Online Sync",
-    headline:"View Your Business from Anywhere.",
-    summary:"Optional add-on — monitor your offline shop data live from any device, any location.",
-    color:"from-sky-500 to-cyan-600",
-    light:"bg-sky-50 text-sky-700 border-sky-100",
-    badge:"New",
-    items:[
-      {icon:"📱", title:"Access from Any Device", desc:"Open your secure web dashboard on your phone, tablet, or any browser — no installation needed."},
-      {icon:"👁️", title:"Read-Only Live View", desc:"View all your shop data in real time. Sales, inventory, accounts, reports — everything visible, nothing editable."},
-      {icon:"📊", title:"Live Dashboard", desc:"See today's sales, profit, stock value and receivables remotely — exactly as shown in the desktop app."},
-      {icon:"🧾", title:"Invoice & Sales History", desc:"Browse past invoices and sales records from anywhere without being at your shop."},
-      {icon:"📦", title:"Inventory Monitoring", desc:"Check stock levels, low-stock alerts and category breakdowns remotely at any time."},
-      {icon:"🔐", title:"Secure & Private", desc:"Your data stays on your PC. Sync is encrypted and read-only. Nothing can be changed remotely."},
-    ]
-  },
+const coreModules = [
+  { icon: "📊", title: "Dashboard", desc: "Cash, sales, stock and profit in one view.", tint: "from-indigo-500/10 to-violet-500/10" },
+  { icon: "🛒", title: "Sales & POS", desc: "Invoices, barcode scan, thermal and A4 print.", tint: "from-blue-500/10 to-indigo-500/10" },
+  { icon: "📦", title: "Inventory", desc: "Stock levels, margins and low-stock alerts.", tint: "from-violet-500/10 to-purple-500/10" },
+  { icon: "📒", title: "Accounts", desc: "Receivables, payables, expenses and cheques.", tint: "from-emerald-500/10 to-teal-500/10" },
+  { icon: "🔧", title: "Repairs", desc: "Track jobs from intake to delivery.", tint: "from-rose-500/10 to-pink-500/10" },
+  { icon: "📈", title: "Reports", desc: "P&L, daily sales and business summaries.", tint: "from-cyan-500/10 to-blue-500/10" },
+  { icon: "👥", title: "Customers", desc: "Profiles, history and credit balances.", tint: "from-amber-500/10 to-orange-500/10" },
+  { icon: "🌐", title: "Online Sync", desc: "Optional read-only view from any browser.", tint: "from-sky-500/10 to-cyan-500/10" },
 ];
 
-const Features = () => {
-  const [active, setActive] = useState("dashboard");
-  const group = featureGroups.find(g => g.id === active);
-  return (
-    <section id="features" className="py-16 sm:py-24 bg-white">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-
-        {/* Header */}
-        <div className="text-center max-w-3xl mx-auto mb-14">
-          <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
-            <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Everything You Need
-          </span>
-          <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">
-            Everything You Need to<br/>Run Your Business
-          </h2>
-          <p className="text-gray-500 text-lg mb-5">
-            13 module groups · 50+ features · offline-first Windows app · optional online sync
-          </p>
-          {/* Quick stats row */}
-          <div className="flex flex-wrap justify-center gap-4">
-            {[["🖥️","Desktop App"],["📴","Offline-First"],["🌐","Online Sync"],["🌍","26+ Currencies"]].map(([ic,lb])=>(
-              <span key={lb} className="flex items-center gap-1.5 bg-gray-50 border border-gray-100 text-gray-600 text-xs font-semibold px-3 py-1.5 rounded-full">
-                <span>{ic}</span>{lb}
-              </span>
-            ))}
-          </div>
-        </div>
-
+const Features = () => (
+  <section id="features" className="py-20 sm:py-28 bg-white">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center max-w-2xl mx-auto mb-14">
+        <SectionLabel>Core modules</SectionLabel>
+        <h2 className="text-3xl sm:text-4xl font-black text-gray-900 mb-4 leading-tight">
+          Everything in one place
+        </h2>
+        <p className="text-gray-500 text-lg leading-relaxed">
+          One Windows app for daily shop work — no juggling spreadsheets or multiple tools.
+        </p>
       </div>
-
-        {/* Tab bar — horizontal scroll on mobile (full-width strip; spacious, snap) */}
-        <div className="sm:hidden w-full border-y border-white/10 bg-gradient-to-b from-[#0c0a18] via-[#12102a] to-[#0e0c1a] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] mb-8">
-          <div className="border-b border-white/10 px-4 pb-3 pt-4">
-            <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-violet-300/95">Module browser</p>
-            <p className="mt-1.5 text-[0.8125rem] font-medium leading-snug text-slate-300">Pick a module — details load below.</p>
-            <p className="mt-2 flex items-center gap-1.5 text-[0.7rem] text-slate-500">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-500" stroke="currentColor" strokeWidth="2" aria-hidden>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01" />
-              </svg>
-              Swipe sideways for more modules
-            </p>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+        {coreModules.map((m) => (
+          <div key={m.title} className={`card-lift rounded-2xl border border-gray-100 bg-gradient-to-br ${m.tint} p-5`}>
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white shadow-sm text-xl" aria-hidden>
+              {m.icon}
+            </div>
+            <h3 className="mt-4 font-bold text-gray-900">{m.title}</h3>
+            <p className="mt-1.5 text-sm text-gray-600 leading-relaxed">{m.desc}</p>
           </div>
-          <div className="relative">
-            <div className="pointer-events-none absolute left-0 top-0 z-[1] h-full w-8 bg-gradient-to-r from-[#0e0c1a] to-transparent" aria-hidden />
-            <div className="pointer-events-none absolute right-0 top-0 z-[1] h-full w-8 bg-gradient-to-l from-[#0e0c1a] to-transparent" aria-hidden />
-            <div
-              className="module-browser-scroll flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth px-4 py-4 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-              style={{ WebkitOverflowScrolling: "touch" }}
-            >
-              {featureGroups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => setActive(g.id)}
-                  className={`flex min-h-[5.25rem] w-[6.25rem] shrink-0 snap-start flex-col items-center justify-center gap-1.5 rounded-2xl px-2 py-3 text-center transition-all duration-200 active:scale-[0.98] ${
-                    active === g.id
-                      ? "bg-gradient-to-br from-violet-600 to-indigo-600 shadow-lg shadow-indigo-900/40 ring-1 ring-white/25"
-                      : "bg-white/[0.06] ring-1 ring-white/[0.08] hover:bg-white/[0.1]"
-                  }`}
-                >
-                  <span className="text-[1.35rem] leading-none" aria-hidden>
-                    {g.icon}
-                  </span>
-                  <span
-                    className={`line-clamp-2 max-h-10 text-[10px] font-semibold leading-tight ${
-                      active === g.id ? "text-white" : "text-slate-300"
-                    }`}
-                  >
-                    {g.label}
-                  </span>
-                  {g.badge ? (
-                    <span className="rounded-full bg-amber-500/90 px-1.5 py-0.5 text-[0.55rem] font-bold uppercase tracking-wide text-amber-950">
-                      {g.badge}
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-
-        {/* Desktop tab bar */}
-        <div className="hidden sm:flex flex-wrap justify-center gap-2 mb-8">
-          {featureGroups.map(g => (
-            <button key={g.id} onClick={()=>setActive(g.id)}
-              className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200"
-              style={active===g.id ? {
-                background:"linear-gradient(135deg,#4f46e5,#7c3aed)",
-                color:"#fff",
-                boxShadow:"0 4px 20px rgba(99,51,255,0.40)",
-                transform:"translateY(-2px)"
-              } : {
-                background:"#f3f4f6",
-                color:"#374151",
-                border:"1px solid #e5e7eb"
-              }}>
-              <div className="relative inline-flex">
-                <span>{g.icon}</span>
-                {g.badge && <span style={{position:"absolute",top:-6,right:-10,background:"#f59e0b",color:"#fff",fontSize:"0.5rem",fontWeight:800,padding:"1px 4px",borderRadius:4}}>{g.badge}</span>}
-              </div>
-              <span>{g.label}</span>
-            </button>
-          ))}
-        </div>
-
-        {/* Active group panel */}
-        {group && (
-          <div className="rounded-3xl overflow-hidden border border-gray-100"
-            style={{boxShadow:"0 8px 40px rgba(99,102,241,0.08)"}}>
-            {/* Group header banner */}
-            <div className={`bg-gradient-to-r ${group.color} px-5 sm:px-8 py-6 sm:py-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4`}>
-              <div className="flex items-center gap-5">
-                <div className="w-16 h-16 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center text-4xl flex-shrink-0">
-                  {group.icon}
-                </div>
-                <div>
-                  <p className="text-white/70 text-xs font-bold uppercase tracking-widest mb-1">Module</p>
-                  <h3 className="text-2xl font-black text-white leading-tight">{group.headline}</h3>
-                  <p className="text-white/75 text-sm mt-1">{group.summary}</p>
-                </div>
-              </div>
-              <div className="flex-shrink-0">
-                <span className="bg-white/20 text-white text-xs font-bold px-3 py-1.5 rounded-full">
-                  {group.items.length} features
-                </span>
-              </div>
-            </div>
-
-            {/* Feature cards grid */}
-            <div className="bg-white p-3 sm:p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-4">
-              {group.items.map((item, i) => (
-                <div key={i}
-                  className="flex items-start gap-4 p-4 rounded-2xl border border-gray-50 cursor-default"
-                  style={{transition:"background 0.2s, border-color 0.2s, box-shadow 0.2s"}}
-                  onMouseEnter={e=>{e.currentTarget.style.background="#f8f7ff";e.currentTarget.style.borderColor="#e0e7ff";e.currentTarget.style.boxShadow="0 4px 16px rgba(99,102,241,0.08)"}}
-                  onMouseLeave={e=>{e.currentTarget.style.background="";e.currentTarget.style.borderColor="#fafafa";e.currentTarget.style.boxShadow=""}}>
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl flex-shrink-0"
-                    style={{background:"linear-gradient(135deg,rgba(99,102,241,0.1),rgba(139,92,246,0.1))"}}>
-                    {item.icon}
-                  </div>
-                  <div>
-                    <p className="font-bold text-gray-900 text-sm mb-0.5">{item.title}</p>
-                    <p className="text-gray-400 text-xs leading-relaxed">{item.desc}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Bottom nav hint */}
-            <div className="bg-gray-50 border-t border-gray-100 px-6 py-3 flex items-center justify-between">
-              <p className="text-xs text-gray-400">
-                <span className="sm:hidden">Tap a tab above</span><span className="hidden sm:inline">Click any tab above</span> to explore more modules
-              </p>
-              <div className="flex gap-1">
-                {featureGroups.map(g=>(
-                  <div key={g.id} onClick={()=>setActive(g.id)}
-                    className="w-2 h-2 rounded-full cursor-pointer transition-all duration-200"
-                    style={{background: g.id===active ? "#6d28d9" : "#e5e7eb", transform: g.id===active?"scale(1.3)":"scale(1)"}}/>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+        ))}
       </div>
-    </section>
-  );
-};
+      <p className="text-center text-sm text-gray-400 mt-10">
+        Plus purchases, returns, barcodes, suppliers, audit log and more.
+      </p>
+    </div>
+  </section>
+);
 
 /* ─── SCREENSHOTS ───────────────────────────────────────────────── */
 const screens = [
-  {label:"Dashboard",comp:<DashboardScreen/>},
-  {label:"Sales & POS",comp:<SalesScreen/>},
-  {label:"Inventory",comp:<InventoryScreen/>},
-  {label:"Repairs",comp:<RepairsScreen/>},
-  {label:"Accounts",comp:<AccountsScreen/>},
-  {label:"Reports",comp:<ReportsScreen/>},
+  { label: "Dashboard", comp: <DashboardScreen /> },
+  { label: "Sales", comp: <SalesScreen /> },
+  { label: "Inventory", comp: <InventoryScreen /> },
 ];
 
 const Screenshots = () => {
   const [active, setActive] = useState(0);
   return (
-    <section id="screenshots" className="py-16 sm:py-24 bg-gradient-to-br from-slate-50 to-indigo-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-2xl mx-auto mb-12">
-          <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4"><span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Real UI · Actual Screens</span>
-          <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-4 leading-tight">See the Real TechonERP</h2>
-          <p className="text-gray-500 text-lg">Every screen shown is a faithful recreation of the actual app UI — exactly what you get after installation.</p>
+    <section id="screenshots" className="py-20 sm:py-28 bg-gradient-to-b from-slate-50 to-white">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-xl mx-auto mb-10">
+          <SectionLabel>Product preview</SectionLabel>
+          <h2 className="text-3xl sm:text-4xl font-black text-gray-900 mb-3">See the app</h2>
+          <p className="text-gray-500">Tap a screen to preview the real TechonERP interface.</p>
         </div>
-      </div>
-
-      {/* Screenshot picker — horizontal scroll on mobile (full-width strip; same pattern as Module Browser) */}
-      <div className="sm:hidden w-full border-y border-white/10 bg-gradient-to-b from-[#0c0a18] via-[#12102a] to-[#0e0c1a] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] mb-8">
-        <div className="border-b border-white/10 px-4 pb-3 pt-4">
-          <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-violet-300/95">App screenshots</p>
-          <p className="mt-1.5 text-[0.8125rem] font-medium leading-snug text-slate-300">Tap a screen to preview.</p>
-          <p className="mt-2 flex items-center gap-1.5 text-[0.7rem] text-slate-500">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-500" stroke="currentColor" strokeWidth="2" aria-hidden>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12M8 12h12M8 17h12M4 7h.01M4 12h.01M4 17h.01" />
-            </svg>
-            Swipe sideways for more screens
-          </p>
-        </div>
-        <div className="relative">
-          <div className="pointer-events-none absolute left-0 top-0 z-[1] h-full w-8 bg-gradient-to-r from-[#0e0c1a] to-transparent" aria-hidden />
-          <div className="pointer-events-none absolute right-0 top-0 z-[1] h-full w-8 bg-gradient-to-l from-[#0e0c1a] to-transparent" aria-hidden />
-          <div
-            className="screenshots-picker-scroll flex snap-x snap-mandatory gap-3 overflow-x-auto scroll-smooth px-4 py-4 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-            style={{ WebkitOverflowScrolling: "touch" }}
-          >
-            {screens.map((s, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => setActive(i)}
-                className={`flex min-h-[5.25rem] w-[6.75rem] shrink-0 snap-start flex-col items-center justify-center rounded-2xl px-2 py-3 text-center transition-all duration-200 active:scale-[0.98] ${
-                  active === i
-                    ? "bg-gradient-to-br from-violet-600 to-indigo-600 shadow-lg shadow-indigo-900/40 ring-1 ring-white/25"
-                    : "bg-white/[0.06] ring-1 ring-white/[0.08] hover:bg-white/[0.1]"
-                }`}
-              >
-                <span
-                  className={`line-clamp-3 max-h-[3.6rem] text-[11px] font-semibold leading-tight ${
-                    active === i ? "text-white" : "text-slate-300"
-                  }`}
-                >
-                  {s.label}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Desktop tab bar */}
-        <div className="hidden sm:flex flex-wrap justify-center gap-2 mb-6">
-          {screens.map((s,i)=>(
-            <button key={i} onClick={()=>setActive(i)}
-              className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 ${active===i?"bg-indigo-600 text-white shadow-lg shadow-indigo-300/40":"bg-white text-gray-600 border border-gray-200 hover:border-indigo-200 hover:text-indigo-600"}`}>
-              {s.label}
+        <div className="flex flex-wrap justify-center gap-2 mb-8 p-1.5 rounded-xl bg-white border border-gray-100 shadow-sm w-fit mx-auto">
+          {screens.map((sc, i) => (
+            <button
+              key={sc.label}
+              type="button"
+              onClick={() => setActive(i)}
+              className={`px-5 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                active === i
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-200"
+                  : "text-gray-600 hover:text-indigo-600"
+              }`}
+            >
+              {sc.label}
             </button>
           ))}
         </div>
-        <div className="rounded-2xl overflow-hidden shadow-2xl shadow-indigo-200/60 border border-gray-200">
-          <div className="bg-gray-800 px-5 py-3 flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-red-400"/><div className="w-3 h-3 rounded-full bg-yellow-400"/><div className="w-3 h-3 rounded-full bg-green-400"/>
-            <div className="flex-1 bg-gray-700 rounded-full px-4 py-1 text-[10px] text-gray-400 ml-3">TechonERP — {screens[active].label}</div>
-            <span className="text-[9px] text-indigo-300 font-semibold">Admin Mode</span>
+        <div className="relative">
+          <div className="absolute -inset-3 rounded-2xl bg-indigo-400/10 blur-xl" aria-hidden />
+          <div className="relative rounded-xl overflow-hidden border border-gray-200 bg-white shadow-xl shadow-indigo-100/50">
+            <div className="bg-gray-900 px-4 py-2.5 flex items-center gap-2">
+              <div className="w-2.5 h-2.5 rounded-full bg-red-400" />
+              <div className="w-2.5 h-2.5 rounded-full bg-yellow-400" />
+              <div className="w-2.5 h-2.5 rounded-full bg-green-400" />
+              <span className="flex-1 text-center text-[10px] text-gray-400 font-medium">
+                TechonERP — {screens[active].label}
+              </span>
+            </div>
+            <div key={active} className="h-56 sm:h-80 bg-gray-50 overflow-hidden animate-[fadeIn_0.3s_ease]">
+              {screens[active].comp}
+            </div>
           </div>
-          <div className="h-64 sm:h-96 lg:h-[500px] bg-gray-50 overflow-hidden">{screens[active].comp}</div>
         </div>
-        <p className="text-center text-sm text-gray-400 mt-4"><span className="sm:hidden">Tap the screen tabs above to switch previews</span><span className="hidden sm:inline">Click tabs above to explore different screens →</span></p>
       </div>
     </section>
   );
@@ -1143,264 +763,42 @@ const ProductHighlights = () => {
 
 /* ─── HOW IT WORKS ──────────────────────────────────────────────── */
 const setupSteps = [
-  {
-    n: "01",
-    time: "~1 min",
-    svg: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-    ),
-    title: "Download EXE",
-    desc: "Download the installer from our website or request it on WhatsApp. No signup, no cloud account.",
-    bullets: ["Direct .exe download", "Same build for trial & paid"],
-  },
-  {
-    n: "02",
-    time: "~2 min",
-    svg: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <rect x="2" y="3" width="20" height="14" rx="2" />
-        <path d="M8 21h8m-4-4v4" />
-      </svg>
-    ),
-    title: "Install on Windows",
-    desc: "Run the installer on Windows 10 or 11. Core setup finishes quickly — works without internet after files are on disk.",
-    bullets: ["Guided installer", "Offline-friendly install"],
-  },
-  {
-    n: "03",
-    time: "One-time",
-    svg: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <rect x="3" y="11" width="18" height="11" rx="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-    ),
-    title: "Activate with key",
-    desc: "A 7-day full trial starts immediately — every module unlocked. When you buy, we send your license key by WhatsApp or email.",
-    bullets: ["Full trial — no card", "Key delivery same day"],
-  },
-  {
-    n: "04",
-    time: "Daily use",
-    svg: (
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <circle cx="12" cy="12" r="10" />
-        <polyline points="12 6 12 12 16 14" />
-      </svg>
-    ),
-    title: "Run offline · sync optional",
-    desc: "Work 100% on your PC after activation. Add Online Sync later to view live data in your browser from any device.",
-    bullets: ["Local data on your disk", "Read-only cloud view optional"],
-  },
+  { title: "Download", desc: "Get the Windows installer — no signup needed.", icon: "⬇️" },
+  { title: "Install", desc: "Run on Windows 10 or 11. Works offline after setup.", icon: "💻" },
+  { title: "Activate", desc: "7-day full trial starts instantly. Buy anytime for a license key.", icon: "🔑" },
+  { title: "Run your shop", desc: "Sell, stock and account from one app on your PC.", icon: "🏪" },
 ];
 
 const HowItWorks = () => (
-  <section id="howitworks" className="relative overflow-hidden">
-    {/* Top: light intro + stats */}
-    <div className="relative bg-gradient-to-b from-white via-slate-50/90 to-indigo-50/70 pt-16 pb-8 sm:pt-20 sm:pb-10">
-      <div
-        className="pointer-events-none absolute inset-0 opacity-[0.45]"
-        style={{ backgroundImage: "radial-gradient(circle at 1px 1px, rgb(99 102 241 / 0.11) 1px, transparent 0)", backgroundSize: "24px 24px" }}
-        aria-hidden
-      />
-      <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="mx-auto mb-10 max-w-3xl text-center sm:mb-12">
-          <span className="mb-4 inline-flex items-center gap-2 rounded-full border border-indigo-100/90 bg-white/80 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-indigo-700 shadow-sm backdrop-blur-sm">
-            <span className="h-1.5 w-1.5 rounded-full bg-indigo-500 shadow-[0_0_0_3px_rgba(99,102,241,0.25)]" />
-            Simple Setup
-          </span>
-          <h2 className="mb-3 text-3xl font-black leading-[1.1] text-gray-900 sm:text-4xl lg:text-5xl">
-            Go live fast —{" "}
-            <span className="bg-gradient-to-r from-indigo-600 via-violet-600 to-indigo-600 bg-clip-text text-transparent">download to daily use</span>
-          </h2>
-          <p className="text-base text-gray-600 sm:text-lg">
-            One installer, one activation, then your data stays on your PC. Online Sync is optional when you need remote visibility.
-          </p>
-        </div>
-
-        <div className="mx-auto grid max-w-4xl grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
-          {[
-            ["4", "Guided steps"],
-            ["~5 min", "To first launch"],
-            ["1×", "Windows installer"],
-            ["0", "Cloud account needed"],
-          ].map(([val, lab]) => (
-            <div
-              key={lab}
-              className="rounded-2xl border border-indigo-100/80 bg-white/90 px-4 py-4 text-center shadow-md shadow-indigo-100/40 backdrop-blur-sm transition-transform hover:-translate-y-0.5"
-            >
-              <p className="text-2xl font-black tabular-nums text-indigo-700 sm:text-3xl">{val}</p>
-              <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">{lab}</p>
-            </div>
-          ))}
-        </div>
+  <section id="howitworks" className="py-20 sm:py-28 bg-white">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center max-w-xl mx-auto mb-14">
+        <SectionLabel>Getting started</SectionLabel>
+        <h2 className="text-3xl sm:text-4xl font-black text-gray-900 mb-3">Up and running in minutes</h2>
+        <p className="text-gray-500">Download, install, activate — then your data stays on your own computer.</p>
       </div>
-
-      <div className="relative mt-10 h-14 w-full sm:mt-12 sm:h-16" aria-hidden>
-        <svg className="absolute inset-0 h-full w-full text-[#0a1024]" preserveAspectRatio="none" viewBox="0 0 1440 80">
-          <path fill="currentColor" d="M0,40 C240,80 480,0 720,35 C960,70 1200,0 1440,40 L1440,80 L0,80 Z" />
-        </svg>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        {setupSteps.map((step, i) => (
+          <div key={step.title} className="relative rounded-2xl border border-gray-100 bg-gray-50/50 p-5 card-lift">
+            {i < setupSteps.length - 1 && (
+              <div className="hidden lg:block absolute top-9 -right-3 w-6 h-px bg-indigo-200" aria-hidden />
+            )}
+            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-indigo-600 text-lg shadow-md shadow-indigo-200 mb-4" aria-hidden>
+              {step.icon}
+            </div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-indigo-500 mb-1">Step {i + 1}</p>
+            <h3 className="font-bold text-gray-900 mb-1.5">{step.title}</h3>
+            <p className="text-sm text-gray-500 leading-relaxed">{step.desc}</p>
+          </div>
+        ))}
       </div>
-    </div>
-
-    {/* Bottom: ERP navy — steps + license */}
-    <div className="relative bg-gradient-to-b from-[#0a1024] via-[#0d1b3e] to-[#050810] pb-16 pt-2 sm:pb-20 sm:pt-0">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(99,102,241,0.18),transparent)]" aria-hidden />
-      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-t from-black/25 to-transparent" aria-hidden />
-
-      <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-        <div className="mb-8 flex flex-col items-center text-center sm:mb-10">
-          <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300/90">The journey</p>
-          <p className="mt-1 max-w-xl text-sm text-slate-400">Four checkpoints from installer to everyday use — the same flow for every shop.</p>
-        </div>
-
-        <div className="relative mb-12 pl-2 sm:hidden">
-          <div className="absolute bottom-2 left-[21px] top-2 w-0.5 rounded-full bg-gradient-to-b from-indigo-400/80 via-violet-400/70 to-indigo-500/80 shadow-[0_0_12px_rgba(129,140,248,0.35)]" aria-hidden />
-          <div className="space-y-5">
-            {setupSteps.map((s, i) => (
-              <div key={i} className="relative flex gap-4">
-                <div className="relative z-10 flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-400 to-violet-600 text-white shadow-lg shadow-indigo-950/60 ring-4 ring-[#0d1b3e]">
-                  <span className="scale-90">{s.svg}</span>
-                </div>
-                <div className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-white/[0.07] p-4 shadow-xl shadow-black/20 backdrop-blur-md">
-                  <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <span className="text-[11px] font-black uppercase tracking-wider text-indigo-300">{s.n}</span>
-                    <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-indigo-100">{s.time}</span>
-                  </div>
-                  <h3 className="mb-1.5 text-base font-black text-white">{s.title}</h3>
-                  <p className="mb-3 text-sm leading-relaxed text-slate-300">{s.desc}</p>
-                  <ul className="space-y-1.5">
-                    {s.bullets.map((b) => (
-                      <li key={b} className="flex items-start gap-2 text-xs text-slate-400">
-                        <span className="mt-0.5 font-bold text-emerald-400">✓</span>
-                        {b}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="mb-12 hidden grid-cols-2 gap-4 sm:grid lg:hidden">
-          {setupSteps.map((s, i) => (
-            <div
-              key={i}
-              className="group rounded-2xl border border-white/10 bg-white/[0.06] p-5 shadow-xl shadow-black/25 backdrop-blur-md transition-all hover:border-indigo-400/30 hover:bg-white/[0.09]"
-            >
-              <div className="mb-3 flex items-center gap-3">
-                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-400 to-violet-600 text-white shadow-lg transition-transform group-hover:scale-105">
-                  {s.svg}
-                </div>
-                <div>
-                  <span className="text-[11px] font-black uppercase tracking-wider text-indigo-300">{s.n}</span>
-                  <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-indigo-100">{s.time}</span>
-                </div>
-              </div>
-              <h3 className="mb-1.5 text-sm font-black text-white">{s.title}</h3>
-              <p className="mb-3 text-xs leading-relaxed text-slate-400">{s.desc}</p>
-              <ul className="space-y-1">
-                {s.bullets.map((b) => (
-                  <li key={b} className="flex gap-1.5 text-[11px] text-slate-400">
-                    <span className="font-bold text-emerald-400">✓</span>
-                    {b}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-
-        <div className="relative mb-14 hidden lg:block">
-          <div className="absolute left-[8%] right-[8%] top-[46px] h-[3px] rounded-full bg-gradient-to-r from-indigo-500/20 via-indigo-400/50 to-indigo-500/20 shadow-[0_0_20px_rgba(129,140,248,0.25)]" aria-hidden />
-          <div className="grid grid-cols-4 gap-4">
-            {setupSteps.map((s, i) => (
-              <div key={i} className="group relative flex flex-col items-center">
-                <div className="relative z-10 mb-4 flex h-[76px] w-[76px] items-center justify-center rounded-[1.25rem] bg-gradient-to-br from-indigo-400 to-violet-600 text-white shadow-xl shadow-indigo-950/50 ring-4 ring-[#0d1b3e] transition-transform duration-300 group-hover:scale-105 group-hover:shadow-indigo-500/30">
-                  {s.svg}
-                </div>
-                <div className="flex min-h-[12rem] w-full flex-col rounded-2xl border border-white/10 bg-white/[0.07] p-5 text-left shadow-xl shadow-black/20 backdrop-blur-md transition-all hover:border-indigo-400/25 hover:bg-white/[0.1]">
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-black uppercase tracking-wider text-indigo-300">{s.n}</span>
-                    <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-indigo-100">{s.time}</span>
-                  </div>
-                  <h3 className="mb-2 text-[15px] font-black leading-snug text-white">{s.title}</h3>
-                  <p className="mb-3 flex-1 text-xs leading-relaxed text-slate-400">{s.desc}</p>
-                  <ul className="space-y-1.5 border-t border-white/10 pt-3">
-                    {s.bullets.map((b) => (
-                      <li key={b} className="flex items-start gap-1.5 text-[11px] text-slate-300">
-                        <span className="font-bold text-emerald-400">✓</span>
-                        {b}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-indigo-600/90 via-violet-700 to-[#1e1b4b] p-6 text-white shadow-2xl shadow-indigo-950/50 sm:rounded-3xl sm:p-8">
-          <div className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-white/15 blur-3xl" aria-hidden />
-          <div className="pointer-events-none absolute -bottom-20 -left-20 h-56 w-56 rounded-full bg-fuchsia-500/20 blur-3xl" aria-hidden />
-          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(105deg,transparent_40%,rgba(255,255,255,0.06)_50%,transparent_60%)]" aria-hidden />
-          <div className="relative grid gap-8 lg:grid-cols-[1fr_auto] lg:items-center lg:gap-10">
-            <div className="flex flex-col gap-5 sm:flex-row sm:gap-6">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/30">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <rect x="3" y="11" width="18" height="11" rx="2" />
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                </svg>
-              </div>
-              <div>
-                <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.2em] text-violet-200/95">License activation</p>
-                <h4 className="mb-2 text-xl font-black leading-tight sm:text-2xl">Trial first. One key. Permanent unlock.</h4>
-                <p className="max-w-2xl text-sm leading-relaxed text-white/88 sm:text-base">
-                  After the <strong className="text-white">7-day free trial</strong> (full access, no restrictions — extra demo time on request), enter the license key we send by{" "}
-                  <strong className="text-white">WhatsApp</strong> or <strong className="text-white">email</strong>. Internet is only needed for that activation step — then your shop runs fully offline.
-                </p>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {["No credit card for trial", "Same installer for all plans", "Human support on WhatsApp"].map((t) => (
-                    <span key={t} className="rounded-full bg-black/20 px-3 py-1 text-[11px] font-semibold ring-1 ring-white/20 backdrop-blur-sm">
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
-              <a
-                href="https://wa.me/94701234678?text=I+need+a+TechonERP+license+key"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-3.5 text-sm font-bold text-indigo-900 shadow-lg transition-transform hover:scale-[1.02]"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z" />
-                </svg>
-                Get license key
-              </a>
-              <a
-                href="https://techon.lk/downloads/latest.zip"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-white/40 bg-white/10 px-6 py-3.5 text-sm font-bold text-white backdrop-blur-sm transition-colors hover:bg-white/20"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                Download installer
-              </a>
-            </div>
-          </div>
-        </div>
+      <div className="mt-12 flex flex-col sm:flex-row gap-3 justify-center">
+        <a href="https://techon.lk/downloads/latest.zip" target="_blank" rel="noreferrer" className="btn-primary">
+          Download installer
+        </a>
+        <a href="https://wa.me/94701234678?text=Hi%2C+I+need+help+with+TechonERP+setup" target="_blank" rel="noreferrer" className="btn-ghost">
+          WhatsApp support
+        </a>
       </div>
     </div>
   </section>
@@ -1418,16 +816,16 @@ const onlineSyncFeatures = [
 
 /* ─── PRICING ───────────────────────────────────────────────────── */
 const planTemplates = [
-  { id: "free", name: "Free Trial", period: PLAN_PERIODS.free, desc: "Full access · No restrictions · No risk", badge: null, highlight: false,
-    features: ["All 20 modules unlocked — full access", "No restrictions during the trial", "No risk — try everything before you buy", "Internet for activation only", "App locks after trial expires", "Request extra demo time on request", "WhatsApp / email support"] },
-  { id: "monthly", name: "Monthly", period: PLAN_PERIODS.monthly, desc: "Flexible, cancel anytime", badge: null, highlight: false,
-    features: ["All 20 modules unlocked", "Unlimited transactions", "100% offline operation", "License key via WhatsApp/email", "Priority support"] },
-  { id: "yearly", name: "Yearly", period: PLAN_PERIODS.yearly, desc: "Save more vs monthly", badge: "Most Popular", highlight: true,
-    features: ["All 20 modules unlocked", "Unlimited transactions", "100% offline operation", "License key via WhatsApp/email", "Priority support", "Free onboarding help"] },
-  { id: "twoYears", name: "2 Years", period: PLAN_PERIODS.twoYears, desc: "Best for growing businesses", badge: null, highlight: false,
-    features: ["All 20 modules unlocked", "Unlimited transactions", "100% offline operation", "License key via WhatsApp/email", "Dedicated support", "Free updates included"] },
+  { id: "free", name: "Free Trial", period: PLAN_PERIODS.free, desc: "Try everything for 7 days", badge: null, highlight: false,
+    features: ["All modules unlocked", "No credit card", "WhatsApp support"] },
+  { id: "monthly", name: "Monthly", period: PLAN_PERIODS.monthly, desc: "Flexible billing", badge: null, highlight: false,
+    features: ["Full ERP access", "Offline on your PC", "License via WhatsApp"] },
+  { id: "yearly", name: "Yearly", period: PLAN_PERIODS.yearly, desc: "Best for most shops", badge: "Popular", highlight: true,
+    features: ["Full ERP access", "Offline on your PC", "Free onboarding help"] },
+  { id: "twoYears", name: "2 Years", period: PLAN_PERIODS.twoYears, desc: "Long-term savings", badge: null, highlight: false,
+    features: ["Full ERP access", "All updates included", "Priority support"] },
   { id: "lifetime", name: "Lifetime", period: PLAN_PERIODS.lifetime, desc: "Pay once, use forever", badge: "Best Value", highlight: false,
-    features: ["All 20 modules unlocked", "Unlimited transactions", "All future updates free", "License key via WhatsApp/email", "Dedicated account support", "Free onboarding & setup"] },
+    features: ["Full ERP access", "All future updates", "Dedicated support"] },
 ];
 
 const formatAmount = (value) => Math.round(value).toLocaleString("en-US");
@@ -1547,74 +945,19 @@ const Pricing = () => {
     multiplier,
   });
 
-  const clientPricing = {
-    monthly: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.monthly * multiplier, {
-      baseLKR: BASE_CLIENT_PRICING_LKR.monthly,
-      multiplier,
-    }),
-    yearly: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.yearly * multiplier, {
-      baseLKR: BASE_CLIENT_PRICING_LKR.yearly,
-      multiplier,
-    }),
-    twoYears: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.twoYears * multiplier, {
-      baseLKR: BASE_CLIENT_PRICING_LKR.twoYears,
-      multiplier,
-    }),
-    lifetime: formatDisplayFromLkr(BASE_CLIENT_PRICING_LKR.lifetime * multiplier, {
-      baseLKR: BASE_CLIENT_PRICING_LKR.lifetime,
-      multiplier,
-    }),
-  };
-
-  const lanPricingTiers = [
-    { label: "Monthly", planId: "monthly", clientKey: "monthly" },
-    { label: "Yearly", planId: "yearly", clientKey: "yearly" },
-    { label: "2 Years", planId: "twoYears", clientKey: "twoYears" },
-    { label: "Lifetime", planId: "lifetime", clientKey: "lifetime" },
-  ];
-
   return (
-  <section id="pricing" className="py-16 sm:py-24 bg-gradient-to-b from-slate-50 to-white">
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="text-center max-w-2xl mx-auto mb-8 sm:mb-12">
-        <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
-          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Pricing Plans
-        </span>
-        <h2 className="text-3xl sm:text-4xl lg:text-5xl font-black text-gray-900 mb-2 leading-tight">Simple Plans.<br/>No Hidden Fees.</h2>
-        <p className="text-[11px] text-gray-400/80 mb-3">Pricing may vary by region.</p>
-        <p className="text-gray-500 text-lg">Start free for 7 days — full access, no credit card, no account needed. Buy a plan and get your license key instantly.</p>
-        <p className="text-sm text-gray-400 mt-2">
-          Prices in {currency.code} (converted from LKR base using reference rates) · License delivered via WhatsApp or email
-        </p>
+  <section id="pricing" className="py-20 sm:py-28 bg-gradient-to-b from-slate-50 via-white to-slate-50">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center max-w-xl mx-auto mb-12">
+        <SectionLabel>Pricing</SectionLabel>
+        <h2 className="text-3xl sm:text-4xl font-black text-gray-900 mb-3">Simple, honest pricing</h2>
+        <p className="text-gray-500">7-day free trial · Prices in <strong className="text-gray-700">{currency.code}</strong> for your region · License via WhatsApp</p>
       </div>
-    </div>
 
-    {/* Mobile: full-width strip — scroll down (not sideways) */}
-    <div className="sm:hidden w-full border-y border-white/10 bg-gradient-to-b from-[#0c0a18] via-[#12102a] to-[#0e0c1a] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] mb-6">
-      <div className="px-4 pb-3 pt-4">
-        <p className="text-[0.65rem] font-bold uppercase tracking-[0.16em] text-violet-300/95">Pricing plans</p>
-        <p className="mt-1.5 text-[0.8125rem] font-medium leading-snug text-slate-300">Five license options plus Online Sync below — scroll down to compare.</p>
-        <p className="mt-2 flex items-center gap-1.5 text-[0.7rem] text-slate-500">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="shrink-0 text-slate-500" stroke="currentColor" strokeWidth="2" aria-hidden>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-          </svg>
-          Scroll down to browse each plan
-        </p>
-      </div>
-    </div>
-
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      {/* Mobile: vertical scroll + snap · Desktop: grid */}
-      <div className="relative">
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-[1] h-12 bg-gradient-to-b from-slate-50 to-transparent sm:hidden" aria-hidden />
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-12 bg-gradient-to-t from-white to-transparent sm:hidden" aria-hidden />
-        <div
-          className="pricing-scroll flex flex-col gap-4 overflow-y-auto overflow-x-hidden max-h-[min(78vh,920px)] snap-y snap-mandatory scroll-smooth pb-1 sm:max-h-none sm:overflow-visible sm:grid sm:grid-cols-2 sm:snap-none lg:grid-cols-5 sm:pb-0 items-stretch [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          style={{ WebkitOverflowScrolling: "touch" }}
-        >
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5 items-stretch">
         {plans.map((p,i)=>(
           <div key={i}
-            className={`pricing-card relative w-full shrink-0 rounded-2xl p-6 flex flex-col transition-all duration-300 hover:-translate-y-1 ${p.highlight?"bg-gradient-to-br from-indigo-600 to-violet-700 text-white shadow-2xl shadow-indigo-400/50 sm:scale-[1.03] ring-2 ring-indigo-400/30":"bg-white border border-gray-100 hover:shadow-xl hover:shadow-indigo-100 hover:border-indigo-200"}`}>
+            className={`relative rounded-2xl p-5 flex flex-col card-lift ${p.highlight?"bg-gradient-to-br from-indigo-600 to-violet-700 text-white shadow-xl shadow-indigo-300/40 ring-2 ring-indigo-400/40 lg:-mt-1 lg:mb-1":"bg-white border border-gray-200 shadow-sm"}`}>
             {p.badge && (
               <div className={`absolute -top-3.5 left-1/2 -translate-x-1/2 text-xs font-bold px-3 py-1 rounded-full whitespace-nowrap ${p.highlight?"bg-amber-400 text-amber-900":"bg-indigo-600 text-white"}`}>{p.badge}</div>
             )}
@@ -1642,187 +985,16 @@ const Pricing = () => {
           </div>
         ))}
       </div>
-      </div>
-      <div className="mt-8 sm:mt-10 mx-auto max-w-4xl overflow-hidden rounded-2xl border border-indigo-100/90 bg-white shadow-[0_24px_70px_-20px_rgba(79,70,229,0.22)] ring-1 ring-indigo-50">
-        <div className="relative overflow-hidden bg-gradient-to-br from-indigo-600 via-violet-600 to-indigo-700 px-5 py-7 text-center sm:px-8 sm:py-8">
-          <div className="pointer-events-none absolute -right-20 -top-16 h-40 w-40 rounded-full bg-white/15 blur-3xl" aria-hidden />
-          <div className="pointer-events-none absolute -bottom-16 -left-10 h-36 w-36 rounded-full bg-violet-400/20 blur-3xl" aria-hidden />
-          <div className="relative">
-            <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/25 bg-white/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-100 shadow-sm backdrop-blur-sm sm:text-xs sm:tracking-[0.16em]">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-300 shadow-[0_0_12px_rgba(252,211,77,0.8)]" />
-              LAN · Multi-PC
-            </span>
-            <h3 className="text-2xl font-black leading-tight text-white sm:text-3xl">LAN / Multi-PC Setup</h3>
-            <p className="mx-auto mt-2 max-w-xl text-sm leading-relaxed text-indigo-100 sm:text-base">
-              Use TechonERP across multiple computers in your shop or business.
-            </p>
-          </div>
+
+      <div className="mt-10 grid sm:grid-cols-2 gap-4 max-w-3xl mx-auto">
+        <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-5 text-sm text-gray-600 leading-relaxed">
+          <p className="font-bold text-gray-900 mb-1">Multi-PC shops</p>
+          <p>Main system uses the plans above. Extra counter PCs need a client license — message us on WhatsApp for LAN pricing.</p>
         </div>
-        <div className="border-t border-indigo-100/80 bg-gradient-to-b from-slate-50/90 to-white px-4 py-5 sm:px-6 sm:py-6">
-          <div className="mb-3 hidden grid-cols-[minmax(0,6rem)_1fr_1fr] gap-3 border-b border-gray-200/90 pb-3 text-[10px] font-bold uppercase tracking-wider text-gray-500 sm:grid">
-            <span>Period</span>
-            <span className="text-center sm:text-left">Main system</span>
-            <span className="text-center sm:text-left">Client (POS)</span>
-          </div>
-          <div className="space-y-3">
-            {lanPricingTiers.map(({ label, planId, clientKey }) => {
-              const mainAmount = plans.find((p) => p.id === planId)?.amount;
-              const clientAmt = clientPricing[clientKey];
-              return (
-                <div
-                  key={planId}
-                  className="group rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-all duration-300 hover:border-indigo-200 hover:shadow-md hover:shadow-indigo-100/80 sm:grid sm:grid-cols-[minmax(0,6rem)_1fr_1fr] sm:items-stretch sm:gap-3 sm:p-4"
-                >
-                  <div className="mb-3 flex items-center gap-2.5 sm:mb-0 sm:flex-col sm:items-start sm:justify-center sm:gap-1.5">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-xs font-black text-white shadow-sm shadow-indigo-300/40">
-                      {label === "2 Years" ? "2Y" : label === "Lifetime" ? "∞" : label.slice(0, 1)}
-                    </span>
-                    <span className="text-sm font-bold text-gray-900 sm:text-[15px]">{label}</span>
-                  </div>
-                  <div className="mb-2 flex flex-col justify-center rounded-xl border border-indigo-100/90 bg-gradient-to-br from-indigo-50/90 to-white px-3 py-3 sm:mb-0">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-indigo-600/90 sm:hidden">Main system</span>
-                    <div className="mt-0.5 flex items-end gap-1">
-                      <span className="text-sm font-semibold text-indigo-400">{currency.symbol}</span>
-                      <span className="text-xl font-black tabular-nums leading-none text-gray-900 sm:text-2xl">{mainAmount}</span>
-                    </div>
-                  </div>
-                  <div className="flex flex-col justify-center rounded-xl border border-violet-100 bg-gradient-to-br from-violet-50/90 to-white px-3 py-3">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-violet-700/90 sm:hidden">Client (POS)</span>
-                    <div className="mt-0.5 flex flex-wrap items-end gap-x-1 gap-y-0">
-                      <span className="text-sm font-semibold text-violet-400">{currency.symbol}</span>
-                      <span className="text-xl font-black tabular-nums leading-none text-gray-900 sm:text-2xl">{clientAmt}</span>
-                      <span className="mb-0.5 text-xs font-bold text-violet-700/90">/ PC</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <p className="mt-5 border-t border-gray-200/90 pt-4 text-center text-[11px] leading-relaxed text-gray-500 sm:text-xs">
-            Each additional computer requires a client (POS) license.
-          </p>
+        <div className="rounded-xl border border-sky-100 bg-sky-50/50 p-5 text-sm text-gray-600 leading-relaxed">
+          <p className="font-bold text-gray-900 mb-1">Online Sync <span className="font-normal text-gray-500">(optional)</span></p>
+          <p>{currency.symbol}{onlineSyncPrice} {PLAN_PERIODS.cloudAddon} — read-only view of your shop from any browser.</p>
         </div>
-      </div>
-
-      {/* Online Sync Add-on */}
-      <div className="mt-14 sm:mt-20">
-        <div className="mx-auto mb-10 max-w-3xl text-center">
-          <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-sky-100 bg-sky-50 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-sky-800">
-            <span className="h-1.5 w-1.5 rounded-full bg-sky-500 shadow-[0_0_10px_rgba(14,165,233,0.6)]" />
-            Optional add-on
-          </span>
-          <h3 className="text-3xl font-black text-gray-900 sm:text-4xl">Online Sync</h3>
-          <p className="mt-3 text-base text-gray-600 sm:text-lg">
-            Your shop PC stays the <strong className="text-gray-800">only place data is edited</strong>. Turn on Online Sync in Settings — TechonERP keeps everything in sync in the background, and you get a{" "}
-            <strong className="text-gray-800">read-only live view</strong> in your web browser from any device.
-          </p>
-        </div>
-
-        <div className="mx-auto max-w-5xl overflow-hidden rounded-3xl border border-sky-100/80 bg-white shadow-[0_24px_80px_-20px_rgba(14,165,233,0.35)]">
-          {/* Hero strip */}
-          <div className="relative overflow-hidden bg-gradient-to-br from-sky-500 via-cyan-600 to-sky-800 px-6 py-8 sm:px-10 sm:py-10">
-            <div className="pointer-events-none absolute -right-16 -top-24 h-56 w-56 rounded-full bg-white/20 blur-3xl" aria-hidden />
-            <div className="pointer-events-none absolute -bottom-20 -left-10 h-48 w-48 rounded-full bg-cyan-300/25 blur-3xl" aria-hidden />
-            <div className="relative flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex max-w-xl flex-col gap-4 sm:flex-row sm:items-start sm:gap-5">
-                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white/20 text-4xl ring-2 ring-white/30 backdrop-blur-sm">🌐</div>
-                <div>
-                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-100">Live remote visibility</p>
-                  <h4 className="mt-1 text-2xl font-black leading-tight text-white sm:text-3xl">Watch the business from anywhere</h4>
-                  <p className="mt-2 text-sm leading-relaxed text-sky-50">
-                    The same <strong className="text-white">Online Sync</strong> option you see inside TechonERP: your Windows app stays in charge, numbers update in the background while you work, and you can check sales, stock and reports from your phone or laptop — <strong className="text-white">view only</strong>, no remote editing.
-                  </p>
-                </div>
-              </div>
-              <div className="flex shrink-0 flex-col items-stretch rounded-2xl bg-white/15 px-6 py-5 text-center ring-1 ring-white/25 backdrop-blur-md sm:min-w-[200px]">
-                <p className="text-[10px] font-bold uppercase tracking-widest text-sky-100">Add-on ({currency.code})</p>
-                <p className="mt-1 font-black leading-none text-white">
-                  <span className="text-lg font-bold text-sky-100">{currency.symbol}</span> <span className="text-4xl sm:text-5xl">{onlineSyncPrice}</span>
-                </p>
-                <p className="mt-1 text-xs font-semibold text-sky-100">{PLAN_PERIODS.cloudAddon}</p>
-              </div>
-            </div>
-
-            {/* Simple reassurance row — no technical URLs */}
-            <div className="relative mt-8 grid gap-3 sm:grid-cols-3">
-              {[
-                { t: "Shop PC = master", d: "All changes and entries happen in your Windows ERP." },
-                { t: "Background sync", d: "Figures stay up to date while you use the app as normal." },
-                { t: "Safe web view", d: "Look up numbers anywhere — nothing can be changed from the browser." },
-              ].map((row) => (
-                <div key={row.t} className="rounded-xl border border-white/20 bg-black/15 px-4 py-3 text-left backdrop-blur-sm">
-                  <p className="text-sm font-bold text-white">{row.t}</p>
-                  <p className="mt-1 text-[11px] leading-snug text-sky-100/95">{row.d}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* How it works — 3 steps */}
-          <div className="border-b border-sky-100 bg-gradient-to-b from-slate-50 to-white px-6 py-8 sm:px-10">
-            <p className="mb-4 text-center text-[11px] font-black uppercase tracking-[0.2em] text-sky-700">How it works</p>
-            <div className="grid gap-4 md:grid-cols-3">
-              {[
-                { n: "1", t: "Get the add-on", d: "Purchase Online Sync and we enable it on your licence. We send what you need by WhatsApp or email." },
-                { n: "2", t: "Turn it on in Settings", d: "Open TechonERP on your shop PC, switch on Online Sync, and enter the code we send you — once saved, it stays on that computer." },
-                { n: "3", t: "Use TechonERP as usual", d: "Work on the counter as normal. When you’re logged in, the app keeps the cloud view updated. The website is for viewing only." },
-              ].map((step) => (
-                <div key={step.n} className="rounded-2xl border border-sky-100 bg-white p-5 shadow-sm">
-                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-sky-100 text-sm font-black text-sky-800">{step.n}</span>
-                  <p className="mt-3 font-black text-gray-900">{step.t}</p>
-                  <p className="mt-1.5 text-xs leading-relaxed text-gray-600">{step.d}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Feature grid */}
-          <div className="grid gap-4 bg-white px-6 py-8 sm:grid-cols-2 sm:px-10 lg:grid-cols-3 lg:gap-5">
-            {onlineSyncFeatures.map((item) => (
-              <div key={item.title} className="group flex gap-3 rounded-2xl border border-sky-100/90 bg-gradient-to-br from-sky-50/80 to-white p-4 transition-all hover:border-sky-200 hover:shadow-md">
-                <span className="text-2xl" aria-hidden>
-                  {item.icon}
-                </span>
-                <div>
-                  <p className="font-bold text-gray-900">{item.title}</p>
-                  <p className="mt-1 text-xs leading-relaxed text-gray-600">{item.desc}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* CTA */}
-          <div className="flex flex-col items-stretch justify-between gap-4 border-t border-sky-100 bg-sky-50/80 px-6 py-6 sm:flex-row sm:items-center sm:px-10">
-            <div>
-              <p className="font-bold text-gray-900">Ready to add Online Sync?</p>
-              <p className="text-xs text-gray-600">We activate the add-on on your licence and send your setup details. You can keep using TechonERP fully offline on Windows — this only adds remote viewing.</p>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <a
-                href="https://wa.me/94701234678?text=Hi%2C+I%27d+like+to+add+Online+Sync+to+my+TechonERP."
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-500 to-cyan-600 px-6 py-3.5 text-sm font-bold text-white shadow-lg shadow-sky-500/30 transition-transform hover:scale-[1.02]"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z" />
-                </svg>
-                Chat on WhatsApp
-              </a>
-              <a
-                href="https://app.techon.lk"
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center rounded-xl border-2 border-sky-200 bg-white px-5 py-3.5 text-sm font-bold text-sky-800 hover:bg-sky-50"
-              >
-                Open web dashboard
-              </a>
-            </div>
-          </div>
-        </div>
-        <p className="mx-auto mt-4 max-w-2xl text-center text-[11px] leading-relaxed text-gray-500">
-          Online Sync is optional. Your Windows ERP stays the source of truth; the web view is read-only — nothing can be changed from the browser.
-        </p>
       </div>
     </div>
   </section>
@@ -1831,71 +1003,39 @@ const Pricing = () => {
 
 /* ─── TESTIMONIALS ──────────────────────────────────────────────── */
 const testimonialList = [
-  {biz:"Techzone Qatar",loc:"Al Wakrah, Qatar",type:"Mobile & Electronics Shop",av:"T",flag:"🇶🇦",text:"We were looking for an ERP that works offline since internet can be unreliable at our shop. TechonERP is exactly that — installs on Windows, runs perfectly without internet, and the QAR currency support made it ready to use from day one. Excellent product from the Techon team."},
-  {biz:"Macline Computers",loc:"Akurana, Kandy — 🇱🇰",type:"Computer & Mobile Shop",av:"M",flag:"🇱🇰",text:"We've been running TechonERP at our computer and mobile shop. Managing inventory, invoicing and repairs all in one place has saved us hours daily. The barcode printing module alone is worth every rupee."},
-  {biz:"The Multi Store",loc:"Katugastota, Kandy — 🇱🇰",type:"Multi-Product Retail",av:"T",flag:"🇱🇰",text:"Perfect for our multi-category retail shop. The inventory breakdown by category, stock health alerts and margin tracking are things we never had before. Simple enough that any staff member can use it."},
-  {biz:"Pradeep Electronics",loc:"Gampaha — 🇱🇰",type:"Electronics & Repair Shop",av:"P",flag:"🇱🇰",text:"The repair job management module is excellent. We track every device from intake to delivery, customers get printed job receipts, and the full pipeline is visible at a glance. Running 100% offline is a huge advantage for us."},
-  {biz:"Nimal Mobile Hub",loc:"Kurunegala — 🇱🇰",type:"Mobile Phone Retailer",av:"N",flag:"🇱🇰",text:"We moved from spreadsheets to TechonERP and the difference is massive. Receivables and payables tracking alone paid back the lifetime licence cost within the first month of use."},
-  {biz:"Al Safa Tech Shop",loc:"Doha, Qatar — 🇶🇦",type:"Mobile Accessories & Repair",av:"A",flag:"🇶🇦",text:"TechonERP supports QAR and runs fully offline which is exactly what we needed. The repair tracking and customer history features have transformed how we manage our daily operations. Very easy to set up and use."},
-  {biz:"Desert Tech Dubai",loc:"Deira, Dubai — 🇦🇪",type:"Mobile & Computer Shop",av:"D",flag:"🇦🇪",text:"We run a busy mobile and computer shop in Deira and TechonERP handles everything — sales, repairs, inventory and invoicing. The AED currency support worked perfectly out of the box. Offline capability is a major advantage since we don't rely on any cloud service."},
-  {biz:"Al Noor Electronics",loc:"Al Quoz, Dubai — 🇦🇪",type:"Electronics & Accessories",av:"A",flag:"🇦🇪",text:"Managing stock across multiple categories used to be a nightmare. TechonERP's inventory with category breakdown, margin tracking and low-stock alerts has made it so much easier. The reports section gives us everything we need to make smart decisions."},
-  {biz:"Burj Mobile Center",loc:"Bur Dubai — 🇦🇪",type:"Smartphone Repair & Sales",av:"B",flag:"🇦🇪",text:"The repair job module is perfectly designed for our workshop. We log every device, track repair status from pending to delivered and print job cards for customers. TechonERP is the best investment we have made for our shop in Dubai."},
-  {biz:"Galaxy Phone Center",loc:"Colombo 07 — 🇱🇰",type:"Smartphone Retail & Service",av:"G",flag:"🇱🇰",text:"The admin and sales mode feature is brilliant. Our sales staff use the POS view while I handle the finances separately in admin mode. The cheque register is something I've never seen in any other local ERP."},
-  {biz:"Ruhunu Tech Hub",loc:"Matara — 🇱🇰",type:"Computer & Accessories Store",av:"R",flag:"🇱🇰",text:"We handle both retail sales and service jobs at the same shop. TechonERP manages both perfectly — the inventory tracks our stock while the repair module handles all our service jobs with status updates. Great value for the price."},
+  {biz:"Macline Computers",loc:"Kandy, Sri Lanka",av:"M",text:"Managing inventory, invoicing and repairs in one place has saved us hours daily."},
+  {biz:"Techzone Qatar",loc:"Al Wakrah, Qatar",av:"T",text:"Works offline perfectly — QAR support made it ready from day one."},
+  {biz:"Desert Tech Dubai",loc:"Dubai, UAE",av:"D",text:"Sales, repairs and inventory in one app. Offline capability is a major advantage."},
 ];
 
-const Testimonials = () => {
-  const [show, setShow] = useState(6);
-  return (
-  <section className="py-16 sm:py-24 bg-white">
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="text-center max-w-2xl mx-auto mb-14">
-        <span className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 font-bold text-xs uppercase tracking-widest px-4 py-1.5 rounded-full mb-4">
-          <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"/>Real Customers
-        </span>
-        <h2 className="text-4xl lg:text-5xl font-black text-gray-900 mb-3 leading-tight">Trusted Across the Globe</h2>
-        <p className="text-gray-500 text-lg">From Sri Lanka to Qatar — businesses of all sizes rely on TechonERP every day.</p>
-        <p className="text-gray-400 text-sm mt-3 max-w-xl mx-auto">Carefully selected global countries for real business use.</p>
-        {/* Country flags strip */}
-        <div className="flex justify-center gap-3 mt-5 flex-wrap">
-          {[["🇱🇰","Sri Lanka"],["🇶🇦","Qatar"],["🇦🇪","UAE / Dubai"]].map(([flag,name])=>(
-            <div key={name} className="flex items-center gap-1.5 bg-indigo-50 border border-indigo-100 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-full">
-              <span className="text-base">{flag}</span>{name}
-            </div>
-          ))}
-        </div>
+const Testimonials = () => (
+  <section className="py-20 sm:py-28 bg-white border-t border-gray-100">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="text-center max-w-xl mx-auto mb-12">
+        <SectionLabel>Reviews</SectionLabel>
+        <h2 className="text-3xl sm:text-4xl font-black text-gray-900 mb-3">Trusted by shop owners</h2>
+        <p className="text-gray-500">From Sri Lanka to the Middle East.</p>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
-        {testimonialList.slice(0,show).map((t,i)=>(
-          <div key={i} className="bg-gradient-to-br from-slate-50 to-indigo-50 border border-indigo-100 rounded-2xl p-4 sm:p-6 hover:shadow-xl hover:shadow-indigo-100 transition-all hover:-translate-y-0.5 flex flex-col">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex gap-0.5">{[1,2,3,4,5].map(s=><span key={s} className="text-amber-400 text-sm">★</span>)}</div>
-              <span className="text-xl">{t.flag}</span>
+      <div className="grid gap-5 sm:grid-cols-3">
+        {testimonialList.map((t,i)=>(
+          <div key={i} className="card-lift rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+            <div className="flex gap-0.5 mb-3" aria-label="5 stars">
+              {[1,2,3,4,5].map(s=><span key={s} className="text-amber-400 text-sm">★</span>)}
             </div>
-            <p className="text-gray-700 leading-relaxed text-sm flex-1">"{t.text}"</p>
-            <div className="flex items-center gap-3 pt-4 mt-4 border-t border-indigo-100">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center text-white font-black text-base flex-shrink-0">{t.av}</div>
+            <p className="text-gray-700 text-sm leading-relaxed mb-5">"{t.text}"</p>
+            <div className="flex items-center gap-3 pt-4 border-t border-gray-100">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 flex items-center justify-center text-white font-bold text-sm shadow-sm">{t.av}</div>
               <div>
-                <p className="font-black text-gray-900 text-sm leading-tight">{t.biz}</p>
-                <p className="text-xs text-indigo-600 font-semibold">{t.type}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{t.loc}</p>
+                <p className="font-bold text-gray-900 text-sm">{t.biz}</p>
+                <p className="text-xs text-gray-400">{t.loc}</p>
               </div>
             </div>
           </div>
         ))}
       </div>
-      {show < testimonialList.length && (
-        <div className="text-center mt-10">
-          <button onClick={()=>setShow(testimonialList.length)}
-            className="px-8 py-3 border-2 border-indigo-200 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 hover:border-indigo-400 transition-all text-sm">
-            Show All Reviews ({testimonialList.length}) ↓
-          </button>
-        </div>
-      )}
     </div>
   </section>
-  );
-};
+);
 
 /* ─── WHY CHOOSE US ─────────────────────────────────────────────── */
 const WhyUs = () => (
@@ -2340,68 +1480,39 @@ const CTA = () => (
 
 /* ─── FOOTER ────────────────────────────────────────────────────── */
 const Footer = () => (
-  <footer id="footer" style={{background:"linear-gradient(180deg,#0a0a14 0%,#06060e 100%)"}}>
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 sm:gap-10 mb-10 sm:mb-12">
-        <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <TechonLogo size={44}/>
-            <div><p className="text-xl font-black text-white">Techon<span className="text-violet-400">ERP</span></p><p className="text-xs text-gray-500">by Techon Computers</p></div>
-          </div>
-          <p className="text-sm text-gray-500 leading-relaxed">All-in-One Smart ERP for Every Business. Desktop app for Windows. Data stored locally on your own PC.</p>
-          <a href="https://wa.me/94701234678" target="_blank" rel="noreferrer"
-            className="inline-flex items-center gap-2 bg-green-600 hover:bg-green-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-            WhatsApp Us
-          </a>
-        </div>
+  <footer id="footer" className="bg-gray-950 text-gray-400">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+      <div className="rounded-2xl bg-gradient-to-r from-indigo-600/20 to-violet-600/20 border border-white/10 p-8 sm:p-10 mb-12 text-center">
+        <h3 className="text-xl sm:text-2xl font-bold text-white mb-2">Ready to try TechonERP?</h3>
+        <p className="text-gray-400 text-sm mb-6 max-w-md mx-auto">Download the free 7-day trial. Full access, no credit card.</p>
+        <a href="https://techon.lk/downloads/latest.zip" target="_blank" rel="noreferrer" className="btn-primary">
+          Download free trial
+        </a>
+      </div>
+      <div className="flex flex-col sm:flex-row sm:justify-between gap-8">
         <div>
-          <h4 className="text-white font-bold mb-5">Quick Links</h4>
-          <ul className="space-y-3">
-            {[["Features","features"],["Screenshots","screenshots"],["How It Works","howitworks"],["Pricing","pricing"]].map(([l,id])=>(
-              <li key={id}><button onClick={()=>goto(id)} className="text-sm text-gray-500 hover:text-indigo-400 transition-colors">{l}</button></li>
-            ))}
-          </ul>
+          <p className="text-lg font-bold text-white">TechonERP</p>
+          <p className="text-sm text-gray-500 mt-1">by Techon Computers · Matale, Sri Lanka</p>
         </div>
-        <div>
-          <h4 className="text-white font-bold mb-5">Built For</h4>
-          <ul className="space-y-2">
-            {["Computer & Mobile Shops","Repair & Service Centers","Grocery & Supermarkets","Electrical & Paint Shops","Restaurants & Cafés","All Retail Businesses"].map(b=>(
-              <li key={b} className="text-sm text-gray-500 flex items-start gap-2"><span className="text-indigo-500">›</span>{b}</li>
-            ))}
-          </ul>
-        </div>
-        <div>
-          <h4 className="text-white font-bold mb-5">Contact Us</h4>
-          <div className="space-y-3">
-            {[["🌐","www.erp.techon.lk","https://www.erp.techon.lk"],["✉","info@techon.lk","mailto:info@techon.lk"],["📞","+94 70 1234 678","tel:+94701234678"],["📞","+94 70 1234 178","tel:+94701234178"]].map(([ic,l,h])=>(
-              <a key={l} href={h} target={h.startsWith("http")?"_blank":undefined} rel="noreferrer" className="flex items-center gap-2.5 text-sm text-gray-500 hover:text-indigo-400 transition-colors">
-                <span>{ic}</span>{l}
-              </a>
-            ))}
-            <div className="mt-4 bg-gray-900 rounded-xl p-3.5 border border-gray-800">
-              <p className="text-xs text-gray-500 font-semibold">📍 Based in</p>
-              <p className="text-sm text-white font-bold mt-0.5">Matale, Central Province</p>
-              <p className="text-xs text-gray-500">Sri Lanka 🇱🇰</p>
-            </div>
-          </div>
+        <div className="space-y-2 text-sm">
+          <a href="mailto:info@techon.lk" className="block hover:text-white transition-colors">info@techon.lk</a>
+          <a href="tel:+94701234678" className="block hover:text-white transition-colors">+94 70 1234 678</a>
+          <a href="https://wa.me/94701234678" target="_blank" rel="noreferrer" className="block hover:text-white transition-colors">WhatsApp</a>
         </div>
       </div>
-      <div className="border-t border-gray-800 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <p className="text-sm text-gray-600">© 2026 <span className="text-indigo-400">TechonERP</span> · Developed by <span className="text-gray-400 font-semibold">Techon Computers</span> · All rights reserved.</p>
-        <p className="text-xs text-gray-700">Electron · IndexedDB · Windows 10/11 · Online Sync optional</p>
-      </div>
+      <p className="border-t border-gray-800 mt-10 pt-6 text-xs text-gray-600 text-center">
+        © {new Date().getFullYear()} TechonERP. All rights reserved.
+      </p>
     </div>
   </footer>
 );
 
 /* ─── FLOATING WHATSAPP ─────────────────────────────────────────── */
 const WAButton = () => (
-  <a href="https://wa.me/94701234678?text=Hi%2C+I%27m+interested+in+TechonERP.+Can+you+help%3F" target="_blank" rel="noreferrer"
-    className="fixed bottom-6 right-6 z-50 flex items-center gap-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-full shadow-2xl shadow-green-500/50 hover:scale-105 transition-all"
-    style={{padding:"13px 20px 13px 16px"}}>
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
-    <span className="text-sm whitespace-nowrap">Chat on WhatsApp</span>
+  <a href="https://wa.me/94701234678?text=Hi%2C+I%27m+interested+in+TechonERP." target="_blank" rel="noreferrer"
+    className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-green-500 text-white shadow-lg hover:bg-green-600 transition-colors"
+    aria-label="Chat on WhatsApp">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a9 9 0 0 0-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 0 0 5.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z"/></svg>
   </a>
 );
 
@@ -2422,10 +1533,10 @@ const FaviconSetter = () => {
 /* ─── ROOT ──────────────────────────────────────────────────────── */
 export default function App() {
   return (
-    <div style={{fontFamily:"'Plus Jakarta Sans',sans-serif"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap'); html{scroll-behavior:smooth} *{box-sizing:border-box} .pricing-scroll::-webkit-scrollbar{display:none} @media(max-width:639px){.pricing-card{flex-shrink:0;scroll-snap-align:start;width:100%}.pricing-scroll{scroll-snap-type:y mandatory;-webkit-overflow-scrolling:touch}.tab-scroll{scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}.tab-scroll::-webkit-scrollbar{display:none}}`}</style>
+    <div style={{fontFamily:"'Inter',system-ui,sans-serif"}}>
+      <style>{`html{scroll-behavior:smooth} *{box-sizing:border-box} @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}`}</style>
       <FaviconSetter/>
-      <Navbar/><Hero/><Features/><Screenshots/><ProductHighlights/><HowItWorks/><SystemModes/><SupportedIndustries/><Currencies/><Pricing/><WhyUs/><SysReq/><CTA/><Testimonials/><Footer/><WAButton/>
+      <Navbar/><Hero/><TrustBar/><Features/><Screenshots/><HowItWorks/><Pricing/><Testimonials/><Footer/><WAButton/>
     </div>
   );
 }

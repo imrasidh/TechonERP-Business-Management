@@ -237,6 +237,10 @@ var POS = React.memo(function (props) {
     var pf = S.get("tc3_repair_prefill", null);
     return pf ? (pf.fromRepairId || "") : "";
   });
+  var [fromRepairDeviceIndexes, setFromRepairDeviceIndexes] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return pf && Array.isArray(pf.fromRepairDeviceIndexes) ? pf.fromRepairDeviceIndexes : [];
+  });
   var [fromQuotationId, setFromQuotationId] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     return pf ? (pf.fromQuotationId || "") : "";
@@ -423,7 +427,7 @@ var POS = React.memo(function (props) {
   useEffect(function () {
     window._techon_pos_snapshot = {
       cart: cart, freeCart: freeCart, custId: custId, custMode: custMode, custSearch: custSearch,
-      newCust: newCust, discount: discount, fromRepairId: fromRepairId,
+      newCust: newCust, discount: discount, fromRepairId: fromRepairId, fromRepairDeviceIndexes: fromRepairDeviceIndexes,
       fromQuotationId: fromQuotationId, invoiceNo: invoiceNo,
       quotationNo: quotationNo, quotationNotes: quotationNotes,
       posPageTab: isQuotationMode ? "quotation" : "sale",
@@ -434,7 +438,7 @@ var POS = React.memo(function (props) {
       codTrack: codTrack,
       _activeHeldId: activeHeldId
     };
-  }, [cart, freeCart, custId, custMode, custSearch, newCust, discount, includeWarranty, posSplitRows, invoiceNo, quotationNo, quotationNotes, isQuotationMode, paidAmt, payMode, editingSaleId, fromRepairId, fromQuotationId, activeHeldId, codTrack]);
+  }, [cart, freeCart, custId, custMode, custSearch, newCust, discount, includeWarranty, posSplitRows, invoiceNo, quotationNo, quotationNotes, isQuotationMode, paidAmt, payMode, editingSaleId, fromRepairId, fromRepairDeviceIndexes, fromQuotationId, activeHeldId, codTrack]);
 
   /* Clear snapshot on unmount, refresh held invoices on mount */
   useEffect(function () {
@@ -1100,7 +1104,7 @@ var POS = React.memo(function (props) {
         return Object.assign({}, it, { lineTax: lt });
       });
     }
-    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: today(), customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromQuotationId: fromQuotationId || undefined, createdAt: new Date().toISOString() };
+    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: today(), customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromRepairDeviceIndexes: (fromRepairDeviceIndexes || []).slice(), fromQuotationId: fromQuotationId || undefined, createdAt: new Date().toISOString() };
     if (isNetworkClientPos) {
       var li = props.licenseInfo || (typeof window !== "undefined" ? window._tcLicInfo : null) || {};
       var oid = li.terminalDeviceId || li.deviceId || "";
@@ -1150,8 +1154,45 @@ var POS = React.memo(function (props) {
     /* Auto-update repair status to Delivered when this sale originated from a repair ticket */
     var nr = state.repairs;
     if (fromRepairId) {
+      var deriveRepairStatus = function (devices) {
+        var list = Array.isArray(devices) && devices.length ? devices : [{ status: "Accepted" }];
+        var counts = list.reduce(function (acc, d) {
+          var k = (d && d.status) || "Accepted";
+          acc[k] = (acc[k] || 0) + 1;
+          return acc;
+        }, {});
+        var total = list.length;
+        if ((counts.Delivered || 0) === total) return "Delivered";
+        if ((counts.Returned || 0) === total) return "Returned";
+        if ((counts.Accepted || 0) > 0) return "Accepted";
+        if ((counts.Ready || 0) > 0) return "Ready";
+        if ((counts.Delivered || 0) > 0 || (counts.Returned || 0) > 0) return "Delivered";
+        return "Accepted";
+      };
       nr = state.repairs.map(function (rep) {
-        return rep.id === fromRepairId ? Object.assign({}, rep, { status: "Delivered", dateOut: today() }) : rep;
+        if (rep.id !== fromRepairId) return rep;
+        var devices = Array.isArray(rep.devices) && rep.devices.length ? rep.devices.slice() : [{
+          deviceType: rep.deviceType || "Laptop",
+          brand: rep.brand || "",
+          modelNo: rep.modelNo || "",
+          problem: rep.problem || "",
+          status: rep.status || "Accepted"
+        }];
+        (fromRepairDeviceIndexes || []).forEach(function (idx) {
+          if (idx < 0 || idx >= devices.length) return;
+          devices[idx] = Object.assign({}, devices[idx], { status: "Delivered" });
+        });
+        var nextStatus = deriveRepairStatus(devices);
+        var first = devices[0] || {};
+        return Object.assign({}, rep, {
+          devices: devices,
+          deviceType: first.deviceType || rep.deviceType,
+          brand: first.brand || rep.brand,
+          modelNo: first.modelNo || rep.modelNo,
+          problem: first.problem || rep.problem,
+          status: nextStatus,
+          dateOut: nextStatus === "Delivered" ? today() : (rep.dateOut || "")
+        });
       });
     }
     /* Mark quotation as Converted when this sale was created from a quotation */
@@ -1287,7 +1328,7 @@ var POS = React.memo(function (props) {
     var finalSaleForPrint = (newState.sales || []).find(function (s) { return s.id === saleObj.id; }) || saleObj;
     if (withPrint) {
       setPendingPrint({ sale: finalSaleForPrint, mode: mode || "thermal", settings: Object.assign({}, state.settings), warranty: includeWarranty, invoiceLang: "en" });
-      setCart([]); setFreeCart([]); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId(""); setFreeSearch("");
+      setCart([]); setFreeCart([]); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId(""); setFromRepairDeviceIndexes([]); setFreeSearch("");
       try { sessionStorage.removeItem("tc3_dirty"); } catch (e2) { }
       focusPosSearch();
     } else {
@@ -1388,6 +1429,7 @@ var POS = React.memo(function (props) {
     setIncludeWarranty(false);
     setFromQuotationId("");
     setFromRepairId("");
+    setFromRepairDeviceIndexes([]);
     setActiveHeldId(null);
     setQuotationNotes("");
     setQuotationNo(genInvNo("QT"));
@@ -1501,7 +1543,7 @@ var POS = React.memo(function (props) {
   };
 
   var resetForm = function () {
-    setCart([]); setFreeCart([]); setFreeSearch(""); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId("");
+    setCart([]); setFreeCart([]); setFreeSearch(""); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId(""); setFromRepairDeviceIndexes([]);
     setEditingSaleId("");
     focusPosSearch();
   };
@@ -1528,6 +1570,7 @@ var POS = React.memo(function (props) {
       setInvoiceNo(h.invoiceNo);
     }
     if (h.fromRepairId) setFromRepairId(h.fromRepairId);
+    if (Array.isArray(h.fromRepairDeviceIndexes)) setFromRepairDeviceIndexes(h.fromRepairDeviceIndexes);
     if (h.fromQuotationId) setFromQuotationId(h.fromQuotationId);
     if (h.editingSaleId) setEditingSaleId(h.editingSaleId);
     if (h.codTrack) setCodTrack(Object.assign(emptyCodTrackForm(), h.codTrack));
@@ -1548,6 +1591,7 @@ var POS = React.memo(function (props) {
     setEditingSaleId("");
     setFromQuotationId("");
     setFromRepairId("");
+    setFromRepairDeviceIndexes([]);
     setActiveHeldId(null);
     if (wasQuotation) {
       setQuotationNotes("");
@@ -1586,6 +1630,7 @@ var POS = React.memo(function (props) {
       newCust: Object.assign({}, newCust),
       discount: discount,
       fromRepairId: fromRepairId,
+      fromRepairDeviceIndexes: (fromRepairDeviceIndexes || []).slice(),
       fromQuotationId: fromQuotationId,
       invoiceNo: invoiceNo,
       quotationNo: quotationNo,
@@ -2251,6 +2296,7 @@ var POS = React.memo(function (props) {
     setEditingSaleId("");
     setInvoiceNo(genInvNo());
     setFromRepairId("");
+    setFromRepairDeviceIndexes([]);
     setFromQuotationId("");
     setTimeout(function () {
       saveAndFinish(false, undefined, function (saleObj) {

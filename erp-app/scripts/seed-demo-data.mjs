@@ -34,5 +34,8 @@ console.log("  • " + (d.tc3_purchases || []).length + " purchases (paid, parti
 console.log("  • " + (d.tc3_cheques || []).length + " cheques (pending, cleared, bounced)");
 console.log("  • " + (d.tc3_manualReceivables || []).length + " manual receivables + " + (d.tc3_manualPayables || []).length + " payables");
 console.log("  • " + (d.tc3_salesReturns || []).length + " sales returns + " + (d.tc3_purchaseReturns || []).length + " purchase returns");
-console.log("  • " + (d.tc3_quotations || []).length + " quotations, " + (d.tc3_repairs || []).length + " repairs, " + (d.tc3_expenses || []).length + " expenses");
+console.log("  • " + (d.tc3_quotations || []).length + " quotations, " + (d.tc3_repairs || []).length + " repairs (multi-device, 3rd party, delivered), " + (d.tc3_expenses || []).length + " expenses");
+    var rep3p = (d.tc3_manualPayables || []).filter(function (mp) { return mp.type === "3rd Party Repair Cost"; }).length;
+    var repSales = (d.tc3_sales || []).filter(function (s) { return s.fromRepairId; }).length;
+    console.log("  • " + rep3p + " 3rd-party repair payables, " + repSales + " repair-linked sales invoices");
 console.log("  • Opening cash/bank balance + pre-built GL journal (" + (d.tc3_journal_lines || []).length + " lines)");

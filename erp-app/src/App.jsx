@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { IS_PRODUCTION, COMPUTER_SHOP_EDITION, validateJsonBackupPayload, enforceProductionStrictPeriodLock } from "./productionConfig.js";
 import { defaultStrictPeriodLock } from "./productionDefaults.js";
-import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId } from "./sync/SyncEngine.js";
+import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, pushKeysToServer, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
 import { generateDocumentNumber } from "./utils/docNumbers.js";
 import {
@@ -1423,6 +1423,12 @@ var applyBackupRestoreData = function (data) {
   _mirrorTc3ToLocalStorage("tc3_restore_grace_until", graceUntil);
   writes.push(_idbWriteAsync("tc3_restore_grace_until", graceUntil));
   return Promise.all(writes).then(function () {
+    try {
+      window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
+      keys.forEach(function (k) {
+        if (data[k] !== undefined) window._tcRecentLocalWrites[k] = Date.now();
+      });
+    } catch (eRw) { /* ignore */ }
     try { window._tcRestoreInProgress = false; } catch (e1) { /* ignore */ }
   }).catch(function (err) {
     try { window._tcRestoreInProgress = false; } catch (e2) { /* ignore */ }
@@ -3011,11 +3017,28 @@ var Input = function (props) {
 var Sel = function (props) {
   var label = props.label;
   var rest = Object.assign({}, props);
+  var origFocus = rest.onFocus;
+  var origBlur = rest.onBlur;
   delete rest.label;
+  var composedFocus = function (e) {
+    e.target.style.borderColor = "#2979ff";
+    e.target.style.boxShadow = "0 0 0 3px rgba(41,121,255,0.12)";
+    if (origFocus) origFocus(e);
+  };
+  var composedBlur = function (e) {
+    e.target.style.borderColor = C.border;
+    e.target.style.boxShadow = "none";
+    if (origBlur) origBlur(e);
+  };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {label && <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</label>}
-      <select {...rest} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%", cursor: "pointer" }}>{props.children}</select>
+      <select
+        {...rest}
+        style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%", cursor: "pointer", transition: "border-color .15s, box-shadow .15s" }}
+        onFocus={composedFocus}
+        onBlur={composedBlur}
+      >{props.children}</select>
     </div>
   );
 };
@@ -7924,7 +7947,30 @@ function App(props) {
                     persistTechonGLJournal("post_restore_rebuild", { forceCanonical: true });
                     setState(loadState());
                   }
-                  addAudit("Backup restored", "restore", { sales: (loaded.sales || []).length, products: (loaded.products || []).length, journalLines: (S.get("tc3_journal_lines", []) || []).length });
+                  var pushPromise = Promise.resolve({ ok: true });
+                  if (isNetworkMode && systemConfig && systemConfig.apiUrl) {
+                    ensureSyncConfig(systemConfig);
+                    var pushKeys = TC_FULL_BACKUP_KEYS.filter(function (k) { return data[k] !== undefined; });
+                    pushPromise = pushKeysToServer(pushKeys, { authConfig: systemConfig }).catch(function (err) {
+                      if (tcIsDevEnv()) {
+                        try { console.warn("[TC_NET] Restore upload to server failed:", err && err.message ? err.message : err); } catch (ePush) {}
+                      }
+                      return { ok: false, message: err && err.message ? err.message : String(err) };
+                    });
+                  }
+                  return pushPromise.then(function (pushResult) {
+                    addAudit("Backup restored", "restore", {
+                      sales: (loaded.sales || []).length,
+                      products: (loaded.products || []).length,
+                      journalLines: (S.get("tc3_journal_lines", []) || []).length,
+                      serverUpload: !!(pushResult && pushResult.ok),
+                    });
+                    if (isNetworkMode && pushResult && !pushResult.ok) {
+                      try {
+                        showAlert("Backup restored on this PC, but upload to the MySQL server failed. Keep this PC online and try Settings → Backup → Restore again, or check the server connection.");
+                      } catch (eAlert) { /* ignore */ }
+                    }
+                  });
                 });
               }}
               AboutTab={AboutTab}

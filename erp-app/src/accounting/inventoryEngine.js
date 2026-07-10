@@ -184,12 +184,38 @@ export function deriveInventoryEconomics(state, S, opts) {
     });
   });
 
+  /* Inventory-linked manual payables (e.g. 3rd party repair receive as one-time stock) */
+  (state.manualPayables || (S && typeof S.get === "function" ? S.get("tc3_manualPayables", []) : []) || []).forEach(function (mp) {
+    if (!mp || !mp.productId || mp._isOpening) return;
+    if (mp.type !== "3rd Party Repair Cost" && !mp.thirdPartyRepairId) return;
+    if (asOfDate && String(mp.date || "") > asOfDate) return;
+    var qmp = Number(mp.qty || 1);
+    var amp = round2(Number(mp.amount || 0));
+    if (!isFinite(qmp) || qmp <= 0) return;
+    if (!isFinite(amp) || amp <= 0) return;
+    events.push({
+      _seq: seq++,
+      date: mp.date || "",
+      isoDateTime: resolveRecordIsoDateTime(mp),
+      type: "manual_payable_in",
+      productId: mp.productId,
+      qty: qmp,
+      unitCost: round2(amp / qmp),
+      referenceType: "manual_payable",
+      referenceId: mp.id,
+      lineIdx: 0,
+    });
+  });
+
   (state.sales || []).forEach(function (s) {
     if (asOfDate && String(s.date || "") > asOfDate) return;
     var saleIso = resolveRecordIsoDateTime(s);
     (s.items || []).forEach(function (it, j) {
       var q = Number(it.qty) || 0;
       if (q <= 0) return;
+      var salePid = it.id != null ? String(it.id) : (it.productId != null ? String(it.productId) : "");
+      var saleProduct = productsById[salePid] || null;
+      if (saleProduct && String(saleProduct.type || "").toLowerCase() === "service") return; /* service line: no inventory movement */
       events.push({
         _seq: seq++,
         date: s.date || "",
@@ -299,7 +325,7 @@ export function deriveInventoryEconomics(state, S, opts) {
       return;
     }
 
-    if (ev.type === "pur_in") {
+    if (ev.type === "pur_in" || ev.type === "manual_payable_in") {
       if (method === "fifo") {
         layersByProduct[pid].push({
           remainingQty: ev.qty,
@@ -311,7 +337,7 @@ export function deriveInventoryEconomics(state, S, opts) {
       }
       runningInventoryValue = round2(runningInventoryValue + round2(ev.qty * ev.unitCost));
       movements.push({
-        id: stableJournalTransactionId("stk", ev.referenceId, "in_" + ev.lineIdx),
+        id: stableJournalTransactionId("stk", ev.referenceId, (ev.type === "manual_payable_in" ? "mp_in_" : "in_") + ev.lineIdx),
         productId: pid,
         qtyIn: ev.qty,
         qtyOut: 0,
@@ -320,7 +346,7 @@ export function deriveInventoryEconomics(state, S, opts) {
         referenceType: ev.referenceType,
         referenceId: ev.referenceId,
         date: ev.date,
-        journalTxnHint: stableJournalTransactionId("purchase", ev.referenceId, "inv"),
+        journalTxnHint: stableJournalTransactionId(ev.type === "manual_payable_in" ? "manual_payable" : "purchase", ev.referenceId, "inv"),
       });
       return;
     }
@@ -451,23 +477,18 @@ export function deriveInventoryEconomics(state, S, opts) {
     }
 
     if (ev.type === "pur_out") {
-      var L2 = layersByProduct[pid].slice();
-      var need2 = ev.qty;
-      var i = 0;
-      while (need2 > 0.0001 && i < L2.length) {
-        var L = L2[i];
-        var rem = Math.max(0, L.remainingQty != null ? L.remainingQty : L.qty || 0);
-        if (rem <= 0) {
-          i++;
-          continue;
-        }
-        var take = Math.min(need2, rem);
-        L.remainingQty = round2(rem - take);
-        need2 = round2(need2 - take);
-        if (L.remainingQty <= 0.0001) i++;
-      }
-      layersByProduct[pid] = L2.filter(function (x) { return (x.remainingQty || 0) > 0.0001; });
+      var consPr = consumeFifo(layersByProduct[pid].slice(), ev.qty, pid);
+      layersByProduct[pid] = consPr.layers;
       var prVal = round2(ev.qty * round2(ev.unitCost || 0));
+      if (consPr.cost < 0.0001 && ev.qty > 0) {
+        if (method === "fifo") {
+          if (allowCostFallback) {
+            warnings.push("FIFO cost fallback used for purchase return " + String(ev.referenceId || "") + ":" + ev.lineIdx + " (allowCostFallback=true)");
+          } else {
+            blockingErrors.push("FIFO: no inventory layers for purchase return " + String(ev.referenceId || "") + ":" + ev.lineIdx + ". Purchase stock first or enable allowCostFallback.");
+          }
+        }
+      }
       runningInventoryValue = round2(runningInventoryValue - prVal);
       movements.push({
         id: stableJournalTransactionId("stk", ev.referenceId, "pr_out"),

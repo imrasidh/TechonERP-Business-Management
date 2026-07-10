@@ -26,6 +26,36 @@ import ProductNameDuplicateHint, { useProductNameHintControls } from "../compone
 import CategorySelect from "../components/CategorySelect.jsx";
 import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
 
+function isMeaningfulGlLastError(err) {
+  if (err == null) return false;
+  if (Array.isArray(err)) return err.length > 0;
+  if (typeof err === "string") return err.trim().length > 0;
+  if (typeof err !== "object") return !!err;
+  if (typeof err.message === "string" && err.message.trim()) return true;
+  if (err.type === "missing_license_secret") return true;
+  if (err.type === "inventory_vs_gl") return true;
+  if (Array.isArray(err.imbalances) && err.imbalances.length > 0) return true;
+  return false;
+}
+
+function formatGlLastError(err) {
+  if (!isMeaningfulGlLastError(err)) return "";
+  if (typeof err === "string") return err;
+  if (Array.isArray(err)) return err.join("; ");
+  if (typeof err.message === "string" && err.message.trim()) return err.message;
+  if (err.type === "missing_license_secret") return "License secret not configured on this install.";
+  if (err.type === "inventory_vs_gl") {
+    return "Inventory vs GL mismatch blocked save."
+      + (err.detail && err.detail.difference != null ? " Difference: " + err.detail.difference : "");
+  }
+  if (Array.isArray(err.imbalances) && err.imbalances.length) {
+    return (err.type || "Journal error") + ": " + err.imbalances.map(function (x) {
+      return typeof x === "string" ? x : JSON.stringify(x);
+    }).join("; ");
+  }
+  try { return JSON.stringify(err); } catch (_e) { return String(err); }
+}
+
 /** Group GL lines by transactionId / entryGroupId for developer debug view only */
 function tcGroupJournalByTransaction(lines) {
   var m = {};
@@ -237,6 +267,31 @@ var Accounts = function (props) {
   var [obRecvForm, setObRecvForm] = useState({ person: "", amount: "", note: "" });
   var [obPayForm, setObPayForm] = useState({ source: "", amount: "", note: "" });
   var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
+  var obNewProdSelectEnterState = useRef({ main: false, sub: false, unit: false });
+  var focusById = function (id) {
+    setTimeout(function () {
+      var el = document.getElementById(id);
+      if (el && typeof el.focus === "function") el.focus();
+    }, 0);
+  };
+  var openSelectById = function (id) {
+    setTimeout(function () {
+      var el = document.getElementById(id);
+      if (!el) return;
+      if (typeof el.focus === "function") el.focus();
+      if (typeof el.click === "function") el.click();
+    }, 0);
+  };
+  var markSelectEnterStage = function (key, val) { obNewProdSelectEnterState.current[key] = !!val; };
+  var handleSelectEnter = function (key, id, onSecondEnter) {
+    if (!obNewProdSelectEnterState.current[key]) {
+      markSelectEnterStage(key, true);
+      openSelectById(id);
+      return;
+    }
+    markSelectEnterStage(key, false);
+    if (typeof onSecondEnter === "function") onSecondEnter();
+  };
   var [obAssetForm, setObAssetForm] = useState({ name: "", category: "Equipment / Machinery", value: "", note: "" });
   var obProductNameMatch = useMemo(function () {
     if (!String(obStockForm.name || "").trim()) return null;
@@ -963,7 +1018,12 @@ var Accounts = function (props) {
           differenceWithEarnings: 0,
         };
         var pl = typeof getProfitAndLossFromLedger === "function" ? getProfitAndLossFromLedger(null, null) : { income: 0, expenses: 0, net: 0 };
-        var glErr = S.get("tc3_gl_last_error", null);
+        var glErrRaw = S.get("tc3_gl_last_error", null);
+        var glErr = isMeaningfulGlLastError(glErrRaw) ? glErrRaw : null;
+        if (!glErr && glErrRaw != null && typeof S.set === "function") {
+          try { S.set("tc3_gl_last_error", null); } catch (_clr) { /* ignore */ }
+        }
+        var glErrText = glErr ? formatGlLastError(glErr) : "";
         var glAudit = S.get("tc3_gl_audit", []);
         var glMode = S.get("tc3_gl_mode", "live");
         var invRec = S.get("tc3_inv_reconciliation", null);
@@ -990,9 +1050,9 @@ var Accounts = function (props) {
                   {bsEqBal ? "✓ Ledger balanced (A = L + E + NI)" : "⚠ Balance sheet equation off by " + getCurrencySymbol() + fmtNum(bsEqDiffAmt)}
                 </span>
               </div>
-              {glErr && (
+              {glErrText && (
                 <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#991b1b", marginBottom: 10 }}>
-                  Last journal error: {typeof glErr.message === "string" ? glErr.message : JSON.stringify(glErr)}
+                  Last journal error: {glErrText}
                 </div>
               )}
               {invRec && !isInventoryReconcileOk(invRec, state.settings || {}) && (
@@ -1758,22 +1818,57 @@ var Accounts = function (props) {
                 <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm(blankObStockForm()); }} wide>
                   <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>New product will be added to your Inventory with opening stock quantity.</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    <Input label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={obNameHint.onNameFocus} onBlur={obNameHint.onNameBlur} />
+                    <Input id="ob-new-name" label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={obNameHint.onNameFocus} onBlur={obNameHint.onNameBlur} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-barcode"); } }} />
                     <ProductNameDuplicateHint name={obStockForm.name} products={state.products} C={C} visible={obNameHint.visible} onDismiss={obNameHint.onDismiss} />
                     <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
                       <div>
                         <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
                         <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{obNextId}</div>
                       </div>
-                      <Input label="Barcode" value={obStockForm.barcode || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
+                      <Input id="ob-new-barcode" label="Barcode" value={obStockForm.barcode || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-main-category"); } }} />
                     </div>
-                    <CategorySelect Sel={Sel} value={obStockForm.category || getDefaultProductCategory(shopSettings)} settings={shopSettings} onChange={function (e) { onObStockCategoryChange(e.target.value); }} />
+                    <CategorySelect
+                      Sel={Sel}
+                      value={obStockForm.category || getDefaultProductCategory(shopSettings)}
+                      settings={shopSettings}
+                      onChange={function (e) { onObStockCategoryChange(e.target.value); }}
+                      focusSubAfterGroupChange={false}
+                      mainSelectProps={{
+                        id: "ob-new-main-category",
+                        onFocus: function () { markSelectEnterStage("main", false); },
+                        onBlur: function () { markSelectEnterStage("main", false); },
+                        onKeyDown: function (e) {
+                          if (e.key === "Enter") { e.preventDefault(); handleSelectEnter("main", "ob-new-main-category", function () { focusById("ob-new-sub-category"); }); }
+                          if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("main", true);
+                        },
+                        onKeyUp: function (e) {
+                          if (e.key === "Enter" && obNewProdSelectEnterState.current.main) { markSelectEnterStage("main", false); focusById("ob-new-sub-category"); }
+                        }
+                      }}
+                      subSelectProps={{
+                        id: "ob-new-sub-category",
+                        onFocus: function () { markSelectEnterStage("sub", false); },
+                        onBlur: function () { markSelectEnterStage("sub", false); },
+                        onKeyDown: function (e) {
+                          if (e.key === "Enter") { e.preventDefault(); handleSelectEnter("sub", "ob-new-sub-category", function () { focusById("ob-new-cost"); }); }
+                          if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("sub", true);
+                        },
+                        onKeyUp: function (e) {
+                          if (e.key === "Enter" && obNewProdSelectEnterState.current.sub) { markSelectEnterStage("sub", false); focusById("ob-new-cost"); }
+                        }
+                      }}
+                    />
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                      <Input label={glassCostPriceLabels(obStockForm, shopSettings).cost} type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-                      <Input label={glassCostPriceLabels(obStockForm, shopSettings).sell} type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
-                      <Sel label="Base Unit" value={obStockForm.unit || getDefaultProductUnit(shopSettings, obStockForm.category)} onChange={function (e) {
+                      <Input id="ob-new-cost" label={glassCostPriceLabels(obStockForm, shopSettings).cost} type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-sell"); } }} />
+                      <Input id="ob-new-sell" label={glassCostPriceLabels(obStockForm, shopSettings).sell} type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-unit"); } }} />
+                      <Sel id="ob-new-unit" label="Base Unit" value={obStockForm.unit || getDefaultProductUnit(shopSettings, obStockForm.category)} onChange={function (e) {
                         var nextUnit = e.target.value;
                         setObStockForm(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
+                      }} onFocus={function () { markSelectEnterStage("unit", false); }} onBlur={function () { markSelectEnterStage("unit", false); }} onKeyDown={function (e) {
+                        if (e.key === "Enter") { e.preventDefault(); handleSelectEnter("unit", "ob-new-unit", function () { focusById("ob-new-desc"); }); }
+                        if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("unit", true);
+                      }} onKeyUp={function (e) {
+                        if (e.key === "Enter" && obNewProdSelectEnterState.current.unit) { markSelectEnterStage("unit", false); focusById("ob-new-desc"); }
                       }}>
                         {getUnitsForSubCategory(obStockForm.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}
                       </Sel>
@@ -1808,7 +1903,7 @@ var Accounts = function (props) {
                     )}
                     <div>
                       <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
-                      <textarea value={obStockForm.description || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
+                      <textarea id="ob-new-desc" value={obStockForm.description || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
                     </div>
                     <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                       <Btn col="cyan" onClick={function () {

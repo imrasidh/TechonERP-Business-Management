@@ -2439,7 +2439,7 @@ var Reports = React.memo(function (props) {
         /* ── CHECK 5: Cheques marked Cleared but not linked to any transaction ── */
         var orphanCheques = (state.cheques || []).filter(function (ch) {
           if (ch.status !== "Cleared") return false;
-          if (ch.saleId || ch.purchaseId || ch.manualPayableId || ch.manualReceivableId) return false;
+          if (ch.saleId || ch.purchaseId || ch.manualPayableId || ch.manualReceivableId || ch.thirdPartyRepairId) return false;
           return true;
         });
         if (orphanCheques.length > 0) {

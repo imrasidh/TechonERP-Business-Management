@@ -132,7 +132,24 @@ var REPAIR_PROBLEMS = [
 ];
 
 /** Max allowed inventory vs GL drift (Rs) for bulk WAC demo data — journal must still balance exactly. */
-export var DEMO_INV_GL_TOLERANCE = 2500;
+export var DEMO_INV_GL_TOLERANCE = 8000;
+
+/** Demo dataset scale — computer shop A–Z coverage */
+var DEMO_SCALE = {
+  stockProducts: 100,
+  customers: 120,
+  suppliers: 50,
+  purchases: 78,
+  sales: 220,
+  salesReturns: 45,
+  purchaseReturns: 28,
+  manualReceivables: 40,
+  manualPayables: 32,
+  quotations: 60,
+  expenses: 50,
+  repairsTotal: 70,
+  extra3pRepairs: 12,
+};
 
 export function buildDemoBackup() {
   var rng = makeRng(20260630);
@@ -165,10 +182,11 @@ export function buildDemoBackup() {
     };
   }
 
-  /* ── Products (80) ── */
+  /* ── Products (100 stock + service SKUs) ── */
   var products = [];
   var i;
-  for (i = 0; i < 80; i++) {
+  var STOCK_N = DEMO_SCALE.stockProducts;
+  for (i = 0; i < STOCK_N; i++) {
     var tpl = PRODUCT_TEMPLATES[i % PRODUCT_TEMPLATES.length];
     var variant = i >= PRODUCT_TEMPLATES.length ? " v" + (Math.floor(i / PRODUCT_TEMPLATES.length) + 1) : "";
     var cost = intCost(tpl.cost * (0.92 + (i % 7) * 0.02));
@@ -212,9 +230,9 @@ export function buildDemoBackup() {
     });
   });
 
-  /* ── Customers (55) ── */
+  /* ── Customers ── */
   var customers = [];
-  for (i = 0; i < 55; i++) {
+  for (i = 0; i < DEMO_SCALE.customers; i++) {
     customers.push({
       id: "demo-c-" + i,
       name: i < CUSTOMER_NAMES.length ? CUSTOMER_NAMES[i] : "Customer " + (i + 1),
@@ -226,9 +244,9 @@ export function buildDemoBackup() {
     });
   }
 
-  /* ── Suppliers (35) ── */
+  /* ── Suppliers ── */
   var suppliers = [];
-  for (i = 0; i < 35; i++) {
+  for (i = 0; i < DEMO_SCALE.suppliers; i++) {
     suppliers.push({
       id: "demo-s-" + i,
       name: i < SUPPLIER_NAMES.length ? SUPPLIER_NAMES[i] : "Supplier " + (i + 1),
@@ -241,9 +259,9 @@ export function buildDemoBackup() {
     });
   }
 
-  /* ── Purchases (65) — stock in first ── */
+  /* ── Purchases — stock in first ── */
   var purchases = [];
-  var PUR_COUNT = 65;
+  var PUR_COUNT = DEMO_SCALE.purchases;
   for (i = 0; i < PUR_COUNT; i++) {
     var sup = suppliers[i % suppliers.length];
     var lineCount = i % 4 === 0 ? rint(rng, 2, 3) : 1;
@@ -322,9 +340,9 @@ export function buildDemoBackup() {
     });
   }
 
-  /* ── Sales (65) ── */
+  /* ── Sales ── */
   var sales = [];
-  var SALE_COUNT = 65;
+  var SALE_COUNT = DEMO_SCALE.sales;
   for (i = 0; i < SALE_COUNT; i++) {
     var cust = i % 5 === 0 ? null : customers[rint(rng, 0, customers.length - 1)];
     var lineCountS = i % 3 === 0 ? rint(rng, 2, 4) : 1;
@@ -457,9 +475,9 @@ export function buildDemoBackup() {
     saleId: "", invoiceNo: "", note: "Bounced — customer to reissue",
   });
 
-  /* ── Sales returns (18) — mix partial qty returns ── */
+  /* ── Sales returns — mix partial qty returns ── */
   var salesReturns = [];
-  for (i = 0; i < 18; i++) {
+  for (i = 0; i < DEMO_SCALE.salesReturns; i++) {
     var src = sales[rint(rng, 5, sales.length - 1)];
     var item = src.items[rint(rng, 0, src.items.length - 1)];
     var maxRet = Math.max(1, item.qty - 1);
@@ -489,9 +507,9 @@ export function buildDemoBackup() {
     trackStock(item.id, rqty);
   }
 
-  /* ── Purchase returns (12) ── */
+  /* ── Purchase returns ── */
   var purchaseReturns = [];
-  for (i = 0; i < 12; i++) {
+  for (i = 0; i < DEMO_SCALE.purchaseReturns; i++) {
     var pur = purchases[rint(rng, 0, purchases.length - 1)];
     var pitem = pur.items[rint(rng, 0, pur.items.length - 1)];
     var prmax = Math.max(1, Math.floor(pitem.qty / 3));
@@ -535,9 +553,9 @@ export function buildDemoBackup() {
     else pur.status = "Unpaid";
   });
 
-  /* ── Manual receivables (15) ── */
+  /* ── Manual receivables ── */
   var manualReceivables = [];
-  for (i = 0; i < 15; i++) {
+  for (i = 0; i < DEMO_SCALE.manualReceivables; i++) {
     var mramt = round2(rint(rng, 8000, 120000));
     var mrPaid = round2(mramt * (rint(rng, 0, 75) / 100));
     var mrHist = [];
@@ -558,9 +576,9 @@ export function buildDemoBackup() {
     });
   }
 
-  /* ── Manual payables (15) ── */
+  /* ── Manual payables ── */
   var manualPayables = [];
-  for (i = 0; i < 15; i++) {
+  for (i = 0; i < DEMO_SCALE.manualPayables; i++) {
     var mpamt = round2(rint(rng, 5000, 90000));
     var mpPaid = round2(mpamt * (rint(rng, 0, 65) / 100));
     var mpHist = [];
@@ -581,9 +599,9 @@ export function buildDemoBackup() {
     });
   }
 
-  /* ── Quotations (28) ── */
+  /* ── Quotations ── */
   var quotations = [];
-  for (i = 0; i < 28; i++) {
+  for (i = 0; i < DEMO_SCALE.quotations; i++) {
     var qLines = [];
     var qsub = 0;
     var qlc = i % 3 === 0 ? rint(rng, 2, 5) : 1;
@@ -621,39 +639,487 @@ export function buildDemoBackup() {
     });
   }
 
-  /* ── Repairs (18) ── */
+  /* ── Repairs (computer shop — multi-device, 3rd party, delivered, returned) ── */
   var repairs = [];
-  var REPAIR_STATUSES = ["Pending", "Repairing", "Ready", "Delivered", "Delivered", "Repairing", "Pending", "Ready"];
+  var repairSaleSeq = 0;
   var DEVICE_TYPES = ["Laptop", "Desktop", "Printer", "Monitor", "Phone", "Tablet"];
   var BRANDS = ["HP", "Dell", "Lenovo", "ASUS", "Acer", "Canon", "Apple", "Samsung"];
-  for (i = 0; i < 18; i++) {
-    var rc = customers[rint(rng, 0, customers.length - 1)];
-    var rstatus = REPAIR_STATUSES[i % REPAIR_STATUSES.length];
-    var rdateIn = dateStr(rint(rng, 0, 45));
-    repairs.push({
-      id: "demo-rep-" + i,
-      date: rdateIn,
-      dateIn: rdateIn,
-      dateOut: rstatus === "Delivered" ? dateStr(Math.max(0, rint(rng, 0, 10))) : "",
-      customer: rc.name,
-      customerId: rc.id,
-      phone: rc.phone,
-      deviceType: pick(rng, DEVICE_TYPES),
-      brand: pick(rng, BRANDS),
-      modelNo: "MOD-" + rint(rng, 1000, 9999),
-      problem: pick(rng, REPAIR_PROBLEMS),
-      description: "Customer reported issue. Diagnostic in progress.",
-      estimatedCost: round2(rint(rng, 2500, 35000)),
-      technician: pick(rng, ["Rashid", "Amjad", "Fazil", "Tech Team"]),
-      accessories: i % 3 === 0 ? "Charger included" : (i % 4 === 0 ? "Laptop bag" : ""),
-      status: rstatus,
-      createdAt: isoAt(rdateIn, 9, rint(rng, 0, 59)),
-    });
+  var mpSeq = manualPayables.length;
+
+  function repairDevice(type, brand, model, problem, status, extra) {
+    return Object.assign({
+      deviceType: type, brand: brand, modelNo: model, problem: problem, status: status || "Accepted",
+    }, extra || {});
   }
 
-  /* ── Expenses (25) ── */
+  function deriveRepairBillStatus(devices) {
+    var list = devices || [];
+    var counts = list.reduce(function (acc, d) {
+      var k = d.status || "Accepted";
+      acc[k] = (acc[k] || 0) + 1;
+      return acc;
+    }, {});
+    var total = list.length;
+    if ((counts.Delivered || 0) === total) return "Delivered";
+    if ((counts.Returned || 0) === total) return "Returned";
+    if ((counts.Accepted || 0) > 0) return "Accepted";
+    if ((counts["Third Party"] || 0) > 0) return "Third Party";
+    if ((counts.Ready || 0) > 0) return "Ready";
+    return "Accepted";
+  }
+
+  function create3pProduct(repairId, deviceIndex, repair, device, cost, sell) {
+    var pid = "demo-3p-prod-" + repairId + "-d" + deviceIndex;
+    var name = "3P Repair - " + repair.customer + " - " + device.deviceType + " " + device.brand + " " + device.modelNo + " - Bill#" + repairId.slice(-8).toUpperCase() + " - D" + (deviceIndex + 1);
+    var prod = {
+      id: pid,
+      productId: "RP3P-" + repairId.slice(-8).toUpperCase() + "-" + (deviceIndex + 1),
+      name: name,
+      barcode: "3P" + String(880000 + products.length),
+      category: "Repair 3rd Party",
+      type: "stock",
+      unit: "Pcs",
+      cost: intCost(cost),
+      price: intCost(sell),
+      stock: 0,
+      damaged: 0,
+      _repair3pOneTime: true,
+      _repairId: repairId,
+      _repairDeviceIndex: deviceIndex,
+      createdAt: isoAt(dateStr(5), 10, 0),
+    };
+    products.push(prod);
+    trackStock(pid, 1);
+    return prod;
+  }
+
+  function add3pPayable(repairId, deviceIndex, repair, device, supplier, cost, sell, recvDate, paySpec) {
+    var prod = create3pProduct(repairId, deviceIndex, repair, device, cost, sell);
+    var payableId = "demo-3p-mp-" + (++mpSeq);
+    var paymentHistory = paySpec.paymentHistory || [];
+    var paidAmount = paySpec.paidAmount || 0;
+    var payMode = paySpec.payMode || "unpaid";
+    var cashMethod = paySpec.cashMethod || "Credit";
+  var payable = {
+      id: payableId,
+      date: recvDate,
+      source: supplier.name,
+      type: "3rd Party Repair Cost",
+      productId: prod.id,
+      qty: 1,
+      amount: round2(cost),
+      paymentMethod: payMode === "unpaid" ? "Credit" : cashMethod,
+      reference: repairId.slice(-8).toUpperCase(),
+      note: prod.name,
+      paymentHistory: paymentHistory,
+      createdAt: isoAt(recvDate, 11, 0),
+      thirdPartyRepairId: repairId,
+      thirdPartyDeviceIndex: deviceIndex,
+      supplierId: supplier.id,
+      supplierPhone: supplier.phone || "",
+    };
+    manualPayables.push(payable);
+    return {
+      product: prod,
+      payable: payable,
+      thirdParty: {
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+        supplierPhone: supplier.phone || "",
+        productName: prod.name,
+        productId: prod.id,
+        amount: round2(cost),
+        sellAmount: round2(sell),
+        payMode: payMode,
+        cashMethod: cashMethod,
+        paidAmount: round2(paidAmount),
+        paid: paidAmount >= cost - 0.01,
+        payableId: payableId,
+        note: paySpec.note || "",
+        receivedAt: recvDate,
+        splitRows: paySpec.splitRows || [],
+      },
+    };
+  }
+
+  function addRepairSale(repair, deviceIndexes, lines, saleDate, paySpec) {
+    var total = round2(lines.reduce(function (a, ln) { return a + (ln.price || 0) * (ln.qty || 1); }, 0));
+    var paid = paySpec.paid != null ? round2(paySpec.paid) : total;
+    var balance = round2(total - paid);
+    var saleId = "demo-rep-sale-" + (++repairSaleSeq);
+    var invNo = "INV-REP-" + String(5000 + repairSaleSeq);
+    lines.forEach(function (ln) {
+      if (ln.id && products.find(function (p) { return p.id === ln.id && p.type !== "service"; })) {
+        trackStock(ln.id, -(ln.qty || 1));
+      }
+    });
+    var sale = {
+      id: saleId,
+      invoiceNo: invNo,
+      date: saleDate,
+      customerId: repair.customerId || "",
+      customerName: repair.customer,
+      customerPhone: repair.phone || "",
+      items: lines,
+      subTotal: total,
+      discount: 0,
+      total: total,
+      paid: paid,
+      balance: balance,
+      payStatus: balance <= 0.01 ? "Paid" : (paid > 0 ? "Partial" : "Unpaid"),
+      cashMethod: paySpec.cashMethod || "Cash",
+      paymentHistory: paySpec.paymentHistory || (paid > 0 ? [ph("demo-ph-rs-" + repairSaleSeq, saleDate, paid, paySpec.cashMethod || "Cash", { note: "Repair invoice payment" })] : []),
+      fromRepairId: repair.id,
+      fromRepairDeviceIndexes: deviceIndexes,
+      createdAt: isoAt(saleDate, 15, 30),
+    };
+    sales.push(sale);
+    return sale;
+  }
+
+  function buildRepairBill(id, cust, dateIn, devices, extra) {
+    var first = devices[0] || repairDevice("Laptop", "HP", "MOD-0", "Issue", "Accepted");
+    return Object.assign({
+      id: id,
+      date: dateIn,
+      dateIn: dateIn,
+      dateOut: "",
+      customer: cust.name,
+      customerId: cust.id,
+      phone: cust.phone,
+      deviceType: first.deviceType,
+      brand: first.brand,
+      modelNo: first.modelNo,
+      problem: first.problem,
+      description: "Workshop repair ticket — demo data",
+      estimatedCost: round2(rint(rng, 3500, 28000)),
+      technician: pick(rng, ["Rashid", "Amjad", "Fazil", "Tech Team"]),
+      accessories: "Charger",
+      devices: devices,
+      returnedLog: [],
+      internalPartsUsed: [],
+      internalPartsCost: 0,
+      status: deriveRepairBillStatus(devices),
+      createdAt: isoAt(dateIn, 9, rint(rng, 0, 59)),
+    }, extra || {});
+  }
+
+  var extSupplier = suppliers.find(function (s) { return s.name.indexOf("Redline") >= 0; }) || suppliers[2];
+  var chipSupplier = suppliers.find(function (s) { return s.name.indexOf("Components") >= 0; }) || suppliers[8];
+
+  /* Active multi-device bill */
+  repairs.push(buildRepairBill("demo-rep-0", customers[0], dateStr(42), [
+    repairDevice("Laptop", "Dell", "5490", "Screen flickering", "Accepted"),
+    repairDevice("Laptop", "HP", "15-dw3033", "Battery not charging", "Ready"),
+    repairDevice("Desktop", "HP", "ProDesk 400", "No display output", "Accepted"),
+  ]));
+
+  /* Mixed delivered + returned on same bill */
+  repairs.push(buildRepairBill("demo-rep-1", customers[1], dateStr(38), [
+    repairDevice("Laptop", "Lenovo", "ThinkPad E14", "Keyboard keys stuck", "Delivered"),
+    repairDevice("Phone", "Samsung", "A54", "Charging port loose", "Returned"),
+    repairDevice("Tablet", "Apple", "iPad 9", "Cracked glass", "Accepted"),
+  ], {
+    returnedLog: [{
+      id: "demo-retlog-1", date: dateStr(20), deviceIndex: 1,
+      device: repairDevice("Phone", "Samsung", "A54", "Charging port loose", "Returned"),
+    }],
+  }));
+
+  /* 3rd party — still at external center */
+  repairs.push(buildRepairBill("demo-rep-2", customers[2], dateStr(30), [
+    repairDevice("Laptop", "ASUS", "VivoBook 15", "Motherboard repair", "Third Party", {
+      thirdParty: { sentAt: dateStr(28), note: "Sent to Redline for board-level repair" },
+    }),
+  ]));
+
+  /* 3rd party received — cash paid, ready */
+  (function () {
+    var cust = customers[3];
+    var dateIn = dateStr(35);
+    var recvDate = dateStr(18);
+    var dev = repairDevice("Laptop", "Dell", "Latitude 3420", "Liquid damage cleanup", "Third Party");
+    var tp = add3pPayable("demo-rep-3", 0, { customer: cust.name }, dev, extSupplier, 15000, 25000, recvDate, {
+      payMode: "paid", cashMethod: "Cash", paidAmount: 15000,
+      paymentHistory: [ph("demo-ph-3p-1", recvDate, 15000, "Cash", { note: "3P repair cash paid" })],
+      note: "Received from Redline",
+    });
+    dev.status = "Ready";
+    dev.thirdParty = tp.thirdParty;
+    repairs.push(buildRepairBill("demo-rep-3", cust, dateIn, [dev]));
+  })();
+
+  /* 3rd party received — partial bank */
+  (function () {
+    var cust = customers[4];
+    var recvDate = dateStr(22);
+    var dev = repairDevice("Printer", "Canon", "G3720", "Print head replacement", "Third Party");
+    var tp = add3pPayable("demo-rep-4", 0, { customer: cust.name }, dev, chipSupplier, 8500, 14500, recvDate, {
+      payMode: "partial", cashMethod: "Bank", paidAmount: 5000,
+      paymentHistory: [ph("demo-ph-3p-2", recvDate, 5000, "Bank", { note: "3P partial bank payment" })],
+      splitRows: [{ method: "Bank", amount: 5000, note: "Advance to chip supplier" }],
+    });
+    dev.status = "Ready";
+    dev.thirdParty = tp.thirdParty;
+    repairs.push(buildRepairBill("demo-rep-4", cust, dateStr(28), [dev]));
+  })();
+
+  /* 3rd party received — cheque pending */
+  (function () {
+    var cust = customers[5];
+    var recvDate = dateStr(15);
+    var ch3p = "demo-ch-3p-" + (++chSeq);
+    var dev = repairDevice("Monitor", "LG", "24MK430", "Panel repair", "Third Party");
+    var tp = add3pPayable("demo-rep-5", 0, { customer: cust.name }, dev, extSupplier, 12000, 19500, recvDate, {
+      payMode: "partial", cashMethod: "Cheque", paidAmount: 0,
+      paymentHistory: [ph("demo-ph-3p-3", recvDate, 0, "Cheque", { chequeId: ch3p, note: "3P repair cheque pending" })],
+      splitRows: [{ method: "Cheque", amount: 12000, chequeNo: "CH3P-4421", chequeBankName: "Sampath", chequeDueDate: dateStr(-5) }],
+      note: "Cheque issued to 3P center",
+    });
+    cheques.push({
+      id: ch3p, type: "outgoing", status: "Pending",
+      chequeNo: "CH3P-4421", bankName: "Sampath", amount: 12000,
+      dueDate: dateStr(-5), issuedDate: recvDate, createdAt: recvDate,
+      supplierName: extSupplier.name, note: "3rd party repair payment",
+      manualPayableId: tp.payable.id,
+      thirdPartyRepairId: "demo-rep-5", thirdPartyDeviceIndex: 0,
+    });
+    dev.status = "Ready";
+    dev.thirdParty = tp.thirdParty;
+    repairs.push(buildRepairBill("demo-rep-5", cust, dateStr(25), [dev]));
+  })();
+
+  /* 3rd party delivered — full flow with repair invoice */
+  (function () {
+    var cust = customers[6];
+    var dateIn = dateStr(40);
+    var recvDate = dateStr(24);
+    var saleDate = dateStr(10);
+    var dev = repairDevice("Laptop", "HP", "2460", "No power after rain", "Third Party");
+    var tp = add3pPayable("demo-rep-6", 0, { customer: cust.name }, dev, extSupplier, 15000, 25000, recvDate, {
+      payMode: "paid", cashMethod: "Bank", paidAmount: 15000,
+      paymentHistory: [ph("demo-ph-3p-4", recvDate, 15000, "Bank", { note: "3P board repair paid" })],
+    });
+    dev.status = "Delivered";
+    dev.thirdParty = tp.thirdParty;
+    var bill = buildRepairBill("demo-rep-6", cust, dateIn, [dev], { dateOut: saleDate });
+    repairs.push(bill);
+    addRepairSale(bill, [0], [{
+      id: tp.product.id, name: "HP 2460 Board Repair", qty: 1, price: 25000, cost: 15000,
+      barcode: tp.product.barcode, fromRepairId: bill.id,
+    }], saleDate, {
+      paid: 25000, cashMethod: "Cash",
+      paymentHistory: [ph("demo-ph-rs-6", saleDate, 25000, "Cash", { note: "3P repair delivered invoice" })],
+    });
+  })();
+
+  /* In-house ready + internal parts used */
+  (function () {
+    var cust = customers[7];
+    var partProd = products.find(function (p) { return p.name.indexOf("Samsung 1TB") >= 0; }) || products[15];
+    var usedQty = 1;
+    /* Internal parts tracked on repair record only — stock movement handled in live app flow */
+    repairs.push(buildRepairBill("demo-rep-7", cust, dateStr(20), [
+      repairDevice("Laptop", "Acer", "Aspire 5", "Slow / HDD failure", "Ready"),
+    ], {
+      internalPartsUsed: [{
+        productId: partProd.id, name: partProd.name, qty: usedQty, unit: partProd.unit,
+        unitCost: partProd.cost, totalCost: round2(partProd.cost * usedQty),
+      }],
+      internalPartsCost: round2(partProd.cost * usedQty),
+    }));
+  })();
+
+  /* Service-only repair delivered (labour invoice) */
+  (function () {
+    var cust = customers[8];
+    var svc = products.find(function (p) { return p.type === "service"; }) || products[80];
+    var saleDate = dateStr(8);
+    var bill = buildRepairBill("demo-rep-8", cust, dateStr(18), [
+      repairDevice("Laptop", "Lenovo", "IdeaPad", "Virus removal", "Delivered"),
+    ], { dateOut: saleDate });
+    repairs.push(bill);
+    addRepairSale(bill, [0], [{
+      id: svc.id, name: svc.name, qty: 1, price: svc.price, cost: 0,
+      barcode: "", fromRepairId: bill.id,
+    }], saleDate, { paid: svc.price, cashMethod: "Bank" });
+  })();
+
+  /* Multi-device partial invoice — only ready device invoiced */
+  (function () {
+    var cust = customers[9];
+    var saleDate = dateStr(12);
+    var bill = buildRepairBill("demo-rep-9", cust, dateStr(32), [
+      repairDevice("Laptop", "Dell", "3500", "Fan noise", "Delivered"),
+      repairDevice("Laptop", "Dell", "3520", "Wi-Fi issue", "Ready"),
+      repairDevice("Desktop", "Dell", "OptiPlex", "PSU failure", "Accepted"),
+    ], { dateOut: saleDate });
+    repairs.push(bill);
+    var svc = products.find(function (p) { return p.name === "Laptop Repair Labour"; }) || products[80];
+    addRepairSale(bill, [0], [{
+      id: svc.id, name: "Dell 3500 Fan Service", qty: 1, price: 6500, cost: 0,
+      barcode: "", fromRepairId: bill.id,
+    }], saleDate, {
+      paid: 3500, cashMethod: "Cash",
+      paymentHistory: [ph("demo-ph-rs-9", saleDate, 3500, "Cash", { note: "Partial on repair invoice" })],
+    });
+  })();
+
+  /* More active / returned / 3P / delivered variety */
+  for (i = 10; i < DEMO_SCALE.repairsTotal; i++) {
+    var rc = customers[i % customers.length];
+    var rdateIn = dateStr(rint(rng, 5, 55));
+    var stPick = i % 7;
+    var devs = [];
+    if (stPick === 0) {
+      devs = [repairDevice(pick(rng, DEVICE_TYPES), pick(rng, BRANDS), "MOD-" + rint(rng, 1000, 9999), pick(rng, REPAIR_PROBLEMS), "Accepted")];
+    } else if (stPick === 1) {
+      devs = [
+        repairDevice("Laptop", pick(rng, BRANDS), "MOD-A" + i, pick(rng, REPAIR_PROBLEMS), "Ready"),
+        repairDevice("Printer", "Canon", "PIXMA-" + i, "Paper jam", "Accepted"),
+      ];
+    } else if (stPick === 2) {
+      devs = [repairDevice("Phone", "Samsung", "Galaxy-" + i, "Screen replacement", "Returned")];
+    } else if (stPick === 3) {
+      devs = [repairDevice("Laptop", "Apple", "MacBook-" + i, "Board level repair", "Third Party", {
+        thirdParty: { sentAt: rdateIn, note: "At external service center" },
+      })];
+    } else if (stPick === 4) {
+      devs = [
+        repairDevice("Monitor", "Dell", "P-" + i, "Backlight issue", "Delivered"),
+        repairDevice("Desktop", "HP", "Elite-" + i, "Boot loop", "Accepted"),
+      ];
+    } else if (stPick === 5) {
+      devs = [
+        repairDevice("Laptop", "Lenovo", "Yoga-" + i, "Hinge broken", "Ready"),
+        repairDevice("Tablet", "Samsung", "Tab-" + i, "Touch issue", "Returned"),
+        repairDevice("Phone", "Apple", "iPhone-" + i, "Battery swell", "Accepted"),
+      ];
+    } else {
+      devs = [
+        repairDevice("Desktop", "ASUS", "ROG-" + i, "GPU issue", "Third Party", {
+          thirdParty: { sentAt: rdateIn, note: "GPU rework at chip supplier" },
+        }),
+        repairDevice("Laptop", "HP", "Envy-" + i, "SSD upgrade", "Ready"),
+      ];
+    }
+    var extraR = {};
+    if (devs.some(function (d) { return d.status === "Returned"; })) {
+      extraR.returnedLog = devs.map(function (d, idx) {
+        if (d.status !== "Returned") return null;
+        return { id: "demo-retlog-" + i + "-" + idx, date: dateStr(rint(rng, 0, 15)), deviceIndex: idx, device: Object.assign({}, d) };
+      }).filter(Boolean);
+    }
+    var bill = buildRepairBill("demo-rep-" + i, rc, rdateIn, devs, extraR);
+
+    /* Every 8th bill: 3P received (cash) → ready */
+    if (i % 8 === 0) {
+      var tpDev = devs[0];
+      if (tpDev && (tpDev.status === "Third Party" || i % 16 === 0)) {
+        var recvDt = dateStr(rint(rng, 8, 20));
+        var supPick = suppliers[rint(rng, 0, suppliers.length - 1)];
+        var cost3p = round2(rint(rng, 6000, 22000));
+        var sell3p = round2(cost3p * pick(rng, [1.35, 1.45, 1.55, 1.65]));
+        var tp = add3pPayable("demo-rep-" + i, 0, bill, tpDev, supPick, cost3p, sell3p, recvDt, {
+          payMode: i % 16 === 0 ? "partial" : "paid",
+          cashMethod: i % 16 === 0 ? "Bank" : "Cash",
+          paidAmount: i % 16 === 0 ? round2(cost3p * 0.4) : cost3p,
+          paymentHistory: [ph("demo-ph-3pb-" + i, recvDt, i % 16 === 0 ? round2(cost3p * 0.4) : cost3p, i % 16 === 0 ? "Bank" : "Cash", { note: "3P bulk receive" })],
+        });
+        tpDev.status = "Ready";
+        tpDev.thirdParty = tp.thirdParty;
+      }
+    }
+
+    /* Every 11th bill: convert ready/delivered device to invoice */
+    if (i % 11 === 0) {
+      var saleDt = dateStr(rint(rng, 2, 12));
+      var invDevIdx = devs.findIndex(function (d) { return d.status === "Ready" || d.status === "Delivered"; });
+      if (invDevIdx < 0) invDevIdx = 0;
+      var invDev = devs[invDevIdx];
+      invDev.status = "Delivered";
+      bill.dateOut = saleDt;
+      var svcProd = products.find(function (p) { return p.type === "service"; });
+      var lines = [];
+      if (invDev.thirdParty && invDev.thirdParty.productId) {
+        var tpProd = products.find(function (p) { return p.id === invDev.thirdParty.productId; });
+        if (tpProd) {
+          lines.push({
+            id: tpProd.id, name: tpProd.name, qty: 1, price: invDev.thirdParty.sellAmount || tpProd.price,
+            cost: invDev.thirdParty.amount || tpProd.cost, barcode: tpProd.barcode, fromRepairId: bill.id,
+          });
+        }
+      } else if (svcProd) {
+        lines.push({
+          id: svcProd.id, name: "Repair — " + invDev.brand + " " + invDev.modelNo, qty: 1,
+          price: round2(rint(rng, 4500, 18000)), cost: 0,
+          barcode: "", fromRepairId: bill.id,
+        });
+      }
+      if (lines.length) {
+        var invPaid = i % 22 === 0 ? round2(lines[0].price * 0.35) : lines[0].price;
+        addRepairSale(bill, [invDevIdx], lines, saleDt, {
+          paid: invPaid,
+          cashMethod: i % 3 === 0 ? "Bank" : "Cash",
+          paymentHistory: invPaid > 0 ? [ph("demo-ph-3pr-" + i, saleDt, invPaid, i % 3 === 0 ? "Bank" : "Cash", { note: "Repair invoice bulk" })] : [],
+        });
+      }
+    }
+
+    repairs.push(bill);
+  }
+
+  /* Extra 3rd-party repair flows for full A–Z coverage */
+  for (i = 0; i < 12; i++) {
+    var c3 = customers[(70 + i) % customers.length];
+    var dIn = dateStr(rint(rng, 10, 45));
+    var d3 = repairDevice(pick(rng, DEVICE_TYPES), pick(rng, BRANDS), "3PX-" + i, pick(rng, REPAIR_PROBLEMS), "Third Party");
+    var bill3 = buildRepairBill("demo-rep-3px-" + i, c3, dIn, [d3]);
+    var recv3 = dateStr(rint(rng, 5, 18));
+    var sup3 = suppliers[(i + 3) % suppliers.length];
+    var cst = round2(rint(rng, 7000, 28000));
+    var sel = round2(cst * pick(rng, [1.4, 1.5, 1.6]));
+    var paySpec3 = { payMode: "paid", cashMethod: "Cash", paidAmount: cst, paymentHistory: [ph("demo-ph-3px-" + i, recv3, cst, "Cash")] };
+    if (i % 3 === 0) {
+      paySpec3 = { payMode: "partial", cashMethod: "Bank", paidAmount: round2(cst * 0.5), paymentHistory: [ph("demo-ph-3px-" + i, recv3, round2(cst * 0.5), "Bank")] };
+    } else if (i % 3 === 1) {
+      var chx = "demo-ch-3px-" + (++chSeq);
+      paySpec3 = {
+        payMode: "partial", cashMethod: "Cheque", paidAmount: 0,
+        paymentHistory: [ph("demo-ph-3px-ch-" + i, recv3, 0, "Cheque", { chequeId: chx })],
+        splitRows: [{ method: "Cheque", amount: cst, chequeNo: "3PX-" + (5000 + i), chequeBankName: pick(rng, BANKS), chequeDueDate: dateStr(-rint(rng, 3, 20)) }],
+        _chequeDraft: {
+          id: chx, type: "outgoing", status: i % 2 === 0 ? "Pending" : "Cleared",
+          chequeNo: "3PX-" + (5000 + i), bankName: pick(rng, BANKS), amount: cst,
+          dueDate: dateStr(-rint(rng, 3, 20)), issuedDate: recv3, createdAt: recv3,
+          supplierName: sup3.name, thirdPartyRepairId: bill3.id, thirdPartyDeviceIndex: 0,
+          note: "3P repair centre cheque",
+        },
+      };
+    }
+    var tp3 = add3pPayable(bill3.id, 0, bill3, d3, sup3, cst, sel, recv3, paySpec3);
+    if (paySpec3._chequeDraft) {
+      cheques.push(Object.assign({}, paySpec3._chequeDraft, { manualPayableId: tp3.payable.id }));
+    }
+    d3.status = i % 4 === 0 ? "Delivered" : "Ready";
+    d3.thirdParty = tp3.thirdParty;
+    if (d3.status === "Delivered") {
+      bill3.dateOut = dateStr(rint(rng, 1, 8));
+      addRepairSale(bill3, [0], [{
+        id: tp3.product.id, name: tp3.product.name, qty: 1, price: sel, cost: cst,
+        barcode: tp3.product.barcode, fromRepairId: bill3.id,
+      }], bill3.dateOut, {
+        paid: i % 2 === 0 ? sel : round2(sel * 0.4),
+        cashMethod: i % 2 === 0 ? "Bank" : "Cash",
+        paymentHistory: [ph("demo-ph-3px-inv-" + i, bill3.dateOut, i % 2 === 0 ? sel : round2(sel * 0.4), i % 2 === 0 ? "Bank" : "Cash")],
+      });
+    }
+    repairs.push(bill3);
+  }
+
+  /* ── Expenses ── */
   var expenses = [];
-  for (i = 0; i < 25; i++) {
+  for (i = 0; i < DEMO_SCALE.expenses; i++) {
     expenses.push({
       id: "demo-exp-" + i,
       date: dateStr(rint(rng, 0, 60)),
@@ -699,7 +1165,7 @@ export function buildDemoBackup() {
     glVatPostingEnabled: true,
     glArApNegativeTolerance: 50,
     glArApHardBlockAt: 1000000,
-    glInventoryReconcileTolerance: 2500,
+    glInventoryReconcileTolerance: DEMO_INV_GL_TOLERANCE,
   };
 
   var data = {
@@ -753,6 +1219,8 @@ function attachDemoGlSnapshot(data) {
     expenses: data.tc3_expenses || [],
     salesReturns: data.tc3_salesReturns || [],
     purchaseReturns: data.tc3_purchaseReturns || [],
+    repairs: data.tc3_repairs || [],
+    manualPayables: data.tc3_manualPayables || [],
   };
   var smock = {
     get: function (k, def) {

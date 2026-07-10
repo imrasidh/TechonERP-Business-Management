@@ -102,10 +102,15 @@ var Cheques = React.memo(function (props) {
           });
         }
         /* FIX 8 (DeepSeek): Update manual payable when cheque clears */
-        if (ch.type === "outgoing" && ch.manualPayableId) {
+        if (ch.type === "outgoing" && (ch.manualPayableId || ch.thirdPartyRepairId)) {
           var manPays = S.get("tc3_manualPayables", []);
           var updManPays = manPays.map(function (mp) {
-            if (mp.id !== ch.manualPayableId) return mp;
+            if (ch.manualPayableId && mp.id !== ch.manualPayableId) return mp;
+            if (!ch.manualPayableId && ch.thirdPartyRepairId && mp.thirdPartyRepairId !== ch.thirdPartyRepairId) return mp;
+            if (!ch.manualPayableId && ch.thirdPartyRepairId) {
+              var linkedPh = (mp.paymentHistory || []).some(function (ph) { return ph.chequeId === ch.id; });
+              if (!linkedPh) return mp;
+            }
             var updPh = (mp.paymentHistory || []).map(function (ph) {
               return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", note: ph.note.replace("(Pending", "(Cleared " + today() + "") }) : ph;
             });

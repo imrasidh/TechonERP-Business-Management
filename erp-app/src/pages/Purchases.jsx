@@ -171,6 +171,34 @@ var Purchases = React.memo(function (props) {
   var [filterStatus, setFilterStatus] = useState("Active");
   var [voidPurTarget, setVoidPurTarget] = useState(null);
   var [voidReason, setVoidReason] = useState("");
+  var newProdSelectEnterState = React.useRef({ main: false, sub: false, type: false, unit: false });
+  var focusById = function (id) {
+    setTimeout(function () {
+      var el = document.getElementById(id);
+      if (el && typeof el.focus === "function") el.focus();
+    }, 0);
+  };
+  var openSelectById = function (id) {
+    setTimeout(function () {
+      var el = document.getElementById(id);
+      if (!el) return;
+      if (typeof el.focus === "function") el.focus();
+      if (typeof el.click === "function") el.click();
+    }, 0);
+  };
+  var markSelectEnterStage = function (key, val) {
+    if (!newProdSelectEnterState.current) return;
+    newProdSelectEnterState.current[key] = !!val;
+  };
+  var handleSelectEnter = function (key, id, onSecondEnter) {
+    if (!newProdSelectEnterState.current[key]) {
+      markSelectEnterStage(key, true);
+      openSelectById(id);
+      return;
+    }
+    markSelectEnterStage(key, false);
+    if (typeof onSecondEnter === "function") onSecondEnter();
+  };
   var purSearchRef = useRef(null);
   var pendingPurFocusRef = useRef(null);
   var [showPurDrop, setShowPurDrop] = useState(false);
@@ -318,6 +346,36 @@ var Purchases = React.memo(function (props) {
     setF(function (x) { return Object.assign({}, x, { supplier: ns.name }); });
     setNewSuppF({ name: "", phone: "", email: "", address: "", note: "" });
     setShowNewSupp(false);
+  };
+
+  /** Same row shape as Save + Print Barcodes — reusable for reprint from saved purchase. */
+  var buildLabelQtyRowsFromPurchaseItems = function (items, products) {
+    return (items || []).map(function (it) {
+      var prod = (products || []).find(function (p) { return p.id === it.id; });
+      var qty = parseInt(it.qty, 10) || 1;
+      return {
+        id: it.id,
+        name: it.name || (prod && prod.name) || "Unknown Product",
+        barcode: prod ? prod.barcode : it.barcode,
+        cost: it.cost,
+        sellPrice: it.sellPrice || it.cost,
+        productId: prod ? prod.productId : (it.productId || ""),
+        purchaseQty: qty,
+        printQty: qty,
+      };
+    });
+  };
+
+  var openPrintBarcodesFromPurchase = function (pur) {
+    if (!pur || !(pur.items || []).length) {
+      showAlert("No products on this purchase invoice to print.");
+      return;
+    }
+    if (isVoidedTxn(pur)) {
+      showAlert("Cannot print barcodes for a voided purchase invoice.");
+      return;
+    }
+    setLabelQtyModal(buildLabelQtyRowsFromPurchaseItems(pur.items, state.products));
   };
 
   var printBarcodeLabels = function () {
@@ -921,19 +979,7 @@ var Purchases = React.memo(function (props) {
     }
     setState(function (st) { return Object.assign({}, st, purStateUpdate); });
     if (withBarcode) {
-      /* Option C: show label qty popup so user can adjust before printing */
-      var qtyRows = normalizedSaveItems.map(function (it) {
-        var prod = np.find(function (p) { return p.id === it.id; });
-        return {
-          id: it.id, name: it.name,
-          barcode: prod ? prod.barcode : it.barcode,
-          cost: it.cost, sellPrice: it.sellPrice || it.cost,
-          productId: prod ? prod.productId : "",
-          purchaseQty: parseInt(it.qty, 10) || 1,
-          printQty: parseInt(it.qty, 10) || 1
-        };
-      });
-      setLabelQtyModal(qtyRows);
+      setLabelQtyModal(buildLabelQtyRowsFromPurchaseItems(normalizedSaveItems, np));
     }
     sessionStorage.removeItem("tc3_dirty");
     setShow(false); setF(BLANK); setPurSplitModal(false);
@@ -1639,6 +1685,9 @@ var Purchases = React.memo(function (props) {
             </tbody>
           </table>
           <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+            {!isVoidedTxn(viewPur) && (viewPur.items || []).length > 0 ? (
+              <Btn col="cyan" onClick={function () { openPrintBarcodesFromPurchase(viewPur); }}>Print Barcodes</Btn>
+            ) : null}
             {!isVoidedTxn(viewPur) && canDeleteInvoices ? (
               <Btn col="red" onClick={function () { promptVoidPurchase(viewPur); }}>Void Purchase</Btn>
             ) : null}
@@ -1973,28 +2022,144 @@ var Purchases = React.memo(function (props) {
         <Modal key={"newprod-" + newProdKey} title={"Add New Product — ID: " + nextProductId(state.products)} onClose={function () { setNewProd(null); }} wide>
           <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>Product will be added to inventory. Stock will be updated when the purchase is saved.</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Product Name *" value={newProd.name} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={newNameHint.onNameFocus} onBlur={newNameHint.onNameBlur} />
+            <Input
+              id="newprod-name"
+              label="Product Name *"
+              value={newProd.name}
+              onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }}
+              onFocus={newNameHint.onNameFocus}
+              onBlur={newNameHint.onNameBlur}
+              onKeyDown={function (e) {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  focusById("newprod-barcode");
+                }
+              }}
+            />
             <ProductNameDuplicateHint name={newProd.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
                 <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{nextProductId(state.products)}</div>
               </div>
-              <Input label="Barcode" value={newProd.barcode || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
+              <Input
+                id="newprod-barcode"
+                label="Barcode"
+                value={newProd.barcode || ""}
+                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }}
+                onKeyDown={function (e) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    focusById("newprod-main-category");
+                  }
+                }}
+              />
             </div>
-            <CategorySelect Sel={Sel} value={newProd.category || "General"} settings={shopSettings} onChange={function (e) { onProductCategoryChange(setNewProd, e.target.value); }} />
+            <CategorySelect
+              Sel={Sel}
+              value={newProd.category || "General"}
+              settings={shopSettings}
+              onChange={function (e) { onProductCategoryChange(setNewProd, e.target.value); }}
+              focusSubAfterGroupChange={false}
+              mainSelectProps={{
+                id: "newprod-main-category",
+                onFocus: function () { markSelectEnterStage("main", false); },
+                onBlur: function () { markSelectEnterStage("main", false); },
+                onKeyDown: function (e) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSelectEnter("main", "newprod-main-category", function () {
+                      focusById("newprod-sub-category");
+                    });
+                  }
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("main", true);
+                },
+                onKeyUp: function (e) {
+                  /* Fallback for native <select> popup: some Enter commits don't fire our second keydown. */
+                  if (e.key === "Enter" && newProdSelectEnterState.current.main) {
+                    markSelectEnterStage("main", false);
+                    focusById("newprod-sub-category");
+                  }
+                }
+              }}
+              subSelectProps={{
+                id: "newprod-sub-category",
+                onFocus: function () { markSelectEnterStage("sub", false); },
+                onBlur: function () { markSelectEnterStage("sub", false); },
+                onKeyDown: function (e) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSelectEnter("sub", "newprod-sub-category", function () {
+                      focusById("newprod-cost");
+                    });
+                  }
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("sub", true);
+                },
+                onKeyUp: function (e) {
+                  if (e.key === "Enter" && newProdSelectEnterState.current.sub) {
+                    markSelectEnterStage("sub", false);
+                    focusById("newprod-cost");
+                  }
+                }
+              }}
+            />
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-              <Input label={glassCostPriceLabels(newProd, shopSettings).cost} type="number" value={newProd.cost || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-              <Input label={glassCostPriceLabels(newProd, shopSettings).sell} type="number" value={newProd.price || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
-              <Sel label="Product Type" value={newProd.type || "stock"} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
+              <Input
+                id="newprod-cost"
+                label={glassCostPriceLabels(newProd, shopSettings).cost}
+                type="number"
+                value={newProd.cost || ""}
+                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }}
+                onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("newprod-sell"); } }}
+              />
+              <Input
+                id="newprod-sell"
+                label={glassCostPriceLabels(newProd, shopSettings).sell}
+                type="number"
+                value={newProd.price || ""}
+                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }}
+                onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("newprod-type"); } }}
+              />
+              <Sel
+                id="newprod-type"
+                label="Product Type"
+                value={newProd.type || "stock"}
+                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}
+                onFocus={function () { markSelectEnterStage("type", false); }}
+                onBlur={function () { markSelectEnterStage("type", false); }}
+                onKeyDown={function (e) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSelectEnter("type", "newprod-type", function () { focusById("newprod-unit"); });
+                  }
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("type", true);
+                }}
+              >
                 <option value="stock">Stock</option>
                 <option value="service">Service</option>
                 <option value="raw_material">Raw Material</option>
               </Sel>
-              <Sel label="Base Unit" value={newProd.unit || getDefaultProductUnit(shopSettings, newProd.category)} onChange={function (e) {
+              <Sel
+                id="newprod-unit"
+                label="Base Unit"
+                value={newProd.unit || getDefaultProductUnit(shopSettings, newProd.category)}
+                onChange={function (e) {
                 var nextUnit = e.target.value;
                 setNewProd(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
-              }}>{getUnitsForSubCategory(newProd.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
+                }}
+                onFocus={function () { markSelectEnterStage("unit", false); }}
+                onBlur={function () { markSelectEnterStage("unit", false); }}
+                onKeyDown={function (e) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSelectEnter("unit", "newprod-unit", function () {
+                      var saveBtn = document.querySelector("button[id='newprod-save-btn']");
+                      if (saveBtn && typeof saveBtn.focus === "function") saveBtn.focus();
+                    });
+                  }
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("unit", true);
+                }}
+              >{getUnitsForSubCategory(newProd.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
             </div>
             {isGlassStockProductForm(newProd, shopSettings) && (
               <GlassSheetInfo form={newProd} setForm={setNewProd} C={C} Input={Input} Sel={Sel} />
@@ -2048,7 +2213,7 @@ var Purchases = React.memo(function (props) {
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <Btn col="cyan" onClick={saveNewProduct} disabled={!newProd.name || !newProd.price || newProductNameExactDup}>Save Product</Btn>
+              <Btn id="newprod-save-btn" col="cyan" onClick={saveNewProduct} disabled={!newProd.name || !newProd.price || newProductNameExactDup}>Save Product</Btn>
               <Btn col="gray" onClick={function () { setNewProd(null); }}>Cancel</Btn>
             </div>
           </div>

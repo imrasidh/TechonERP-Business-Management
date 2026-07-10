@@ -128,6 +128,33 @@ var Inventory = React.memo(function (props) {
   /* FIX 8: Toggle to show soft-deleted (inactive) products for recovery */
   var [showInactive, setShowInactive] = useState(false);
   var [rmUseModal, setRmUseModal] = useState(null);
+  var newProductSelectEnterState = useRef({ main: false, sub: false, type: false, unit: false });
+  var focusById = function (id) {
+    setTimeout(function () {
+      var el = document.getElementById(id);
+      if (el && typeof el.focus === "function") el.focus();
+    }, 0);
+  };
+  var openSelectById = function (id) {
+    setTimeout(function () {
+      var el = document.getElementById(id);
+      if (!el) return;
+      if (typeof el.focus === "function") el.focus();
+      if (typeof el.click === "function") el.click();
+    }, 0);
+  };
+  var markSelectEnterStage = function (key, val) {
+    newProductSelectEnterState.current[key] = !!val;
+  };
+  var handleSelectEnter = function (key, id, onSecondEnter) {
+    if (!newProductSelectEnterState.current[key]) {
+      markSelectEnterStage(key, true);
+      openSelectById(id);
+      return;
+    }
+    markSelectEnterStage(key, false);
+    if (typeof onSecondEnter === "function") onSecondEnter();
+  };
   var [rmUseQty, setRmUseQty] = useState("");
   var [rmUseDate, setRmUseDate] = useState(today());
   var [rmUseUnit, setRmUseUnit] = useState("Pcs");
@@ -1680,32 +1707,110 @@ var Inventory = React.memo(function (props) {
       {newP && (
         <Modal title={"Add New Product - ID: " + nextProductId(state.products)} onClose={function () { setNewP(null); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Product Name *" value={newP.name} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={newNameHint.onNameFocus} onBlur={newNameHint.onNameBlur} />
+            <Input
+              id="inv-new-name"
+              label="Product Name *"
+              value={newP.name}
+              onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }}
+              onFocus={newNameHint.onNameFocus}
+              onBlur={newNameHint.onNameBlur}
+              onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-barcode"); } }}
+            />
             <ProductNameDuplicateHint name={newP.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
             <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
                 <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{nextProductId(state.products)}</div>
               </div>
-              <Input label="Barcode" value={newP.barcode} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} />
+              <Input
+                id="inv-new-barcode"
+                label="Barcode"
+                value={newP.barcode}
+                onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }}
+                onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-main-category"); } }}
+              />
             </div>
-            <CategorySelect Sel={Sel} value={newP.category} settings={shopSettings} onChange={function (e) { onProductCategoryChange(setNewP, e.target.value); }} />
-            <Sel label="Product Type" value={newP.type || "stock"} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
+            <CategorySelect
+              Sel={Sel}
+              value={newP.category}
+              settings={shopSettings}
+              onChange={function (e) { onProductCategoryChange(setNewP, e.target.value); }}
+              focusSubAfterGroupChange={false}
+              mainSelectProps={{
+                id: "inv-new-main-category",
+                onFocus: function () { markSelectEnterStage("main", false); },
+                onBlur: function () { markSelectEnterStage("main", false); },
+                onKeyDown: function (e) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSelectEnter("main", "inv-new-main-category", function () { focusById("inv-new-sub-category"); });
+                  }
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("main", true);
+                },
+                onKeyUp: function (e) {
+                  if (e.key === "Enter" && newProductSelectEnterState.current.main) {
+                    markSelectEnterStage("main", false);
+                    focusById("inv-new-sub-category");
+                  }
+                }
+              }}
+              subSelectProps={{
+                id: "inv-new-sub-category",
+                onFocus: function () { markSelectEnterStage("sub", false); },
+                onBlur: function () { markSelectEnterStage("sub", false); },
+                onKeyDown: function (e) {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    handleSelectEnter("sub", "inv-new-sub-category", function () { focusById("inv-new-type"); });
+                  }
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("sub", true);
+                },
+                onKeyUp: function (e) {
+                  if (e.key === "Enter" && newProductSelectEnterState.current.sub) {
+                    markSelectEnterStage("sub", false);
+                    focusById("inv-new-type");
+                  }
+                }
+              }}
+            />
+            <Sel
+              id="inv-new-type"
+              label="Product Type"
+              value={newP.type || "stock"}
+              onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}
+              onFocus={function () { markSelectEnterStage("type", false); }}
+              onBlur={function () { markSelectEnterStage("type", false); }}
+              onKeyDown={function (e) {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleSelectEnter("type", "inv-new-type", function () { focusById("inv-new-cost"); });
+                }
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("type", true);
+              }}
+              onKeyUp={function (e) {
+                if (e.key === "Enter" && newProductSelectEnterState.current.type) {
+                  markSelectEnterStage("type", false);
+                  focusById("inv-new-cost");
+                }
+              }}
+            >
               <option value="stock">stock</option>
               <option value="service">service</option>
               <option value="raw_material">raw_material</option>
             </Sel>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, alignItems: "end" }}>
-              <Input label={glassCostPriceLabels(newP, shopSettings).cost} type="number" value={newP.cost} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-              <Input label={glassCostPriceLabels(newP, shopSettings).sell} type="number" value={newP.price} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+              <Input id="inv-new-cost" label={glassCostPriceLabels(newP, shopSettings).cost} type="number" value={newP.cost} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-sell"); } }} />
+              <Input id="inv-new-sell" label={glassCostPriceLabels(newP, shopSettings).sell} type="number" value={newP.price} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-stock"); } }} />
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", minHeight: 30, display: "block" }}>
                   {newP.type === "service" ? "Initial Stock (not required for service)" : "Initial Stock"}
                 </label>
                 <input
+                  id="inv-new-stock"
                   type="number"
                   value={newP.stock}
                   onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { stock: e.target.value }); }); }}
+                  onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-unit"); } }}
                   style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
                 />
               </div>
@@ -1714,10 +1819,26 @@ var Inventory = React.memo(function (props) {
                   Base Unit
                 </label>
                 <select
+                  id="inv-new-unit"
                   value={newP.unit || getDefaultProductUnit(shopSettings, newP.category)}
                   onChange={function (e) {
                     var nextUnit = e.target.value;
                     setNewP(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
+                  }}
+                  onFocus={function (e) { markSelectEnterStage("unit", false); e.target.style.borderColor = "#2979ff"; e.target.style.boxShadow = "0 0 0 3px rgba(41,121,255,0.12)"; }}
+                  onBlur={function (e) { markSelectEnterStage("unit", false); e.target.style.borderColor = C.border; e.target.style.boxShadow = "none"; }}
+                  onKeyDown={function (e) {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleSelectEnter("unit", "inv-new-unit", function () { focusById("inv-new-desc"); });
+                    }
+                    if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("unit", true);
+                  }}
+                  onKeyUp={function (e) {
+                    if (e.key === "Enter" && newProductSelectEnterState.current.unit) {
+                      markSelectEnterStage("unit", false);
+                      focusById("inv-new-desc");
+                    }
                   }}
                   style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
                 >
@@ -1762,7 +1883,7 @@ var Inventory = React.memo(function (props) {
             )}
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
-              <textarea value={newP.description || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
+              <textarea id="inv-new-desc" value={newP.description || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
             </div>
             {getBusinessProfile().name === "Jewelry & Watches" && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>

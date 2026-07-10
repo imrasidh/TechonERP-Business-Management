@@ -37,6 +37,8 @@ function backupToState(d) {
     expenses: d.tc3_expenses || [],
     salesReturns: d.tc3_salesReturns || [],
     purchaseReturns: d.tc3_purchaseReturns || [],
+    repairs: d.tc3_repairs || [],
+    manualPayables: d.tc3_manualPayables || [],
   });
 }
 
@@ -60,29 +62,48 @@ export function runDemo360Tests(ctx) {
     var d = bk.data;
 
     assert(d.tc3_businessType === "tech", "tech industry set");
-    assert((d.tc3_products || []).length >= 50, "50+ products seeded");
-    assert((d.tc3_customers || []).length >= 50, "50+ customers seeded");
-    assert((d.tc3_suppliers || []).length >= 30, "30+ suppliers seeded");
-    assert((d.tc3_sales || []).length >= 50, "50+ sales seeded");
-    assert((d.tc3_purchases || []).length >= 50, "50+ purchases seeded");
-    assert((d.tc3_cheques || []).length >= 10, "cheques seeded");
-    assert((d.tc3_manualReceivables || []).length >= 10, "receivables seeded");
-    assert((d.tc3_manualPayables || []).length >= 10, "payables seeded");
-    assert((d.tc3_salesReturns || []).length >= 10, "sales returns seeded");
-    assert((d.tc3_purchaseReturns || []).length >= 5, "purchase returns seeded");
-    assert((d.tc3_quotations || []).length >= 10, "quotations seeded");
-    assert((d.tc3_expenses || []).length >= 15, "expenses seeded");
+    assert((d.tc3_products || []).length >= 100, "100+ products seeded");
+    assert((d.tc3_customers || []).length >= 100, "100+ customers seeded");
+    assert((d.tc3_suppliers || []).length >= 45, "45+ suppliers seeded");
+    assert((d.tc3_sales || []).length >= 150, "150+ sales seeded");
+    assert((d.tc3_purchases || []).length >= 70, "70+ purchases seeded");
+    assert((d.tc3_cheques || []).length >= 25, "cheques seeded");
+    assert((d.tc3_manualReceivables || []).length >= 35, "receivables seeded");
+    assert((d.tc3_manualPayables || []).length >= 35, "payables seeded");
+    assert((d.tc3_salesReturns || []).length >= 35, "sales returns seeded");
+    assert((d.tc3_purchaseReturns || []).length >= 20, "purchase returns seeded");
+    assert((d.tc3_quotations || []).length >= 50, "quotations seeded");
+    assert((d.tc3_expenses || []).length >= 40, "expenses seeded");
     assert(d.tc3_openBal && d.tc3_openBal.completed, "opening balance set");
+
+    assert((d.tc3_repairs || []).length >= 65, "65+ repair bills seeded");
+    var withDevices = (d.tc3_repairs || []).filter(function (r) { return Array.isArray(r.devices) && r.devices.length > 0; });
+    assert(withDevices.length >= 65, "repair bills use per-device model");
+    var thirdPartyDevices = 0;
+    (d.tc3_repairs || []).forEach(function (r) {
+      (r.devices || []).forEach(function (dev) {
+        if (dev.thirdParty || (dev.status || "") === "Third Party") thirdPartyDevices++;
+      });
+    });
+    assert(thirdPartyDevices >= 12, "3rd party repair devices seeded");
+    var tpPayables = (d.tc3_manualPayables || []).filter(function (mp) {
+      return mp.type === "3rd Party Repair Cost" && mp.productId;
+    });
+    assert(tpPayables.length >= 10, "3rd party inventory-linked payables seeded");
+    var repairSales = (d.tc3_sales || []).filter(function (s) { return s.fromRepairId; });
+    assert(repairSales.length >= 10, "repair-linked sales seeded");
+    var tpProducts = (d.tc3_products || []).filter(function (p) { return p._repair3pOneTime; });
+    assert(tpProducts.length >= 10, "one-time 3rd party products seeded");
 
     var sales = d.tc3_sales || [];
     var partials = sales.filter(function (s) { return s.payStatus === "Partial"; });
-    assert(partials.length >= 5, "multiple partial sales");
+    assert(partials.length >= 20, "multiple partial sales");
     partials.slice(0, 3).forEach(function (partial) {
       near(partial.paid + partial.balance, partial.total, "partial sale paid+balance=total (" + partial.invoiceNo + ")");
     });
 
     var splits = sales.filter(function (s) { return (s.paymentHistory || []).length >= 2; });
-    assert(splits.length >= 5, "split / multi-method payments");
+    assert(splits.length >= 20, "split / multi-method payments");
     splits.slice(0, 2).forEach(function (split) {
       var splitPaid = (split.paymentHistory || []).reduce(function (a, p) { return a + (Number(p.amount) || 0); }, 0);
       near(splitPaid, split.paid, "split payment sums match paid");
@@ -91,13 +112,13 @@ export function runDemo360Tests(ctx) {
     var chequeSales = sales.filter(function (s) {
       return (s.paymentHistory || []).some(function (p) { return p.chequeId; });
     });
-    assert(chequeSales.length >= 5, "cheque-linked sales");
+    assert(chequeSales.length >= 20, "cheque-linked sales");
 
     var chPending = (d.tc3_cheques || []).filter(function (c) { return c.status === "Pending"; });
-    assert(chPending.length >= 3, "pending cheques");
+    assert(chPending.length >= 10, "pending cheques");
 
     var purPartials = (d.tc3_purchases || []).filter(function (p) { return p.status === "Partial" || p.balance > 0; });
-    assert(purPartials.length >= 5, "partial/credit purchases");
+    assert(purPartials.length >= 20, "partial/credit purchases");
     purPartials.slice(0, 2).forEach(function (purPartial) {
       near(purPartial.paidAmount + purPartial.balance, purPartial.total, "partial purchase balances");
     });
@@ -114,9 +135,9 @@ export function runDemo360Tests(ctx) {
     var x = rebuild(st, Smock);
     assert(x.r && x.r.validate && x.r.validate.ok, "GL rebuild validates: " + JSON.stringify(x.r && x.r.validate));
     assert(validateJournalBalanced(x.r.lines).ok, "journal balanced");
-    assert(x.r.lines.length >= 100, "substantial journal (" + x.r.lines.length + " lines)");
+    assert(x.r.lines.length >= 500, "substantial journal (" + x.r.lines.length + " lines)");
 
-    assert((d.tc3_journal_lines || []).length >= 100, "pre-built GL journal in demo backup");
+    assert((d.tc3_journal_lines || []).length >= 500, "pre-built GL journal in demo backup");
 
     var inv = validateAccountingCommitInvariants({
       lines: x.r.lines,
