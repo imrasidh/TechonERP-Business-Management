@@ -757,6 +757,29 @@ var getQuickAmounts = function (unit) {
 ------------------------------------------------------------------------------- */
 var shareViaWhatsApp = function (html, filename, phone, options) {
   options = options || {};
+  var normalizeWhatsAppPhone = function (value, fallback) {
+    var raw = String(value || "").trim();
+    var fb = String(fallback || "").trim();
+    var norm = function (v) {
+      if (!v) return "";
+      var s = String(v).replace(/[^\d+]/g, "");
+      if (!s) return "";
+      if (s.indexOf("00") === 0) s = s.slice(2);
+      if (s.indexOf("+") === 0) s = s.slice(1);
+      return s.replace(/\D/g, "");
+    };
+    var p = norm(raw);
+    if (p && p[0] !== "0") return p;
+    var fbDigits = norm(fb);
+    if (p && p[0] === "0" && fbDigits) {
+      var local = p.replace(/^0+/, "");
+      /* Derive country code from shop WhatsApp number (e.g. +94...). */
+      var cc = fbDigits;
+      if (fbDigits.length >= 9) cc = fbDigits.slice(0, Math.max(1, fbDigits.length - 9));
+      if (cc && local) return cc + local;
+    }
+    return p;
+  };
   /* headStyles: full <style>...</style> blocks for @page - must live in <head> or PDF defaults to A4 */
   var headStyles = options.headStyles || "";
   var pageFormat = options.pageFormat || "";
@@ -775,7 +798,8 @@ var shareViaWhatsApp = function (html, filename, phone, options) {
     showAlert(UI.wait + " Generating PDF — please wait a moment.");
     var _st = S.get("tc3_settings", {});
     var invoicePdfFolder = (_st && _st.invoicePdfFolder) ? String(_st.invoicePdfFolder).trim() : "";
-    window.electronAPI.sharePDF({ html: fullHtml, filename: filename, phone: phone || "", pageFormat: pageFormat, invoicePdfFolder: invoicePdfFolder })
+    var normalizedPhone = normalizeWhatsAppPhone(phone || "", (_st && _st.whatsapp) || "");
+    window.electronAPI.sharePDF({ html: fullHtml, filename: filename, phone: normalizedPhone || "", pageFormat: pageFormat, invoicePdfFolder: invoicePdfFolder })
       .then(function (res) {
         if (res && res.ok) {
           var p = res.path ? String(res.path) : "";

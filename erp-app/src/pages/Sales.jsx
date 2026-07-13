@@ -2506,7 +2506,7 @@ var POS = React.memo(function (props) {
           <span style={{ fontSize: 13, fontWeight: 700 }}>{busy ? (p.busyText || "Processing...") : "WhatsApp"}</span>
         </span>
         {!busy ? (
-          <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.04em", opacity: 0.88, color: "rgba(255,255,255,0.88)" }}>Ctrl + W</span>
+          <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.04em", opacity: 0.88, color: "rgba(255,255,255,0.88)" }}>Ctrl + W to Whatsapp</span>
         ) : null}
       </span>
     );
@@ -2612,9 +2612,10 @@ var POS = React.memo(function (props) {
           type="button"
           onClick={holdCurrentCart}
           disabled={!cart.length}
+          title="Ctrl + H to Hold"
           style={{
-            padding: "9px 16px 8px",
-            borderRadius: 10,
+            padding: "10px 16px 9px",
+            borderRadius: 12,
             border: "1.5px solid " + (!cart.length ? "#f3b7c1" : "#d11a42"),
             background: !cart.length ? "#fde8ed" : "linear-gradient(135deg,#f04464,#c81e45)",
             color: !cart.length ? "#b76a78" : "#fff",
@@ -2622,15 +2623,18 @@ var POS = React.memo(function (props) {
             fontWeight: 800,
             cursor: !cart.length ? "not-allowed" : "pointer",
             fontFamily: "inherit",
-            boxShadow: !cart.length ? "none" : "0 8px 18px rgba(209,26,66,0.22)",
-            minWidth: 140,
+            boxShadow: !cart.length ? "none" : "0 10px 20px rgba(209,26,66,0.26)",
+            minWidth: 170,
           }}
         >
-          <PosShortcutBtnContent
-            label={isQuotationMode ? "Hold Quotation" : "Hold Invoice"}
-            shortcut="Ctrl + H"
-            onDark={true}
-          />
+          <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
+            <span style={{ fontSize: 14, lineHeight: 1 }} aria-hidden="true">⏸</span>
+            <PosShortcutBtnContent
+              label={isQuotationMode ? "Hold Quotation" : "Hold Invoice"}
+              shortcut="Ctrl + H to Hold"
+              onDark={true}
+            />
+          </span>
         </button>
       </div>
     )}
@@ -4089,10 +4093,10 @@ var POS = React.memo(function (props) {
                 <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Save quotation</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   <Btn stack={true} onClick={function () { saveQuotation(false); }} disabled={!cart.length || isSavingQuotation || !canEditInvoices} col="blue" full>
-                    <PosShortcutBtnContent label="Save Only" shortcut="Ctrl + S" busy={isSavingQuotation} busyText="Saving..." onDark={true} />
+                    <PosShortcutBtnContent label="Save Only" shortcut="Ctrl + S to Save" busy={isSavingQuotation} busyText="Saving..." onDark={true} />
                   </Btn>
                   <Btn stack={true} onClick={openQuotationPrintPicker} disabled={!cart.length || isSavingQuotation || !canEditInvoices} col="gray" full>
-                    <PosShortcutBtnContent label="Print" shortcut="Ctrl + P to print" busy={isSavingQuotation} busyText="Saving..." />
+                    <PosShortcutBtnContent label="Print" shortcut="Ctrl + P to Print" busy={isSavingQuotation} busyText="Saving..." />
                   </Btn>
                   {renderPosWhatsAppBtn({
                     onClick: openQuotationWhatsApp,
@@ -4164,7 +4168,7 @@ var POS = React.memo(function (props) {
             <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Complete sale</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <Btn stack={true} onClick={function () { saveAndFinish(false); }} disabled={!cart.length || posSetupBlocked || isCheckingOut} aria-describedby={posCheckoutAriaDesc} title={posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : undefined} col="blue" full>
-                <PosShortcutBtnContent label="Save Only" shortcut="Ctrl + S" busy={isCheckingOut} onDark={true} />
+                <PosShortcutBtnContent label="Save Only" shortcut="Ctrl + S to Save" busy={isCheckingOut} onDark={true} />
               </Btn>
 
               {(function () {
@@ -4174,7 +4178,7 @@ var POS = React.memo(function (props) {
                 return (
                   <React.Fragment>
                     <Btn stack={true} onClick={openPosPrintPicker} disabled={checkoutDisabled} aria-describedby={posCheckoutAriaDesc} title={checkoutTitle} col="gray" full>
-                      <PosShortcutBtnContent label="Print" shortcut="Ctrl + P to print" busy={isCheckingOut} />
+                      <PosShortcutBtnContent label="Print" shortcut="Ctrl + P to Print" busy={isCheckingOut} />
                     </Btn>
                     {renderPosWhatsAppBtn({
                       onClick: saveAndWhatsApp,
