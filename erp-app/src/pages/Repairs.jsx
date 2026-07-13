@@ -2,6 +2,9 @@ import React, { useState } from "react";
 import CustomerPicker from "../components/CustomerPicker.jsx";
 import SupplierPicker from "../components/SupplierPicker.jsx";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { RepairActionBtn, RepairActionGroup } from "../components/RepairActionBtn.jsx";
+import { RepairStatusSelect, getRepairBulkStatusOptions } from "../components/RepairStatusSelect.jsx";
+import StockProductPicker from "../components/StockProductPicker.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 import { buildVoidSaleUpdates, isVoidedTxn, VOID_REASON_OPTIONS, voidSaleBlockReason } from "../utils/voidInvoice.js";
 
@@ -114,6 +117,12 @@ var Repairs = function (props) {
   var STATUS_COLORS = { Accepted: "#c2410c", "Third Party": "#7c3aed", Ready: "#047857", Delivered: "#1d4ed8", Returned: "#374151" };
   var STATUS_BG    = { Accepted: "#fff7ed", "Third Party": "#f5f3ff", Ready: "#ecfdf5", Delivered: "#eff6ff", Returned: "#f3f4f6" };
   var STATUS_ICONS = { Accepted: "📥", "Third Party": "🏢", Ready: "✅", Delivered: "📦", Returned: "↩️" };
+  var STATUS_DISPLAY = { Accepted: "Active", "Third Party": "3rd Party", Ready: "Ready", Delivered: "Delivered", Returned: "Returned" };
+  var deviceStatusLabel = function (status) {
+    var st = status || "Accepted";
+    return STATUS_DISPLAY[st] || st;
+  };
+  var STATUS_LABELS = { Accepted: "Active", "Third Party": "3rd Party", Ready: "Ready", Delivered: "Delivered", Returned: "Returned" };
   var deriveRepairStatus = function (devices) {
     var list = normalizeRepairDevices({ devices: devices || [] });
     var total = list.length;
@@ -502,6 +511,7 @@ var Repairs = function (props) {
     var code = deviceStatusCode(st);
     var s = {
       code: code,
+      label: deviceStatusLabel(st),
       bg: "#fff",
       fg: C.text,
       bd: C.border
@@ -513,8 +523,42 @@ var Repairs = function (props) {
     if (st === "Returned") { s.bg = "#f3f4f6"; s.fg = "#374151"; s.bd = "#d1d5db"; }
     return s;
   };
+  var deviceStatusBadge = function (status, compact) {
+    var pill = deviceStatusPill(status);
+    return (
+      <span style={{ background: pill.bg, color: pill.fg, border: "1px solid " + pill.bd, borderRadius: 999, padding: compact ? "3px 9px" : "4px 11px", fontSize: compact ? 10 : 11, fontWeight: 700, flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 5 }}>
+        {!compact ? <span style={{ opacity: 0.75, fontWeight: 800, fontSize: 9 }}>{pill.code}</span> : null}
+        <span>{pill.label}</span>
+      </span>
+    );
+  };
   var deviceStatusPills = function (repair) {
     return normalizeRepairDevices(repair).map(function (d) { return deviceStatusPill(d.status || "Accepted"); });
+  };
+  var renderDeviceStatusActions = function (repair, idx, st) {
+    return (
+      <RepairStatusSelect
+        currentStatus={st}
+        compact={false}
+        onAction={function (action) { handleDeviceStatusAction(repair, idx, action); }}
+      />
+    );
+  };
+  var handleDeviceStatusAction = function (repair, deviceIndex, action) {
+    if (!repair || !action) return;
+    if (action === "__receive__") {
+      openThirdPartyReceiveModal(repair, deviceIndex);
+      return;
+    }
+    if (action === "__invoice__") {
+      openConvertModal(repair);
+      return;
+    }
+    if (action === "__void__") {
+      promptVoidDelivered(repair.id, deviceIndex);
+      return;
+    }
+    updateDeviceStatus(repair, deviceIndex, action);
   };
   var deviceStatusCodesText = function (repair) {
     var ds = normalizeRepairDevices(repair);
@@ -595,12 +639,20 @@ var Repairs = function (props) {
         price: sell,
         stock: 1,
         _repair3pOneTime: true,
+        _repairInternal: true,
         _repairId: repair.id,
         _repairDeviceIndex: deviceIndex
       };
       products.push(p);
     } else {
-      p = Object.assign({}, p, { name: name, cost: cost, price: sell, stock: (p.stock || 0) > 0 ? p.stock : 1 });
+      p = Object.assign({}, p, {
+        name: name,
+        cost: cost,
+        price: sell,
+        stock: (p.stock || 0) > 0 ? p.stock : 1,
+        _repair3pOneTime: true,
+        _repairInternal: true,
+      });
       products = products.map(function (x) { return x.id === p.id ? p : x; });
     }
     return { product: p, products: products };
@@ -748,7 +800,8 @@ var Repairs = function (props) {
     setRepairInternalParts([{
       rowId: uid(),
       productId: "",
-      qty: ""
+      qty: "",
+      searchText: ""
     }]);
     setConvertModal(r);
   };
@@ -1062,14 +1115,12 @@ var Repairs = function (props) {
           </table>
           ) : (
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr style={{ background: "#f7f9ff" }}><TH>Date In</TH><TH>Customer</TH><TH>Bill #</TH><TH>Device</TH><TH>Brand / Model</TH><TH>Problem</TH><TH>Est. Cost</TH><TH>Status</TH><TH>Actions</TH></tr></thead>
+            <thead><tr style={{ background: "#f7f9ff" }}><TH>Date In</TH><TH>Customer</TH><TH>Bill #</TH><TH>Device</TH><TH>Brand / Model</TH><TH>Problem</TH><TH>Est. Cost</TH><TH>Status</TH><TH style={{ width: 44 }}></TH></tr></thead>
             <tbody>
               {filtered.length === 0 && <tr><td colSpan={9} style={{ padding: 20, textAlign: "center", color: C.muted }}>No devices in {currentTab.label.toLowerCase()}</td></tr>}
               {repPager.slice.map(function (row, i) {
                 var r = row.repair;
                 var d = row.device;
-                var pill = deviceStatusPill(row.status);
-                var canInvoice = row.status === "Ready";
                 return (
                   <TR key={row.rowKey} i={i}>
                     <TD>{fmtDate(r.dateIn || r.date)}</TD>
@@ -1080,21 +1131,14 @@ var Repairs = function (props) {
                     <TD>{d.problem}</TD>
                     <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(r.estimatedCost || r.cost || 0)}</TD>
                     <td style={{ padding: "9px 12px" }}>
-                      <span style={{ background: pill.bg, color: pill.fg, border: "1.5px solid " + pill.bd, padding: "2px 10px", borderRadius: 999, fontWeight: 900, fontSize: 11 }}>{pill.code}</span>
+                      <RepairStatusSelect
+                        currentStatus={row.status}
+                        compact
+                        onAction={function (action) { handleDeviceStatusAction(r, row.deviceIndex, action); }}
+                      />
                     </td>
-                    <td style={actBtnCellStyle}>
-                      <ActBtnGroup gap={6}>
-                        <ActBtn tone="cyan" title="View repair bill" onClick={function () { setViewR(r); }}>🧾</ActBtn>
-                        {/* Ready/Returned/Delivered cannot be edited or deleted */}
-                        {repairTab === "thirdparty" ? <ActBtn tone="green" title="Receive from 3rd party" wide onClick={function () { openThirdPartyReceiveModal(r, row.deviceIndex); }}>Receive</ActBtn> : null}
-                        {repairTab === "thirdparty" ? <ActBtn tone="orange" title="Reverse to Active" onClick={function () { updateDeviceStatus(r, row.deviceIndex, "Accepted"); }}>↩</ActBtn> : null}
-                        {repairTab === "ready" ? <ActBtn tone="orange" title="Reverse to Active" onClick={function () { updateDeviceStatus(r, row.deviceIndex, "Accepted"); }}>↩</ActBtn> : null}
-                        {repairTab === "returned" ? <ActBtn tone="orange" title="Reverse to Active" onClick={function () { updateDeviceStatus(r, row.deviceIndex, "Accepted"); }}>↩</ActBtn> : null}
-                        {repairTab === "thirdparty" ? <ActBtn tone="gray" title="Mark returned" onClick={function () { updateDeviceStatus(r, row.deviceIndex, "Returned"); }}>RT</ActBtn> : null}
-                        {repairTab === "ready" ? <ActBtn tone="green" title="Convert to invoice" wide onClick={function () { openConvertModal(r); }}>Invoice</ActBtn> : null}
-                        {repairTab === "ready" ? <ActBtn tone="gray" title="Mark returned" onClick={function () { updateDeviceStatus(r, row.deviceIndex, "Returned"); }}>RT</ActBtn> : null}
-                        {repairTab === "delivered" ? <ActBtn tone="red" title="Void linked invoice (reverses stock/accounts)" wide onClick={function () { promptVoidDelivered(r.id, row.deviceIndex); }}>Void</ActBtn> : null}
-                      </ActBtnGroup>
+                    <td style={{ ...actBtnCellStyle, width: 44, padding: "9px 8px" }}>
+                      <ActBtn tone="cyan" title="View repair bill" onClick={function () { setViewR(r); }}>🧾</ActBtn>
                     </td>
                   </TR>
                 );
@@ -1116,8 +1160,8 @@ var Repairs = function (props) {
             {VOID_REASON_OPTIONS.map(function (opt) { return <option key={opt} value={opt}>{opt}</option>; })}
           </Sel>
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-            <Btn col="red" disabled={!voidReason} onClick={doVoidSaleFromModal}>Void Invoice</Btn>
-            <Btn col="gray" onClick={function () { setVoidSaleTarget(null); setVoidReason(""); }}>Cancel</Btn>
+            <RepairActionBtn tone="danger" disabled={!voidReason} onClick={doVoidSaleFromModal}>Void Invoice</RepairActionBtn>
+            <RepairActionBtn tone="neutral" onClick={function () { setVoidSaleTarget(null); setVoidReason(""); }}>Cancel</RepairActionBtn>
           </div>
         </Modal>
       )}
@@ -1222,9 +1266,11 @@ var Repairs = function (props) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <Btn col="green" onClick={function () { saveThirdPartyReceived(false); }}>Save & Move to Ready</Btn>
-              <Btn col="cyan" onClick={function () { saveThirdPartyReceived(true); }}>Save + Print Barcode</Btn>
-              <Btn col="gray" onClick={function () { setThirdPartyReceiveModal(null); }}>Cancel</Btn>
+            <RepairActionGroup gap={6}>
+              <RepairActionBtn tone="ready" onClick={function () { saveThirdPartyReceived(false); }}>Save & Move to Ready</RepairActionBtn>
+              <RepairActionBtn tone="print" onClick={function () { saveThirdPartyReceived(true); }}>Save + Print Barcode</RepairActionBtn>
+              <RepairActionBtn tone="neutral" onClick={function () { setThirdPartyReceiveModal(null); }}>Cancel</RepairActionBtn>
+            </RepairActionGroup>
             </div>
           </div>
         </Modal>
@@ -1232,8 +1278,10 @@ var Repairs = function (props) {
       {thirdPartyBarcodeItems && (
         <Modal title={"Print 3rd Party Barcode — " + thirdPartyBarcodeItems.length + " label"} onClose={function () { setThirdPartyBarcodeItems(null); }} wide>
           <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }} className="no-print">
-            <Btn col="cyan" onClick={printThirdPartyBarcodeLabels}>Print Label</Btn>
-            <Btn col="gray" sm onClick={function () { setThirdPartyBarcodeItems(null); }}>Close</Btn>
+          <RepairActionGroup gap={6}>
+            <RepairActionBtn tone="print" onClick={printThirdPartyBarcodeLabels}>Print Label</RepairActionBtn>
+            <RepairActionBtn sm tone="neutral" onClick={function () { setThirdPartyBarcodeItems(null); }}>Close</RepairActionBtn>
+          </RepairActionGroup>
           </div>
           <BarcodeLabelSheet items={thirdPartyBarcodeItems} shopName={state.settings.shopName} barcodeSettings={state.settings} />
         </Modal>
@@ -1386,7 +1434,7 @@ var Repairs = function (props) {
             <div style={{ textAlign: "right" }}>
               <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
                 {deviceStatusPills(viewR).map(function (p, idx) {
-                  return <span key={idx} style={{ background: p.bg, color: p.fg, border: "1.5px solid " + p.bd, borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 900 }}>{p.code}</span>;
+                  return <span key={idx} style={{ background: p.bg, color: p.fg, border: "1px solid " + p.bd, borderRadius: 999, padding: "4px 11px", fontSize: 11, fontWeight: 700 }}>{p.label}</span>;
                 })}
               </div>
               <div style={{ opacity: 0.6, fontSize: 10, marginTop: 4 }}>Job #{viewR.id.slice(0, 8).toUpperCase()}</div>
@@ -1410,35 +1458,57 @@ var Repairs = function (props) {
               );
             })}
           </div>
-          <div style={{ background: "#f7f9ff", borderRadius: 9, padding: "12px 14px", marginBottom: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Devices in this bill</div>
+          <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Devices in this bill</div>
             {normalizeRepairDevices(viewR).map(function (d, idx) {
-              var pill = deviceStatusPill(d.status || "Accepted");
               var st = d.status || "Accepted";
-                var tp = d.thirdParty || {};
               return (
-                <div key={idx} style={{ padding: "10px 0", borderBottom: idx === normalizeRepairDevices(viewR).length - 1 ? "none" : "1px dashed " + C.border }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <div>
-                      <div style={{ fontWeight: 700, color: C.text }}>{idx + 1}. {d.deviceType} {d.brand} {d.modelNo}</div>
-                      <div style={{ fontSize: 12, color: C.textMd, marginTop: 2 }}>{d.problem || "—"}</div>
+                <div key={idx} style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", marginBottom: idx === normalizeRepairDevices(viewR).length - 1 ? 0 : 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{idx + 1}. {d.deviceType} {d.brand} {d.modelNo}</div>
+                      <div style={{ fontSize: 12, color: C.textMd, marginTop: 3, lineHeight: 1.45 }}>{d.problem || "—"}</div>
                     </div>
-                    <span style={{ background: pill.bg, color: pill.fg, border: "1.5px solid " + pill.bd, borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 900 }}>{pill.code}</span>
+                    {deviceStatusBadge(st, false)}
                   </div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-                    {st === "Accepted" ? <Btn sm col="green" onClick={function () { updateDeviceStatus(viewR, idx, "Ready"); }}>Mark Ready</Btn> : null}
-                    {st === "Accepted" ? <Btn sm col="purple" onClick={function () { updateDeviceStatus(viewR, idx, "Third Party"); }}>Send 3rd Party</Btn> : null}
-                    {st === "Third Party" ? <Btn sm col="green" onClick={function () { openThirdPartyReceiveModal(viewR, idx); }}>Received</Btn> : null}
-                    {st === "Third Party" ? <Btn sm col="orange" onClick={function () { updateDeviceStatus(viewR, idx, "Accepted"); }}>Back to Active</Btn> : null}
-                    {st !== "Returned" && st !== "Delivered" ? <Btn sm col="gray" onClick={function () { updateDeviceStatus(viewR, idx, "Returned"); }}>Mark Returned</Btn> : null}
-                    {st === "Ready" ? <Btn sm col="blue" onClick={function () { updateDeviceStatus(viewR, idx, "Accepted"); }}>Back to Active</Btn> : null}
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
+                    {renderDeviceStatusActions(viewR, idx, st)}
                   </div>
                 </div>
               );
             })}
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-              <Btn sm col="purple" onClick={function () { updateAllDeviceStatuses(viewR, "Third Party"); }}>All to 3rd Party</Btn>
-              <Btn sm col="gray" onClick={function () { updateAllDeviceStatuses(viewR, "Returned"); }}>All Devices Returned</Btn>
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed " + C.border, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.muted }}>All devices:</span>
+              <select
+                defaultValue=""
+                onChange={function (e) {
+                  var v = e.target.value;
+                  e.target.value = "";
+                  if (!v || !viewR) return;
+                  updateAllDeviceStatuses(viewR, v);
+                }}
+                style={{
+                  height: 32,
+                  minWidth: 180,
+                  padding: "0 28px 0 12px",
+                  borderRadius: 8,
+                  border: "1px solid " + C.border,
+                  background: "#fff url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 8px center",
+                  backgroundSize: "12px",
+                  color: C.textMd,
+                  fontSize: 12,
+                  fontWeight: 600,
+                  fontFamily: "inherit",
+                  cursor: "pointer",
+                  appearance: "none",
+                  WebkitAppearance: "none",
+                }}
+              >
+                <option value="" disabled>Bulk status change…</option>
+                {getRepairBulkStatusOptions().map(function (opt) {
+                  return <option key={opt.value} value={opt.value}>{opt.label}</option>;
+                })}
+              </select>
             </div>
           </div>
           {((viewR && viewR.returnedLog && viewR.returnedLog.length > 0) || normalizeRepairDevices(viewR).some(function (d) { return (d.status || "Accepted") === "Returned"; })) && (
@@ -1491,16 +1561,17 @@ var Repairs = function (props) {
               <div style={{ color: C.textMd, fontSize: 13 }}>{viewR.accessories}</div>
             </div>
           )}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-            <Btn col="blue" onClick={function () { setViewR(null); setEditR(Object.assign({}, viewR, { devices: normalizeRepairDevices(viewR) })); }}>✏️ Edit</Btn>
-            {/* Convert to Invoice only available when Ready */}
-            {normalizeRepairDevices(viewR).some(function (d) { return (d.status || "Accepted") === "Ready"; }) && (
-              <Btn col="green" onClick={function () { setViewR(null); openConvertModal(viewR); }}>📄 Convert to Invoice</Btn>
-            )}
-            <Btn col="cyan" onClick={function () { printRepairJob(viewR, "a4"); }}>🖨 Print A4</Btn>
-            <Btn col="purple" onClick={function () { printRepairJob(viewR, "a5"); }}>🖨 Print A5</Btn>
-            <WABtn title="Share Job Card via WhatsApp" onClick={function () { whatsappRepairJob(viewR, "a4"); }} />
-            <Btn col="gray" onClick={function () { setViewR(null); }}>Close</Btn>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, paddingTop: 12, borderTop: "1px solid " + C.border }}>
+            <RepairActionGroup gap={6}>
+              <RepairActionBtn tone="edit" onClick={function () { setViewR(null); setEditR(Object.assign({}, viewR, { devices: normalizeRepairDevices(viewR) })); }}>Edit</RepairActionBtn>
+              {normalizeRepairDevices(viewR).some(function (d) { return (d.status || "Accepted") === "Ready"; }) ? (
+                <RepairActionBtn tone="invoice" onClick={function () { setViewR(null); openConvertModal(viewR); }}>Convert to Invoice</RepairActionBtn>
+              ) : null}
+              <RepairActionBtn tone="print" onClick={function () { printRepairJob(viewR, "a4"); }}>Print A4</RepairActionBtn>
+              <RepairActionBtn tone="thirdParty" onClick={function () { printRepairJob(viewR, "a5"); }}>Print A5</RepairActionBtn>
+              <WABtn title="Share Job Card via WhatsApp" onClick={function () { whatsappRepairJob(viewR, "a4"); }} />
+              <RepairActionBtn tone="neutral" onClick={function () { setViewR(null); }}>Close</RepairActionBtn>
+            </RepairActionGroup>
           </div>
         </Modal>
       )}
@@ -1575,8 +1646,8 @@ var Repairs = function (props) {
               <Input label="Bill Status (auto)" value={deriveRepairStatus(normalizeRepairDevices(editR))} disabled />
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <Btn col="cyan" onClick={saveEdit}>Save Changes</Btn>
-              <Btn col="gray" onClick={function () { setEditR(null); }}>Cancel</Btn>
+              <RepairActionBtn tone="edit" onClick={saveEdit}>Save Changes</RepairActionBtn>
+              <RepairActionBtn tone="neutral" onClick={function () { setEditR(null); }}>Cancel</RepairActionBtn>
             </div>
           </div>
         </Modal>
@@ -1591,10 +1662,10 @@ var Repairs = function (props) {
             <div style={{ fontWeight: 700, color: C.blue, marginTop: 4 }}>Est. Cost: {getCurrencySymbol()} {fmtNum(readyPrompt.estimatedCost || readyPrompt.cost || 0)}</div>
           </div>
           <div style={{ fontSize: 13, color: C.textMd, marginBottom: 14 }}>Would you like to create a Sales Invoice for this repair now?</div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn col="green" onClick={function () { openConvertModal(readyPrompt); setReadyPrompt(null); }}>📄 Yes — Create Invoice</Btn>
-            <Btn col="gray" onClick={function () { setReadyPrompt(null); }}>Later</Btn>
-          </div>
+          <RepairActionGroup gap={6}>
+            <RepairActionBtn tone="invoice" onClick={function () { openConvertModal(readyPrompt); setReadyPrompt(null); }}>Create Invoice</RepairActionBtn>
+            <RepairActionBtn tone="neutral" onClick={function () { setReadyPrompt(null); }}>Later</RepairActionBtn>
+          </RepairActionGroup>
         </Modal>
       )}
 
@@ -1671,23 +1742,41 @@ var Repairs = function (props) {
               </div>
             )}
             <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, marginBottom: 8 }}>Internal stock used</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Internal stock used</div>
+              <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>Search parts by product name, barcode, or product ID. Only items with stock are shown.</div>
               {(repairInternalParts || []).map(function (row, idx) {
                 return (
-                  <div key={row.rowId || idx} style={{ display: "grid", gridTemplateColumns: "1fr 100px auto", gap: 8, alignItems: "end", marginBottom: 8 }}>
-                    <Sel label={"Part " + (idx + 1)} value={row.productId || ""} onChange={function (e) {
-                      var v = e.target.value;
-                      setRepairInternalParts(function (rows) {
-                        var n = (rows || []).slice();
-                        n[idx] = Object.assign({}, n[idx], { productId: v });
-                        return n;
-                      });
-                    }}>
-                      <option value="">Select stock</option>
-                      {(state.products || []).filter(function (p) { return (p.stock || 0) > 0; }).map(function (p) {
-                        return <option key={p.id} value={p.id}>{p.name} ({fmtNum(p.stock || 0)})</option>;
-                      })}
-                    </Sel>
+                  <div key={row.rowId || idx} style={{ display: "grid", gridTemplateColumns: "1fr 100px auto", gap: 8, alignItems: "start", marginBottom: 10 }}>
+                    <StockProductPicker
+                      label={"Part " + (idx + 1)}
+                      products={state.products || []}
+                      selectedProductId={row.productId || ""}
+                      value={row.searchText != null ? row.searchText : ""}
+                      C={C}
+                      fmtNum={fmtNum}
+                      getCurrencySymbol={getCurrencySymbol}
+                      onValueChange={function (v) {
+                        setRepairInternalParts(function (rows) {
+                          var n = (rows || []).slice();
+                          var next = Object.assign({}, n[idx], { searchText: v });
+                          if (next.productId) {
+                            var sel = (state.products || []).find(function (p) { return p.id === next.productId; });
+                            if (!sel || String(v || "").trim().toLowerCase() !== String(sel.name || "").toLowerCase()) {
+                              next.productId = "";
+                            }
+                          }
+                          n[idx] = next;
+                          return n;
+                        });
+                      }}
+                      onSelectProduct={function (p) {
+                        setRepairInternalParts(function (rows) {
+                          var n = (rows || []).slice();
+                          n[idx] = Object.assign({}, n[idx], { productId: p.id, searchText: p.name || "" });
+                          return n;
+                        });
+                      }}
+                    />
                     <Input label="Qty" type="number" value={row.qty || ""} onChange={function (e) {
                       setRepairInternalParts(function (rows) {
                         var n = (rows || []).slice();
@@ -1695,23 +1784,29 @@ var Repairs = function (props) {
                         return n;
                       });
                     }} />
-                    {(repairInternalParts || []).length > 1 ? <Btn col="red" sm onClick={function () {
-                      setRepairInternalParts(function (rows) {
-                        var n = (rows || []).slice();
-                        n.splice(idx, 1);
-                        return n.length ? n : [{ rowId: uid(), productId: "", qty: "" }];
-                      });
-                    }}>Remove</Btn> : <span />}
+                    {(repairInternalParts || []).length > 1 ? (
+                      <div style={{ marginTop: 22 }}>
+                        <Btn col="red" sm onClick={function () {
+                          setRepairInternalParts(function (rows) {
+                            var n = (rows || []).slice();
+                            n.splice(idx, 1);
+                            return n.length ? n : [{ rowId: uid(), productId: "", qty: "", searchText: "" }];
+                          });
+                        }}>Remove</Btn>
+                      </div>
+                    ) : <span />}
                   </div>
                 );
               })}
               <Btn sm col="blue" onClick={function () {
-                setRepairInternalParts(function (rows) { return (rows || []).concat([{ rowId: uid(), productId: "", qty: "" }]); });
+                setRepairInternalParts(function (rows) { return (rows || []).concat([{ rowId: uid(), productId: "", qty: "", searchText: "" }]); });
               }}>+ Add part</Btn>
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <Btn col="green" onClick={doConvertToInvoice}>Continue to Sales →</Btn>
-              <Btn col="gray" onClick={function () { setConvertModal(null); }}>Cancel</Btn>
+            <RepairActionGroup gap={6}>
+              <RepairActionBtn tone="invoice" onClick={doConvertToInvoice}>Continue to Sales</RepairActionBtn>
+              <RepairActionBtn tone="neutral" onClick={function () { setConvertModal(null); }}>Cancel</RepairActionBtn>
+            </RepairActionGroup>
             </div>
           </div>
         </Modal>

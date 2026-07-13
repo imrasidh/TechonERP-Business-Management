@@ -37,11 +37,203 @@ try {
 } catch (_e) { /* dotenv optional if missing */ }
 
 /* ═══════════════════════════════════════════════════════════════════
+   LEGACY USERDATA MIGRATION (v2.0.1+)
+   Before 2.0.1, Electron stored shop data in %APPDATA%/Techon-ERP/.
+   From 2.0.1 onward it lives in %APPDATA%/TechonERP/UserData/.
+   Upgrading without migration looks like a brand-new install (setup wizard + empty data).
+   ═══════════════════════════════════════════════════════════════════ */
+function _dirHasEntries(dir) {
+  try {
+    return fs.existsSync(dir) && fs.readdirSync(dir).length > 0;
+  } catch (_e) {
+    return false;
+  }
+}
+
+function _legacyUserDataHasShopData(dir) {
+  if (!dir || !fs.existsSync(dir)) return false;
+  try {
+    if (fs.existsSync(path.join(dir, 'tc_network.json'))) return true;
+    if (fs.existsSync(path.join(dir, 'tc_lic.dat'))) return true;
+    if (_dirHasEntries(path.join(dir, 'IndexedDB'))) return true;
+    if (_dirHasEntries(path.join(dir, 'Local Storage'))) return true;
+  } catch (_e) { /* ignore */ }
+  return false;
+}
+
+function _dirSizeBytes(dir, depth) {
+  if (!dir || !fs.existsSync(dir)) return 0;
+  if (depth == null) depth = 0;
+  if (depth > 8) return 0;
+  try {
+    let total = 0;
+    for (const entry of fs.readdirSync(dir)) {
+      const p = path.join(dir, entry);
+      try {
+        const st = fs.statSync(p);
+        if (st.isDirectory()) total += _dirSizeBytes(p, depth + 1);
+        else total += st.size;
+      } catch (_e) { /* skip */ }
+    }
+    return total;
+  } catch (_e) {
+    return 0;
+  }
+}
+
+function _newUserDataLooksEmpty(dir) {
+  if (!dir || !fs.existsSync(dir)) return true;
+  try {
+    if (fs.existsSync(path.join(dir, '.tc_legacy_migrated'))) return false;
+    if (_legacyUserDataHasShopData(dir)) return false;
+    const entries = fs.readdirSync(dir).filter(function (e) {
+      return e !== '.tc_legacy_migrated';
+    });
+    return entries.length === 0;
+  } catch (_e) {
+    return true;
+  }
+}
+
+/** True when user already set a fresh password but legacy folder still has the real shop DB. */
+function _shouldForceLegacyMigration(legacyDir, userDataDir) {
+  if (!legacyDir || !userDataDir) return false;
+  if (fs.existsSync(path.join(userDataDir, '.tc_legacy_migrated'))) return false;
+  if (!_legacyUserDataHasShopData(legacyDir)) return false;
+  if (_newUserDataLooksEmpty(userDataDir)) return true;
+  try {
+    const legacyIdb = _dirSizeBytes(path.join(legacyDir, 'IndexedDB'));
+    const newIdb = _dirSizeBytes(path.join(userDataDir, 'IndexedDB'));
+    const legacyLs = _dirSizeBytes(path.join(legacyDir, 'Local Storage'));
+    const newLs = _dirSizeBytes(path.join(userDataDir, 'Local Storage'));
+    /* Fresh setup is tiny; real shops are usually hundreds of KB or more. */
+    if (legacyIdb > 80000 && newIdb < legacyIdb * 0.5) return true;
+    if (legacyLs > 40000 && newLs < legacyLs * 0.5) return true;
+    if (fs.existsSync(path.join(legacyDir, 'tc_network.json'))
+      && !fs.existsSync(path.join(userDataDir, 'tc_network.json'))) return true;
+  } catch (_e) { /* ignore */ }
+  return false;
+}
+
+function _removePathRecursive(target) {
+  if (!target || !fs.existsSync(target)) return;
+  try {
+    if (typeof fs.rmSync === 'function') {
+      fs.rmSync(target, { recursive: true, force: true });
+      return;
+    }
+  } catch (_e) { /* fall through */ }
+  try {
+    const st = fs.statSync(target);
+    if (st.isDirectory()) {
+      for (const entry of fs.readdirSync(target)) {
+        _removePathRecursive(path.join(target, entry));
+      }
+      fs.rmdirSync(target);
+    } else {
+      fs.unlinkSync(target);
+    }
+  } catch (_e) { /* ignore */ }
+}
+
+function _copyLegacyEntry(srcRoot, destRoot, entry, force) {
+  const src = path.join(srcRoot, entry);
+  if (!fs.existsSync(src)) return;
+  const dest = path.join(destRoot, entry);
+  try {
+    if (force && fs.existsSync(dest)) _removePathRecursive(dest);
+    if (fs.statSync(src).isDirectory()) {
+      if (typeof fs.cpSync === 'function') {
+        fs.cpSync(src, dest, { recursive: true, force: !!force, errorOnExist: false });
+      } else {
+        _copyDirRecursiveEarly(src, dest, !!force);
+      }
+    } else if (force || !fs.existsSync(dest)) {
+      fs.copyFileSync(src, dest);
+    }
+  } catch (_e) { /* best effort */ }
+}
+
+function _copyDirRecursiveEarly(src, dest, force) {
+  if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src)) {
+    const s = path.join(src, entry);
+    const d = path.join(dest, entry);
+    if (fs.statSync(s).isDirectory()) {
+      _copyDirRecursiveEarly(s, d, force);
+    } else if (force || !fs.existsSync(d)) {
+      fs.copyFileSync(s, d);
+    }
+  }
+}
+
+function _runLegacyUserDataMigration(userDataDir, legacyDir, forceReplace) {
+  fs.mkdirSync(userDataDir, { recursive: true });
+  if (forceReplace) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const backupDir = userDataDir + '.fresh-backup-' + stamp;
+    try {
+      if (typeof fs.cpSync === 'function') {
+        fs.cpSync(userDataDir, backupDir, { recursive: true, force: true });
+      }
+      console.log('[TechonERP] Backed up fresh UserData to ' + backupDir);
+    } catch (_e) { /* ignore */ }
+  }
+  const copyEntries = [
+    'IndexedDB', 'Local Storage', 'Session Storage', 'databases',
+    'tc_network.json', 'tc_lic.dat', 'tc_cli_lic.dat', 'tc_did.dat',
+    'tc_clock.dat', 'tc_last_known_time.dat', 'tc_local_enc.key',
+    'tc_device.dat',
+  ];
+  for (const entry of copyEntries) {
+    _copyLegacyEntry(legacyDir, userDataDir, entry, forceReplace);
+  }
+  try {
+    for (const f of fs.readdirSync(legacyDir)) {
+      if (f.startsWith('tc_') && !copyEntries.includes(f)) {
+        _copyLegacyEntry(legacyDir, userDataDir, f, forceReplace);
+      }
+    }
+  } catch (_e) { /* ignore */ }
+  fs.writeFileSync(
+    path.join(userDataDir, '.tc_legacy_migrated'),
+    'from=' + legacyDir + '\n' + 'at=' + new Date().toISOString() + '\n' + 'force=' + String(!!forceReplace) + '\n',
+    'utf8'
+  );
+  console.log('[TechonERP] Migrated legacy user data from ' + legacyDir + ' → ' + userDataDir + (forceReplace ? ' (replaced fresh setup)' : ''));
+  return legacyDir;
+}
+
+function migrateLegacyUserDataIfNeeded(userDataDir) {
+  const appData = app.getPath('appData');
+  const legacyCandidates = [
+    path.join(appData, 'Techon-ERP'),
+    path.join(appData, 'techon-erp'),
+  ];
+  const normalizedNew = path.normalize(userDataDir);
+  for (const legacyDir of legacyCandidates) {
+    const normalizedLegacy = path.normalize(legacyDir);
+    if (normalizedLegacy === normalizedNew) continue;
+    if (normalizedNew.startsWith(normalizedLegacy + path.sep)) continue;
+    const forceReplace = _shouldForceLegacyMigration(legacyDir, userDataDir);
+    if (!_newUserDataLooksEmpty(userDataDir) && !forceReplace) continue;
+    if (!_legacyUserDataHasShopData(legacyDir)) continue;
+    try {
+      return _runLegacyUserDataMigration(userDataDir, legacyDir, forceReplace);
+    } catch (err) {
+      console.error('[TechonERP] Legacy userData migration failed:', err && err.message ? err.message : err);
+    }
+  }
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    CHROMIUM STORAGE PATH FIX (Windows)
    Avoid "Access is denied" errors for disk cache / quota DB which can
    delay first paint by several seconds and show a blank window.
    Put all runtime data under %APPDATA%/TechonERP.
    ═══════════════════════════════════════════════════════════════════ */
+let _legacyMigrationFrom = null;
 try {
   const base = path.join(app.getPath('appData'), 'TechonERP');
   fs.mkdirSync(base, { recursive: true });
@@ -51,6 +243,7 @@ try {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(cacheDir, { recursive: true });
   fs.mkdirSync(tempDir, { recursive: true });
+  _legacyMigrationFrom = migrateLegacyUserDataIfNeeded(userDataDir);
   app.setPath('userData', userDataDir);
   app.setPath('cache', cacheDir);
   app.setPath('temp', tempDir);
@@ -2538,6 +2731,9 @@ function createWindow() {
    APP EVENTS
    ═══════════════════════════════════════════════════════════════════ */
 app.whenReady().then(() => {
+  if (_legacyMigrationFrom) {
+    writeLogFile('info', '[Startup] Migrated legacy user data from ' + _legacyMigrationFrom);
+  }
   ipcMain.on('save-backup', (_event, payload) => {
     if (isNetworkClientRole()) return;
     if (payload && payload.filename && payload.content) {

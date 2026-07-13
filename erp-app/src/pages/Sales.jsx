@@ -7,6 +7,7 @@ import {
 } from "../utils/rawMaterialQty.js";
 import CustomerPicker from "../components/CustomerPicker.jsx";
 import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
+import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 import { splitSaleItemsByFree, baseQtyInCartLines, FREE_ITEM_LABEL } from "../utils/posFreeItems.js";
 import { UI } from "../utils/uiIcons.js";
 import { ensureUniqueDocumentNumber } from "../utils/docNumbers.js";
@@ -97,15 +98,17 @@ var POS = React.memo(function (props) {
   var businessType = String(S.get("tc3_businessType", "") || "").toLowerCase();
   var isRestaurant = businessType === "restaurant";
   var shopSettings = state.settings || {};
-  var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
-  var codSalesTrackEnabled = isCodSalesTrackEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
-  var posLineCommentsEnabled = isPosLineCommentsEnabled(state.settings, businessType, (props.systemConfig && props.systemConfig.role) || "standalone");
+  var netRole = (props.systemConfig && props.systemConfig.role) || "standalone";
+  var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType, netRole, currentUserRole);
+  var codSalesTrackEnabled = isCodSalesTrackEnabled(state.settings, businessType, netRole, currentUserRole);
+  var posLineCommentsEnabled = isPosLineCommentsEnabled(state.settings, businessType, netRole, currentUserRole);
   var [posPageTab, setPosPageTab] = useState("sale");
   var isQuotationMode = posPageTab === "quotation" && !isRestaurant;
   var [restaurantProductFilter, setRestaurantProductFilter] = useState("all");
   var getProductType = function (p) { return String((p && p.type) || "stock").toLowerCase(); };
+  var isServiceProduct = function (p) { return getProductType(p) === "service"; };
   var isRawMaterialProduct = function (p) { return getProductType(p) === "raw_material"; };
-  var isRestaurantServiceProduct = function (p) { return isRestaurant && getProductType(p) === "service"; };
+  var isRestaurantServiceProduct = function (p) { return isRestaurant && isServiceProduct(p); };
   var normalizeRestaurantTableName = function (raw) {
     return String(raw || "").trim().replace(/\s+/g, " ");
   };
@@ -542,10 +545,11 @@ var POS = React.memo(function (props) {
     return state.products.filter(function (p) {
       /* FIX 8: Exclude inactive (soft-deleted) products from POS selection */
       if (p.status === "inactive") return false;
+      if (isRepair3pInternalProduct(p)) return false;
       if (!productMatchesSearch(p, q)) return false;
       if (isRawMaterialProduct(p)) return false;
       if (!isRestaurant) return true;
-      var isService = isRestaurantServiceProduct(p);
+      var isService = isServiceProduct(p);
       if (restaurantProductFilter === "service" && !isService) return false;
       if (restaurantProductFilter === "stock" && isService) return false;
       return isService || (p.stock || 0) > 0;
@@ -563,9 +567,10 @@ var POS = React.memo(function (props) {
     var q = freeSearch.toLowerCase();
     return state.products.filter(function (p) {
       if (p.status === "inactive") return false;
+      if (isRepair3pInternalProduct(p)) return false;
       if (!productMatchesSearch(p, q)) return false;
       if (isRawMaterialProduct(p)) return false;
-      return (p.stock || 0) > 0 || isRestaurantServiceProduct(p);
+      return (p.stock || 0) > 0 || isServiceProduct(p);
     }).sort(function (a, b) {
       var aExact = productMatchesSearchExact(a, q);
       var bExact = productMatchesSearchExact(b, q);
@@ -684,7 +689,7 @@ var POS = React.memo(function (props) {
       showAlert("Add at least one paid sale item before adding free gifts.");
       return;
     }
-    var isService = isRestaurantServiceProduct(p);
+    var isService = isServiceProduct(p);
     var reserved = getReservedBaseQtyForProduct(p);
     if (!isQuotationMode && !isService && (p.stock || 0) === 0) { showAlert("\"" + p.name + "\" is out of stock."); setFreeSearch(""); return; }
     if (!isQuotationMode && !isService && reserved >= (p.stock || 0)) {
@@ -721,7 +726,7 @@ var POS = React.memo(function (props) {
     var item = freeCart.find(function (x) { return cartLineKey(x) === lineKey; });
     if (item) {
       var prod = state.products.find(function (p) { return p.id === item.id; });
-      if (prod && !isRestaurantServiceProduct(prod)) {
+      if (prod && !isServiceProduct(prod)) {
         var curBase = toProductBaseQty(item.qty || 0, item.saleUnit || item.unit || "Pcs", prod);
         var newBase = toProductBaseQty(q, item.saleUnit || item.unit || "Pcs", prod);
         var reserved = getReservedBaseQtyForProduct(prod) - curBase + newBase;
@@ -790,7 +795,7 @@ var POS = React.memo(function (props) {
       showAlert("Order Closed for this table. Start/use another table.");
       return;
     }
-    var isService = isRestaurantServiceProduct(p);
+    var isService = isServiceProduct(p);
     var isGlass = isGlassProduct(p, shopSettings);
     if (isGlass && !(getSheetAreaSqFt(p) > 0)) {
       showAlert("\"" + p.name + "\" has no sheet size configured.\nEdit the product and enter sheet width and height first.");
@@ -853,6 +858,8 @@ var POS = React.memo(function (props) {
       }
       var su = p.unit || "Pcs";
       var lbl = String(p.comment_label || "").trim();
+      var linePrice = getPosSellPricePerSaleUnit(p, su);
+      var serviceNeedsPrice = isServiceProduct(p) && !(Number(linePrice) > 0);
       return [{
         cartLineId: uid(),
         id: p.id,
@@ -861,7 +868,7 @@ var POS = React.memo(function (props) {
         unit: su,
         saleUnit: su,
         qty: step,
-        price: getPosSellPricePerSaleUnit(p, su),
+        price: linePrice,
         cost: getPosCostPerSaleUnit(p, su),
         stock: p.stock,
         description: p.description || "",
@@ -869,7 +876,7 @@ var POS = React.memo(function (props) {
         commentLabel: lbl || DEFAULT_PRODUCT_COMMENT_LABEL,
         requireComment: needLinePerUnit,
         itemNote: "",
-        customPrice: false,
+        customPrice: serviceNeedsPrice,
       }].concat(prev);
     });
     if (isRestaurant) {
@@ -1016,7 +1023,7 @@ var POS = React.memo(function (props) {
       seenStockPid[item.id] = 1;
       var prod = state.products.find(function (p) { return p.id === item.id; });
       if (!prod) return;
-      if (isRestaurantServiceProduct(prod)) return;
+      if (isServiceProduct(prod)) return;
       var totalReq = getReservedBaseQtyForProduct(prod);
       if (totalReq > (prod.stock || 0)) {
         var availMsg = getBulkDisplayParts(prod) ? fmtStockDual(prod) : fmtStock(prod.stock || 0, prod.unit || "Pcs");
@@ -1024,6 +1031,14 @@ var POS = React.memo(function (props) {
       }
     });
     if (stockErr) { showAlert(stockErr); return; }
+    var missingServicePrice = cart.find(function (item) {
+      var pr = state.products.find(function (p) { return p.id === item.id; });
+      return isServiceProduct(pr) && !(Number(item.price) > 0);
+    });
+    if (missingServicePrice) {
+      showAlert("Enter a selling price for \"" + missingServicePrice.name + "\" before checkout.");
+      return;
+    }
     /* Block selling below cost */
     var belowCostItem = cart.find(function (item) {
       var pr = state.products.find(function (p) { return p.id === item.id; });
@@ -1141,7 +1156,7 @@ var POS = React.memo(function (props) {
     var np = _baseProds.map(function (p) {
       var lines = cart.filter(function (x) { return x.id === p.id; }).concat(freeCart.filter(function (x) { return x.id === p.id; }));
       if (!lines.length) return p;
-      if (isRestaurantServiceProduct(p)) return p;
+      if (isServiceProduct(p)) return p;
       var deductQty = lines.reduce(function (acc, ci) {
         return acc + toProductBaseQty(ci.qty || 0, ci.saleUnit || ci.unit || "Pcs", p);
       }, 0);
@@ -2783,7 +2798,7 @@ var POS = React.memo(function (props) {
                   {filteredProds.length} product{filteredProds.length > 1 ? "s" : ""} found — Enter adds · then Price → Qty → Search
                 </div>
                 {filteredProds.slice(0, 10).map(function (p, pidx) {
-                  var isService = isRestaurantServiceProduct(p);
+                  var isService = isServiceProduct(p);
                   var oos = !isService && (p.stock || 0) === 0;
                   return (
                     <div key={p.id} onMouseDown={function (e) { e.preventDefault(); if (selectedTableLocked) return; addToCart(p); setPosDropIdx(-1); }}
@@ -2797,7 +2812,7 @@ var POS = React.memo(function (props) {
                         {oos && <span style={{ marginLeft: 6, fontSize: 10, background: "#fee2e2", color: C.red, padding: "1px 6px", borderRadius: 10, fontWeight: 700 }}>OUT OF STOCK</span>}
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
-                        <span style={{ color: C.accent, fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(glassCartLayout && isGlassProduct(p, shopSettings) ? getGlassSellRatePerSqFt(p) : p.price)}{glassCartLayout && isGlassProduct(p, shopSettings) ? " / Sq Ft" : ""}</span>
+                        <span style={{ color: C.accent, fontWeight: 700 }}>{getCurrencySymbol()} {(isService && !(Number(p.price) > 0)) ? "—" : fmtNum(glassCartLayout && isGlassProduct(p, shopSettings) ? getGlassSellRatePerSqFt(p) : p.price)}{glassCartLayout && isGlassProduct(p, shopSettings) ? " / Sq Ft" : ""}</span>
                         {isService
                           ? <span style={{ color: C.muted, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>(service item)</span>
                           : (!oos && <span style={{ color: C.muted, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>({glassCartLayout && isGlassProduct(p, shopSettings) ? (fmtNum(glassAvailableSqFt(p)) + " Sq Ft left") : (getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit) + " left")})</span>)}
@@ -3216,7 +3231,7 @@ var POS = React.memo(function (props) {
               {freeSearch && filteredFreeProds.length > 0 && freeDropPos && cart.length > 0 && (
                 <div style={{ position: "fixed", top: freeDropPos.top + 2, left: freeDropPos.left, width: freeDropPos.width, background: "#fff", border: "1px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.14)" }}>
                   {filteredFreeProds.slice(0, 10).map(function (p, pidx) {
-                    var oos = (p.stock || 0) === 0 && !isRestaurantServiceProduct(p);
+                    var oos = (p.stock || 0) === 0 && !isServiceProduct(p);
                     return (
                       <div key={"free-" + p.id} onMouseDown={function (e) { e.preventDefault(); addToFreeCart(p); setFreeDropIdx(-1); }}
                         style={{ padding: "9px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: freeDropIdx === pidx ? "#dcfce7" : "#fff", opacity: oos ? 0.65 : 1 }}
@@ -3625,7 +3640,7 @@ var POS = React.memo(function (props) {
                 </div>
                 <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                   {restaurantRecentItems.map(function (pid) {
-                    var p = state.products.find(function (x) { return x.id === pid && x.status !== "inactive"; });
+                    var p = state.products.find(function (x) { return x.id === pid && x.status !== "inactive" && !isRepair3pInternalProduct(x); });
                     if (!p) return null;
                     return (
                       <button

@@ -4,6 +4,7 @@
  */
 
 import { productMatchesSearch } from "./productSearch.js";
+import { isRepair3pInternalProduct } from "./repair3pProduct.js";
 
 var PRODUCT_NAME_STOP_WORDS = {
   laptop: 1, laptops: 1, notebook: 1, notebooks: 1,
@@ -40,7 +41,7 @@ export function productNameFingerprint(name) {
 
 function activeProducts(products, excludeId) {
   return (products || []).filter(function (p) {
-    return p && p.status !== "inactive" && (!excludeId || p.id !== excludeId);
+    return p && p.status !== "inactive" && !isRepair3pInternalProduct(p) && (!excludeId || p.id !== excludeId);
   });
 }
 

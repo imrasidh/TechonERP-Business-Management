@@ -66,7 +66,8 @@ var CodDatabase = function (props) {
     state.settings,
     businessType,
     getBusinessProfile ? getBusinessProfile() : null,
-    netRole
+    netRole,
+    props.currentUserRole
   );
   var [tab, setTab] = useState("tracker");
   var [financeSubTab, setFinanceSubTab] = useState("breakdown");

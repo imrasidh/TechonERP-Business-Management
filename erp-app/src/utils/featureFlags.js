@@ -1,6 +1,7 @@
 /**
  * Optional module toggles — settings override industry profile defaults.
- * Main PC and Counter PC have separate toggle maps.
+ * Main PC: admin (mainModuleToggles) and staff/cashier (staffModuleToggles) are separate.
+ * Counter PC uses counterModuleToggles.
  * Sales (pos) and Settings always stay on; every other sidebar screen is toggleable.
  */
 import { hydrateCategoryGroupSettings } from "./categoryGroups.js";
@@ -87,15 +88,26 @@ function buildToggleMap(stored, businessType, profile, defaultFn) {
   return out;
 }
 
+function storedMapHasValues(stored) {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return false;
+  var hasVal = false;
+  Object.keys(stored).forEach(function (k) {
+    if (stored[k] === true || stored[k] === false) hasVal = true;
+  });
+  return hasVal;
+}
+
+function normalizeUserRole(userRole) {
+  var r = String(userRole || "").toLowerCase();
+  if (r === "admin" || r === "manager" || r === "cashier") return r;
+  return "admin";
+}
+
 function readStoredMap(settings, primaryKey, legacyKey) {
   if (!settings || typeof settings !== "object") return {};
   var primary = settings[primaryKey];
   if (primary && typeof primary === "object" && !Array.isArray(primary)) {
-    var hasVal = false;
-    Object.keys(primary).forEach(function (k) {
-      if (primary[k] === true || primary[k] === false) hasVal = true;
-    });
-    if (hasVal) return primary;
+    if (storedMapHasValues(primary)) return primary;
   }
   if (legacyKey && settings[legacyKey] && typeof settings[legacyKey] === "object") {
     return settings[legacyKey];
@@ -127,6 +139,14 @@ export function getMainModuleToggles(settings, businessType, profile) {
   return out;
 }
 
+export function getStaffModuleToggles(settings, businessType, profile) {
+  var stored = readStoredMap(settings, "staffModuleToggles", null);
+  if (!storedMapHasValues(stored)) {
+    return getMainModuleToggles(settings, businessType, profile);
+  }
+  return buildToggleMap(stored, businessType, profile, null);
+}
+
 export function getCounterModuleToggles(settings, businessType, profile) {
   var stored = readStoredMap(settings, "counterModuleToggles", null);
   return buildToggleMap(stored, businessType, profile, defaultCounterModule);
@@ -141,74 +161,82 @@ export function isCounterTerminal(netRole) {
   return netRole === "network_client" || (typeof window !== "undefined" && window._tcNetRole === "network_client");
 }
 
-export function getModuleTogglesForTerminal(settings, businessType, profile, netRole) {
+export function getModuleTogglesForTerminal(settings, businessType, profile, netRole, userRole) {
   if (isCounterTerminal(netRole)) {
     return getCounterModuleToggles(settings, businessType, profile);
   }
-  return getMainModuleToggles(settings, businessType, profile);
+  if (normalizeUserRole(userRole) === "admin") {
+    return getMainModuleToggles(settings, businessType, profile);
+  }
+  return getStaffModuleToggles(settings, businessType, profile);
 }
 
-export function isModuleEnabled(settings, businessType, profile, moduleId, netRole) {
-  var toggles = getModuleTogglesForTerminal(settings, businessType, profile, netRole);
+export function isModuleEnabled(settings, businessType, profile, moduleId, netRole, userRole) {
+  var toggles = getModuleTogglesForTerminal(settings, businessType, profile, netRole, userRole);
   return toggles[moduleId] === true;
 }
 
-export function isNavModuleEnabled(settings, businessType, profile, navId, netRole) {
+export function isNavModuleEnabled(settings, businessType, profile, navId, netRole, userRole) {
   if (CORE_NAV_IDS.indexOf(navId) >= 0) return true;
   var mod = MODULE_TOGGLE_DEFS.find(function (m) {
     return m.id === navId || m.navId === navId;
   });
   if (!mod) return true;
-  return isModuleEnabled(settings, businessType, profile, mod.id, netRole);
+  return isModuleEnabled(settings, businessType, profile, mod.id, netRole, userRole);
 }
 
 /** First sidebar page to open when Dashboard is off (logo click, auto-lock, etc.). */
-export function getDefaultLandingNavId(settings, businessType, profile, netRole) {
-  if (isNavModuleEnabled(settings, businessType, profile, "dashboard", netRole)) return "dashboard";
+export function getDefaultLandingNavId(settings, businessType, profile, netRole, userRole) {
+  if (isNavModuleEnabled(settings, businessType, profile, "dashboard", netRole, userRole)) return "dashboard";
   return "pos";
 }
 
-export function isFreeItemsEnabled(settings, businessType, netRole) {
-  return isModuleEnabled(settings, businessType, null, "freeItems", netRole);
+export function isFreeItemsEnabled(settings, businessType, netRole, userRole) {
+  return isModuleEnabled(settings, businessType, null, "freeItems", netRole, userRole);
 }
 
-export function isPosLineCommentsEnabled(settings, businessType, netRole) {
-  return isModuleEnabled(settings, businessType, null, "posLineComments", netRole);
+export function isPosLineCommentsEnabled(settings, businessType, netRole, userRole) {
+  return isModuleEnabled(settings, businessType, null, "posLineComments", netRole, userRole);
 }
 
-export function isCodSalesTrackEnabled(settings, businessType, netRole) {
-  return isModuleEnabled(settings, businessType, null, "codSalesTrack", netRole);
+export function isCodSalesTrackEnabled(settings, businessType, netRole, userRole) {
+  return isModuleEnabled(settings, businessType, null, "codSalesTrack", netRole, userRole);
 }
 
-export function isCodDatabaseEnabled(settings, businessType, profile, netRole) {
-  return isModuleEnabled(settings, businessType, profile, "coddatabase", netRole);
+export function isCodDatabaseEnabled(settings, businessType, profile, netRole, userRole) {
+  return isModuleEnabled(settings, businessType, profile, "coddatabase", netRole, userRole);
 }
 
-export function isCodCostProfitEnabled(settings, businessType, profile, netRole) {
-  if (!isCodDatabaseEnabled(settings, businessType, profile, netRole)) return false;
-  return isModuleEnabled(settings, businessType, profile, "codCostProfit", netRole);
-}
-
-/** @deprecated use isCodCostProfitEnabled */
-export function isCodCostBreakdownEnabled(settings, businessType, profile, netRole) {
-  return isCodCostProfitEnabled(settings, businessType, profile, netRole);
+export function isCodCostProfitEnabled(settings, businessType, profile, netRole, userRole) {
+  if (!isCodDatabaseEnabled(settings, businessType, profile, netRole, userRole)) return false;
+  return isModuleEnabled(settings, businessType, profile, "codCostProfit", netRole, userRole);
 }
 
 /** @deprecated use isCodCostProfitEnabled */
-export function isCodProfitSharingEnabled(settings, businessType, profile, netRole) {
-  return isCodCostProfitEnabled(settings, businessType, profile, netRole);
+export function isCodCostBreakdownEnabled(settings, businessType, profile, netRole, userRole) {
+  return isCodCostProfitEnabled(settings, businessType, profile, netRole, userRole);
 }
 
-export function isRepairsModuleEnabled(settings, businessType, profile, netRole) {
-  return isModuleEnabled(settings, businessType, profile, "repairs", netRole);
+/** @deprecated use isCodCostProfitEnabled */
+export function isCodProfitSharingEnabled(settings, businessType, profile, netRole, userRole) {
+  return isCodCostProfitEnabled(settings, businessType, profile, netRole, userRole);
+}
+
+export function isRepairsModuleEnabled(settings, businessType, profile, netRole, userRole) {
+  return isModuleEnabled(settings, businessType, profile, "repairs", netRole, userRole);
 }
 
 export function hydrateFeatureFlagDefaults(settings, businessType, profile) {
   var next = Object.assign({}, settings || {});
   var mainToggles = getMainModuleToggles(next, businessType, profile);
   var counterToggles = getCounterModuleToggles(next, businessType, profile);
+  var staffStored = readStoredMap(next, "staffModuleToggles", null);
+  var staffToggles = storedMapHasValues(staffStored)
+    ? buildToggleMap(staffStored, businessType, profile, null)
+    : Object.assign({}, mainToggles);
   next.mainModuleToggles = mainToggles;
   next.counterModuleToggles = counterToggles;
+  next.staffModuleToggles = staffToggles;
   next.moduleToggles = mainToggles;
   next.freeItemsEnabled = mainToggles.freeItems === true;
   next.repairsModuleEnabled = mainToggles.repairs === true;
@@ -235,6 +263,10 @@ export function persistMainModuleToggles(formToggles) {
   };
 }
 
+export function persistStaffModuleToggles(formToggles) {
+  return { staffModuleToggles: packToggleForm(formToggles) };
+}
+
 export function persistCounterModuleToggles(formToggles) {
   return { counterModuleToggles: packToggleForm(formToggles) };
 }
@@ -244,11 +276,11 @@ export function persistModuleToggles(formToggles) {
   return persistMainModuleToggles(formToggles);
 }
 
-export function listEnabledNavIds(settings, businessType, profile, netRole) {
+export function listEnabledNavIds(settings, businessType, profile, netRole, userRole) {
   var ids = CORE_NAV_IDS.slice();
   MODULE_TOGGLE_DEFS.forEach(function (m) {
     if (m.navId === null) return;
-    if (isModuleEnabled(settings, businessType, profile, m.id, netRole) && ids.indexOf(m.id) < 0) {
+    if (isModuleEnabled(settings, businessType, profile, m.id, netRole, userRole) && ids.indexOf(m.id) < 0) {
       ids.push(m.id);
     }
   });

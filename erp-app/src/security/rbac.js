@@ -8,6 +8,9 @@ export var ROLE_LABELS = {
   cashier: "Cashier",
 };
 
+/** Shown in Settings → User Management when creating a cashier account. */
+export var CASHIER_ACCESS_SUMMARY = "Same screens as admin; staff modules on/off separately under Settings → Modules";
+
 var ROLE_PERMISSIONS = {
   admin: {
     "reports.view": true,
@@ -45,18 +48,11 @@ export function hasPermission(user, permission) {
 
 export function canAccessPageByRole(user, pageId) {
   var role = normalizeRole(user && user.role);
-  if (role === ROLE_ADMIN) return true;
+  if (role === ROLE_ADMIN || role === ROLE_CASHIER) return true;
   if (role === ROLE_MANAGER) {
     if (pageId === "auditlog" || pageId === "accounts") return false;
     return true;
   }
-  var cashierPages = {
-    pos: true,
-    invoices: true,
-    customers: true,
-    returns: true,
-    repairs: true,
-  };
-  return !!cashierPages[pageId];
+  return true;
 }
 

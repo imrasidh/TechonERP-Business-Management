@@ -11,7 +11,7 @@ import {
   computeRawMaterialPricingBackfillPlan,
   applyRawMaterialPricingPlanToProducts,
 } from "../utils/rawMaterialPricingBackfill.js";
-import { ROLE_ADMIN, ROLE_LABELS, normalizeRole } from "../security/rbac.js";
+import { ROLE_ADMIN, ROLE_LABELS, CASHIER_ACCESS_SUMMARY, normalizeRole } from "../security/rbac.js";
 import { COMPUTER_SHOP_EDITION, validateJsonBackupPayload } from "../productionConfig.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import {
@@ -19,8 +19,10 @@ import {
   isPosLineCommentsEnabled,
   isRepairsModuleEnabled,
   getMainModuleToggles,
+  getStaffModuleToggles,
   getCounterModuleToggles,
   persistMainModuleToggles,
+  persistStaffModuleToggles,
   persistCounterModuleToggles,
   MODULE_TOGGLE_DEFS,
 } from "../utils/featureFlags.js";
@@ -168,6 +170,7 @@ var Settings = function (props) {
     posLineCommentsEnabled: isPosLineCommentsEnabled(state.settings, businessType, isNetworkClient ? "network_client" : systemConfig.role),
     repairsModuleEnabled: isRepairsModuleEnabled(state.settings, businessType, getBusinessProfile(), isNetworkClient ? "network_client" : systemConfig.role),
     mainModuleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
+    staffModuleToggles: getStaffModuleToggles(state.settings, businessType, getBusinessProfile()),
     counterModuleToggles: getCounterModuleToggles(state.settings, businessType, getBusinessProfile()),
     moduleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
     enabledCategoryGroups: readEnabledCategoryGroups(state.settings),
@@ -616,7 +619,10 @@ var Settings = function (props) {
     ns.allowCostFallback = ns.allowCostFallback === true;
     ns.glVatPostingEnabled = ns.glVatPostingEnabled !== false;
     if (!isNetworkClient) {
-      Object.assign(ns, persistMainModuleToggles(f.mainModuleToggles || f.moduleToggles || {}));
+      if (canManageUsers) {
+        Object.assign(ns, persistMainModuleToggles(f.mainModuleToggles || f.moduleToggles || {}));
+      }
+      Object.assign(ns, persistStaffModuleToggles(f.staffModuleToggles || {}));
     }
     ns.strictPeriodLock = ns.strictPeriodLock === true;
     ns.purchaseReturnCostMode = ns.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac";
@@ -1462,7 +1468,20 @@ var Settings = function (props) {
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {isNetworkClient
             ? renderModulePanel("counterModuleToggles", "Counter modules", "Screens shown on this counter terminal. Changes sync to the main PC. Data still syncs even when a module is hidden.")
-            : renderModulePanel("mainModuleToggles", "Main PC modules", "Screens shown on the main server PC sidebar. Sales and Settings always stay available.")}
+            : (
+              <React.Fragment>
+                {canManageUsers
+                  ? renderModulePanel("mainModuleToggles", "Admin modules", "Screens shown when signed in as admin. Cashier and manager use the staff list below.")
+                  : null}
+                {renderModulePanel(
+                  "staffModuleToggles",
+                  canManageUsers ? "Cashier & staff modules" : "Your modules",
+                  canManageUsers
+                    ? "Screens shown when a cashier or manager signs in. Independent from the admin list above."
+                    : "Choose which screens appear in your sidebar. Changes apply only to your role, not admin."
+                )}
+              </React.Fragment>
+            )}
           <div>
             <Btn col="blue" onClick={isNetworkClient ? saveCounterModules : save}>Save modules</Btn>
           </div>
@@ -3785,7 +3804,7 @@ var Settings = function (props) {
       {stab === "users" && canManageUsers && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <Card>
-            <CardTitle sub="Create staff accounts with role-based access">User Management</CardTitle>
+            <CardTitle sub={"Create staff accounts with role-based access. Cashier role: " + CASHIER_ACCESS_SUMMARY + "."}>User Management</CardTitle>
             {userMsg && (
               <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: userMsg.type === "error" ? "#fde8ed" : "#e6f7f2", color: userMsg.type === "error" ? "#b91c1c" : "#0a7a53", border: "1px solid " + (userMsg.type === "error" ? "#fca5a5" : "#9ee8ce") }}>
                 {userMsg.text}
@@ -3796,7 +3815,7 @@ var Settings = function (props) {
               <Input label="Username" value={newUserUsername} onChange={function (e) { setNewUserUsername(e.target.value); setUserMsg(null); }} placeholder="e.g. cashier1" />
               <Sel label="Role" value={newUserRole} onChange={function (e) { setNewUserRole(e.target.value); }}>
                 <option value="manager">Manager</option>
-                <option value="cashier">Cashier</option>
+                <option value="cashier">Cashier ({CASHIER_ACCESS_SUMMARY})</option>
               </Sel>
               <Input label="Password" type="password" value={newUserPassword} onChange={function (e) { setNewUserPassword(e.target.value); setUserMsg(null); }} placeholder="Min 4 chars" />
               <Btn col="blue" onClick={createUser}>+ Add User</Btn>

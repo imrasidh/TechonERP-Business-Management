@@ -211,6 +211,11 @@ var hashPw = function (pw) {
   return sha256(pw).then(function (h) { return "sha256:" + h; });
 };
 var normalizeLoginUsername = function (v) { return String(v || "").trim().toLowerCase(); };
+var isPrimaryAdminUser = function (user) {
+  if (!user) return false;
+  if (normalizeRole(user.role) === ROLE_ADMIN) return true;
+  return normalizeLoginUsername(user.username) === "admin";
+};
 /** Keep tc3_apppass and tc3_users[].passwordHash in sync (login uses users when present). */
 var setLoginPassword = function (hashed, opts) {
   opts = opts || {};
@@ -252,12 +257,16 @@ var syncMainAdminPassHashToSettings = function (hashed) {
 var verifyLoginPassword = function (input, user) {
   var appHash = S.get("tc3_apppass", "");
   var userHash = user && user.passwordHash;
-  if (!userHash && appHash) {
-    return pwMatchesAsync(input, appHash).then(function (ok) { return { ok: ok, user: user }; });
+  var isAdmin = isPrimaryAdminUser(user);
+  if (!userHash) {
+    if (isAdmin && appHash) {
+      return pwMatchesAsync(input, appHash).then(function (ok) { return { ok: ok, user: user }; });
+    }
+    return Promise.resolve({ ok: false, user: user });
   }
   return pwMatchesAsync(input, userHash).then(function (ok) {
     if (ok) return { ok: true, user: user };
-    if (!appHash || userHash === appHash) return { ok: false, user: user };
+    if (!isAdmin || !appHash || userHash === appHash) return { ok: false, user: user };
     return pwMatchesAsync(input, appHash).then(function (ok2) {
       if (ok2 && user) {
         setLoginPassword(appHash, { userId: user.id, username: user.username });
@@ -3156,6 +3165,82 @@ var HeaderNetDot = function (props) {
   );
 };
 
+/** Top-bar network/sync dot — counter PC uses HTTP reachability; main server trusts WS + sync state. */
+var resolveHeaderNetStatus = function (opts) {
+  var isNetworkClient = opts.isNetworkClient;
+  var isNetworkServer = opts.isNetworkServer;
+  var isNetworkMode = opts.isNetworkMode;
+  var connStatus = opts.connStatus || "unknown";
+  var wsConnStatus = opts.wsConnStatus || "disconnected";
+  var syncStatus = opts.syncStatus || SYNC_STATUS.IDLE;
+  var syncLabel = (opts.syncCfg && opts.syncCfg.label) || "Ready";
+  var connLabel = (opts.connCfg && opts.connCfg.label) || "Connecting";
+  var lastSyncTime = opts.lastSyncTime;
+
+  var dot = "#94a3b8";
+  var label = syncLabel;
+  var titleParts = [
+    isNetworkServer ? "Main server" : (isNetworkClient ? connLabel : "Online"),
+    "HTTP: " + (connStatus === "connected" ? "OK" : connStatus),
+    "WS: " + wsConnStatus,
+    syncLabel,
+  ];
+  if (lastSyncTime) titleParts.push(lastSyncTime);
+
+  if (syncStatus === SYNC_STATUS.FAILED || syncStatus === "error") {
+    dot = "#ef4444";
+    label = "Sync failed";
+  } else if (syncStatus === SYNC_STATUS.SAVING) {
+    dot = "#f59e0b";
+    label = "Saving";
+  } else if (isNetworkClient && connStatus === "disconnected") {
+    dot = "#ef4444";
+    label = "Offline";
+  } else if (isNetworkMode && wsConnStatus === "connected") {
+    dot = "#22c55e";
+    label = "Live sync";
+  } else if (connStatus === "connected" || (isNetworkServer && syncStatus === SYNC_STATUS.SYNCED)) {
+    dot = "#22c55e";
+    label = isNetworkMode ? "Polling" : syncLabel;
+  } else if (connStatus === "reconnecting" || wsConnStatus === "connecting" || wsConnStatus === "reconnecting") {
+    dot = "#f59e0b";
+    label = "Connecting";
+  } else if (isNetworkServer && connStatus === "disconnected") {
+    dot = "#f59e0b";
+    label = wsConnStatus === "connected" ? "Live sync" : "DB check";
+  } else if (isNetworkMode) {
+    dot = "#f59e0b";
+    label = "Polling";
+  }
+
+  return { dot: dot, label: label, title: titleParts.join(" · ") };
+};
+
+var localLoopbackApiUrl = function (apiUrl) {
+  try {
+    var u = new URL(String(apiUrl || ""));
+    var host = (u.hostname || "").toLowerCase();
+    if (host === "127.0.0.1" || host === "localhost") return null;
+    u.hostname = "127.0.0.1";
+    return u.toString();
+  } catch (e) {
+    return null;
+  }
+};
+
+var pingPhpHealth = async function (apiUrl, pingHeaders, useLanRequest) {
+  var base = String(apiUrl || "");
+  if (!base.endsWith("/")) base += "/";
+  if (useLanRequest && window.electronAPI && typeof window.electronAPI.lanRequest === "function") {
+    var r = await window.electronAPI.lanRequest({ method: "GET", path: "ping.php" });
+    var body = (r && r.data) || r;
+    return !!(r && r.success !== false && body && body.success);
+  }
+  var res = await fetch(base + "ping.php", { headers: pingHeaders, signal: AbortSignal.timeout(5000) });
+  var j = await res.json();
+  return !!(j && j.success);
+};
+
 var Badge = function (props) {
   var s = props.status || "";
   var MAP = {
@@ -5763,11 +5848,20 @@ var LoginScreen = function (props) {
   var hasPass = !!S.get("tc3_apppass", "");
   var hasAdmin = !!S.get("tc3_admin_name", "");
   var [username, setUsername] = useState("admin");
+  var [loginUsers, setLoginUsers] = useState([]);
   var getUsers = function () {
     var users = S.get("tc3_users", []);
     return Array.isArray(users) ? users : [];
   };
   var normalizeUserName = function (v) { return String(v || "").trim().toLowerCase(); };
+  var getActiveLoginUsers = function () {
+    return getUsers().filter(function (u) { return u && u.active !== false; }).sort(function (a, b) {
+      var ar = a.role === ROLE_ADMIN ? 0 : 1;
+      var br = b.role === ROLE_ADMIN ? 0 : 1;
+      if (ar !== br) return ar - br;
+      return String(a.name || a.username || "").localeCompare(String(b.name || b.username || ""));
+    });
+  };
   /* isFirst = no password set yet; needName = has password but no admin name yet */
   var [isFirst, setIsFirst] = useState(!hasPass);
   var [needName, setNeedName] = useState(hasPass && !hasAdmin);
@@ -5830,6 +5924,16 @@ var LoginScreen = function (props) {
       var admin = !!safeTrim(S.get("tc3_admin_name", ""));
       setIsFirst(!pass);
       setNeedName(pass && !admin);
+      var users = getActiveLoginUsers();
+      setLoginUsers(users);
+      if (users.length) {
+        setUsername(function (prev) {
+          var still = users.find(function (u) { return normalizeUserName(u.username) === normalizeUserName(prev); });
+          if (still) return still.username;
+          var def = users.find(function (u) { return u.role === ROLE_ADMIN; }) || users[0];
+          return def.username || "admin";
+        });
+      }
     };
     refresh();
     var t = setTimeout(refresh, 400);
@@ -5870,30 +5974,19 @@ var LoginScreen = function (props) {
       return pwMatchesAsync(password, st.mainAdminPassHash).then(function (ok) { return !!ok; });
     };
     var loginFailed = function (msg) {
+      if (!msg && user && !isPrimaryAdminUser(user) && stored && user.passwordHash === stored) {
+        msg = "Incorrect password. This cashier account may need a new password — admin: Settings → Users → Reset password.";
+      }
       setErr(msg || "Incorrect password. If you forgot it, use Forgot password below.");
       setPw("");
     };
     if (user) {
       verifyLoginPassword(pw, user).then(function (r) {
         if (r.ok) { finishLogin(r.user || user); return; }
-        if (stored) {
-          pwMatchesAsync(pw, stored).then(function (ok2) {
-            if (ok2) {
-              setLoginPassword(stored, { userId: user.id, username: user.username || "admin" });
-              finishLogin(user);
-              return;
-            }
-            tryMainServerLogin(pw).then(function (mainOk) {
-              if (mainOk) finishMainAdminLogin();
-              else loginFailed();
-            });
-          });
-        } else {
-          tryMainServerLogin(pw).then(function (mainOk) {
-            if (mainOk) finishMainAdminLogin();
-            else loginFailed();
-          });
-        }
+        tryMainServerLogin(pw).then(function (mainOk) {
+          if (mainOk) finishMainAdminLogin();
+          else loginFailed();
+        });
       }).catch(function () {
         setErr("Login failed. Please restart the app and try again.");
         setPw("");
@@ -6124,8 +6217,24 @@ var LoginScreen = function (props) {
                 <div style={{ fontSize: 17, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em" }}>Sign in</div>
                 <div className="tc-login-fields-row">
                   <div>
-                    <Input label="Username" value={username} onChange={function (e) { setUsername(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="admin" />
-                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>Default: <strong>admin</strong></div>
+                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>User</label>
+                    <select
+                      value={username}
+                      onChange={function (e) { setUsername(e.target.value); setErr(""); }}
+                      onKeyDown={handleKeyDown}
+                      style={{
+                        width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 10,
+                        padding: "11px 12px", fontSize: 14, fontWeight: 600, color: C.text, background: "#fff",
+                        outline: "none", fontFamily: "inherit", cursor: "pointer",
+                      }}
+                    >
+                      {(loginUsers.length ? loginUsers : [{ username: "admin", name: "Admin", role: ROLE_ADMIN }]).map(function (u) {
+                        var un = u.username || "admin";
+                        var label = (u.name || un) + " (" + un + ")";
+                        if (u.role && ROLE_LABELS[u.role]) label += " — " + ROLE_LABELS[u.role];
+                        return <option key={u.id || un} value={un}>{label}</option>;
+                      })}
+                    </select>
                   </div>
                   <Input label="Password" type="password" value={pw} onChange={function (e) { setPw(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="Enter password" />
                 </div>
@@ -6413,6 +6522,16 @@ function App(props) {
   useEffect(function () { supportUnlockInputRef.current = supportUnlockInput; }, [supportUnlockInput]);
   /* Avoid setState after unmount / modal close on async PIN verification */
   var appMountedRef = useRef(true);
+  /** Stays true until a user signs in from the login screen (prevents auto-login after Switch user). */
+  var forceLoginScreenRef = useRef(false);
+  var [loginScreenKey, setLoginScreenKey] = useState(0);
+  useEffect(function () {
+    try {
+      if (sessionStorage.getItem("tc3_force_login_once") === "1") {
+        forceLoginScreenRef.current = true;
+      }
+    } catch (e) { /* ignore */ }
+  }, []);
   useEffect(function () {
     try {
       var users = S.get("tc3_users", []);
@@ -6968,7 +7087,6 @@ function App(props) {
     if (!isNetworkMode || !systemConfig.apiUrl) return;
 
     var failCount = 0;
-    var pingUrl   = systemConfig.apiUrl + 'ping.php';
     var pingHeaders = {};
     if (systemConfig.apiKey) pingHeaders['X-TC-KEY'] = systemConfig.apiKey;
     var cancelled = false;
@@ -6991,25 +7109,18 @@ function App(props) {
 
     async function ping() {
       try {
-        var api = window.electronAPI;
-        if (api && typeof api.lanRequest === 'function') {
-          var r = await api.lanRequest({ method: 'GET', path: 'ping.php' });
-          var body = (r && r.data) || r;
-          if (r && r.success !== false && body && body.success) {
-            failCount = 0;
-            setConnStatus('connected');
-            setClientError(null);
-            return;
-          }
-          throw new Error('not ready');
+        var ok = await pingPhpHealth(systemConfig.apiUrl, pingHeaders, true);
+        if (!ok && isNetworkServer) {
+          var loopUrl = localLoopbackApiUrl(systemConfig.apiUrl);
+          if (loopUrl) ok = await pingPhpHealth(loopUrl, pingHeaders, false);
         }
-        var res = await fetch(pingUrl, { headers: pingHeaders, signal: AbortSignal.timeout(5000) });
-        var j = await res.json();
-        if (j.success) {
+        if (ok) {
           failCount = 0;
           setConnStatus('connected');
           setClientError(null);
-        } else { throw new Error('not ready'); }
+          return;
+        }
+        throw new Error('not ready');
       } catch (_) {
         failCount++;
         if (failCount === 1) setConnStatus('reconnecting');
@@ -7034,7 +7145,7 @@ function App(props) {
       cancelled = true;
       clearRetryTimer();
     };
-  }, [isNetworkMode, systemConfig.apiUrl, isNetworkClient]);
+  }, [isNetworkMode, systemConfig.apiUrl, isNetworkClient, isNetworkServer]);
 
   /* -- Before-close sync flush warning ------------------------- */
   useEffect(function () {
@@ -7095,6 +7206,14 @@ function App(props) {
   }, [loggedIn, isNetworkServer]);
 
   var handleLogin = function (user) {
+    forceLoginScreenRef.current = false;
+    try { sessionStorage.removeItem("tc3_force_login_once"); } catch (e) {}
+    settingsPwBypassRef.current = false;
+    setSettingsPwModal(false);
+    setSettingsPwPending(null);
+    setSettingsPwEntry("");
+    setSettingsPwErr("");
+    _setActive("pos");
     var actor = user || {
       id: "legacy-admin",
       username: "admin",
@@ -7116,6 +7235,13 @@ function App(props) {
       var api = window.electronAPI;
       if (api && api.stopLanWebSocket) api.stopLanWebSocket().catch(function () {});
     } catch (e) {}
+    forceLoginScreenRef.current = true;
+    settingsPwBypassRef.current = false;
+    setSettingsPwModal(false);
+    setSettingsPwPending(null);
+    setSettingsPwEntry("");
+    setSettingsPwErr("");
+    _setActive("pos");
     try {
       sessionStorage.removeItem("tc3_current_user");
       sessionStorage.setItem("tc3_force_login_once", "1");
@@ -7123,6 +7249,7 @@ function App(props) {
     setPinModal(false);
     setIsAdminMode(false);
     setCurrentUser(null);
+    setLoginScreenKey(function (k) { return k + 1; });
     setLoggedIn(false);
   };
 
@@ -7149,24 +7276,26 @@ function App(props) {
     } catch (e) { /* ignore */ }
   }, [loggedIn, uiAdminMode]);
 
-  /* -- Sales Mode pages (always accessible) -- */
-  var _activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
-  var _netRole = isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone");
-  var _repairsModuleOn = isRepairsModuleEnabled(state && state.settings, businessType, _activeProfile, _netRole);
-  var _navOn = function (id) { return isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id, _netRole); };
-  var _landingNav = function () { return getDefaultLandingNavId(state && state.settings, businessType, _activeProfile, _netRole); };
-  var SALES_MODE_PAGES = ["pos"]
-    .concat(_navOn("invoices") ? ["invoices"] : [])
-    .concat(_navOn("customers") ? ["customers"] : [])
-    .concat(_navOn("purchases") ? ["purchases"] : [])
-    .concat(_navOn("returns") ? ["returns"] : [])
-    .concat(_repairsModuleOn ? ["repairs"] : []);
   var normalizedCurrentUser = currentUser || {
     id: "legacy-admin",
     username: "admin",
     name: S.get("tc3_admin_name", "Admin"),
     role: uiAdminMode ? ROLE_ADMIN : ROLE_CASHIER,
   };
+  var _userRole = normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role);
+
+  /* -- Sales Mode pages (always accessible) -- */
+  var _activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
+  var _netRole = isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone");
+  var _repairsModuleOn = isRepairsModuleEnabled(state && state.settings, businessType, _activeProfile, _netRole, _userRole);
+  var _navOn = function (id) { return isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id, _netRole, _userRole); };
+  var _landingNav = function () { return getDefaultLandingNavId(state && state.settings, businessType, _activeProfile, _netRole, _userRole); };
+  var SALES_MODE_PAGES = ["pos"]
+    .concat(_navOn("invoices") ? ["invoices"] : [])
+    .concat(_navOn("customers") ? ["customers"] : [])
+    .concat(_navOn("purchases") ? ["purchases"] : [])
+    .concat(_navOn("returns") ? ["returns"] : [])
+    .concat(_repairsModuleOn ? ["repairs"] : []);
   var canViewReports = hasPermission(normalizedCurrentUser, "reports.view");
   var canViewSettings = hasPermission(normalizedCurrentUser, "settings.view");
   var canEditInvoices = hasPermission(normalizedCurrentUser, "invoices.edit");
@@ -7215,16 +7344,21 @@ function App(props) {
     if (!stored) return Promise.resolve(false);
     return pwMatchesAsync(input, stored);
   };
+  var settingsUnlockIsStaff = normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role) !== ROLE_ADMIN;
   var submitSettingsPassword = function () {
     if (!settingsPwEntry) {
-      setSettingsPwErr(isNetworkClient ? "Enter the main PC admin password." : "Enter your admin password.");
+      setSettingsPwErr(isNetworkClient
+        ? "Enter the main PC admin password."
+        : (settingsUnlockIsStaff ? "Enter the administrator password." : "Enter your admin password."));
       return;
     }
     verifySettingsUnlockPassword(settingsPwEntry).then(function (ok) {
       if (!ok) {
         setSettingsPwErr(isNetworkClient
           ? "Incorrect main PC password. Counter login passwords cannot open Settings."
-          : "Incorrect password.");
+          : (settingsUnlockIsStaff
+            ? "Incorrect administrator password. Your own login password cannot open Settings."
+            : "Incorrect password."));
         setSettingsPwEntry("");
         return;
       }
@@ -7252,6 +7386,11 @@ function App(props) {
         if (tcIsDevEnv()) {
           console.warn("[TC_CLIENT] blocked route (module off):", id);
         }
+        _setActive("pos");
+        return;
+      }
+      if (!canAccessPageByRole(normalizedCurrentUser, id)) {
+        showPermissionDenied("open this page");
         _setActive("pos");
         return;
       }
@@ -7389,7 +7528,7 @@ function App(props) {
       showPermissionDenied("open this page");
       return;
     }
-    if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id, _netRole)) {
+    if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id, _netRole, _userRole)) {
       return;
     }
     /* Network server: full navigation - no sales/admin mode gate */
@@ -7403,7 +7542,7 @@ function App(props) {
   useEffect(function () {
     if (!loggedIn || !state || isNetworkClient) return;
     if (CORE_NAV_IDS.indexOf(active) >= 0) return;
-    if (isNavModuleEnabled(state.settings, businessType, _activeProfile, active, _netRole)) return;
+    if (isNavModuleEnabled(state.settings, businessType, _activeProfile, active, _netRole, _userRole)) return;
     setActive("pos");
   }, [loggedIn, state, active, businessType, isNetworkClient]);
 
@@ -7648,17 +7787,17 @@ function App(props) {
   }
 
   if (!loggedIn) {
-    /* Skip login if password lock is disabled (but always show on first-run setup) */
+    /* Skip login if password lock is disabled (but always show on first-run setup or Switch user). */
     var _hasPass = !!S.get("tc3_apppass", "");
     var _hasAdmin = !!S.get("tc3_admin_name", "");
     var _requirePw = (state && state.settings && state.settings.requirePasswordOnLogin !== undefined) ? state.settings.requirePasswordOnLogin : true;
-    var _forceLogin = false;
+    var _mustShowLogin = forceLoginScreenRef.current;
     try {
-      _forceLogin = sessionStorage.getItem("tc3_force_login_once") === "1";
-      if (_forceLogin) sessionStorage.removeItem("tc3_force_login_once");
-    } catch (e) {}
-    if (_hasPass && _hasAdmin && _requirePw === false && !_forceLogin) {
+      if (sessionStorage.getItem("tc3_force_login_once") === "1") _mustShowLogin = true;
+    } catch (e) { /* ignore */ }
+    if (_hasPass && _hasAdmin && _requirePw === false && !_mustShowLogin) {
       setTimeout(function () {
+        if (forceLoginScreenRef.current) return;
         var users2 = S.get("tc3_users", []);
         var fallbackUser = Array.isArray(users2) && users2.length
           ? users2[0]
@@ -7667,7 +7806,7 @@ function App(props) {
       }, 0);
       return null;
     }
-    return <LoginScreen key="login-ready" onLogin={handleLogin} isNetworkClient={isNetworkClient} />;
+    return <LoginScreen key={"login-" + loginScreenKey} onLogin={handleLogin} isNetworkClient={isNetworkClient} />;
   }
 
   var activeItem = null;
@@ -7723,17 +7862,19 @@ function App(props) {
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 10px 6px" }}>
             {NAV_GROUPS.map(function (group) {
               var activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
-              var navEnabled = function (id) { return isNavModuleEnabled(state.settings, businessType, activeProfile, id, isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone")); };
+              var navEnabled = function (id) { return isNavModuleEnabled(state.settings, businessType, activeProfile, id, isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone"), _userRole); };
               var groupItems = NAV_ITEMS.filter(function (n) {
                 if (group.ids.indexOf(n.id) < 0) return false;
                 /* POS terminal: sidebar from synced counter module toggles */
                 if (isNetworkClient) {
                   if (clientPosPages.indexOf(n.id) < 0) return false;
+                  if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
                   return true;
                 }
-                /* Network server: show full nav (settings + module toggles) */
+                /* Network server: module toggles + role access */
                 if (isNetworkServer) {
                   if (!navEnabled(n.id)) return false;
+                  if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
                   return true;
                 }
                 /* Network mode + Sales Mode (non-server): POS page only */
@@ -7862,19 +8003,17 @@ function App(props) {
                 };
                 var connCfg = connMap[connStatus] || connMap.unknown;
                 var syncCfg = syncMap[syncStatus] || syncMap.idle;
-                var netDot = connStatus === "disconnected" ? connCfg.dot : (syncStatus === "saving" ? "#f59e0b" : (wsConnStatus === "connected" ? "#22c55e" : (connStatus === "connected" ? "#22c55e" : "#f59e0b")));
-                var netLabel = (function () {
-                  if (isNetworkClient && connStatus === "disconnected") return "Offline";
-                  if (syncStatus === "saving") return "Saving";
-                  if (isNetworkMode && wsConnStatus === "connected") return "Live sync";
-                  if (isNetworkMode && (connStatus === "connected" || isNetworkServer)) return "Polling";
-                  if (wsConnStatus === "connecting" || wsConnStatus === "reconnecting") return "Connecting";
-                  if (isNetworkMode) return "Polling";
-                  return syncCfg.label;
-                })();
-                var netTitle = isNetworkClient
-                  ? (connCfg.label + " · WS: " + wsConnStatus + " · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""))
-                  : ("Online · WS: " + wsConnStatus + " · " + syncCfg.label + (lastSyncTime ? (" · " + lastSyncTime) : ""));
+                var netUi = resolveHeaderNetStatus({
+                  isNetworkClient: isNetworkClient,
+                  isNetworkServer: isNetworkServer,
+                  isNetworkMode: isNetworkMode,
+                  connStatus: connStatus,
+                  wsConnStatus: wsConnStatus,
+                  syncStatus: syncStatus,
+                  syncCfg: syncCfg,
+                  connCfg: connCfg,
+                  lastSyncTime: lastSyncTime,
+                });
                 var metaParts = [
                   { key: "mode", text: modeLabel, emphasis: true, color: modeColor },
                 ];
@@ -7897,7 +8036,7 @@ function App(props) {
                       Switch user
                     </button>
                     {isNetworkMode ? (
-                      <HeaderNetDot dot={netDot} label={netLabel} title={netTitle} />
+                      <HeaderNetDot dot={netUi.dot} label={netUi.label} title={netUi.title} />
                     ) : null}
                     <HeaderMetaChip
                       parts={metaParts}
@@ -8459,7 +8598,9 @@ function App(props) {
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 18, lineHeight: 1.55 }}>
             {isNetworkClient
               ? "Enter the main PC admin password. Counter login passwords cannot open Settings."
-              : "Enter your admin password to open Settings."}
+              : (settingsUnlockIsStaff
+                ? "Enter the administrator password to open Settings. Your own login password cannot unlock Settings."
+                : "Enter your admin password to open Settings.")}
           </div>
           <input
             type="password"

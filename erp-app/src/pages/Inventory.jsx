@@ -7,6 +7,7 @@ import {
   rawMaterialPackPricingConfirmMessage,
 } from "../utils/rawMaterialPricingGuard.js";
 import { productMatchesSearch } from "../utils/productSearch.js";
+import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
 import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
@@ -191,7 +192,7 @@ var Inventory = React.memo(function (props) {
 
   /* FIX 8: Exclude inactive (soft-deleted) products from all inventory views and stats.
      Inactive products still exist in state.products so historical records remain intact. */
-  var products = state.products.filter(function (p) { return p.status !== "inactive"; });
+  var products = state.products.filter(function (p) { return p.status !== "inactive" && !isRepair3pInternalProduct(p); });
   var newProductNameMatch = useMemo(function () {
     if (!newP || !String(newP.name || "").trim()) return null;
     return evaluateProductNameMatch(newP.name, state.products, null);
@@ -523,7 +524,8 @@ var Inventory = React.memo(function (props) {
   var saveNew = function () {
     if (!newP) return;
     var nameStr = String(newP.name == null ? "" : newP.name).trim();
-    if (!nameStr || !newP.price) return;
+    var isServiceNew = isServiceProduct({ type: newP.type });
+    if (!nameStr || (!isServiceNew && !newP.price)) return;
     var nameCheck = checkProductName(nameStr, state.products, null);
     if (nameCheck && nameCheck.type === "exact") {
       showAlert("A product named \"" + nameCheck.match + "\" already exists.\nPlease use a different name.");
@@ -557,7 +559,7 @@ var Inventory = React.memo(function (props) {
           description: newP.description || "",
           cost: parseFloat(newP.cost) || 0,
           price: parseFloat(newP.price) || 0,
-          stock: isGlassNew ? (parseFloat(newP.stock) || 0) : (parseInt(newP.stock) || 0),
+          stock: normalizeProductType(newP.type) === "service" ? 0 : (isGlassNew ? (parseFloat(newP.stock) || 0) : (parseInt(newP.stock) || 0)),
           damaged: 0,
           require_comment: false,
           comment_label: String(newP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
@@ -633,7 +635,7 @@ var Inventory = React.memo(function (props) {
           description: editP.description,
           cost: parseFloat(editP.cost) || 0,
           price: parseFloat(editP.price) || 0,
-          stock: origStock,
+          stock: normalizeProductType(editP.type) === "service" ? 0 : origStock,
           require_comment: false,
           comment_label: String(editP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         }, unitFieldsEdit), editP, shopSettings);
@@ -1800,7 +1802,7 @@ var Inventory = React.memo(function (props) {
             </Sel>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, alignItems: "end" }}>
               <Input id="inv-new-cost" label={glassCostPriceLabels(newP, shopSettings).cost} type="number" value={newP.cost} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-sell"); } }} />
-              <Input id="inv-new-sell" label={glassCostPriceLabels(newP, shopSettings).sell} type="number" value={newP.price} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-stock"); } }} />
+              <Input id="inv-new-sell" label={newP.type === "service" ? "Selling Price (optional — enter at sale)" : glassCostPriceLabels(newP, shopSettings).sell} type="number" value={newP.price} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-stock"); } }} placeholder={newP.type === "service" ? "Leave empty if price varies" : ""} />
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", minHeight: 30, display: "block" }}>
                   {newP.type === "service" ? "Initial Stock (not required for service)" : "Initial Stock"}
@@ -1898,14 +1900,14 @@ var Inventory = React.memo(function (props) {
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <Btn col="cyan" onClick={saveNew} disabled={!newP.name || !newP.price || newProductNameExactDup}>Save Product</Btn>
+              <Btn col="cyan" onClick={saveNew} disabled={!newP.name || (!isServiceProduct({ type: newP.type }) && !newP.price) || newProductNameExactDup}>Save Product</Btn>
               <Btn col="blue" onClick={function () {
-                if (!newP.name || !newP.price || newProductNameExactDup) return;
+                if (!newP.name || (!isServiceProduct({ type: newP.type }) && !newP.price) || newProductNameExactDup) return;
                 saveNew();
                 setTimeout(function () {
                   setNewP(blankProduct());
                 }, 80);
-              }} disabled={!newP.name || !newP.price || newProductNameExactDup}>Save + Add Another</Btn>
+              }} disabled={!newP.name || (!isServiceProduct({ type: newP.type }) && !newP.price) || newProductNameExactDup}>Save + Add Another</Btn>
               <Btn col="gray" onClick={function () { setNewP(null); }}>Cancel</Btn>
             </div>
           </div>
@@ -1926,7 +1928,7 @@ var Inventory = React.memo(function (props) {
             </Sel>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
               <Input label={glassCostPriceLabels(editP, shopSettings).cost} type="number" value={editP.cost || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} />
-              <Input label={glassCostPriceLabels(editP, shopSettings).sell} type="number" value={editP.price || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} />
+              <Input label={editP.type === "service" ? "Selling Price (optional — enter at sale)" : glassCostPriceLabels(editP, shopSettings).sell} type="number" value={editP.price || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} placeholder={editP.type === "service" ? "Leave empty if price varies" : ""} />
               <Sel label="Base Unit" value={editP.unit || getDefaultProductUnit(shopSettings, editP.category)} onChange={function (e) {
                 var nextUnit = e.target.value;
                 setEditP(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });

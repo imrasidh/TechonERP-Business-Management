@@ -37,6 +37,7 @@ import {
   productMatchesSearchExact,
   findActiveProductByExactSearch,
 } from "../utils/productSearch.js";
+import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
 import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
@@ -442,7 +443,7 @@ var Purchases = React.memo(function (props) {
 
   var fp = state.products.filter(function (p) {
     /* FIX 8: Exclude inactive (soft-deleted) products from purchase search */
-    return p.status !== "inactive" && productMatchesSearch(p, ps);
+    return p.status !== "inactive" && !isRepair3pInternalProduct(p) && productMatchesSearch(p, ps);
   });
 
   var formTotal = sumPurchaseLinesStockTotal(f.items);

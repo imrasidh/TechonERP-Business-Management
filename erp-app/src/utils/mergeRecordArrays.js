@@ -223,12 +223,14 @@ export function mergeSettingsFromServer(local, remote) {
   });
   if (netRole === "network_client") {
     out.mainModuleToggles = Object.assign({}, local.mainModuleToggles || local.moduleToggles || {}, remote.mainModuleToggles || remote.moduleToggles || {});
+    out.staffModuleToggles = Object.assign({}, remote.staffModuleToggles || {}, local.staffModuleToggles || {});
     out.counterModuleToggles = Object.assign({}, remote.counterModuleToggles || {}, local.counterModuleToggles || {});
     out.moduleToggles = out.mainModuleToggles;
     out.enabledCategoryGroups = Object.assign({}, remote.enabledCategoryGroups || {}, local.enabledCategoryGroups || {});
     if (remote.mainAdminPassHash) out.mainAdminPassHash = remote.mainAdminPassHash;
   } else {
     out.mainModuleToggles = Object.assign({}, remote.mainModuleToggles || remote.moduleToggles || {}, local.mainModuleToggles || local.moduleToggles || {});
+    out.staffModuleToggles = Object.assign({}, remote.staffModuleToggles || {}, local.staffModuleToggles || {});
     out.counterModuleToggles = Object.assign({}, remote.counterModuleToggles || {}, local.counterModuleToggles || {});
     out.moduleToggles = out.mainModuleToggles;
     out.enabledCategoryGroups = Object.assign({}, local.enabledCategoryGroups || {}, remote.enabledCategoryGroups || {});

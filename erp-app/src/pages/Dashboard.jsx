@@ -3,6 +3,7 @@ import { round2 } from "../utils/moneyRound.js";
 import { sumRawMaterialKitchenCostInRange } from "../utils/ingredientUsageCost.js";
 import { activeSales } from "../utils/voidInvoice.js";
 import { sortNewestFirst } from "../utils/listPage.js";
+import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 
 var dashTileStyle = {
   background: "#fff",
@@ -125,6 +126,7 @@ var Dashboard = function (props) {
   var activeProducts = state.products.filter(function (p) { return p.status !== "inactive"; });
   /* Service products are not stocked like inventory — omit from stock value / low / out-of-stock / reorder (matches Inventory tab). */
   var stockableProducts = activeProducts.filter(function (p) {
+    if (isRepair3pInternalProduct(p)) return false;
     return String((p && p.type) || "stock").toLowerCase() !== "service";
   });
   var stockValue = round2(stockableProducts.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0));

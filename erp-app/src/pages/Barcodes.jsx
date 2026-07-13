@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { productMatchesSearch } from "../utils/productSearch.js";
+import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 
 /* ═══════════════════════════════════════════════════════════════════
    UNIFIED BARCODE LABELS COMPONENT
@@ -210,6 +211,7 @@ var BarcodePrinter = function (props) {
 
   var filtPrintProds = state.products.filter(function (p) {
     if (p.status === "inactive") return false;
+    if (isRepair3pInternalProduct(p)) return false;
     var q = printSearch.toLowerCase();
     if (!q) return false;
     return productMatchesSearch(p, q);
