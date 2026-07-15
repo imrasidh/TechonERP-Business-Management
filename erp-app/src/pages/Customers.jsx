@@ -28,6 +28,7 @@ var Customers = function (props) {
   var Pager = props.Pager;
   var Modal = props.Modal;
   var Badge = props.Badge;
+  var getCustomerOutstandingBalance = props.getCustomerOutstandingBalance;
 
   var [show, setShow] = useState(false);
   var [f, setF] = useState({ name: "", phone: "", address: "" });
@@ -99,10 +100,13 @@ var Customers = function (props) {
           <tbody>
             {custPager.slice.map(function (c, i) {
               var dupR = custDupNameKeys[normalizePaymentCustomerName(c.name)];
+              var liveCredit = typeof getCustomerOutstandingBalance === "function"
+                ? getCustomerOutstandingBalance(c, state.sales)
+                : (c.credit || 0);
               return (
                 <TR key={c.id} i={i}>
                   <TD bold>{c.name}{dupR ? <span title="Duplicate name exists"> ⚠️</span> : null}</TD><TD>{c.phone}</TD><TD>{c.address}</TD>
-                  <TD color={(c.credit || 0) > 0 ? C.red : C.muted}>{getCurrencySymbol()} {fmtNum(c.credit || 0)}</TD>
+                  <TD color={liveCredit > 0 ? C.red : C.muted}>{getCurrencySymbol()} {fmtNum(liveCredit)}</TD>
                   <TD color={C.blue}>{getCurrencySymbol()} {fmtNum(c.totalSpent || 0)}</TD>
                   <td style={actBtnCellStyle}>
                     <ActBtnGroup align="left">
@@ -143,7 +147,7 @@ var Customers = function (props) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 14 }}>
             <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px" }}><div style={{ fontSize: 11, color: C.muted }}>TOTAL PURCHASES</div><div style={{ fontWeight: 700, color: C.blue }}>{state.sales.filter(function (s) { return s.customerId === sel.id || s.customerName === sel.name; }).length}</div></div>
             <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px" }}><div style={{ fontSize: 11, color: C.muted }}>TOTAL SPENT</div><div style={{ fontWeight: 700, color: C.blue }}>{getCurrencySymbol()} {fmtNum(sel.totalSpent || 0)}</div></div>
-            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px" }}><div style={{ fontSize: 11, color: C.muted }}>OUTSTANDING</div><div style={{ fontWeight: 700, color: C.red }}>{getCurrencySymbol()} {fmtNum(sel.credit || 0)}</div></div>
+            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px" }}><div style={{ fontSize: 11, color: C.muted }}>OUTSTANDING</div><div style={{ fontWeight: 700, color: C.red }}>{getCurrencySymbol()} {fmtNum(typeof getCustomerOutstandingBalance === "function" ? getCustomerOutstandingBalance(sel, state.sales) : (sel.credit || 0))}</div></div>
           </div>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead><tr style={{ background: "#f8fafc" }}><TH>Invoice</TH><TH>Date</TH><TH>Total</TH><TH>Paid</TH><TH>Balance</TH><TH>Status</TH></tr></thead>

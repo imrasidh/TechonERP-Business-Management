@@ -5,6 +5,7 @@ var Suppliers = function (props) {
   var state = props.state;
   var setState = props.setState;
   var getTotalSupplierPayable = props.getTotalSupplierPayable;
+  var getSupplierPayableFromPurchases = props.getSupplierPayableFromPurchases;
   var uid = props.uid;
   var S = props.S;
   var showConfirm = props.showConfirm;
@@ -34,9 +35,11 @@ var Suppliers = function (props) {
   /* Fix 2: Compute each supplier's real payable from purchase balances so the
      displayed value never drifts even if s.payable was updated incorrectly. */
   var getSupplierPayable = function (supplierName) {
-    return state.purchases.reduce(function (a, p) {
-      return p.supplier === supplierName ? a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)) : a;
-    }, 0);
+    return (typeof getSupplierPayableFromPurchases === "function"
+      ? getSupplierPayableFromPurchases(supplierName, state.purchases)
+      : state.purchases.reduce(function (a, p) {
+          return p.supplier === supplierName ? a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)) : a;
+        }, 0));
   };
   var suppliersWithBalance = state.suppliers.filter(function (s) { return getSupplierPayable(s.name) > 0; }).length;
   var totalSpent = state.purchases.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);

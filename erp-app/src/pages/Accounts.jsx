@@ -23,6 +23,7 @@ import {
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { evaluateProductNameMatch, checkProductName } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
+import { activeSales, activePurchases } from "../utils/voidInvoice.js";
 import CategorySelect from "../components/CategorySelect.jsx";
 import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
 
@@ -169,10 +170,12 @@ var Accounts = function (props) {
 
   /* ── Overview tab state ── */
   var balances = getCashBalances(state);
+  var liveSalesAc = activeSales(state.sales);
+  var livePurchasesAc = activePurchases(state.purchases);
   var totalReceivable = typeof getTotalReceivableDerived === "function"
     ? getTotalReceivableDerived(state)
     : (function () {
-      var fromSales = state.sales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
+      var fromSales = liveSalesAc.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
       var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
         var paid = (mr.paymentHistory || []).reduce(function (s, p) { return s + p.amount; }, 0);
         return a + Math.max(0, mr.amount - paid);
@@ -189,8 +192,8 @@ var Accounts = function (props) {
       }, 0);
       return fromSupp + fromManual;
     })();
-  var totalRevenue = state.sales.reduce(function (a, s) { return a + s.total; }, 0);
-  var totalCOGS = getNetCOGS(state.sales, state.salesReturns); /* Bug 3 fix: net COGS after returns */
+  var totalRevenue = liveSalesAc.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0);
+  var totalCOGS = getNetCOGS(liveSalesAc, state.salesReturns); /* Bug 3 fix: net COGS after returns */
   var totalExpenses = state.expenses.reduce(function (a, e) { return a + e.amount; }, 0);
   var totalAssets = (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
   var netCapital = getCapLedger().reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
@@ -203,15 +206,20 @@ var Accounts = function (props) {
   var totalRepairRevenue = state.repairs.reduce(function (a, r) {
     if (r.status !== "Delivered") return a;
     /* If this repair has a corresponding sale (fromRepairId on the sale), skip it */
-    var alreadyInvoiced = state.sales.some(function (s) { return s.fromRepairId === r.id; });
+    var alreadyInvoiced = liveSalesAc.some(function (s) { return s.fromRepairId === r.id; });
     return alreadyInvoiced ? a : a + (r.estimatedCost || r.cost || 0);
   }, 0);
   /* Theoretical stock reconciliation — catches direct edits, damage, deletions and WAC rounding in one formula */
   var acObSnap = S.get("tc3_openBal", null);
   var acObStockVal = (acObSnap && acObSnap.completed) ? (acObSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
-  var acTotalPurchasesVal = state.purchases.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
+  var acTotalPurchasesVal = livePurchasesAc.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
   var acTotalPurchaseReturnsVal = (state.purchaseReturns || []).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
-  var acTheoreticalStock = acObStockVal + acTotalPurchasesVal - totalCOGS - acTotalPurchaseReturnsVal;
+  var acTotalDamageVal = (state.damageLog || []).reduce(function (a, d) {
+    var prod = (state.products || []).find(function (p) { return p.id === d.productId; });
+    var uc = (d.cost != null ? d.cost : (prod && prod.cost)) || 0;
+    return a + (Number(d.qty) || 0) * (Number(uc) || 0);
+  }, 0);
+  var acTheoreticalStock = acObStockVal + acTotalPurchasesVal - totalCOGS - acTotalPurchaseReturnsVal - acTotalDamageVal;
   var acStockCostValue = state.products.filter(function (p) { return p.status !== "inactive"; }).reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
   var acManualStockAdj = acStockCostValue - acTheoreticalStock;
   var netProfit = grossProfit + totalRepairRevenue - totalExpenses + acManualStockAdj;

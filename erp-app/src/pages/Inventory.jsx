@@ -677,7 +677,7 @@ var Inventory = React.memo(function (props) {
     var qty = parseInt(dmgQty) || 1;
     if (actionP.mode === "damage") {
       var np2 = state.products.map(function (x) { return x.id === p.id ? Object.assign({}, x, { stock: Math.max(0, x.stock - qty), damaged: (x.damaged || 0) + qty }) : x; });
-      var dl = (state.damageLog || []).concat([{ id: uid(), date: today(), productId: p.id, productName: p.name, qty: qty, reason: reason }]);
+      var dl = (state.damageLog || []).concat([{ id: uid(), date: today(), productId: p.id, productName: p.name, qty: qty, cost: p.cost || 0, reason: reason }]);
       S.set("tc3_products", np2); S.set("tc3_damageLog", dl);
       setState(function (s) { return Object.assign({}, s, { products: np2, damageLog: dl }); });
     } else if (actionP.mode === "void") {

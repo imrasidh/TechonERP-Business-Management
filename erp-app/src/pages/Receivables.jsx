@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { saleReturnUiStatus } from "../utils/returnDisplay.js";
+import { isVoidedTxn } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
@@ -58,6 +59,7 @@ var EnhancedReceivables = function (props) {
   var processSplitSale = function (saleId, splits, __forcedId, __legacyAll) {
     var sale = state.sales.find(function (s) { return s.id === saleId; });
     if (!sale) return;
+    if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return; }
     var newPh = (sale.paymentHistory || []).slice();
     var newCheques = (state.cheques || []).slice();
     var totalAdded = 0;
@@ -102,7 +104,7 @@ var EnhancedReceivables = function (props) {
   };
 
   /* ── Build unified list ── */
-  var salesEntries = state.sales.filter(function (s) { return Math.max(0, s.total - (s.paid || 0)) > 0 || true; }).map(function (s) {
+  var salesEntries = (state.sales || []).filter(function (s) { return !isVoidedTxn(s); }).map(function (s) {
     var bal = Math.max(0, s.total - (s.paid || 0));
     var retMeta = saleReturnUiStatus(s, state.salesReturns);
     return { id: s.id, _type: "sale", date: s.date, source: s.customerName || "Walk-in", type: "Sales Invoice", amount: s.total, paid: s.paid || 0, balance: bal, reference: s.invoiceNo || s.id.slice(0, 8), note: "", paymentHistory: s.paymentHistory || [], _saleObj: s, _returnMeta: retMeta };
@@ -142,6 +144,7 @@ var EnhancedReceivables = function (props) {
   var applyErSaleCashPayment = function (item, amt, forcedId, legacyAll) {
     var sale = state.sales.find(function (s) { return s.id === item.id; });
     if (!sale) return true;
+    if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return false; }
     var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: forcedId, legacyApplyAllNameMatches: legacyAll });
     if (res.needPicker && res.candidates.length) {
       maybeShowPaymentMatchToasts(sale, res);

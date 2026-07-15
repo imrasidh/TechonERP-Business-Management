@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { purchaseReturnUiStatus } from "../utils/returnDisplay.js";
+import { isVoidedTxn } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
@@ -49,7 +50,7 @@ var EnhancedPayables = function (props) {
   var manualPays = S.get("tc3_manualPayables", []);
 
   /* ── Build unified list ── */
-  var purchaseEntries = state.purchases.map(function (p) {
+  var purchaseEntries = (state.purchases || []).filter(function (p) { return !isVoidedTxn(p); }).map(function (p) {
     var bal = Math.max(0, p.total - (p.paidAmount || 0));
     var retMeta = purchaseReturnUiStatus(p, state.purchaseReturns);
     return { id: p.id, _type: "purchase", date: p.date, source: p.supplier || "", type: "Purchase Invoice", amount: p.total, paid: p.paidAmount || 0, balance: bal, reference: p.invoiceNo || p.id.slice(0, 8), note: "", paymentHistory: p.paymentHistory || [], _purObj: p, _returnMeta: retMeta };
@@ -90,6 +91,10 @@ var EnhancedPayables = function (props) {
     var amt = parseFloat(payAmt);
     if (!amt || amt <= 0) { showAlert("Enter a valid payment amount."); return; }
     var item = payModal;
+    if (item && item._type === "purchase" && item._purObj && isVoidedTxn(item._purObj)) {
+      showAlert("Cannot record payment on a voided purchase.");
+      return;
+    }
     /* ── Cheque: save ALL cheques in chequeList ── */
     if (payMethod === "Cheque") {
       if (chequeList.length === 0) { showAlert("Add at least one cheque using the + Add Cheque button."); return; }

@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import { computeSaleTaxFromSnapshot, computePurchaseReturnTax } from "../tax/taxCompute.js";
 import { round2 } from "../utils/moneyRound.js";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
+import { glassInvoiceLineTotal } from "../utils/glassProduct.js";
+import { isVoidedTxn } from "../utils/voidInvoice.js";
 
 /* ─── RETURNS PAGE ────────────────────────────────────────────────────────── */
 var Returns = function (props) {
@@ -174,9 +176,20 @@ var SalesReturnTab = function (props) {
     setModal("items");
   };
 
+  var returnLineAmount = function (it, q) {
+    if (!(q > 0)) return 0;
+    if (it && it.isGlassLine) {
+      var full = glassInvoiceLineTotal(it);
+      var soldQty = Number(it.qty) || 0;
+      if (soldQty <= 0) return 0;
+      return round2(full * (q / soldQty));
+    }
+    return round2(q * (Number(it.price) || 0));
+  };
+
   var returnTotal = selInv ? (selInv.items || []).reduce(function (a, it) {
-    var q = parseInt(returnQtys[it.id]) || 0;
-    return a + q * (it.price || 0);
+    var q = parseFloat(returnQtys[it.id]) || 0;
+    return a + returnLineAmount(it, q);
   }, 0) : 0;
 
   /* Filter invoices: match customer search OR invoice number search */
@@ -192,16 +205,17 @@ var SalesReturnTab = function (props) {
 
   var processReturn = function () {
     if (!selInv) return;
-    var hasQty = (selInv.items || []).some(function (it) { return (parseInt(returnQtys[it.id]) || 0) > 0; });
+    if (isVoidedTxn(selInv)) { showAlert("Cannot return a voided invoice."); return; }
+    var hasQty = (selInv.items || []).some(function (it) { return (parseFloat(returnQtys[it.id]) || 0) > 0; });
     if (!hasQty) { showAlert("Enter at least one return quantity."); return; }
     if (!returnReason.trim()) { showAlert("Please enter a reason for this return."); return; }
     var err = null;
     (selInv.items || []).forEach(function (it) {
       if (err) return;
-      var q = parseInt(returnQtys[it.id]) || 0;
-      var maxReturn = it.qty - getReturnedQty(selInv.id, it.id);
+      var q = parseFloat(returnQtys[it.id]) || 0;
+      var maxReturn = (Number(it.qty) || 0) - getReturnedQty(selInv.id, it.id);
       if (q < 0) { err = "Quantity cannot be negative."; return; }
-      if (q > maxReturn) { err = "\"" + (it.name || "Item") + "\": max returnable is " + maxReturn + "."; }
+      if (q > maxReturn + 1e-9) { err = "\"" + (it.name || "Item") + "\": max returnable is " + maxReturn + "."; }
     });
     if (err) { showAlert(err); return; }
 
@@ -210,7 +224,10 @@ var SalesReturnTab = function (props) {
     /* FIX Bug 2: Dynamic refund calculation — works for Paid AND Partial invoices.
        If the new invoice total drops below what was already paid, the difference must be refunded. */
     var origPaid = selInv.paid || 0;
-    var origLineSub = selInv.subTotal != null ? selInv.subTotal : (selInv.items || []).reduce(function (a, it) { return a + (it.qty || 0) * (it.price || 0); }, 0);
+    var origOutstanding = Math.max(0, (selInv.total || 0) - origPaid);
+    var origLineSub = selInv.subTotal != null ? selInv.subTotal : (selInv.items || []).reduce(function (a, it) {
+      return a + (it.isGlassLine ? glassInvoiceLineTotal(it) : ((it.qty || 0) * (it.price || 0)));
+    }, 0);
     var newLineSub = Math.max(0, origLineSub - returnTotal);
     var origNet = Math.max(0, origLineSub - (selInv.discount || 0));
     var newNet = Math.max(0, origNet - returnTotal);
@@ -232,9 +249,9 @@ var SalesReturnTab = function (props) {
       var refundRecorded = false;
 
       (selInv.items || []).forEach(function (it) {
-        var q = parseInt(returnQtys[it.id]) || 0;
+        var q = parseFloat(returnQtys[it.id]) || 0;
         if (q <= 0) return;
-        var lineGross = round2(q * (it.price || 0));
+        var lineGross = returnLineAmount(it, q);
         var isInclusive = selInv.taxMode === "inclusive" || ((state.settings && state.settings.taxMode === "inclusive") && selInv.taxMode !== "exclusive");
         var lineTaxBundle = computeSaleTaxFromSnapshot(selInv, lineGross);
         var lineReturnTax = round2(lineTaxBundle.totalTax || 0);
@@ -296,7 +313,7 @@ var SalesReturnTab = function (props) {
             type: "refund",
             note: "Sales return adjustment",
             createdAt: new Date().toISOString(),
-            cashMethod: "Adjustment",
+            cashMethod: needsRefund && refundMethod === "Bank" ? "Bank" : (needsRefund ? "Cash" : "Adjustment"),
           });
         }
         return Object.assign({}, s, taxPatch, {
@@ -310,10 +327,10 @@ var SalesReturnTab = function (props) {
       });
 
       /* Adjust customer credit and totalSpent — no early exit for needsRefund (Ghost Debt fix) */
+      var newOutstanding = Math.max(0, newTotal - Math.min(origPaid, newTotal));
+      var debtReduced = Math.max(0, origOutstanding - newOutstanding);
       var nc = state.customers.map(function (c) {
         if (!selInv.customerId || c.id !== selInv.customerId) return c;
-        /* Amount of the return that erased debt (vs amount refunded as cash) */
-        var debtReduced = returnTotal - (needsRefund ? refundAmt : 0);
         return Object.assign({}, c, {
           credit: Math.max(0, (c.credit || 0) - debtReduced),
           totalSpent: Math.max(0, (c.totalSpent || 0) - returnTotal)
@@ -447,7 +464,7 @@ var SalesReturnTab = function (props) {
               {(selInv.items || []).map(function (it, i) {
                 var alreadyRet = getReturnedQty(selInv.id, it.id);
                 var maxRet = it.qty - alreadyRet;
-                var q = parseInt(returnQtys[it.id]) || 0;
+                var q = parseFloat(returnQtys[it.id]) || 0;
                 var amt = q * (it.price || 0);
                 var overMax = q > maxRet;
                 return (
@@ -708,13 +725,26 @@ var PurchaseReturnTab = function (props) {
         });
       });
 
-      /* Reduce purchase total/balance */
+      /* Reduce purchase total/balance; align paymentHistory when paid drops (refund) */
       var npur = state.purchases.map(function (p) {
         if (p.id !== selPur.id) return p;
         var newPaid = Math.min(origPaid, newTotal);
         var newBal = Math.max(0, newTotal - newPaid);
         var newStat = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-        return Object.assign({}, p, { total: newTotal, balance: newBal, paidAmount: newPaid, status: newStat });
+        var refundFromPaid = origPaid - newPaid;
+        var ph = (p.paymentHistory || []).slice();
+        if (refundFromPaid > 0.005) {
+          ph.push({
+            id: uid(),
+            date: today(),
+            amount: -refundFromPaid,
+            type: "refund",
+            note: "Purchase return refund/adjustment",
+            createdAt: new Date().toISOString(),
+            cashMethod: needsRefund && purRefundMethod === "Bank" ? "Bank" : (needsRefund ? "Cash" : "Adjustment"),
+          });
+        }
+        return Object.assign({}, p, { total: newTotal, balance: newBal, paidAmount: newPaid, status: newStat, paymentHistory: ph });
       });
 
       S.set("tc3_purchaseReturns", newReturns);
@@ -850,7 +880,7 @@ var PurchaseReturnTab = function (props) {
               {(selPur.items || []).map(function (it, i) {
                 var alreadyRet = getPurReturnedQty(selPur.id, it.id);
                 var maxRet = it.qty - alreadyRet;
-                var q = parseInt(returnQtys[it.id]) || 0;
+                var q = parseFloat(returnQtys[it.id]) || 0;
                 var amt = q * (it.cost || 0);
                 var overMax = q > maxRet;
                 return (

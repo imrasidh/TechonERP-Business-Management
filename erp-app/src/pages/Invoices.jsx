@@ -771,6 +771,7 @@ var SalesInvoices = React.memo(function (props) {
   var recordPayment = function (saleId, amount, note, mode, __forcedId, __legacyAll) {
     var sale = state.sales.find(function (s) { return s.id === saleId; });
     if (!sale) return;
+    if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return; }
     /* Cheque: create cheque record — receivable stays open until cleared */
     if (mode === "Cheque") {
       var chequeNo = payModal.chequeNo || "";

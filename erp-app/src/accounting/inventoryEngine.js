@@ -5,6 +5,7 @@
 import { GL, round2 } from "./generalLedger.js";
 import { stableJournalTransactionId } from "./ids.js";
 import { purchaseInventoryNetFactor } from "../tax/taxCompute.js";
+import { isVoidedTxn } from "../utils/voidInvoice.js";
 
 /** Persistable snapshot of layer stacks (productId → layers). */
 export function serializeInventoryLayers(layersByProduct) {
@@ -162,6 +163,7 @@ export function deriveInventoryEconomics(state, S, opts) {
   }
 
   (state.purchases || []).forEach(function (p) {
+    if (isVoidedTxn(p)) return;
     if (asOfDate && String(p.date || "") > asOfDate) return;
     var purNetFactor = purchaseInventoryNetFactor(p, settings);
     var purIso = resolveRecordIsoDateTime(p);
@@ -208,6 +210,7 @@ export function deriveInventoryEconomics(state, S, opts) {
   });
 
   (state.sales || []).forEach(function (s) {
+    if (isVoidedTxn(s)) return;
     if (asOfDate && String(s.date || "") > asOfDate) return;
     var saleIso = resolveRecordIsoDateTime(s);
     (s.items || []).forEach(function (it, j) {
@@ -233,6 +236,8 @@ export function deriveInventoryEconomics(state, S, opts) {
 
   (state.salesReturns || []).forEach(function (r) {
     if (asOfDate && String(r.date || "") > asOfDate) return;
+    var parentSale = (state.sales || []).find(function (s) { return s && s.id === r.invoiceId; });
+    if (parentSale && isVoidedTxn(parentSale)) return;
     var q = Number(r.qty) || 0;
     if (q <= 0) return;
     events.push({
@@ -251,9 +256,10 @@ export function deriveInventoryEconomics(state, S, opts) {
 
   (state.purchaseReturns || []).forEach(function (r) {
     if (asOfDate && String(r.date || "") > asOfDate) return;
+    var purchase = (state.purchases || []).find(function (p) { return p && p.id === r.purchaseId; });
+    if (purchase && isVoidedTxn(purchase)) return;
     var q = Number(r.qty) || 0;
     if (q <= 0) return;
-    var purchase = (state.purchases || []).find(function (p) { return p && p.id === r.purchaseId; });
     var purNetFactor = purchase ? purchaseInventoryNetFactor(purchase, settings) : 1;
     events.push({
       _seq: seq++,
@@ -265,6 +271,26 @@ export function deriveInventoryEconomics(state, S, opts) {
       unitCost: round2((r.cost || 0) * purNetFactor),
       referenceType: "purchase_return",
       referenceId: r.id,
+      lineIdx: 0,
+    });
+  });
+
+  (state.damageLog || []).forEach(function (d) {
+    if (!d || d.productId == null) return;
+    if (asOfDate && String(d.date || "") > asOfDate) return;
+    var qd = Number(d.qty) || 0;
+    if (qd <= 0) return;
+    var prod = productsById[String(d.productId)] || null;
+    events.push({
+      _seq: seq++,
+      date: String(d.date || ""),
+      isoDateTime: resolveRecordIsoDateTime(d),
+      type: "damage_out",
+      productId: d.productId,
+      qty: qd,
+      unitCost: round2(Number(prod && prod.cost) || Number(d.cost) || 0),
+      referenceType: "damage",
+      referenceId: d.id,
       lineIdx: 0,
     });
   });
@@ -431,6 +457,47 @@ export function deriveInventoryEconomics(state, S, opts) {
         referenceId: ev.referenceId,
         date: ev.date,
         journalTxnHint: stableJournalTransactionId("raw_material_usage", ev.referenceId, "cogs"),
+      });
+      return;
+    }
+
+    if (ev.type === "damage_out") {
+      var layersDmg = layersByProduct[pid].slice();
+      var hadStockDmg = layersDmg.some(function (L) {
+        return (L.remainingQty != null ? L.remainingQty : L.qty || 0) > 0.0001;
+      });
+      var consDmg = consumeFifo(layersDmg, ev.qty, pid);
+      layersByProduct[pid] = consDmg.layers;
+      var lineKeyDmg = "dmg:" + String(ev.referenceId || "") + ":" + ev.lineIdx;
+      var lineCostDmg = consDmg.cost;
+      if (lineCostDmg < 0.0001 && ev.qty > 0) {
+        if (method === "fifo") {
+          if (allowCostFallback) {
+            lineCostDmg = round2(ev.qty * (ev.unitCost || 0));
+            warnings.push("FIFO cost fallback used for damage " + lineKeyDmg);
+          } else {
+            blockingErrors.push("FIFO: no inventory layers for damage " + lineKeyDmg);
+            lineCostDmg = 0;
+          }
+        } else {
+          lineCostDmg = round2(ev.qty * (ev.unitCost || 0));
+          if (!hadStockDmg && lineCostDmg > 0) {
+            warnings.push("WAC: no layers — used product cost for damage " + lineKeyDmg);
+          }
+        }
+      }
+      runningInventoryValue = round2(runningInventoryValue - lineCostDmg);
+      movements.push({
+        id: stableJournalTransactionId("stk", "dmg_" + String(ev.referenceId || ""), "out"),
+        productId: pid,
+        qtyIn: 0,
+        qtyOut: ev.qty,
+        unitCost: ev.qty > 0 ? round2(lineCostDmg / ev.qty) : 0,
+        totalCost: lineCostDmg,
+        referenceType: "damage",
+        referenceId: ev.referenceId,
+        date: ev.date,
+        journalTxnHint: stableJournalTransactionId("damage", ev.referenceId, "loss"),
       });
       return;
     }

@@ -639,10 +639,6 @@ var BarcodePrinter = function (props) {
                 <button onClick={zoomReset} style={{ minWidth: 48, height: 26, borderRadius: 6, border: "1.5px solid #ccc", background: "#fff", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>{Math.round(zoom * 100)}%</button>
                 <button onClick={zoomIn}  style={{ width: 26, height: 26, borderRadius: 6, border: "1.5px solid #ccc", background: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
               </div>
-              {/* Space hint */}
-              <div style={{ position: "absolute", bottom: 6, left: 10, fontSize: 10, color: "#999" }}>
-                Hold Space to pan · Ctrl+/− to zoom · Arrows to nudge
-              </div>
               {/* Zoomable/pannable canvas container */}
               <div style={{ transform: "translate(" + pan.x + "px," + pan.y + "px) scale(" + zoom + ")", transformOrigin: "center center", transition: isPanning ? "none" : "transform 0.05s" }}>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>

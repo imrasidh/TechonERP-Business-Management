@@ -22,6 +22,7 @@ export var GL = {
   COGS: "5000",
   /** Kitchen / raw-material consumption (restaurant ingredient draw — distinct from invoice COGS 5000) */
   COGS_KITCHEN: "5005",
+  DAMAGE: "5010",
   PUR_VAR: "5200",
   /** Penny differences so invoice totals tie to GL lines exactly */
   ROUND: "5215",
@@ -45,6 +46,7 @@ export var DEFAULT_GL_CHART = [
   { id: GL.REPAIR, code: "4100", name: "Repair Service Revenue", type: "income", normal: "credit" },
   { id: GL.COGS, code: "5000", name: "Cost of Goods Sold", type: "expense", normal: "debit" },
   { id: GL.COGS_KITCHEN, code: "5005", name: "Kitchen Consumption (Raw Materials)", type: "expense", normal: "debit" },
+  { id: GL.DAMAGE, code: "5010", name: "Inventory Damage / Write-off", type: "expense", normal: "debit" },
   { id: GL.PUR_VAR, code: "5200", name: "Purchase Rounding / Tax Variance", type: "expense", normal: "debit" },
   { id: GL.ROUND, code: "5215", name: "Rounding Adjustment", type: "expense", normal: "debit" },
   { id: GL.EXP, code: "6000", name: "Operating Expenses", type: "expense", normal: "debit" },
@@ -685,6 +687,29 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
         { accountId: GL.COGS_KITCHEN, debit: amt, credit: 0, memo: "Kitchen RM" },
         { accountId: GL.INV, debit: 0, credit: amt, memo: "Inventory drawn down" },
       ], "Kitchen consumption · " + d, "kitchen");
+    }
+  });
+
+  /* Damage write-offs from inventory replay movements */
+  var damageByDate = {};
+  if (invDer && Array.isArray(invDer.movements)) {
+    invDer.movements.forEach(function (mv) {
+      if (!mv || mv.referenceType !== "damage") return;
+      var tc = mv.totalCost != null ? round2(mv.totalCost) : round2((mv.qtyOut || 0) * round2(mv.unitCost || 0));
+      if (!(tc > 0.0001)) return;
+      var d = String(mv.date || "");
+      damageByDate[d] = round2((damageByDate[d] || 0) + tc);
+    });
+  }
+  Object.keys(damageByDate).sort(function (a, b) {
+    return String(a).localeCompare(String(b));
+  }).forEach(function (d) {
+    var amt = damageByDate[d];
+    if (amt > 0.0001) {
+      add(d, "damage", "damage_" + d, [
+        { accountId: GL.DAMAGE, debit: amt, credit: 0, memo: "Damage write-off" },
+        { accountId: GL.INV, debit: 0, credit: amt, memo: "Inventory written off" },
+      ], "Inventory damage · " + d, "damage");
     }
   });
 

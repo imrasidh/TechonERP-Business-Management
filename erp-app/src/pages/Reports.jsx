@@ -168,9 +168,8 @@ var Reports = React.memo(function (props) {
   var invoicedCOGS = round2(getNetCOGS(liveSalesRpt, state.salesReturns)); /* Bug 3 fix: net COGS after returns */
   var ingredientUsageCOGS = round2(sumRawMaterialKitchenCostInRange(state, null, null));
   var totalCOGS = round2(invoicedCOGS + ingredientUsageCOGS);
-  /* sale.total is already reduced by returns, so totalRevenue IS netRevenue.
-     Reconstruct grossRevenue by adding back the return amounts for display. */
-  var netRevenue = round2(liveSalesRpt.reduce(function (a, s) { return a + s.total; }, 0));
+  /* sale.total may include VAT; net of tax for profit (matches GL sales posting) */
+  var netRevenue = round2(liveSalesRpt.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0));
   var totalTaxOnInvoices = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
   /* Sales returns: r.amount = retail value reversed; cash refunds tracked separately in getCashBalances via r.refundAmount */
   var totalSalesReturnAmt = round2((state.salesReturns || []).reduce(function (a, r) { return a + (r.amount || 0); }, 0));
@@ -716,7 +715,7 @@ var Reports = React.memo(function (props) {
         var inR = function (d) { return (d || "") >= rf && (d || "") <= rt; };
 
         var rSales = liveSalesRpt.filter(function (s) { return inR(s.date); });
-        var rPurch = state.purchases.filter(function (p) { return inR(p.date); });
+        var rPurch = livePurchasesRpt.filter(function (p) { return inR(p.date); });
         var rExp = state.expenses.filter(function (e) { return inR(e.date); });
         var rRepairs = state.repairs.filter(function (r) { return inR(r.dateIn || r.date); });
         var rAssets = (state.assets || []).filter(function (a) { return !a._isOpening && inR(a.date); });
@@ -732,7 +731,7 @@ var Reports = React.memo(function (props) {
         var totalCashRefundedReturns = rSalesReturns.filter(function (r) { return r.isRefund && (r.refundAmount || 0) > 0; }).reduce(function (a, r) { return a + (r.refundAmount || 0); }, 0);
 
         /* sale.total is already net (reduced by returns). Reconstruct gross for display. */
-        var netRevenue = round2(rSales.reduce(function (a, s) { return a + s.total; }, 0));
+        var netRevenue = round2(rSales.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0));
         var totalRevenue = round2(netRevenue + totalSalesReturnAmt); /* gross — for display only */
         var totalCollected = round2(rSales.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
         var totalUnpaid = round2(rSales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0));

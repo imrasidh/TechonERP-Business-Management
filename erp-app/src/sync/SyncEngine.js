@@ -1045,8 +1045,18 @@ export function destroySyncEngine() {
     clearInterval(_retryInterval);
     _retryInterval = null;
   }
+  if (_patchRetryTimer) {
+    clearTimeout(_patchRetryTimer);
+    _patchRetryTimer = null;
+  }
   _engineStarted = false;
   unpatchStorageSet();
+  try {
+    if (_idbDB) {
+      try { _idbDB.close(); } catch (_e) {}
+      _idbDB = null;
+    }
+  } catch (_e2) {}
   /* Keep _config, _pending, _onFlushSuccess, and window._tcNetSyncConfig */
   _config = getActiveConfig();
 }

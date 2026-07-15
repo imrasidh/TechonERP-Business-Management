@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { IS_PRODUCTION, COMPUTER_SHOP_EDITION, validateJsonBackupPayload, enforceProductionStrictPeriodLock } from "./productionConfig.js";
 import { defaultStrictPeriodLock } from "./productionDefaults.js";
-import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, pushKeysToServer, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId } from "./sync/SyncEngine.js";
+import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, pushKeysToServer, NETWORK_KV_KEYS, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
+import { isVoidedTxn, activeSales, activePurchases } from "./utils/voidInvoice.js";
 import { generateDocumentNumber } from "./utils/docNumbers.js";
 import {
   MASTER_EDITION_ID,
@@ -309,6 +310,61 @@ var repairLoginAuthOnLoad = function () {
     next[idx] = Object.assign({}, u, { username: "admin", passwordHash: appHash });
     S.set("tc3_users", next);
   }
+};
+var resolvePrimaryAdminUser = function () {
+  var users = S.get("tc3_users", []);
+  if (!Array.isArray(users)) users = [];
+  var byUsername = users.find(function (u) {
+    return u && u.active !== false && normalizeLoginUsername(u.username) === "admin";
+  });
+  if (byUsername) return byUsername;
+  return users.find(function (u) {
+    return u && u.active !== false && u.role === ROLE_ADMIN;
+  }) || null;
+};
+/** Accept any password that unlocks Settings / admin login (user hash, apppass, or mainAdminPassHash). */
+var verifyAdminPassword = function (input) {
+  var pw = String(input || "");
+  if (!pw) return Promise.resolve(false);
+  var checks = [];
+  var seen = {};
+  var pushHash = function (hash) {
+    if (!hash || typeof hash !== "string") return;
+    if (seen[hash]) return;
+    seen[hash] = true;
+    checks.push(hash);
+  };
+  var admin = resolvePrimaryAdminUser();
+  if (admin && admin.passwordHash) pushHash(admin.passwordHash);
+  pushHash(S.get("tc3_apppass", ""));
+  try {
+    var st = S.get("tc3_settings", {}) || {};
+    pushHash(st.mainAdminPassHash);
+  } catch (e) { /* ignore */ }
+  var users = S.get("tc3_users", []);
+  if (Array.isArray(users)) {
+    users.forEach(function (u) {
+      if (u && u.active !== false && isPrimaryAdminUser(u) && u.passwordHash) pushHash(u.passwordHash);
+    });
+  }
+  if (!checks.length) return Promise.resolve(false);
+  var tryNext = function (i) {
+    if (i >= checks.length) return Promise.resolve(false);
+    return pwMatchesAsync(pw, checks[i]).then(function (ok) {
+      if (ok) {
+        /* Keep appass in sync with the hash that matched so Settings / Reset stay aligned. */
+        try {
+          var matched = checks[i];
+          if (matched && S.get("tc3_apppass", "") !== matched) {
+            setLoginPassword(matched, { username: (admin && admin.username) || "admin" });
+          }
+        } catch (eSync) { /* ignore */ }
+        return true;
+      }
+      return tryNext(i + 1);
+    });
+  };
+  return tryNext(0);
 };
 /* Admin PIN: hashed like login password; verify without leaking length for sha256-stored pins. */
 var tryFinalizeAdminPinEntry = function (entry, stored, onUnlocked, onWrong) {
@@ -1223,16 +1279,55 @@ function _idbDeleteDb() {
         try { _idbDB.close(); } catch (_closeErr) {}
         _idbDB = null;
       }
+      var settled = false;
+      var finish = function (fn) {
+        if (settled) return;
+        settled = true;
+        fn();
+      };
+      var timeoutId = setTimeout(function () {
+        finish(function () { reject(new Error("deleteDatabase timed out for " + _IDB_NAME)); });
+      }, 4000);
       var req = indexedDB.deleteDatabase(_IDB_NAME);
       req.onblocked = function () {
-        reject(new Error("deleteDatabase blocked for " + _IDB_NAME));
+        /* Keep waiting until timeout - another connection (SyncEngine) often holds the DB. */
       };
       req.onerror = function () {
-        reject(req.error || new Error("deleteDatabase failed for " + _IDB_NAME));
+        clearTimeout(timeoutId);
+        finish(function () {
+          reject(req.error || new Error("deleteDatabase failed for " + _IDB_NAME));
+        });
       };
-      req.onsuccess = function () { resolve(); };
+      req.onsuccess = function () {
+        clearTimeout(timeoutId);
+        finish(function () { resolve(); });
+      };
     } catch (e) {
       reject(e);
+    }
+  });
+}
+
+/** Clear every key in the IDB object store without deleting the database (avoids blocked deleteDatabase hangs). */
+function _idbClearAllKeys() {
+  return new Promise(function (resolve) {
+    try {
+      if (!_idbDB) {
+        resolve(false);
+        return;
+      }
+      if (!_idbDB.objectStoreNames.contains(_IDB_STORE)) {
+        resolve(false);
+        return;
+      }
+      var tx = _idbDB.transaction(_IDB_STORE, "readwrite");
+      var store = tx.objectStore(_IDB_STORE);
+      var req = store.clear();
+      tx.oncomplete = function () { resolve(true); };
+      tx.onerror = function () { resolve(false); };
+      req.onerror = function () { resolve(false); };
+    } catch (e) {
+      resolve(false);
     }
   });
 }
@@ -1458,6 +1553,162 @@ var _coreStorageSet = function (k, v) {
   _idbCache[k] = v;
   _idbWrite(k, v);
   _mirrorTc3ToLocalStorage(k, v);
+};
+
+var getFreshResetBlankSettings = function () {
+  return {
+    shopName: "", address: "", phone: "", phone2: "", whatsapp: "", email: "", website: "", brn: "", footer: "",
+    capitalInvested: 0, warrantyEnabled: false, warrantyText: "",
+    invoiceAccentColor: "#0d47a1", invoiceDefaultSize: "a4", invoiceThermalSize: "thermal80",
+    invoiceLogo: "", invoiceLogoSize: 80,
+    barcodeWidth: 60, barcodeHeight: 30, barcodeFontSize: 9, barcodeFontSize2: 11, barcodeBarWidth: "1.2",
+    barcodeShowCost: true, barcodeShowPrice: true, barcodeShowShopName: true, barcodeUseProductId: false,
+    labelWidth: "60mm", labelHeight: "auto", barcodeWidthMm: "100%", labelCopies: 1, labelBorder: "solid",
+    labelShopColor: "#1e3a5f", labelPriceColor: "#000000", labelBgColor: "#ffffff", labelTextAlign: "center",
+    labelFooterText: "", labelShowBarcode: true, labelShowProductCode: true, costCodeWord: "STARLIGHKZ",
+    shopCountry: "", defaultInvoiceLang: "en", optionalInvoiceLangs: [], customInvoiceLangs: [],
+    taxEnabled: false, taxMode: "exclusive", selectedTaxes: [],
+  };
+};
+
+var buildFreshResetLocalPayload = function () {
+  var blankSettings = getFreshResetBlankSettings();
+  var payload = {};
+  TC_FULL_BACKUP_KEYS.forEach(function (k) {
+    if (k === "tc3_settings") payload[k] = blankSettings;
+    else if (k === "tc3_gl_mode") payload[k] = "live";
+    else payload[k] = [];
+  });
+  payload.tc3_businessType = MASTER_EDITION_ID;
+  payload.tc3_apppass = "";
+  payload.tc3_admin_name = "";
+  payload.tc3_users = [];
+  payload.tc3_startup_wizard_done = false;
+  payload.tc3_held_invoices = [];
+  return payload;
+};
+
+/** Wipe all local ERP data and optionally push empty state to network server (Settings → Reset). */
+var wipeAllErpDataForReset = function (opts) {
+  opts = opts || {};
+  var withTimeout = function (promise, ms, label) {
+    return new Promise(function (resolve) {
+      var done = false;
+      var t = setTimeout(function () {
+        if (done) return;
+        done = true;
+        resolve({ ok: false, timeout: true, message: (label || "operation") + " timed out" });
+      }, ms);
+      Promise.resolve(promise).then(function (res) {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        resolve(res == null ? { ok: true } : res);
+      }).catch(function (err) {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        resolve({ ok: false, message: err && err.message ? err.message : String(err) });
+      });
+    });
+  };
+
+  /* Close SyncEngine connection first — otherwise deleteDatabase hangs forever. */
+  try { destroySyncEngine(); } catch (eSync0) { /* ignore */ }
+
+  var keySet = {};
+  var addKeys = function (list) {
+    (list || []).forEach(function (k) {
+      if (k && k.indexOf("tc3_") === 0) keySet[k] = true;
+    });
+  };
+  addKeys(typeof TC_FULL_BACKUP_KEYS !== "undefined" ? TC_FULL_BACKUP_KEYS : []);
+  addKeys([
+    "tc3_users", "tc3_apppass", "tc3_admin_name", "tc3_held_invoices", "tc3_autobak", "tc3_autobak_time",
+    "tc3_last_manual_backup", "tc3_restore_grace_until", "tc3_businessType", "tc3_startup_wizard_done",
+    "tc3_restaurant_tables", "tc3_restaurant_default_order_type", "tc3_gl_last_error",
+  ]);
+  Object.keys(_idbCache).forEach(function (k) {
+    if (k.indexOf("tc3_") === 0) keySet[k] = true;
+  });
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var lk = localStorage.key(i);
+      if (lk && lk.indexOf("tc3_") === 0) keySet[lk] = true;
+    }
+  } catch (eLsScan) { /* ignore */ }
+
+  try {
+    var ssRemove = [];
+    for (var si = 0; si < sessionStorage.length; si++) {
+      var sk = sessionStorage.key(si);
+      if (sk && sk.indexOf("tc3_") === 0) ssRemove.push(sk);
+    }
+    ssRemove.forEach(function (k) { sessionStorage.removeItem(k); });
+  } catch (eSs) { /* ignore */ }
+
+  Object.keys(_idbCache).forEach(function (k) { delete _idbCache[k]; });
+  Object.keys(keySet).forEach(function (k) { _mirrorTc3ToLocalStorage(k, null); });
+  try {
+    for (var j = localStorage.length - 1; j >= 0; j--) {
+      var kk = localStorage.key(j);
+      if (kk && kk.indexOf("tc3_") === 0) localStorage.removeItem(kk);
+    }
+  } catch (eLsClear) { /* ignore */ }
+
+  var finishFreshLocal = function () {
+    var fresh = buildFreshResetLocalPayload();
+    Object.keys(fresh).forEach(function (k) {
+      _idbCache[k] = fresh[k];
+      _mirrorTc3ToLocalStorage(k, fresh[k]);
+    });
+    var writes = Object.keys(fresh).map(function (k) {
+      return _idbWriteAsync(k, fresh[k]);
+    });
+    return Promise.all(writes).then(function () { return { ok: true }; }).catch(function () {
+      return { ok: true };
+    });
+  };
+
+  var maybePushServer = function (localResult) {
+    if (!(opts.pushServer && opts.authConfig && opts.authConfig.apiUrl)) {
+      return localResult || { ok: true };
+    }
+    try { ensureSyncConfig(opts.authConfig); } catch (eCfg) { /* ignore */ }
+    return withTimeout(
+      pushKeysToServer(NETWORK_KV_KEYS, { authConfig: opts.authConfig }),
+      12000,
+      "server wipe upload"
+    ).then(function (pushRes) {
+      if (pushRes && pushRes.timeout) {
+        return { ok: false, message: pushRes.message || "Server wipe upload timed out" };
+      }
+      if (pushRes && pushRes.ok === false) return pushRes;
+      return { ok: true };
+    });
+  };
+
+  /* Prefer clearing the store (fast, never hangs). Fall back to deleteDatabase with timeout. */
+  return _idbClearAllKeys().then(function (cleared) {
+    if (cleared) {
+      return finishFreshLocal().then(maybePushServer);
+    }
+    return withTimeout(_idbDeleteDb().then(function () {
+      _idbDB = null;
+      initAndLoadIDB._done = false;
+      initAndLoadIDB._promise = null;
+      return true;
+    }), 5000, "deleteDatabase").then(function (delRes) {
+      if (delRes && delRes.timeout) {
+        /* Still write empty local state into LS + cache so reload is fresh enough. */
+        return finishFreshLocal().then(maybePushServer);
+      }
+      _idbDB = null;
+      initAndLoadIDB._done = false;
+      initAndLoadIDB._promise = null;
+      return finishFreshLocal().then(maybePushServer);
+    });
+  });
 };
 
 /** Restore backup.data into cache + IndexedDB + localStorage (awaitable). */
@@ -1802,11 +2053,74 @@ initAndLoadIDB._promise = null;
 
 /* --- CASH / BANK BALANCE CALCULATOR ---------------- */
 
+/* Customer AR before the current invoice (other unpaid sales + opening/manual receivables). */
+var getCustomerPreviousBalance = function (opts) {
+  opts = opts || {};
+  var sales = opts.sales || [];
+  var manualReceivables = opts.manualReceivables;
+  if (manualReceivables == null) {
+    try { manualReceivables = S.get("tc3_manualReceivables", []) || []; } catch (e) { manualReceivables = []; }
+  }
+  var customerId = opts.customerId ? String(opts.customerId).trim() : "";
+  var customerName = String(opts.customerName || "").trim();
+  var excludeSaleId = opts.excludeSaleId || "";
+  if (!customerId && (!customerName || /^walk-?in$/i.test(customerName))) return 0;
+  var nameKey = customerName.toLowerCase();
+  var matchParty = function (idVal, nameVal) {
+    if (customerId && idVal && String(idVal) === customerId) return true;
+    if (!customerId && nameKey && String(nameVal || "").trim().toLowerCase() === nameKey) return true;
+    if (customerId && !idVal && nameKey && String(nameVal || "").trim().toLowerCase() === nameKey) return true;
+    return false;
+  };
+  var total = 0;
+  (activeSales(sales) || []).forEach(function (s) {
+    if (!s) return;
+    if (excludeSaleId && s.id === excludeSaleId) return;
+    if (!matchParty(s.customerId, s.customerName)) return;
+    total += Math.max(0, (Number(s.total) || 0) - (Number(s.paid) || 0));
+  });
+  (manualReceivables || []).forEach(function (mr) {
+    if (!mr) return;
+    if (!matchParty(mr.customerId, mr.person || mr.customer || mr.customerName)) return;
+    var paid = (mr.paymentHistory || []).reduce(function (a, p) { return a + (Number(p.amount) || 0); }, 0);
+    total += Math.max(0, (Number(mr.amount) || 0) - paid);
+  });
+  return Math.round(total * 100) / 100;
+};
+
+/** Attach previousBalance / totalDue for invoice print templates. */
+var enrichInvoiceWithAccountBalance = function (inv, salesList) {
+  if (!inv) return inv;
+  var prev = getCustomerPreviousBalance({
+    sales: salesList || [],
+    customerId: inv.customerId,
+    customerName: inv.customerName,
+    excludeSaleId: inv.id,
+  });
+  var thisBal = Math.max(0, (Number(inv.total) || 0) - (Number(inv.paid) || 0));
+  return Object.assign({}, inv, {
+    previousBalance: prev,
+    totalDue: Math.round((prev + thisBal) * 100) / 100,
+    _accountBalanceEnriched: true,
+  });
+};
+
+/** True outstanding for a customer row (sales + manual AR). */
+var getCustomerOutstandingBalance = function (customer, salesList) {
+  if (!customer) return 0;
+  return getCustomerPreviousBalance({
+    sales: salesList || [],
+    customerId: customer.id,
+    customerName: customer.name,
+    excludeSaleId: "",
+  });
+};
+
 /* BUG8 FIX: Helper to get a supplier's true payable balance from purchase records.
    The supplier.payable field can drift when purchases are edited/deleted.
    This function recomputes it from actual outstanding purchase balances. */
 var getSupplierPayableFromPurchases = function (supplierName, purchases) {
-  return (purchases || []).reduce(function (a, p) {
+  return (activePurchases(purchases) || []).reduce(function (a, p) {
     var bal = Math.max(0, (p.total || 0) - (p.paidAmount || 0));
     return p.supplier === supplierName ? a + bal : a;
   }, 0);
@@ -1819,7 +2133,7 @@ var tcRound2 = function (x) {
 /* Helper: total supplier payable recomputed from purchases (not stale s.payable) */
 var getTotalSupplierPayable = function (purchases) {
   var bySupplier = {};
-  (purchases || []).forEach(function (p) {
+  (activePurchases(purchases) || []).forEach(function (p) {
     if (!bySupplier[p.supplier]) bySupplier[p.supplier] = 0;
     bySupplier[p.supplier] += Math.max(0, (p.total || 0) - (p.paidAmount || 0));
   });
@@ -1850,7 +2164,7 @@ var getTotalReceivableDerived = function (state) {
       return Math.max(0, tcRound2(ledgerARAP(jlines).receivables));
     }
   } catch (e) { /* fall back */ }
-  var fromSales = (state.sales || []).reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
+  var fromSales = (activeSales(state.sales) || []).reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
   var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
     var paid = (mr.paymentHistory || []).reduce(function (s, p) { return s + p.amount; }, 0);
     return a + Math.max(0, mr.amount - paid);
@@ -2074,8 +2388,8 @@ var getCashBalances = function (state) {
     else cash += sign * e.amount;
   });
 
-  /* Sales received: each payment in paymentHistory */
-  (state.sales || []).forEach(function (s) {
+  /* Sales received: each payment in paymentHistory (skip voided invoices) */
+  (activeSales(state.sales) || []).forEach(function (s) {
     (s.paymentHistory || []).forEach(function (ph) {
       var m = ph.cashMethod || "Cash";
       if (m === "Bank") bank += ph.amount;
@@ -2083,9 +2397,10 @@ var getCashBalances = function (state) {
     });
   });
 
-  /* Purchases paid: each payment in paymentHistory */
-  (state.purchases || []).forEach(function (p) {
+  /* Purchases paid: each payment in paymentHistory (skip voided; skip negative refund rows — cash-back counted via purchaseReturns) */
+  (activePurchases(state.purchases) || []).forEach(function (p) {
     (p.paymentHistory || []).forEach(function (ph) {
+      if ((Number(ph.amount) || 0) < 0) return;
       var m = ph.cashMethod || "Cash";
       if (m === "Bank") bank -= ph.amount;
       else cash -= ph.amount;
@@ -2169,22 +2484,14 @@ var getCashBalances = function (state) {
        - manualReceivables[].paymentHistory  (for manual receivable cheques)
      Adding the cleared cheque again here would count it TWICE. */
 
-  /* FIX Bug 1: Purchase Return refunds - when supplier gives cash back after a return,
-     that cash must flow into balances. Only count entries where isRefund=true. */
+  /* Purchase/sales return refunds:
+     - Sales: negative amounts already in sale.paymentHistory
+     - Purchases: use return log isRefund (PH negatives are statement-only for older+new consistency) */
   (state.purchaseReturns || S.get("tc3_purchaseReturns", [])).forEach(function (r) {
     if (!r.isRefund || !r.refundMethod || !r.refundAmount) return;
     var m = r.refundMethod === "Bank" ? "Bank" : "Cash";
     if (m === "Bank") bank += r.refundAmount;
     else cash += r.refundAmount;
-  });
-
-  /* Sales Return Refunds: use r.refundAmount (actual cash handed back) NOT r.amount (retail value of returned goods) */
-  (state.salesReturns || []).forEach(function (r) {
-    if (r.isRefund && r.refundMethod && r.refundAmount) {
-      var m = r.refundMethod === "Bank" ? "Bank" : "Cash";
-      if (m === "Bank") bank -= r.refundAmount;
-      else cash -= r.refundAmount;
-    }
   });
 
   /* Profit Distributions: outflow */
@@ -3189,6 +3496,121 @@ var HeaderNetDot = function (props) {
   );
 };
 
+var HeaderKeysHint = function (props) {
+  var pageId = props.pageId || "dashboard";
+  var [open, setOpen] = useState(false);
+  var hideTimer = useRef(null);
+  var ALL = [
+    { scope: "sales", keys: "Ctrl + S", text: "Save only" },
+    { scope: "sales", keys: "Ctrl + P", text: "Print" },
+    { scope: "sales", keys: "Ctrl + W", text: "WhatsApp" },
+    { scope: "sales", keys: "Ctrl + H", text: "Hold cart" },
+    { scope: "sales", keys: "Alt", text: "Switch Walk-in / Customer" },
+    { scope: "sales", keys: "/", text: "Focus product search" },
+    { scope: "sales", keys: "Esc", text: "Return to product search" },
+    { scope: "sales", keys: "A", text: "Print/WhatsApp picker — A4" },
+    { scope: "sales", keys: "T", text: "Print/WhatsApp picker — Thermal" },
+    { scope: "sales", keys: "Esc", text: "Close print/WhatsApp picker" },
+    { scope: "purchases", keys: "Ctrl + +", text: "Add product" },
+    { scope: "purchases", keys: "/", text: "Focus product search" },
+    { scope: "purchases", keys: "Esc", text: "Return to product search" },
+    { scope: "inventory", keys: "Ctrl + +", text: "Add product" },
+    { scope: "accounts", keys: "Ctrl + +", text: "Add product (opening balance stock step)" },
+    { scope: "barcodes", keys: "Space", text: "Hold to pan" },
+    { scope: "barcodes", keys: "Ctrl + +", text: "Zoom in" },
+    { scope: "barcodes", keys: "Ctrl + −", text: "Zoom out" },
+    { scope: "barcodes", keys: "Ctrl + 0", text: "Reset zoom" },
+    { scope: "barcodes", keys: "Arrows", text: "Nudge element" },
+  ];
+  var pageScope = null;
+  var scopeTitle = "All shortcuts";
+  if (pageId === "pos") { pageScope = "sales"; scopeTitle = "Sales shortcuts"; }
+  else if (pageId === "purchases") { pageScope = "purchases"; scopeTitle = "Purchases shortcuts"; }
+  else if (pageId === "inventory") { pageScope = "inventory"; scopeTitle = "Inventory shortcuts"; }
+  else if (pageId === "accounts") { pageScope = "accounts"; scopeTitle = "Accounts shortcuts"; }
+  else if (pageId === "barcodeprint") { pageScope = "barcodes"; scopeTitle = "Barcode shortcuts"; }
+  else { scopeTitle = "All shortcuts"; }
+
+  var rows = pageScope
+    ? ALL.filter(function (r) { return r.scope === pageScope; })
+    : ALL.map(function (r) {
+      var prefix = r.scope === "sales" ? "Sales — "
+        : r.scope === "purchases" ? "Purchases — "
+        : r.scope === "inventory" ? "Inventory — "
+        : r.scope === "accounts" ? "Accounts — "
+        : r.scope === "barcodes" ? "Barcodes — "
+        : "";
+      return { keys: r.keys, text: prefix + r.text };
+    });
+
+  var clearHide = function () {
+    if (hideTimer.current) { clearTimeout(hideTimer.current); hideTimer.current = null; }
+  };
+  var show = function () { clearHide(); setOpen(true); };
+  var hideSoon = function () {
+    clearHide();
+    hideTimer.current = setTimeout(function () { setOpen(false); }, 120);
+  };
+  useEffect(function () {
+    return function () { clearHide(); };
+  }, []);
+  return (
+    <div
+      style={{ position: "relative", display: "inline-flex" }}
+      onMouseEnter={show}
+      onMouseLeave={hideSoon}
+    >
+      <button
+        type="button"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 999,
+          border: "1.5px solid " + (open ? "#2979ff" : "#93c5fd"),
+          background: open ? "#dbeafe" : "#eff6ff",
+          color: "#1d4ed8",
+          fontSize: 11, fontWeight: 800, cursor: "default", fontFamily: "inherit", whiteSpace: "nowrap",
+          letterSpacing: "0.01em",
+          boxShadow: open ? "0 0 0 3px rgba(41,121,255,0.15)" : "none",
+        }}
+      >
+        <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>⌨</span>
+        ShortCut Keys
+      </button>
+      {open ? (
+        <div
+          onMouseEnter={show}
+          onMouseLeave={hideSoon}
+          style={{
+            position: "absolute", top: "100%", left: 0, marginTop: 6, zIndex: 4000,
+            width: 320, maxHeight: 360, overflowY: "auto", padding: "8px 0",
+            background: "#fff", border: "1px solid #bfdbfe", borderRadius: 10,
+            boxShadow: "0 12px 32px rgba(29,78,216,0.16)",
+          }}
+        >
+          <div style={{ fontSize: 10, fontWeight: 800, color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.07em", padding: "2px 12px 8px" }}>{scopeTitle}</div>
+          {rows.length === 0 ? (
+            <div style={{ fontSize: 11, color: "#94a3b8", padding: "6px 12px" }}>No shortcuts for this page.</div>
+          ) : rows.map(function (r, i) {
+            return (
+              <div key={i} style={{
+                display: "grid",
+                gridTemplateColumns: "88px 1fr",
+                gap: 8,
+                alignItems: "baseline",
+                padding: "4px 12px",
+                borderTop: i === 0 ? "1px solid #eff6ff" : "none",
+                background: i % 2 === 0 ? "#fff" : "#f8fbff",
+              }}>
+                <span style={{ fontSize: 11, fontWeight: 800, color: "#1d4ed8", fontFamily: "ui-monospace, Consolas, monospace", whiteSpace: "nowrap" }}>{r.keys}</span>
+                <span style={{ fontSize: 11, color: "#475569", fontWeight: 500, lineHeight: 1.35 }}>{r.text}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 /** Top-bar network/sync dot — counter PC uses HTTP reachability; main server trusts WS + sync state. */
 var resolveHeaderNetStatus = function (opts) {
   var isNetworkClient = opts.isNetworkClient;
@@ -3508,15 +3930,38 @@ var BarcodeLabelSheet = function (props) {
    Monochrome receipt layout - width: 218px (58mm) or 302px (80mm) @ 96dpi.
    Height is content-driven (no fixed height). Print UI only.
 ----------------------------------------------------------- */
+var saleInvoiceLineTotal = function (it) {
+  if (it && it.isGlassLine) return glassInvoiceLineTotal(it);
+  if (it && it.inputQty != null && it.inputPrice != null) {
+    return Math.round((Number(it.inputQty) * Number(it.inputPrice)) * 100) / 100;
+  }
+  return (Number(it.qty) || 0) * (Number(it.price) || 0);
+};
+var saleInvoiceLineLeftText = function (it, sym, fmtNumFn) {
+  if (it && it.isGlassLine) {
+    return glassInvoiceCutSizeCol(it) + "\n" + glassInvoiceQtyCol(it, fmtNumFn) + " @ " + glassInvoiceRateLabel(it, getCurrencySymbol, fmtNumFn);
+  }
+  var dispQty = it.inputQty != null ? it.inputQty : it.qty;
+  var dispUnit = it.inputUnit || it.saleUnit || it.unit || "Pcs";
+  var dispPrice = it.inputPrice != null ? it.inputPrice : it.price;
+  return fmtInvoiceLineQty(dispQty, dispUnit) + " x " + sym + " " + fmtNumFn(dispPrice);
+};
+
 var InvoiceThermal = function (props) {
-  var inv = props.inv;
   var settings = props.settings;
   var documentKind = props.documentKind || "invoice";
   var isQuotation = documentKind === "quotation";
+  var salesForBal = props.sales;
+  if (!isQuotation && salesForBal == null) {
+    try { salesForBal = S.get("tc3_sales", []) || []; } catch (eSales) { salesForBal = []; }
+  }
+  var inv = isQuotation ? props.inv : enrichInvoiceWithAccountBalance(props.inv, salesForBal);
   var L = getInvoicePrintLabels(props.invoiceLang || (settings && settings.defaultInvoiceLang) || "en");
   var thermalWidth = props.width || 302;
   var isNarrow = thermalWidth < 260;
   var balance = Math.max(0, inv.total - (inv.paid || 0));
+  var prevBal = Number(inv.previousBalance) || 0;
+  var totalDue = inv.totalDue != null ? Number(inv.totalDue) : (prevBal + balance);
   var subTotal = inv.subTotal != null ? inv.subTotal : inv.total;
   var discount = inv.discount || 0;
   var invTaxLines = inv.selectedTaxes || [];
@@ -3639,12 +4084,9 @@ var InvoiceThermal = function (props) {
           var items = inv.items || [];
           var len = items.length;
           var isGlass = !!(it && it.isGlassLine);
-          var line = isGlass ? glassInvoiceLineTotal(it) : (it.qty * it.price);
+          var line = saleInvoiceLineTotal(it);
           var sym = getCurrencySymbol();
-          var lineUnit = it.saleUnit || it.unit || "Pcs";
-          var leftLine = isGlass
-            ? (glassInvoiceCutSizeCol(it) + "\n" + glassInvoiceQtyCol(it, fmtNum) + " @ " + glassInvoiceRateLabel(it, getCurrencySymbol, fmtNum))
-            : (fmtInvoiceLineQty(it.qty, lineUnit) + " x " + sym + " " + fmtNum(it.price));
+          var leftLine = saleInvoiceLineLeftText(it, sym, fmtNum);
           var rightLine = sym + " " + fmtNum(line);
           var numMono = { fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1' };
           var isLast = i >= len - 1;
@@ -3753,12 +4195,27 @@ var InvoiceThermal = function (props) {
                 <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(changeAmt)}</span>
               </div>
             ) : null}
-            {balance > 0 ? (
+            {prevBal > 0 ? (
+              <React.Fragment>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginTop: 4, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 700 }}>{L.previousBalance}</span>
+                  <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(prevBal)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 700 }}>{L.thisInvoice}</span>
+                  <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(balance)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginTop: 4, fontWeight: 700, fontSize: 14 }}>
+                  <span>{L.totalDue}</span>
+                  <span style={{ fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(totalDue)}</span>
+                </div>
+              </React.Fragment>
+            ) : (balance > 0 ? (
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginTop: 4, fontWeight: 700, fontSize: 14 }}>
                 <span>{L.balanceDue}</span>
                 <span style={{ fontVariantNumeric: "tabular-nums", fontFeatureSettings: '"tnum" 1', whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(balance)}</span>
               </div>
-            ) : null}
+            ) : null)}
           </div>
         </React.Fragment>
       ) : null}
@@ -3822,14 +4279,20 @@ var InvoiceThermal = function (props) {
    A4: 794px wide  |  A5: 559px wide
 ----------------------------------------------------------- */
 var InvoiceA4 = function (props) {
-  var inv = props.inv;
   var settings = props.settings;
   var documentKind = props.documentKind || "invoice";
   var isQuotation = documentKind === "quotation";
+  var salesForBal = props.sales;
+  if (!isQuotation && salesForBal == null) {
+    try { salesForBal = S.get("tc3_sales", []) || []; } catch (eSalesA4) { salesForBal = []; }
+  }
+  var inv = isQuotation ? props.inv : enrichInvoiceWithAccountBalance(props.inv, salesForBal);
   var L = getInvoicePrintLabels(props.invoiceLang || (settings && settings.defaultInvoiceLang) || "en");
   var size = props.size || "a4";
   var isA5 = size === "a5";
   var balance = Math.max(0, inv.total - (inv.paid || 0));
+  var prevBal = Number(inv.previousBalance) || 0;
+  var totalDue = inv.totalDue != null ? Number(inv.totalDue) : (prevBal + balance);
   var subTotal = inv.subTotal != null ? inv.subTotal : inv.total;
   var discount = inv.discount || 0;
   var invTaxLinesA4 = inv.selectedTaxes || [];
@@ -3960,13 +4423,13 @@ var InvoiceA4 = function (props) {
                         <td style={{ padding: invCellPad, textAlign: "center", color: "#333", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", borderRight: invTdSide }}>
                           {it.isGlassLine
                             ? glassInvoiceQtyCol(it, fmtNum)
-                            : fmtInvoiceLineQty(it.qty, it.saleUnit || it.unit)}
+                            : fmtInvoiceLineQty(it.inputQty != null ? it.inputQty : it.qty, it.inputUnit || it.saleUnit || it.unit)}
                         </td>
                         <td style={{ padding: invCellPad, textAlign: "right", color: "#333", borderRight: invTdSide }}>
-                          {it.isGlassLine ? glassInvoiceRateLabel(it, getCurrencySymbol, fmtNum) : fmtNum(it.price)}
+                          {it.isGlassLine ? glassInvoiceRateLabel(it, getCurrencySymbol, fmtNum) : fmtNum(it.inputPrice != null ? it.inputPrice : it.price)}
                         </td>
                         <td style={{ padding: invCellPad, textAlign: "right", fontWeight: 600, color: "#111" }}>
-                          {fmtNum(it.isGlassLine ? glassInvoiceLineTotal(it) : (it.qty * it.price))}
+                          {fmtNum(it.isGlassLine ? glassInvoiceLineTotal(it) : saleInvoiceLineTotal(it))}
                         </td>
                       </tr>
                     );
@@ -3994,13 +4457,30 @@ var InvoiceA4 = function (props) {
                     <div style={{ color: "#111", fontWeight: 700 }}>{inv.cashMethod || (inv.payStatus === "Unpaid" ? "-" : "Cash")}</div>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}>
-                    <div style={{ color: "#5a6472", fontWeight: 600 }}>Amount Received</div>
+                    <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.amountReceived}</div>
                     <div style={{ color: "#111", fontWeight: 700 }}>{fmtNum(inv.paid || 0)}</div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0 0" }}>
-                    <div style={{ color: "#5a6472", fontWeight: 600 }}>Balance Due</div>
-                    <div style={{ color: balance > 0 ? "#dc2626" : "#111", fontWeight: 700 }}>{fmtNum(balance)}</div>
-                  </div>
+                  {prevBal > 0 ? (
+                    <React.Fragment>
+                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}>
+                        <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.previousBalance}</div>
+                        <div style={{ color: "#dc2626", fontWeight: 700 }}>{fmtNum(prevBal)}</div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}>
+                        <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.thisInvoice}</div>
+                        <div style={{ color: balance > 0 ? "#dc2626" : "#111", fontWeight: 700 }}>{fmtNum(balance)}</div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0 0" }}>
+                        <div style={{ color: "#5a6472", fontWeight: 700 }}>{L.totalDue}</div>
+                        <div style={{ color: "#dc2626", fontWeight: 800 }}>{fmtNum(totalDue)}</div>
+                      </div>
+                    </React.Fragment>
+                  ) : (
+                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0 0" }}>
+                      <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.balanceDue}</div>
+                      <div style={{ color: balance > 0 ? "#dc2626" : "#111", fontWeight: 700 }}>{fmtNum(balance)}</div>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : null}
@@ -4903,66 +5383,244 @@ var Statements = function (props) {
   var people = mode === "customer" ? customers : suppliers;
   var selected = people.find(function (p) { return p.id === selId; }) || null;
 
-  /* -- Build transaction rows -- */
+  var namesMatch = function (a, b) {
+    return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+  };
+  var payMethodLabel = function (ph) {
+    return (ph && (ph.method || ph.cashMethod || ph.payMode)) || "";
+  };
+  var itemDetail = function (items) {
+    var list = items || [];
+    if (!list.length) return "-";
+    return list.map(function (i) {
+      var q = Number(i.qty) || 0;
+      return (i.name || "Item") + (q > 1 ? (" x" + q) : "");
+    }).join(", ");
+  };
+  /** If paidAmount > sum(paymentHistory), add a reconciling payment so statement matches real paid. */
+  var pushPaymentRows = function (rowsOut, opts) {
+    var history = opts.history || [];
+    var paidTotal = Number(opts.paidTotal) || 0;
+    var ref = opts.ref || "";
+    var fallDate = opts.date || "";
+    var verb = opts.verb || "Payment";
+    var histSum = 0;
+    history.forEach(function (ph) {
+      var amt = Number(ph && ph.amount) || 0;
+      if (Math.abs(amt) <= 0.005) return;
+      var method = payMethodLabel(ph);
+      if (amt > 0) {
+        rowsOut.push({
+          date: ph.date || fallDate,
+          type: "Payment",
+          ref: ref,
+          detail: verb + (method ? (" via " + method) : ""),
+          debit: 0,
+          credit: amt,
+        });
+      } else {
+        rowsOut.push({
+          date: ph.date || fallDate,
+          type: "Refund",
+          ref: ref,
+          detail: (ph.note || verb + " refund") + (method ? (" via " + method) : ""),
+          debit: Math.abs(amt),
+          credit: 0,
+        });
+      }
+      histSum += amt;
+    });
+    var gap = Math.round((paidTotal - histSum) * 100) / 100;
+    if (gap > 0.005) {
+      rowsOut.push({
+        date: fallDate,
+        type: "Payment",
+        ref: ref,
+        detail: verb + " (recorded)",
+        debit: 0,
+        credit: gap,
+      });
+    }
+  };
+
+  /* -- Build full ledger (all-time), then apply date range with opening BF -- */
   var rows = [];
 
   if (selected) {
     if (mode === "customer") {
-      /* Sales invoices - use original total (before returns) for the debit so the
-         return credit row shows the reduction cleanly without double-counting.
-         We reconstruct original total = current total + sum of returns on that invoice */
-      (state.sales || []).forEach(function (s) {
-        if (s.customerId !== selected.id && s.customerName !== selected.name) return;
-        /* Find all returns for this invoice to reconstruct original total */
-        var saleReturns = (state.salesReturns || []).filter(function (r) { return r.invoiceId === s.id || r.invoiceNo === s.invoiceNo; });
-        var returnedTotal = saleReturns.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
-        var originalTotal = s.total + returnedTotal; /* restore original invoice value */
-        rows.push({ date: s.date, type: "Invoice", ref: s.invoiceNo || s.id.slice(0, 8), detail: (s.items || []).map(function (i) { return i.name + (i.qty > 1 ? " x" + i.qty : ""); }).join(", ") || "-", debit: originalTotal, credit: 0, paid: s.paid || 0, payStatus: s.payStatus });
-        /* Payment history entries */
-        (s.paymentHistory || []).forEach(function (ph) {
-          if (ph.amount > 0) {
-            rows.push({ date: ph.date || s.date, type: "Payment", ref: s.invoiceNo || s.id.slice(0, 8), detail: "Payment received" + (ph.method ? " - " + ph.method : ""), debit: 0, credit: ph.amount, paid: 0, payStatus: "" });
-          }
+      activeSales(state.sales || []).forEach(function (s) {
+        var matchId = selected.id && s.customerId && String(s.customerId) === String(selected.id);
+        var matchName = !s.customerId && namesMatch(s.customerName, selected.name);
+        if (!matchId && !matchName) return;
+        var saleReturns = (state.salesReturns || []).filter(function (r) {
+          return r.invoiceId === s.id || (s.invoiceNo && r.invoiceNo === s.invoiceNo);
+        });
+        var returnedTotal = saleReturns.reduce(function (a, r) { return a + (Number(r.amount) || 0); }, 0);
+        var originalTotal = (Number(s.total) || 0) + returnedTotal;
+        var ref = s.invoiceNo || String(s.id || "").slice(0, 8);
+        rows.push({
+          date: s.date,
+          type: "Invoice",
+          ref: ref,
+          detail: itemDetail(s.items),
+          debit: originalTotal,
+          credit: 0,
+        });
+        pushPaymentRows(rows, {
+          history: s.paymentHistory,
+          paidTotal: Number(s.paid) || 0,
+          ref: ref,
+          date: s.date,
+          verb: "Payment received",
         });
       });
-      /* Sales returns - show as credit (reduces what customer owes) */
       (state.salesReturns || []).forEach(function (r) {
-        if (r.customerId !== selected.id && r.customerName !== selected.name && r.customer !== selected.name) return;
-        rows.push({ date: r.date, type: "Return", ref: r.invoiceNo || r.id.slice(0, 8), detail: (r.productName || "Return") + (r.reason ? " - " + r.reason : ""), debit: 0, credit: r.amount || 0, paid: 0, payStatus: "" });
+        var matchId = selected.id && r.customerId && String(r.customerId) === String(selected.id);
+        var matchName = !r.customerId && namesMatch(r.customerName || r.customer, selected.name);
+        if (!matchId && !matchName) return;
+        /* Skip orphan return if parent sale is voided */
+        var parent = (state.sales || []).find(function (s) {
+          return s && (s.id === r.invoiceId || (s.invoiceNo && s.invoiceNo === r.invoiceNo));
+        });
+        if (parent && isVoidedTxn(parent)) return;
+        rows.push({
+          date: r.date,
+          type: "Return",
+          ref: r.invoiceNo || r.returnId || String(r.id || "").slice(0, 8),
+          detail: (r.productName || "Sales return") + (r.reason ? (" — " + r.reason) : ""),
+          debit: 0,
+          credit: Number(r.amount) || 0,
+        });
+      });
+      (S.get("tc3_manualReceivables", []) || []).forEach(function (mr) {
+        if (!mr) return;
+        var matchId = selected.id && mr.customerId && String(mr.customerId) === String(selected.id);
+        var matchName = namesMatch(mr.person || mr.customer || mr.customerName, selected.name);
+        if (!matchId && !matchName) return;
+        var ref = mr.ref || mr.note || (mr._isOpening ? "Opening" : String(mr.id || "").slice(0, 8));
+        rows.push({
+          date: mr.date || mr.dueDate || "",
+          type: mr._isOpening ? "Opening" : "Charge",
+          ref: ref,
+          detail: mr.note || (mr._isOpening ? "Opening balance" : "Manual receivable"),
+          debit: Number(mr.amount) || 0,
+          credit: 0,
+        });
+        pushPaymentRows(rows, {
+          history: mr.paymentHistory,
+          paidTotal: (mr.paymentHistory || []).reduce(function (a, p) { return a + (Number(p.amount) || 0); }, 0),
+          ref: ref,
+          date: mr.date || mr.dueDate || "",
+          verb: "Payment received",
+        });
       });
     } else {
-      /* Purchases */
-      (state.purchases || []).forEach(function (p) {
-        if (p.supplier !== selected.name && p.supplierId !== selected.id) return;
-        rows.push({ date: p.date, type: "Purchase", ref: p.invoiceNo || p.id.slice(0, 8), detail: (p.items || p.stock || []).map(function (i) { return i.name + (i.qty > 1 ? " x" + i.qty : ""); }).join(", ") || "-", debit: p.total, credit: 0, paid: p.paid || 0, payStatus: p.payStatus });
-        (p.paymentHistory || []).forEach(function (ph) {
-          if (ph.amount > 0) {
-            rows.push({ date: ph.date || p.date, type: "Payment", ref: p.invoiceNo || p.id.slice(0, 8), detail: "Payment made" + (ph.method ? " - " + ph.method : ""), debit: 0, credit: ph.amount, paid: 0, payStatus: "" });
-          }
+      activePurchases(state.purchases || []).forEach(function (p) {
+        var matchId = selected.id && p.supplierId && String(p.supplierId) === String(selected.id);
+        var matchName = !p.supplierId && namesMatch(p.supplier, selected.name);
+        if (!matchId && !matchName) return;
+        var purReturns = (state.purchaseReturns || []).filter(function (r) {
+          return r.purchaseId === p.id || (p.invoiceNo && r.purchaseNo === p.invoiceNo);
+        });
+        var returnedTotal = purReturns.reduce(function (a, r) { return a + (Number(r.amount) || 0); }, 0);
+        /* Show original purchase invoice value; returns appear as separate credit lines */
+        var originalTotal = (Number(p.total) || 0) + returnedTotal;
+        var ref = p.invoiceNo || String(p.id || "").slice(0, 8);
+        rows.push({
+          date: p.date,
+          type: "Purchase",
+          ref: ref,
+          detail: itemDetail(p.items || p.stock),
+          debit: originalTotal,
+          credit: 0,
+        });
+        pushPaymentRows(rows, {
+          history: p.paymentHistory,
+          paidTotal: Number(p.paidAmount != null ? p.paidAmount : p.paid) || 0,
+          ref: ref,
+          date: p.date,
+          verb: "Payment made",
+        });
+      });
+      (state.purchaseReturns || []).forEach(function (r) {
+        if (!namesMatch(r.supplier, selected.name)) return;
+        var parent = (state.purchases || []).find(function (p) {
+          return p && (p.id === r.purchaseId || (p.invoiceNo && p.invoiceNo === r.purchaseNo));
+        });
+        if (parent && isVoidedTxn(parent)) return;
+        rows.push({
+          date: r.date,
+          type: "Return",
+          ref: r.purchaseNo || r.returnId || String(r.id || "").slice(0, 8),
+          detail: (r.productName || "Purchase return") + (r.reason ? (" — " + r.reason) : ""),
+          debit: 0,
+          credit: Number(r.amount) || 0,
+        });
+      });
+      (S.get("tc3_manualPayables", []) || []).forEach(function (mp) {
+        if (!mp) return;
+        var matchId = selected.id && mp.supplierId && String(mp.supplierId) === String(selected.id);
+        var matchName = namesMatch(mp.source || mp.supplier || mp.person, selected.name);
+        if (!matchId && !matchName) return;
+        var ref = mp.ref || mp.note || (mp._isOpening ? "Opening" : String(mp.id || "").slice(0, 8));
+        rows.push({
+          date: mp.date || mp.dueDate || "",
+          type: mp._isOpening ? "Opening" : "Charge",
+          ref: ref,
+          detail: mp.note || (mp._isOpening ? "Opening balance" : "Manual payable"),
+          debit: Number(mp.amount) || 0,
+          credit: 0,
+        });
+        pushPaymentRows(rows, {
+          history: mp.paymentHistory,
+          paidTotal: (mp.paymentHistory || []).reduce(function (a, p) { return a + (Number(p.amount) || 0); }, 0),
+          ref: ref,
+          date: mp.date || mp.dueDate || "",
+          verb: "Payment made",
         });
       });
     }
   }
 
-  /* Sort by date ascending */
-  rows.sort(function (a, b) { return (a.date || "").localeCompare(b.date || ""); });
-
-  /* Date filter */
-  var filtered = rows.filter(function (r) {
-    if (dateFrom && r.date < dateFrom) return false;
-    if (dateTo && r.date > dateTo) return false;
-    return true;
+  rows.sort(function (a, b) {
+    var ad = a.date || "";
+    var bd = b.date || "";
+    if (ad !== bd) return ad.localeCompare(bd);
+    var order = { Opening: 0, Invoice: 1, Purchase: 1, Charge: 2, Return: 3, Payment: 4 };
+    return (order[a.type] != null ? order[a.type] : 5) - (order[b.type] != null ? order[b.type] : 5);
   });
 
-  /* Running balance */
+  /* Date filter with carried-forward opening balance */
+  var openingBf = 0;
+  if (dateFrom) {
+    rows.forEach(function (r) {
+      if ((r.date || "") < dateFrom) openingBf += (r.debit || 0) - (r.credit || 0);
+    });
+  }
+  var filtered = rows.filter(function (r) {
+    if (dateFrom && (r.date || "") < dateFrom) return false;
+    if (dateTo && (r.date || "") > dateTo) return false;
+    return true;
+  });
+  if (dateFrom && Math.abs(openingBf) > 0.005) {
+    filtered = [{
+      date: dateFrom,
+      type: "Opening",
+      ref: "BF",
+      detail: "Balance brought forward",
+      debit: openingBf > 0 ? openingBf : 0,
+      credit: openingBf < 0 ? Math.abs(openingBf) : 0,
+    }].concat(filtered);
+  }
+
   var running = 0;
   var withBalance = filtered.map(function (r) {
-    running += (r.debit - r.credit);
+    running += (r.debit || 0) - (r.credit || 0);
     return Object.assign({}, r, { runningBalance: running });
   });
 
-  var totalDebit = filtered.reduce(function (a, r) { return a + r.debit; }, 0);
-  var totalCredit = filtered.reduce(function (a, r) { return a + r.credit; }, 0);
+  var totalDebit = filtered.reduce(function (a, r) { return a + (r.debit || 0); }, 0);
+  var totalCredit = filtered.reduce(function (a, r) { return a + (r.credit || 0); }, 0);
   var netBalance = totalDebit - totalCredit;
 
   /* -- Print statement -- */
@@ -5009,7 +5667,7 @@ var Statements = function (props) {
     html += "</div><div class='bal-box'><div class='bal-label'>Outstanding Balance</div><div class='bal-val'>" + cur + " " + fmtNum(Math.abs(netBalance)) + (netBalance <= 0 ? " CR" : "") + "</div></div></div>";
     html += "<table><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Details</th><th class='r'>Debit (" + cur + ")</th><th class='r'>Credit (" + cur + ")</th><th class='r'>Balance (" + cur + ")</th></tr></thead><tbody>";
     withBalance.forEach(function (r) {
-      var typeClass = r.type === "Invoice" || r.type === "Purchase" ? "type-invoice" : r.type === "Payment" ? "type-payment" : "type-return";
+      var typeClass = r.type === "Invoice" || r.type === "Purchase" || r.type === "Charge" || r.type === "Opening" ? "type-invoice" : r.type === "Payment" ? "type-payment" : "type-return";
       html += "<tr><td>" + escapeHtml(fmtDate(r.date)) + "</td>";
       html += "<td><span class='" + typeClass + "'>" + escapeHtml(r.type) + "</span></td>";
       html += "<td class='bold'>" + escapeHtml(r.ref) + "</td>";
@@ -5037,7 +5695,7 @@ var Statements = function (props) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <div style={{ fontSize: 22, fontWeight: 900, color: C.text, letterSpacing: "-0.03em" }}>Account Statements</div>
-          <div style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Full transaction history for customers and suppliers</div>
+          <div style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Accurate ledger for customers and suppliers — invoices, purchases, payments, returns, and opening balances</div>
         </div>
         {selected && withBalance.length > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
@@ -5144,11 +5802,17 @@ var Statements = function (props) {
               </thead>
               <tbody>
                 {withBalance.map(function (r, i) {
-                  var typeColor = r.type === "Invoice" || r.type === "Purchase" ? C.accent : r.type === "Payment" ? C.green : "#d97706";
-                  var typeBg = r.type === "Invoice" || r.type === "Purchase" ? C.accentSoft : r.type === "Payment" ? "#dcfce7" : "#fef9c3";
+                  var typeColor = r.type === "Invoice" || r.type === "Purchase" || r.type === "Charge" ? C.accent
+                    : r.type === "Payment" ? C.green
+                    : r.type === "Opening" ? "#6366f1"
+                    : "#d97706";
+                  var typeBg = r.type === "Invoice" || r.type === "Purchase" || r.type === "Charge" ? C.accentSoft
+                    : r.type === "Payment" ? "#dcfce7"
+                    : r.type === "Opening" ? "#eef2ff"
+                    : "#fef9c3";
                   return (
                     <tr key={i} style={{ borderBottom: "1px solid " + C.border, background: i % 2 === 0 ? "#fff" : "#fafbff" }}>
-                      <td style={{ padding: "10px 12px", color: C.textMd, fontSize: 12, whiteSpace: "nowrap" }}>{fmtDate(r.date)}</td>
+                      <td style={{ padding: "10px 12px", color: C.textMd, fontSize: 12, whiteSpace: "nowrap" }}>{r.date ? fmtDate(r.date) : "—"}</td>
                       <td style={{ padding: "10px 12px" }}>
                         <span style={{ display: "inline-block", padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: typeBg, color: typeColor }}>{r.type}</span>
                       </td>
@@ -6096,7 +6760,20 @@ var LoginScreen = function (props) {
     <React.Fragment>
       <style>{`
         .tc-login-grid { display: grid; grid-template-columns: minmax(260px, 0.92fr) minmax(300px, 1.08fr); }
-        .tc-login-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+        .tc-login-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+        .tc-login-fields-row > * { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+        .tc-login-fields-row label {
+          font-size: 11px !important; font-weight: 600 !important; color: #64748b !important;
+          text-transform: uppercase; letter-spacing: 0.07em; margin: 0 !important; line-height: 1.2; min-height: 14px;
+        }
+        .tc-login-fields-row input,
+        .tc-login-fields-row select {
+          width: 100% !important; box-sizing: border-box !important; height: 40px !important;
+          border: 1.5px solid #e2e8f0 !important; border-radius: 8px !important;
+          padding: 9px 13px !important; font-size: 13px !important; font-weight: 400 !important;
+          color: #0f172a !important; background: #fff !important; outline: none; font-family: inherit;
+        }
+        .tc-login-fields-row select { cursor: pointer; }
         .tc-login-unlock-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
         .tc-login-unlock-label { font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 8px; line-height: 1.2; min-height: 12px; }
         .tc-login-unlock-box { min-height: 58px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 12px; }
@@ -6241,16 +6918,11 @@ var LoginScreen = function (props) {
                 <div style={{ fontSize: 17, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em" }}>Sign in</div>
                 <div className="tc-login-fields-row">
                   <div>
-                    <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>User</label>
+                    <label>User</label>
                     <select
                       value={username}
                       onChange={function (e) { setUsername(e.target.value); setErr(""); }}
                       onKeyDown={handleKeyDown}
-                      style={{
-                        width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 10,
-                        padding: "11px 12px", fontSize: 14, fontWeight: 600, color: C.text, background: "#fff",
-                        outline: "none", fontFamily: "inherit", cursor: "pointer",
-                      }}
                     >
                       {(loginUsers.length ? loginUsers : [{ username: "admin", name: "Admin", role: ROLE_ADMIN }]).map(function (u) {
                         var un = u.username || "admin";
@@ -7359,14 +8031,7 @@ function App(props) {
     setSettingsPwModal(true);
   };
   var verifySettingsUnlockPassword = function (input) {
-    if (isNetworkClient) {
-      var st = S.get("tc3_settings", {}) || {};
-      if (st.mainAdminPassHash) return pwMatchesAsync(input, st.mainAdminPassHash);
-      return Promise.resolve(false);
-    }
-    var stored = S.get("tc3_apppass", "");
-    if (!stored) return Promise.resolve(false);
-    return pwMatchesAsync(input, stored);
+    return verifyAdminPassword(input);
   };
   var settingsUnlockIsStaff = normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role) !== ROLE_ADMIN;
   var submitSettingsPassword = function () {
@@ -8002,7 +8667,7 @@ function App(props) {
                   Logged in as: <span style={{ color: C.text, fontWeight: 800 }}>{posHeaderRestaurantLoggedIn}</span>
                 </div>
               )}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end", flexDirection: "row-reverse" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end", flexDirection: "row" }}>
               {dbHealthError && isNetworkServer && (
                 <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fde8ed", border: "1px solid #f9a8ba", borderRadius: 8, padding: "5px 12px", fontSize: 11, color: "#9b1c34" }}>
                   <span>Server database issue - {dbHealthError}. Please restore from backup.</span>
@@ -8043,9 +8708,15 @@ function App(props) {
                 ];
                 return (
                   <React.Fragment>
-                    <time dateTime={today()} style={{ fontSize: 12, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.01em", whiteSpace: "nowrap", padding: "2px 0" }}>
-                      {fmtDateFull(today())}
-                    </time>
+                    <HeaderKeysHint pageId={active} />
+                    <HeaderMetaChip
+                      parts={metaParts}
+                      maxWidth={360}
+                      title={modeLabel}
+                    />
+                    {isNetworkMode ? (
+                      <HeaderNetDot dot={netUi.dot} label={netUi.label} title={netUi.title} />
+                    ) : null}
                     <button
                       onClick={function () {
                         showConfirm("Switch user now?\n\nAny saved data remains safe. You will return to the login screen.", function () {
@@ -8059,14 +8730,9 @@ function App(props) {
                     >
                       Switch user
                     </button>
-                    {isNetworkMode ? (
-                      <HeaderNetDot dot={netUi.dot} label={netUi.label} title={netUi.title} />
-                    ) : null}
-                    <HeaderMetaChip
-                      parts={metaParts}
-                      maxWidth={360}
-                      title={modeLabel}
-                    />
+                    <time dateTime={today()} style={{ fontSize: 12, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.01em", whiteSpace: "nowrap", padding: "2px 0" }}>
+                      {fmtDateFull(today())}
+                    </time>
                   </React.Fragment>
                 );
               })()}
@@ -8144,6 +8810,7 @@ function App(props) {
               updateCurrencySymbol={updateCurrencySymbol}
               _idbCache={_idbCache}
               _idbWrite={_idbWrite}
+              wipeAllDataForReset={wipeAllErpDataForReset}
               applyBackupRestore={function (data) {
                 return applyBackupRestoreData(data).then(function () {
                   var loaded = loadState();
@@ -8262,6 +8929,7 @@ function App(props) {
               getTotalSupplierPayable={getTotalSupplierPayable}
               getSupplierPayableFromPurchases={getSupplierPayableFromPurchases}
               getTotalReceivableDerived={getTotalReceivableDerived}
+              getCustomerOutstandingBalance={getCustomerOutstandingBalance}
               getTotalPayableDerived={getTotalPayableDerived}
               getCashBalances={getCashBalances}
               buildCloudSyncPayload={buildCloudSyncPayload}
@@ -8406,6 +9074,7 @@ function App(props) {
                 return r;
               }}
               pwMatchesAsync={pwMatchesAsync}
+              verifyAdminPassword={verifyAdminPassword}
               hashPw={hashPw}
               setLoginPassword={setLoginPassword}
               isAdminMode={uiAdminMode}

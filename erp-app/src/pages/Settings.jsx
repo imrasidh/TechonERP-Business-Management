@@ -84,6 +84,31 @@ var Settings = function (props) {
   var _idbCache = props._idbCache;
   var _idbWrite = props._idbWrite;
   var applyBackupRestore = typeof props.applyBackupRestore === "function" ? props.applyBackupRestore : null;
+  var wipeAllDataForReset = typeof props.wipeAllDataForReset === "function" ? props.wipeAllDataForReset : null;
+  var verifyAdminPassword = typeof props.verifyAdminPassword === "function" ? props.verifyAdminPassword : null;
+  var confirmAdminPassword = function (input) {
+    var pw = String(input || "").trim();
+    if (!pw) return Promise.resolve(false);
+    var tryUsers = [];
+    if (currentUser && currentUser.passwordHash) tryUsers.push(currentUser.passwordHash);
+    var chain = Promise.resolve(false);
+    if (verifyAdminPassword) {
+      chain = verifyAdminPassword(pw);
+    } else {
+      chain = pwMatchesAsync(pw, S.get("tc3_apppass", ""));
+    }
+    return chain.then(function (ok) {
+      if (ok) return true;
+      var tryNext = function (i) {
+        if (i >= tryUsers.length) return Promise.resolve(false);
+        return pwMatchesAsync(pw, tryUsers[i]).then(function (hit) {
+          if (hit) return true;
+          return tryNext(i + 1);
+        });
+      };
+      return tryNext(0);
+    });
+  };
   var AboutTab = props.AboutTab;
   var InvoiceThermal = props.InvoiceThermal;
   var InvoiceA4 = props.InvoiceA4;
@@ -459,14 +484,35 @@ var Settings = function (props) {
   };
 
   var doResetData = function () {
-    var storedPw = S.get("tc3_apppass", "");
-    pwMatchesAsync(resetPw, storedPw).then(function (ok) {
-      if (!ok) { setResetMsg({ type: "error", text: "Incorrect password. Reset cancelled." }); return; }
+    var pw = String(resetPw || "").trim();
+    if (!pw) {
+      setResetMsg({ type: "error", text: "Enter your admin password to confirm." });
+      return;
+    }
+    setResetMsg({ type: "success", text: "Checking password…" });
+    confirmAdminPassword(pw).then(function (ok) {
+      if (!ok) {
+        setResetMsg({
+          type: "error",
+          text: "Incorrect password. Use the same password you use to log in (or the password that opened Settings). If you recently changed it, try that new password.",
+        });
+        return;
+      }
       doResetDataCore();
+    }).catch(function () {
+      setResetMsg({ type: "error", text: "Password check failed. Please restart the app and try again." });
     });
   };
 
   var doResetDataCore = function () {
+    if (isNetworkClient) {
+      setResetMsg({ type: "error", text: "Reset All Data must be run on the Main PC (server), not on a counter terminal. After the main PC reset, counter PCs will sync the fresh empty data." });
+      return;
+    }
+    if (!wipeAllDataForReset) {
+      setResetMsg({ type: "error", text: "Reset is unavailable in this build. Please update the app." });
+      return;
+    }
 
     /* FIX #7: Download safety backup FIRST and confirm it succeeded before wiping */
     var backupOk = false;
@@ -491,30 +537,39 @@ var Settings = function (props) {
       return;
     }
 
-    setResetMsg({ type: "success", text: "✅ Safety backup downloaded. Wiping data..." });
+    setResetMsg({ type: "success", text: "✅ Safety backup downloaded. Wiping all data..." });
 
-    /* Small delay so user sees the progress message */
-    setTimeout(function () {
-      /* Nuclear wipe — clear IDB cache and IndexedDB for all tc3_ keys */
-      var allCacheKeys = Object.keys(_idbCache).filter(function (k) { return k.indexOf("tc3_") === 0; });
-      allCacheKeys.forEach(function (k) { delete _idbCache[k]; _idbWrite(k, undefined); });
-      /* Also clear localStorage for backward compatibility */
-      for (var ki = localStorage.length - 1; ki >= 0; ki--) {
-        var kk = localStorage.key(ki);
-        if (kk && kk.indexOf("tc3_") === 0) localStorage.removeItem(kk);
+    var resetFinished = false;
+    var reloadSoon = function (msg) {
+      if (resetFinished) return;
+      resetFinished = true;
+      setResetMsg({ type: "success", text: msg || "✅ System reset complete. Reloading..." });
+      setTimeout(function () {
+        try { window.location.reload(); } catch (eRel) {
+          try { window.location.href = window.location.href; } catch (e2) {}
+        }
+      }, 700);
+    };
+
+    wipeAllDataForReset({
+      pushServer: isNetworkServer,
+      authConfig: systemConfig,
+    }).then(function (res) {
+      if (res && res.ok === false) {
+        /* Local wipe still happened — reload so user is not stuck, but warn about server. */
+        reloadSoon("✅ Local data cleared. Server wipe may be incomplete — reload now. If old data returns, clear MySQL / re-upload empty data from Settings → Network.");
+        return;
       }
-      /* Write empty arrays for all data keys so loadState never falls back to SEED */
-      var emptyData = ["tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_labelDesigns"];
-      emptyData.forEach(function (k) { S.set(k, []); });
-      /* Write blank settings — no shop name, no logo, no warranty, no preset values */
-      var blankSettings = { shopName: "", address: "", phone: "", phone2: "", whatsapp: "", email: "", website: "", brn: "", footer: "", capitalInvested: 0, warrantyEnabled: false, warrantyText: "", invoiceAccentColor: "#0d47a1", invoiceDefaultSize: "a4", invoiceThermalSize: "thermal80", invoiceLogo: "", invoiceLogoSize: 80, barcodeWidth: 60, barcodeHeight: 30, barcodeFontSize: 9, barcodeFontSize2: 11, barcodeBarWidth: "1.2", barcodeShowCost: true, barcodeShowPrice: true, barcodeShowShopName: true, barcodeUseProductId: false, labelWidth: "60mm", labelHeight: "auto", barcodeWidthMm: "100%", labelCopies: 1, labelBorder: "solid", labelShopColor: "#1e3a5f", labelPriceColor: "#000000", labelBgColor: "#ffffff", labelTextAlign: "center", labelFooterText: "", labelShowBarcode: true, labelShowProductCode: true, costCodeWord: "STARLIGHKZ", shopCountry: "", defaultInvoiceLang: "en", optionalInvoiceLangs: ["ta", "si"], customInvoiceLangs: [], taxEnabled: false, taxMode: "exclusive", selectedTaxes: [] };
-      S.set("tc3_settings", blankSettings);
-      /* Remove password and admin name — app will show first-run setup on reload */
-      S.set("tc3_apppass", "");
-      S.set("tc3_admin_name", "");
-      setResetMsg({ type: "success", text: "✅ System reset complete. Reloading in 2 seconds..." });
-      setTimeout(function () { window.location.reload(); }, 2000);
-    }, 600);
+      reloadSoon("✅ System reset complete. Reloading...");
+    }).catch(function (err) {
+      reloadSoon("✅ Reset finished with a warning (" + (err && err.message ? err.message : "error") + "). Reloading...");
+    });
+
+    /* Absolute safety: never leave the UI stuck on "Wiping..." forever. */
+    setTimeout(function () {
+      if (resetFinished) return;
+      reloadSoon("✅ Reset taking too long — forcing reload now...");
+    }, 15000);
   };
 
   var doRestore = function (e) {
@@ -1227,7 +1282,8 @@ var Settings = function (props) {
     invoiceNo: "INV-20250101-0001", date: today(),
     customerName: "Sample Customer", customerPhone: "0771234567",
     items: [{ name: "Laptop HP 15s", qty: 1, price: 85000 }, { name: "Laptop Bag", qty: 1, price: 3500 }, { name: "USB Mouse", qty: 2, price: 1200 }],
-    subTotal: 90900, discount: 900, total: 90000, paid: 50000, balance: 40000, payStatus: "Partial", includeWarranty: true
+    subTotal: 90900, discount: 900, total: 90000, paid: 50000, balance: 40000, payStatus: "Partial", includeWarranty: true,
+    previousBalance: 0
   };
 
   var embWiz = props.embeddedWizard === "shop_limited" || props.embeddedWizard === "langcurrency";
@@ -1346,7 +1402,7 @@ var Settings = function (props) {
       {showSettingsTabs && (
       <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border, marginBottom: 16, flexWrap: "wrap" }}>
         {TABS.map(function (t) {
-          var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", pos: "🛒", about: "ℹ" };
+          var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", pos: "🛒", about: "ℹ", restaurantsetup: "🍽", categories: "📁" };
           return <button key={t[0]} onClick={function () { setStab(t[0]); }} style={{ padding: "10px 20px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (stab === t[0] ? C.border : "transparent"), borderBottom: stab === t[0] ? "2px solid #fff" : "none", background: stab === t[0] ? "#fff" : "transparent", color: stab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: stab === t[0] ? -2 : 0 }}>{icons[t[0]]} {t[1]}</button>;
         })}
       </div>

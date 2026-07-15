@@ -129,11 +129,21 @@ var Cheques = React.memo(function (props) {
             });
             return Object.assign({}, s, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: updPh });
           });
-          /* FIX 9 (DeepSeek): Update customer credit when incoming cheque clears */
-          if (ch.customerId) {
+          /* Update customer credit: use cheque customerId, else linked sale.customerId, else name match */
+          var saleForCr = ns.find(function (s) { return s.id === ch.saleId; }) || state.sales.find(function (s) { return s.id === ch.saleId; });
+          var creditTargetId = ch.customerId || (saleForCr && saleForCr.customerId) || "";
+          if (creditTargetId) {
             nc = nc.map(function (c) {
-              return c.id === ch.customerId ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - ch.amount) }) : c;
+              return c.id === creditTargetId ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - ch.amount) }) : c;
             });
+          } else if (saleForCr && saleForCr.customerName) {
+            var nameKey = String(saleForCr.customerName).trim().toLowerCase();
+            var nameMatches = nc.filter(function (c) { return String(c.name || "").trim().toLowerCase() === nameKey; });
+            if (nameMatches.length === 1) {
+              nc = nc.map(function (c) {
+                return c.id === nameMatches[0].id ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - ch.amount) }) : c;
+              });
+            }
           }
         }
         /* FIX 8 (DeepSeek): Update manual receivable when cheque clears */

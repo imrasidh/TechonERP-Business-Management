@@ -917,7 +917,8 @@ var Purchases = React.memo(function (props) {
     }
     var purAmtErr = validateTxnAmounts("Purchase invoice", invoiceTotalSave, effPaid, effBal);
     if (purAmtErr) { showAlert("X " + purAmtErr); return; }
-    var purObj = { id: uid(), supplier: f.supplier, invoiceNo: purInvNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave, taxMode: taxModeSave, createdAt: new Date().toISOString() };
+    var suppRow = (state.suppliers || []).find(function (s) { return s.name === f.supplier; });
+    var purObj = { id: uid(), supplier: f.supplier, supplierId: suppRow ? suppRow.id : "", invoiceNo: purInvNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave, taxMode: taxModeSave, createdAt: new Date().toISOString() };
     var np = state.products.slice();
     normalizedSaveItems.forEach(function (it) {
       var idx = np.findIndex(function (p) { return p.id === it.id; });

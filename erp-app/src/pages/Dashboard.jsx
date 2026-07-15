@@ -89,7 +89,7 @@ var Dashboard = function (props) {
   var currentUser = props.currentUser || null;
   var t = today();
   var liveSales = activeSales(state.sales);
-  var todaySales = round2(liveSales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.total; }, 0));
+  var todaySales = round2(liveSales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0));
   var todayInvoicedCost = round2(liveSales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); }, 0));
   var todayIngredientCost = round2(sumRawMaterialKitchenCostInRange(state, t, t));
   var todayCost = round2(todayInvoicedCost + todayIngredientCost);
