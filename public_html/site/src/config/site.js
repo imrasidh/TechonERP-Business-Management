@@ -1,3 +1,5 @@
+import { FALLBACK_DOWNLOAD_URL, VERSION_JSON_URL } from "./releaseManifest.jsx";
+
 /** Site-wide links and contact (single source of truth) */
 export const site = {
   name: "TechonERP",
@@ -12,4 +14,7 @@ export const site = {
   whatsapp: "https://wa.me/94701234678",
   whatsappPrefill: (text) =>
     `https://wa.me/94701234678?text=${encodeURIComponent(text)}`,
+  /** Latest installer — resolved live from GitHub version.json (see releaseManifest.js) */
+  versionJsonUrl: VERSION_JSON_URL,
+  fallbackDownloadUrl: FALLBACK_DOWNLOAD_URL,
 };

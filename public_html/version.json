@@ -1,5 +1,7 @@
 {
-  "version": "2.0.0",
-  "url": "https://techon.lk/downloads/latest.zip",
-  "notes": "Bug fixes and improvements"
+  "version": "2.0.2",
+  "url": "https://github.com/imrasidh/TechonERP-releases/releases/download/v2.0.2/TechonERP-2.0.2.zip",
+  "download": "https://github.com/imrasidh/TechonERP-releases/releases/download/v2.0.2/TechonERP-2.0.2.zip",
+  "notes": "Bug fixes and improvements",
+  "publishedAt": "2026-07-15T07:47:00.000Z"
 }

@@ -4970,10 +4970,18 @@ var AboutTab = function (props) {
       : Promise.resolve(currentVersion);
     versionPromise.then(function (cv) {
       currentVersion = cv || appVersion;
-      return fetch("https://techon.lk/version.json", { cache: "no-store" });
-    }).then(function (res) {
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      return res.json();
+      var manifestUrls = [
+        "https://raw.githubusercontent.com/imrasidh/TechonERP-releases/main/version.json?t=" + Date.now(),
+        "https://techon.lk/version.json?t=" + Date.now(),
+      ];
+      var loadManifest = function (i) {
+        if (i >= manifestUrls.length) return Promise.reject(new Error("manifest unavailable"));
+        return fetch(manifestUrls[i], { cache: "no-store" }).then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.json();
+        }).catch(function () { return loadManifest(i + 1); });
+      };
+      return loadManifest(0);
     }).then(function (data) {
       var latest = data.version || "0.0.0";
       var parseSemver = function (v) { return String(v).split(".").map(function (n) { return parseInt(n) || 0; }); };
