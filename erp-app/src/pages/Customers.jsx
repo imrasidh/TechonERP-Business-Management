@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import AddPartyModal from "../components/AddPartyModal.jsx";
+import { createAndPersistCustomer } from "../utils/customerCreate.js";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
 
 var Customers = function (props) {
@@ -12,14 +14,11 @@ var Customers = function (props) {
   var tcTrialGuard = props.tcTrialGuard;
   var uid = props.uid;
   var S = props.S;
-  var today = props.today;
   var usePager = props.usePager;
   var getCurrencySymbol = props.getCurrencySymbol;
   var fmtNum = props.fmtNum;
   var fmtDate = props.fmtDate;
   var C = props.C;
-  var Card = props.Card;
-  var CardTitle = props.CardTitle;
   var Btn = props.Btn;
   var Input = props.Input;
   var TH = props.TH;
@@ -29,9 +28,9 @@ var Customers = function (props) {
   var Modal = props.Modal;
   var Badge = props.Badge;
   var getCustomerOutstandingBalance = props.getCustomerOutstandingBalance;
+  var embedded = props.embedded;
 
   var [show, setShow] = useState(false);
-  var [f, setF] = useState({ name: "", phone: "", address: "" });
   var [sel, setSel] = useState(null);
   var [editCust, setEditCust] = useState(null);
   var [custSearch, setCustSearch] = useState("");
@@ -41,24 +40,17 @@ var Customers = function (props) {
   });
   var custDupNameKeys = getDuplicateNormalizedNameKeys(state.customers);
   var custPager = usePager(filteredCusts, LIST_PAGE_SIZE);
-  var saveNew = function () {
-    if (!f.name) return;
-    if (f.phone && state.customers.find(function (c) { return c.phone === f.phone; })) {
-      showConfirm("A customer with phone \"" + f.phone + "\" already exists. Add anyway?", function () {
-        var c = { id: uid(), name: f.name, phone: f.phone || "", address: f.address || "", credit: 0, totalSpent: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-        if (!tcTrialGuard(state.customers, 'customers')) return;
-        var nc = state.customers.concat([c]);
-        S.set("tc3_customers", nc);
-        setState(function (st) { return Object.assign({}, st, { customers: nc }); });
-        setF({ name: "", phone: "", address: "" }); setShow(false);
-      });
-      return;
-    }
-    var c = { id: uid(), name: f.name, phone: f.phone || "", address: f.address || "", credit: 0, totalSpent: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    var nc = state.customers.concat([c]);
-    S.set("tc3_customers", nc);
-    setState(function (st) { return Object.assign({}, st, { customers: nc }); });
-    setShow(false); setF({ name: "", phone: "", address: "" });
+  var handleCreateCustomer = function (draft) {
+    var result = createAndPersistCustomer({
+      customers: state.customers,
+      setState: setState,
+      S: S,
+      uid: uid,
+      tcTrialGuard: tcTrialGuard,
+      draft: draft,
+    });
+    if (!result.ok) return null;
+    return result.customer;
   };
 
   var saveEditCust = function () {
@@ -90,70 +82,147 @@ var Customers = function (props) {
     });
   };
 
-  return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Card>
-        <CardTitle sub={filteredCusts.length.toLocaleString() + " of " + state.customers.length.toLocaleString() + " customers"} action={<Btn sm col="blue" onClick={function () { setShow(true); }}>+ Add Customer</Btn>}>Customers</CardTitle>
-        <Input value={custSearch} onChange={function (e) { setCustSearch(e.target.value); }} placeholder="Search customers by name, phone, address..." style={{ marginBottom: 10 }} />
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr style={{ background: "#f8fafc" }}><TH>Name</TH><TH>Phone</TH><TH>Address</TH><TH>Credit Balance</TH><TH>Total Spent</TH><TH>History</TH></tr></thead>
+  var panel = (
+    <div className="erp-pty-panel is-customer" style={{ height: "100%" }}>
+      <div className="erp-pty-panel-head">
+        <div className="erp-pty-panel-head-left">
+          <span className="erp-pty-panel-ico" aria-hidden="true">CU</span>
+          <div>
+            <div className="erp-pty-panel-title">Customer register</div>
+            <div className="erp-pty-panel-count">{filteredCusts.length.toLocaleString()} shown · {state.customers.length.toLocaleString()} total</div>
+          </div>
+        </div>
+        <button type="button" className="erp-pty-btn-add" onClick={function () { setShow(true); }}>+ Add Customer</button>
+      </div>
+
+      <div className="erp-pty-toolbar">
+        <div className="erp-pty-search-wrap">
+          <input
+            className="erp-pty-field"
+            value={custSearch}
+            onChange={function (e) { setCustSearch(e.target.value); }}
+            placeholder="Search name, phone, address…"
+            aria-label="Search customers"
+          />
+        </div>
+        {custSearch ? (
+          <button type="button" className="erp-pty-btn-clear" onClick={function () { setCustSearch(""); }}>Clear</button>
+        ) : null}
+      </div>
+
+      <div className="erp-pty-table-wrap">
+        <table className="erp-pty-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Address</th>
+              <th className="num">Credit</th>
+              <th className="num">Spent</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
           <tbody>
-            {custPager.slice.map(function (c, i) {
+            {custPager.slice.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="erp-pty-empty">No customers found</td>
+              </tr>
+            ) : custPager.slice.map(function (c) {
               var dupR = custDupNameKeys[normalizePaymentCustomerName(c.name)];
               var liveCredit = typeof getCustomerOutstandingBalance === "function"
                 ? getCustomerOutstandingBalance(c, state.sales)
                 : (c.credit || 0);
               return (
-                <TR key={c.id} i={i}>
-                  <TD bold>{c.name}{dupR ? <span title="Duplicate name exists"> ⚠️</span> : null}</TD><TD>{c.phone}</TD><TD>{c.address}</TD>
-                  <TD color={liveCredit > 0 ? C.red : C.muted}>{getCurrencySymbol()} {fmtNum(liveCredit)}</TD>
-                  <TD color={C.blue}>{getCurrencySymbol()} {fmtNum(c.totalSpent || 0)}</TD>
+                <tr key={c.id}>
+                  <td>
+                    <span className="erp-pty-name">{c.name}{dupR ? " ⚠" : ""}</span>
+                  </td>
+                  <td className="erp-pty-muted">{c.phone || "—"}</td>
+                  <td className="erp-pty-muted">{c.address || "—"}</td>
+                  <td className="num">
+                    <span className={"erp-pty-money " + (liveCredit > 0 ? "is-debt" : "is-ok")}>
+                      {getCurrencySymbol()} {fmtNum(liveCredit)}
+                    </span>
+                  </td>
+                  <td className="num">
+                    <span className="erp-pty-money is-blue">{getCurrencySymbol()} {fmtNum(c.totalSpent || 0)}</span>
+                  </td>
                   <td style={actBtnCellStyle}>
                     <ActBtnGroup align="left">
-                      <ActBtn tone="blue" title="Edit customer" onClick={function () { setEditCust({ id: c.id, name: c.name, phone: c.phone || "", address: c.address || "" }); }}>✎</ActBtn>
-                      <ActBtn tone="cyan" title="View history" onClick={function () { setSel(c); }}>🧾</ActBtn>
-                      <ActBtn tone="red" title="Delete customer" onClick={function () { deleteCust(c.id); }}>🗑</ActBtn>
+                      <ActBtn tone="blue" title="Edit customer" onClick={function () { setEditCust({ id: c.id, name: c.name, phone: c.phone || "", address: c.address || "" }); }} />
+                      <ActBtn tone="cyan" title="View history" onClick={function () { setSel(c); }} />
+                      <ActBtn tone="red" icon="delete" title="Delete customer" onClick={function () { deleteCust(c.id); }} />
                     </ActBtnGroup>
                   </td>
-                </TR>
+                </tr>
               );
             })}
           </tbody>
         </table>
-        <Pager pager={custPager} />
-      </Card>
-      {show && (
-        <Modal title="Add Customer" onClose={function () { setShow(false); }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Name" value={f.name} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
-            <Input label="Phone" value={f.phone} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); }} />
-            <Input label="Address" value={f.address} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }} />
-            <div style={{ display: "flex", gap: 8 }}><Btn col="blue" onClick={saveNew} disabled={!f.name}>Save</Btn><Btn col="gray" onClick={function () { setShow(false); }}>Cancel</Btn></div>
-          </div>
-        </Modal>
-      )}
+      </div>
+
+      <div className="erp-pty-footer">
+        <div className="erp-pty-footer-meta">
+          <span><strong>{filteredCusts.length}</strong> customers</span>
+        </div>
+        <div className="erp-pty-footer-pager">
+          <Pager pager={custPager} />
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className={embedded ? "" : "erp-page erp-pty-modern"} style={embedded ? { height: "100%", minHeight: 0, display: "flex", flexDirection: "column" } : undefined}>
+      {panel}
+      {show ? (
+        <AddPartyModal
+          open={show}
+          onClose={function () { setShow(false); }}
+          onCreate={handleCreateCustomer}
+          customers={state.customers}
+          context="customers"
+          partyKind="customer"
+          Modal={Modal}
+          Input={Input}
+          Btn={Btn}
+        />
+      ) : null}
       {editCust && (
-        <Modal title={"Edit Customer — " + editCust.name} onClose={function () { setEditCust(null); }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input label="Name" value={editCust.name} onChange={function (e) { setEditCust(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
-            <Input label="Phone" value={editCust.phone} onChange={function (e) { setEditCust(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); }} />
-            <Input label="Address" value={editCust.address} onChange={function (e) { setEditCust(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }} />
-            <div style={{ display: "flex", gap: 8 }}><Btn col="blue" onClick={saveEditCust} disabled={!editCust.name}>Save Changes</Btn><Btn col="gray" onClick={function () { setEditCust(null); }}>Cancel</Btn></div>
+        <Modal
+          title={"Edit Customer — " + editCust.name}
+          onClose={function () { setEditCust(null); }}
+          wide
+          closeRound
+          className="erp-party-modal is-customer"
+        >
+          <div className="erp-party-modal-body">
+            <div className="erp-party-modal-fields">
+              <Input compact label="Name *" value={editCust.name} onChange={function (e) { setEditCust(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
+              <div className="erp-party-modal-meta-row is-two">
+                <Input compact label="Phone" value={editCust.phone || ""} onChange={function (e) { setEditCust(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); }} />
+                <Input compact label="Address" value={editCust.address || ""} onChange={function (e) { setEditCust(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }} />
+              </div>
+            </div>
+            <div className="erp-party-modal-footer">
+              <Btn col="gray" onClick={function () { setEditCust(null); }}>Cancel</Btn>
+              <Btn col="blue" onClick={saveEditCust} disabled={!editCust.name}>Save Changes</Btn>
+            </div>
           </div>
         </Modal>
       )}
       {sel && (
         <Modal title={sel.name + " - Purchase History"} onClose={function () { setSel(null); }} wide>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 14 }}>
-            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px" }}><div style={{ fontSize: 11, color: C.muted }}>TOTAL PURCHASES</div><div style={{ fontWeight: 700, color: C.blue }}>{state.sales.filter(function (s) { return s.customerId === sel.id || s.customerName === sel.name; }).length}</div></div>
-            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px" }}><div style={{ fontSize: 11, color: C.muted }}>TOTAL SPENT</div><div style={{ fontWeight: 700, color: C.blue }}>{getCurrencySymbol()} {fmtNum(sel.totalSpent || 0)}</div></div>
-            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px" }}><div style={{ fontSize: 11, color: C.muted }}>OUTSTANDING</div><div style={{ fontWeight: 700, color: C.red }}>{getCurrencySymbol()} {fmtNum(typeof getCustomerOutstandingBalance === "function" ? getCustomerOutstandingBalance(sel, state.sales) : (sel.credit || 0))}</div></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 8, marginBottom: 12 }}>
+            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "10px 12px" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>TOTAL PURCHASES</div><div style={{ fontWeight: 800, color: C.blue }}>{state.sales.filter(function (s) { return s.customerId === sel.id || s.customerName === sel.name; }).length}</div></div>
+            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "10px 12px" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>TOTAL SPENT</div><div style={{ fontWeight: 800, color: C.blue }}>{getCurrencySymbol()} {fmtNum(sel.totalSpent || 0)}</div></div>
+            <div style={{ background: "#f8fafc", borderRadius: 8, padding: "10px 12px" }}><div style={{ fontSize: 10, color: C.muted, fontWeight: 700 }}>OUTSTANDING</div><div style={{ fontWeight: 800, color: C.red }}>{getCurrencySymbol()} {fmtNum(typeof getCustomerOutstandingBalance === "function" ? getCustomerOutstandingBalance(sel, state.sales) : (sel.credit || 0))}</div></div>
           </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead><tr style={{ background: "#f8fafc" }}><TH>Invoice</TH><TH>Date</TH><TH>Total</TH><TH>Paid</TH><TH>Balance</TH><TH>Status</TH></tr></thead>
             <tbody>
               {state.sales.filter(function (s) { return s.customerId === sel.id || s.customerName === sel.name; }).map(function (s, i) {
-                return <TR key={s.id} i={i}><td style={{ padding: "9px 12px", fontFamily: "monospace", fontSize: 12 }}>{s.invoiceNo || s.id.slice(0, 8)}</td><TD>{fmtDate(s.date)}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD><TD color={C.green}>{getCurrencySymbol()} {fmtNum(s.paid || 0)}</TD><TD color={C.red}>{getCurrencySymbol()} {fmtNum(s.total - (s.paid || 0))}</TD><td style={{ padding: "9px 12px" }}><Badge status={s.payStatus || "Paid"} /></td></TR>;
+                return <TR key={s.id} i={i}><td style={{ padding: "7px 10px", fontFamily: "monospace", fontSize: 11 }}>{s.invoiceNo || s.id.slice(0, 8)}</td><TD>{fmtDate(s.date)}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD><TD color={C.green}>{getCurrencySymbol()} {fmtNum(s.paid || 0)}</TD><TD color={C.red}>{getCurrencySymbol()} {fmtNum(s.total - (s.paid || 0))}</TD><td style={{ padding: "7px 10px" }}><Badge status={s.payStatus || "Paid"} /></td></TR>;
               })}
             </tbody>
           </table>

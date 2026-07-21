@@ -19,6 +19,8 @@ import { runTrialLimitsTests } from "./trial-limits.test.mjs";
 import { runPosFreeItemsTests } from "./pos-free-items.test.mjs";
 import { runProductNameMatchTests } from "./product-name-match.test.mjs";
 import { runVoidInvoiceTests } from "./void-invoice.test.mjs";
+import { runRepairVoidChainTests, runVoidReturnResidualTests, runMediumLowFixTests } from "./repair-void-chain.test.mjs";
+import { runConcurrencyMergeTests } from "./concurrency-merge.test.mjs";
 import { runDemo360Tests } from "./demo-360.test.mjs";
 import { runGlassDimensionsTests } from "./glass-dimensions.test.mjs";
 
@@ -90,6 +92,22 @@ if (process.exitCode) {
   process.exit(process.exitCode);
 }
 runVoidInvoiceTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runRepairVoidChainTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runVoidReturnResidualTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runMediumLowFixTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runConcurrencyMergeTests(ctx);
 if (process.exitCode) {
   process.exit(process.exitCode);
 }

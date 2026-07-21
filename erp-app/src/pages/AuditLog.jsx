@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 
-var AUDIT_PAGE_SIZE = 50;
+import { LIST_PAGE_SIZE } from "../utils/listPage.js";
+
+var AUDIT_PAGE_SIZE = LIST_PAGE_SIZE;
 var AuditLog = function (props) {
   var S = props.S;
   var showConfirm = props.showConfirm;

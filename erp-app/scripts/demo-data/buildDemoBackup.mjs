@@ -134,21 +134,25 @@ var REPAIR_PROBLEMS = [
 /** Max allowed inventory vs GL drift (Rs) for bulk WAC demo data — journal must still balance exactly. */
 export var DEMO_INV_GL_TOLERANCE = 8000;
 
-/** Demo dataset scale — computer shop A–Z coverage */
+/** Demo dataset scale — computer shop A–Z coverage (fresh medium profile) */
 var DEMO_SCALE = {
-  stockProducts: 100,
-  customers: 120,
-  suppliers: 50,
-  purchases: 78,
-  sales: 220,
-  salesReturns: 45,
-  purchaseReturns: 28,
-  manualReceivables: 40,
-  manualPayables: 32,
-  quotations: 60,
-  expenses: 50,
-  repairsTotal: 70,
-  extra3pRepairs: 12,
+  stockProducts: 35,
+  customers: 45,
+  suppliers: 15,
+  purchases: 42,
+  sales: 165,
+  salesReturns: 22,
+  purchaseReturns: 14,
+  manualReceivables: 18,
+  manualPayables: 14,
+  quotations: 28,
+  expenses: 22,
+  repairsTotal: 28,
+  extra3pRepairs: 6,
+  codRecords: 18,
+  codWithdrawals: 8,
+  damageEntries: 5,
+  assets: 4,
 };
 
 export function buildDemoBackup() {
@@ -1131,6 +1135,120 @@ export function buildDemoBackup() {
     });
   }
 
+  /* ── COD records (separate module — not main GL) ── */
+  var codRecords = [];
+  var codStatuses = ["Accepted", "Dispatched", "Delivered", "Returned"];
+  var codSaleTypes = ["COD", "Direct Delivery", "Direct Sale"];
+  for (i = 0; i < DEMO_SCALE.codRecords; i++) {
+    var codSale = sales[rint(rng, 8, sales.length - 1)];
+    var codItem = codSale.items[0] || {};
+    var paidCost = round2((codItem.cost || 0) * (codItem.qty || 1));
+    var freeCost = i % 5 === 0 ? round2(paidCost * 0.15) : 0;
+    var courier = round2(rint(rng, 350, 1200));
+    var sold = codSale.total || 0;
+    var netProfit = round2(sold - paidCost - freeCost - courier);
+    codRecords.push({
+      id: "demo-cod-" + i,
+      saleId: codSale.id,
+      invoiceNo: codSale.invoiceNo || "",
+      saleDate: codSale.date || "",
+      customerName: codSale.customerName || "Walk-in",
+      customerPhone: codSale.customerPhone || "",
+      altPhone: i % 3 === 0 ? "077" + String(3000000 + i) : "",
+      customerAddress: pick(rng, ["Colombo 05", "Kandy", "Gampaha", "Negombo"]),
+      saleType: pick(rng, codSaleTypes),
+      trackingNumber: "TRK" + String(100000 + i),
+      deliveryStatus: codStatuses[i % codStatuses.length],
+      soldTotal: sold,
+      paidItemsCost: paidCost,
+      costTotal: round2(paidCost + freeCost),
+      courierCost: courier,
+      freeItemsCost: freeCost,
+      otherCost: 0,
+      netProfit: netProfit,
+      itemsSummary: (codItem.name || "Item") + " x" + (codItem.qty || 1),
+      createdAt: codSale.createdAt || isoAt(codSale.date, 10, 0),
+      updatedAt: isoAt(dateStr(rint(rng, 0, 20)), 14, rint(rng, 0, 59)),
+    });
+  }
+
+  var codProfitSettings = {
+    totalInvestment: 500000,
+    shareholders: [
+      {
+        id: "demo-sh-1", name: "Shop Owner", investmentAmount: 300000,
+        openingBalanceOwed: 0, userSharePercentage: 60, partnerSharePercentage: 40,
+        isActive: true, sortOrder: 1, createdAt: isoAt(dateStr(60), 9, 0), updatedAt: isoAt(dateStr(5), 9, 0),
+      },
+      {
+        id: "demo-sh-2", name: "Partner Ali", investmentAmount: 200000,
+        openingBalanceOwed: 0, userSharePercentage: 60, partnerSharePercentage: 40,
+        isActive: true, sortOrder: 2, createdAt: isoAt(dateStr(55), 9, 0), updatedAt: isoAt(dateStr(5), 9, 0),
+      },
+    ],
+  };
+
+  var codWithdrawals = [];
+  var codFunds = ["paidItems", "freeItems", "courier", "yourProfit", "profit"];
+  for (i = 0; i < DEMO_SCALE.codWithdrawals; i++) {
+    var fund = codFunds[i % codFunds.length];
+    codWithdrawals.push({
+      id: "demo-cod-wd-" + i,
+      shareholderId: fund === "profit" ? "demo-sh-2" : "",
+      shareholderName: fund === "profit" ? "Partner Ali" : (fund === "yourProfit" ? "Techon Computers" : "Shop"),
+      withdrawFrom: fund,
+      date: dateStr(rint(rng, 0, 25)),
+      amount: round2(rint(rng, 1500, 25000)),
+      note: "Demo COD withdrawal " + (i + 1),
+      balanceAfter: round2(rint(rng, 5000, 80000)),
+      fundBalanceAfter: round2(rint(rng, 3000, 60000)),
+      createdAt: isoAt(dateStr(rint(rng, 0, 25)), 16, rint(rng, 0, 59)),
+      updatedAt: isoAt(dateStr(rint(rng, 0, 25)), 16, rint(rng, 0, 59)),
+    });
+  }
+
+  /* ── Damage / write-off log ── */
+  var damageLog = [];
+  for (i = 0; i < DEMO_SCALE.damageEntries; i++) {
+    var dprod = products.filter(function (p) { return p.type !== "service"; })[rint(rng, 0, STOCK_N - 1)];
+    var dqty = rint(rng, 1, 3);
+    damageLog.push({
+      id: "demo-dmg-" + i,
+      date: dateStr(rint(rng, 5, 40)),
+      isoDateTime: isoAt(dateStr(rint(rng, 5, 40)), 13, rint(rng, 0, 59)),
+      productId: dprod.id,
+      productName: dprod.name,
+      qty: dqty,
+      cost: dprod.cost || 0,
+      reason: pick(rng, ["Damaged in store", "Dead stock write-off", "Demo unit scrap", "Courier damage"]),
+      createdAt: isoAt(dateStr(rint(rng, 5, 40)), 13, 0),
+    });
+    trackStock(dprod.id, -dqty);
+  }
+
+  /* ── Fixed assets ── */
+  var assets = [];
+  var assetTemplates = [
+    { name: "Showroom Display Rack", category: "Furniture", cost: 85000 },
+    { name: "Workshop Bench & Tools", category: "Equipment", cost: 120000 },
+    { name: "Delivery Van (used)", category: "Vehicle", cost: 2800000 },
+    { name: "Server / NAS Backup", category: "IT Equipment", cost: 185000 },
+  ];
+  for (i = 0; i < DEMO_SCALE.assets; i++) {
+    var atpl = assetTemplates[i % assetTemplates.length];
+    assets.push({
+      id: "demo-asset-" + i,
+      name: atpl.name + (i >= assetTemplates.length ? " #" + (i + 1) : ""),
+      category: atpl.category,
+      purchaseDate: dateStr(rint(rng, 90, 200)),
+      cost: atpl.cost,
+      depreciationMethod: i % 2 === 0 ? "straight_line" : "none",
+      usefulLifeYears: i % 2 === 0 ? 5 : 0,
+      note: "Demo fixed asset",
+      createdAt: isoAt(dateStr(rint(rng, 90, 200)), 10, 0),
+    });
+  }
+
   /* Sync product.stock from ledger */
   products.forEach(function (p) {
     if (p.type === "service") return;
@@ -1184,8 +1302,12 @@ export function buildDemoBackup() {
     tc3_quotations: quotations,
     tc3_repairs: repairs,
     tc3_expenses: expenses,
-    tc3_assets: [],
-    tc3_damageLog: [],
+    tc3_assets: assets,
+    tc3_damageLog: damageLog,
+    tc3_codRecords: codRecords,
+    tc3_codPartners: (codProfitSettings.shareholders || []).slice(),
+    tc3_codProfitSettings: codProfitSettings,
+    tc3_codWithdrawals: codWithdrawals,
     tc3_productLog: [],
     tc3_auditLog: [],
     tc3_openBal: {
@@ -1221,6 +1343,8 @@ function attachDemoGlSnapshot(data) {
     purchaseReturns: data.tc3_purchaseReturns || [],
     repairs: data.tc3_repairs || [],
     manualPayables: data.tc3_manualPayables || [],
+    damageLog: data.tc3_damageLog || [],
+    assets: data.tc3_assets || [],
   };
   var smock = {
     get: function (k, def) {

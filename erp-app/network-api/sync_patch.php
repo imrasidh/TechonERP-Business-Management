@@ -84,6 +84,10 @@ $ALLOWED = [
     'tc3_codPartners'        => 'array',
     'tc3_codProfitSettings'  => 'object',
     'tc3_codWithdrawals'     => 'array',
+    'tc3_invoice_edit_locks' => 'array',
+    'tc3_raw_material_usage' => 'array',
+    'tc3_raw_material_counts'=> 'array',
+    'tc3_users'              => 'array',
 ];
 
 function validatePatchValue($key, $value, $expectedType) {
@@ -161,10 +165,13 @@ foreach ($patches as $patch) {
                 : [];
             if (!is_array($existing)) $existing = [];
             $isChunk = !empty($patch['_chunk']);
-            if ($isChunk) {
-                $value = tcMergeRecordArraysByNewest($existing, $value);
+            if ($key === 'tc3_invoice_edit_locks') {
+                /* Soft locks: never drop other counters' locks via full-array snapshot. */
+                $value = tcMergeRecordArraysByNewest($existing, $value, $key);
+            } else if ($isChunk) {
+                $value = tcMergeRecordArraysByNewest($existing, $value, $key);
             } else {
-                $value = tcApplyFullArraySnapshot($existing, $value);
+                $value = tcApplyFullArraySnapshot($existing, $value, $key);
             }
             $json = json_encode($value, JSON_UNESCAPED_UNICODE);
             if ($json === false) {
@@ -224,6 +231,15 @@ foreach ($patches as $patch) {
     } catch (PDOException $e) {
         $failed[] = ['key' => $key, 'reason' => 'database_error'];
         serverLog('error', 'DB write failed for ' . $key . ': ' . $e->getMessage());
+    }
+}
+
+$VOID_RETURN_KEYS = ['tc3_sales', 'tc3_salesReturns', 'tc3_purchases', 'tc3_purchaseReturns'];
+if (count(array_intersect($saved, $VOID_RETURN_KEYS)) > 0) {
+    try {
+        tcReconcileVoidReturnStateOnServer(db());
+    } catch (Exception $e) {
+        serverLog('warn', 'Void/return reconcile failed: ' . $e->getMessage());
     }
 }
 

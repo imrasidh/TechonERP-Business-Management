@@ -26,6 +26,8 @@ import {
   persistCounterModuleToggles,
   MODULE_TOGGLE_DEFS,
 } from "../utils/featureFlags.js";
+import { getToolbarKeys, persistToolbarKeys } from "../utils/toolbarConfig.js";
+import ToolbarCustomizePanel from "../components/ToolbarCustomizePanel.jsx";
 import { safeStr } from "../utils/syncDataNormalize.js";
 import { pushKeysToServer, NETWORK_KV_KEYS } from "../sync/SyncEngine.js";
 import {
@@ -114,8 +116,16 @@ var Settings = function (props) {
   var InvoiceA4 = props.InvoiceA4;
   var Input = props.Input;
   var Btn = props.Btn;
-  var Card = props.Card;
-  var CardTitle = props.CardTitle;
+  var CardRaw = props.Card;
+  var CardTitleRaw = props.CardTitle;
+  var Card = function (p) {
+    var cls = ["erp-set-card", p && p.className].filter(Boolean).join(" ");
+    var pad = p && p.pad !== undefined ? p.pad : (wizardUi ? undefined : 12);
+    return React.createElement(CardRaw, Object.assign({}, p, { className: cls, pad: pad }));
+  };
+  var CardTitle = function (p) {
+    return React.createElement("div", { className: "erp-set-card-title" }, React.createElement(CardTitleRaw, p));
+  };
   var Sel = props.Sel;
   var Modal = props.Modal;
   var StatCard = props.StatCard;
@@ -198,6 +208,7 @@ var Settings = function (props) {
     staffModuleToggles: getStaffModuleToggles(state.settings, businessType, getBusinessProfile()),
     counterModuleToggles: getCounterModuleToggles(state.settings, businessType, getBusinessProfile()),
     moduleToggles: getMainModuleToggles(state.settings, businessType, getBusinessProfile()),
+    toolbarKeys: getToolbarKeys(state.settings),
     enabledCategoryGroups: readEnabledCategoryGroups(state.settings),
   }));
   var [newAsset, setNewAsset] = useState(null);
@@ -298,8 +309,13 @@ var Settings = function (props) {
 
   var normalizeUsername = function (v) { return String(v || "").trim().toLowerCase(); };
   var saveUsers = function (nextUsers, msg) {
-    S.set("tc3_users", nextUsers);
-    setUsers(nextUsers);
+    var ts = new Date().toISOString();
+    var stamped = (nextUsers || []).map(function (u) {
+      if (!u || typeof u !== "object") return u;
+      return Object.assign({}, u, { updatedAt: u.updatedAt || ts });
+    });
+    S.set("tc3_users", stamped);
+    setUsers(stamped);
     if (msg) setUserMsg(msg);
   };
 
@@ -313,6 +329,7 @@ var Settings = function (props) {
     if (!newUserPassword || newUserPassword.length < 4) { setUserMsg({ type: "error", text: "Password must be at least 4 chars." }); return; }
     if (users.some(function (u) { return normalizeUsername(u.username) === uname; })) { setUserMsg({ type: "error", text: "Username already exists." }); return; }
     hashPw(newUserPassword).then(function (hashed) {
+      var now = new Date().toISOString();
       var next = users.concat([{
         id: uid(),
         name: name,
@@ -320,7 +337,8 @@ var Settings = function (props) {
         role: role,
         passwordHash: hashed,
         active: true,
-        createdAt: new Date().toISOString(),
+        createdAt: now,
+        updatedAt: now,
       }]);
       saveUsers(next, { type: "success", text: "User created." });
       setNewUserName(""); setNewUserUsername(""); setNewUserPassword(""); setNewUserRole("cashier");
@@ -333,7 +351,11 @@ var Settings = function (props) {
     if (p == null) return;
     if (String(p).length < 4) { setUserMsg({ type: "error", text: "Password too short." }); return; }
     hashPw(String(p)).then(function (hashed) {
-      var next = users.map(function (x) { return x.id === u.id ? Object.assign({}, x, { passwordHash: hashed }) : x; });
+      var next = users.map(function (x) {
+        return x.id === u.id
+          ? Object.assign({}, x, { passwordHash: hashed, updatedAt: new Date().toISOString() })
+          : x;
+      });
       saveUsers(next, { type: "success", text: "Password reset for " + (u.username || u.name) + "." });
       if (typeof setLoginPassword === "function" && (u.role === "admin" || normalizeUsername(u.username) === "admin")) {
         setLoginPassword(hashed, { userId: u.id, username: u.username });
@@ -450,7 +472,7 @@ var Settings = function (props) {
     }
   }, [cloudSyncBump]);
 
-  var ALL_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_businessType"];
+  var ALL_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals", "tc3_invoice_edit_locks", "tc3_users", "tc3_businessType"];
 
   var buildBackupObject = function () {
     var backup = { version: 2, timestamp: new Date().toISOString(), shopName: state.settings.shopName || "Techon", data: {} };
@@ -548,7 +570,7 @@ var Settings = function (props) {
         try { window.location.reload(); } catch (eRel) {
           try { window.location.href = window.location.href; } catch (e2) {}
         }
-      }, 700);
+      }, 1500);
     };
 
     wipeAllDataForReset({
@@ -556,13 +578,18 @@ var Settings = function (props) {
       authConfig: systemConfig,
     }).then(function (res) {
       if (res && res.ok === false) {
-        /* Local wipe still happened — reload so user is not stuck, but warn about server. */
-        reloadSoon("✅ Local data cleared. Server wipe may be incomplete — reload now. If old data returns, clear MySQL / re-upload empty data from Settings → Network.");
+        setResetMsg({ type: "error", text: "Reset failed: " + (res.message || "Could not clear all data. Close other TechonERP windows and try again.") });
+        return;
+      }
+      var salesLeft = (S.get("tc3_sales", []) || []).length;
+      var productsLeft = (S.get("tc3_products", []) || []).length;
+      if (salesLeft > 0 || productsLeft > 0) {
+        setResetMsg({ type: "error", text: "Reset incomplete — " + salesLeft + " sales and " + productsLeft + " products still found. Close other windows and retry." });
         return;
       }
       reloadSoon("✅ System reset complete. Reloading...");
     }).catch(function (err) {
-      reloadSoon("✅ Reset finished with a warning (" + (err && err.message ? err.message : "error") + "). Reloading...");
+      setResetMsg({ type: "error", text: "Reset failed: " + (err && err.message ? err.message : String(err)) });
     });
 
     /* Absolute safety: never leave the UI stuck on "Wiping..." forever. */
@@ -605,7 +632,12 @@ var Settings = function (props) {
             });
           };
           restoreFn(backup.data).then(function () {
-            var msg = "Restore complete (" + salesCount + " sales)";
+            var loadedSales = (S.get("tc3_sales", []) || []).length;
+            var msg = "Restore complete (" + (loadedSales || salesCount) + " sales)";
+            if (loadedSales === 0 && salesCount > 0) {
+              setBakMsg({ type: "error", text: "Restore finished but no sales found in database. Please try again or contact support." });
+              return;
+            }
             if (isNetworkMode) msg += " — uploaded to MySQL server";
             msg += ". Reloading in 3 seconds...";
             setBakMsg({ type: "success", text: msg });
@@ -679,6 +711,7 @@ var Settings = function (props) {
       }
       Object.assign(ns, persistStaffModuleToggles(f.staffModuleToggles || {}));
     }
+    Object.assign(ns, persistToolbarKeys(f.toolbarKeys));
     ns.strictPeriodLock = ns.strictPeriodLock === true;
     ns.purchaseReturnCostMode = ns.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac";
     ns.taxApplyBase = ns.taxApplyBase === "before_discount" ? "before_discount" : "after_discount";
@@ -703,6 +736,7 @@ var Settings = function (props) {
   var saveCounterModules = function () {
     var ns = Object.assign({}, state.settings);
     Object.assign(ns, persistCounterModuleToggles(f.counterModuleToggles || {}));
+    Object.assign(ns, persistToolbarKeys(f.toolbarKeys));
     S.set("tc3_settings", ns);
     setState(function (st) { return Object.assign({}, st, { settings: ns }); });
     showAlert("Counter modules saved.");
@@ -1095,9 +1129,9 @@ var Settings = function (props) {
     return (
       <Card key={toggleKey}>
         <CardTitle sub={sub}>{title}</CardTitle>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 640 }}>
-          <div style={{ padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + C.border, background: "#f8fafc" }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Always on</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 640 }}>
+          <div style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid " + C.border, background: "#f8fafc" }}>
+            <div className="erp-set-section-label">Always on</div>
             {[
               { label: "Sales", blurb: "Point of sale — create invoices, take payments, and hold orders." },
               { label: "Settings", blurb: toggleKey === "counterModuleToggles" ? "Counter modules and network connection (main PC password required)." : "Shop setup, modules, backup, security, and accounting options." },
@@ -1118,14 +1152,14 @@ var Settings = function (props) {
             if (!items.length) return null;
             return (
               <div key={groupName}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>{groupName}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div className="erp-set-section-label">{groupName}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {items.map(function (m) {
                     var toggles = f[toggleKey] || {};
                     var parentOff = m.parentModule && toggles[m.parentModule] !== true;
                     var on = toggles[m.id] === true && !parentOff;
                     return (
-                      <label key={m.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: parentOff ? "not-allowed" : "pointer", padding: "11px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff", opacity: parentOff ? 0.55 : 1, marginLeft: m.parentModule ? 18 : 0 }}>
+                      <label key={m.id} className="erp-set-toggle-row" style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: parentOff ? "not-allowed" : "pointer", padding: "8px 10px", borderRadius: 8, border: "1px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff", opacity: parentOff ? 0.55 : 1, marginLeft: m.parentModule ? 14 : 0 }}>
                         <input
                           type="checkbox"
                           checked={on}
@@ -1134,8 +1168,14 @@ var Settings = function (props) {
                             var checked = e.target.checked;
                             setF(function (x) {
                               var nextToggles = Object.assign({}, x[toggleKey] || {}, { [m.id]: checked });
+                              if (m.id === "coddatabase" && checked) {
+                                nextToggles.codSalesTrack = true;
+                              }
                               if (m.id === "coddatabase" && !checked) {
                                 nextToggles.codCostProfit = false;
+                              }
+                              if (m.id === "codSalesTrack" && checked) {
+                                nextToggles.coddatabase = true;
                               }
                               var patch = {};
                               patch[toggleKey] = nextToggles;
@@ -1398,18 +1438,35 @@ var Settings = function (props) {
   };
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+    <div className={"erp-page erp-set-modern erp-settings-scope" + (wizardUi ? " is-wizard" : "")} style={{ display: "flex", flexDirection: "column", gap: 0 }}>
       {showSettingsTabs && (
-      <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border, marginBottom: 16, flexWrap: "wrap" }}>
-        {TABS.map(function (t) {
-          var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", pos: "🛒", about: "ℹ", restaurantsetup: "🍽", categories: "📁" };
-          return <button key={t[0]} onClick={function () { setStab(t[0]); }} style={{ padding: "10px 20px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (stab === t[0] ? C.border : "transparent"), borderBottom: stab === t[0] ? "2px solid #fff" : "none", background: stab === t[0] ? "#fff" : "transparent", color: stab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: stab === t[0] ? -2 : 0 }}>{icons[t[0]]} {t[1]}</button>;
-        })}
+      <div className="erp-set-chrome">
+        <div className="erp-set-tabs" role="tablist" aria-label="Settings sections">
+          {TABS.map(function (t) {
+            var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", pos: "🛒", about: "ℹ", restaurantsetup: "🍽", categories: "📁" };
+            var active = stab === t[0];
+            return (
+              <button
+                key={t[0]}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={"erp-set-tab" + (active ? " is-active" : "")}
+                onClick={function () { setStab(t[0]); }}
+              >
+                <span className="erp-set-tab-ico" aria-hidden="true">{icons[t[0]]}</span>
+                <span>{t[1]}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
       )}
 
+      <div className="erp-set-body">
+
       {stab === "shop" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: wizardUi && props.embeddedWizard === "shop_limited" ? 0 : 14 }}>
+        <div className={"erp-set-stack" + (wizardUi && props.embeddedWizard === "shop_limited" ? " is-tight" : "")}>
           {wizardUi && props.embeddedWizard === "shop_limited" ? (
             <React.Fragment>
               <div style={wizPanelStyle}>
@@ -1521,7 +1578,7 @@ var Settings = function (props) {
       )}
 
       {stab === "features" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
           {isNetworkClient
             ? renderModulePanel("counterModuleToggles", "Counter modules", "Screens shown on this counter terminal. Changes sync to the main PC. Data still syncs even when a module is hidden.")
             : (
@@ -1538,6 +1595,16 @@ var Settings = function (props) {
                 )}
               </React.Fragment>
             )}
+          <Card>
+            <CardTitle sub="Live toolbar preview — one click to add or remove, drag to reorder.">Toolbar shortcuts</CardTitle>
+            <ToolbarCustomizePanel
+              keys={f.toolbarKeys || getToolbarKeys(state.settings)}
+              onChange={function (next) {
+                setF(function (x) { return Object.assign({}, x, { toolbarKeys: next }); });
+              }}
+              C={C}
+            />
+          </Card>
           <div>
             <Btn col="blue" onClick={isNetworkClient ? saveCounterModules : save}>Save modules</Btn>
           </div>
@@ -1545,7 +1612,7 @@ var Settings = function (props) {
       )}
 
       {stab === "categories" && !isNetworkClient && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
           <Card>
             <CardTitle sub="Enable the product groups your shop sells. Sub-categories and units follow each group (e.g. Glass shows sheet dimensions; Phones use Pcs, Box, etc.).">Category groups</CardTitle>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 720 }}>
@@ -1594,8 +1661,8 @@ var Settings = function (props) {
       )}
 
       {stab === "langcurrency" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 0 : 14 }}>
-          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20}>
+        <div className={"erp-set-stack" + (langWizShell ? " is-tight" : "")}>
+          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 12}>
             {langWizShell ? (
               <CardTitle variant="wizard" sub="Choose your country and currency—they stay aligned for symbols and regional options. For Euro (€), pick the country that matches your business (for example Germany, France, or Italy).">
                 Country &amp; currency
@@ -2102,7 +2169,7 @@ var Settings = function (props) {
       )}
 
       {stab === "invoice" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
 
           {/* ── Top-level A4/A5 vs Thermal tabs ── */}
           {(function () {
@@ -2376,13 +2443,21 @@ var Settings = function (props) {
                   </div>
                 </Card>
                 {/* Format toggle */}
-                <div style={{ display: "flex", gap: 0, background: "#f1f5f9", borderRadius: 10, padding: 4 }}>
+                <div className="erp-set-fmt" role="tablist" aria-label="Invoice format">
                   {[["a4a5","📄 A4 / A5 Invoice"],["thermal","🖨 Thermal Receipt"]].map(function (tab) {
                     var active = invFmt === tab[0];
-                    return <button key={tab[0]} onClick={function () { setInvFmt(tab[0]); }}
-                      style={{ flex: 1, padding: "9px 16px", borderRadius: 8, border: "none", background: active ? "#fff" : "transparent", color: active ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", boxShadow: active ? "0 1px 4px rgba(0,0,0,0.1)" : "none", transition: "all .15s" }}>
-                      {tab[1]}
-                    </button>;
+                    return (
+                      <button
+                        key={tab[0]}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        className={"erp-set-fmt-btn" + (active ? " is-active" : "")}
+                        onClick={function () { setInvFmt(tab[0]); }}
+                      >
+                        {tab[1]}
+                      </button>
+                    );
                   })}
                 </div>
 
@@ -2412,7 +2487,7 @@ var Settings = function (props) {
       )}
 
       {stab === "restaurantsetup" && isRestaurantBusiness && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
           <Card>
             <CardTitle sub="Choose the default order flow and manage restaurant tables">Restaurant Setup</CardTitle>
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -2492,7 +2567,7 @@ var Settings = function (props) {
       )}
 
       {stab === "backup" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
           {bakMsg && <div style={{ background: bakMsg.type === "error" ? C.dangerSoft : C.successSoft, color: bakMsg.type === "error" ? C.red : C.green, borderRadius: 10, padding: "12px 18px", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>{bakMsg.text}</div>}
 
           <Card>
@@ -2760,7 +2835,7 @@ var Settings = function (props) {
       )}
 
       {stab === "accounting" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
           <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 16px", fontSize: 13, color: C.textMd, lineHeight: 1.55 }}>
             Bookkeeping and ledger options for accountants and advanced users. Everyday shop setup stays on <strong>Shop Info</strong> — you can leave these at defaults unless your accountant asks you to change them.
           </div>
@@ -3177,7 +3252,7 @@ var Settings = function (props) {
       )}
 
       {stab === "security" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
 
           {/* ── UNIFIED SECURITY SETTINGS CARD ── */}
           <Card>
@@ -3372,7 +3447,7 @@ var Settings = function (props) {
 
 
       {stab === "network" && isNetworkClient && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
           <Card>
             <CardTitle sub="Counter terminal sync">Sync status</CardTitle>
             <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
@@ -3482,7 +3557,7 @@ var Settings = function (props) {
       )}
 
       {stab === "network" && isNetworkServer && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
 
           {/* ── Mode & Status ── */}
           <Card>
@@ -3858,7 +3933,7 @@ var Settings = function (props) {
       )}
 
       {stab === "users" && canManageUsers && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-set-stack">
           <Card>
             <CardTitle sub={"Create staff accounts with role-based access. Cashier role: " + CASHIER_ACCESS_SUMMARY + "."}>User Management</CardTitle>
             {userMsg && (
@@ -3893,7 +3968,7 @@ var Settings = function (props) {
                         <td style={Object.assign({}, actBtnCellStyle, { padding: "8px 6px" })}>
                           <ActBtnGroup>
                             <ActBtn tone="gray" title="Reset password" wide onClick={function () { resetUserPassword(u); }}>Reset</ActBtn>
-                            <ActBtn tone="red" title="Remove user" onClick={function () { removeUser(u); }} disabled={normalizeUsername(u.username) === "admin"}>✕</ActBtn>
+                            <ActBtn tone="red" title="Remove user" onClick={function () { removeUser(u); }} disabled={normalizeUsername(u.username) === "admin"} />
                           </ActBtnGroup>
                         </td>
                       </tr>
@@ -4015,6 +4090,8 @@ var Settings = function (props) {
           </div>
         </div>
       )}
+
+      </div>{/* erp-set-body */}
 
       {industryPwOpen && (
         <Modal title="Confirm industry change" onClose={function () { setIndustryPwOpen(false); setIndustryPw(""); setIndustryPwMsg(""); }}>

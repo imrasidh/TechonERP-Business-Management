@@ -1,0 +1,633 @@
+/* TechonERP — Phase 4: POS / Sales, Settings, Accounts */
+
+/* ── Folder-style module tabs (Settings, Accounts) ─────────── */
+.erp-folder-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  padding: 3px 3px 0;
+  margin-bottom: 8px;
+}
+
+.erp-folder-tab {
+  border: 1px solid #aca899;
+  border-bottom: none;
+  background: linear-gradient(180deg, #f5f5f5 0%, #e0e0e0 100%);
+  color: #333;
+  padding: 5px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: default;
+  white-space: nowrap;
+  line-height: 1.3;
+  margin-bottom: -1px;
+}
+
+.erp-folder-tab:hover {
+  background: #fff;
+}
+
+.erp-folder-tab.active {
+  background: #fff;
+  color: #1a4fa0;
+  font-weight: 700;
+  border-bottom: 1px solid #fff;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Accounts summary KPI tiles ─────────────────────────────── */
+.erp-acct-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.erp-acct-kpi {
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+  border-left-width: 4px;
+}
+
+.erp-acct-kpi-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #444;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.erp-acct-kpi-value {
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.erp-acct-kpi-sub {
+  font-size: 10px;
+  color: #555;
+  margin-top: 3px;
+}
+
+.erp-acct-kpi-blue { border-left-color: #1a4fa0; }
+.erp-acct-kpi-blue .erp-acct-kpi-value { color: #1a4fa0; }
+.erp-acct-kpi-green { border-left-color: #2e7d32; }
+.erp-acct-kpi-green .erp-acct-kpi-value { color: #2e7d32; }
+.erp-acct-kpi-red { border-left-color: #c00000; }
+.erp-acct-kpi-red .erp-acct-kpi-value { color: #c00000; }
+.erp-acct-kpi-teal { border-left-color: #00695c; }
+.erp-acct-kpi-teal .erp-acct-kpi-value { color: #00695c; }
+.erp-acct-kpi-purple { border-left-color: #6a1b9a; }
+.erp-acct-kpi-purple .erp-acct-kpi-value { color: #6a1b9a; }
+.erp-acct-kpi-orange { border-left-color: #e65100; }
+.erp-acct-kpi-orange .erp-acct-kpi-value { color: #e65100; }
+.erp-acct-kpi-navy { border-left-color: #1a237e; }
+.erp-acct-kpi-navy .erp-acct-kpi-value { color: #1a237e; }
+
+/* ── POS / Sales layout ─────────────────────────────────────── */
+.erp-pos-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+}
+
+.erp-pos-shell .erp-pos-toolbar {
+  flex-shrink: 0;
+}
+
+.erp-pos-shell .erp-pos {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  gap: 0;
+  margin: 0;
+}
+
+.erp-pos-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.erp-pos-right {
+  width: 310px;
+  flex: 0 0 310px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-left: 1px solid #8ea8cc;
+  background: #e8eef8;
+  padding: 8px;
+  overflow-y: auto;
+  align-self: stretch;
+}
+
+.erp-pos-checkout-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.erp-pos-checkout-panel > .erp-card {
+  background: #fff;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-main-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.erp-pos-main-card > .erp-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
+  border: 1px solid #aca899;
+  background: #fff;
+}
+
+.erp-pos-main-card > .erp-card > .erp-card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 10px;
+}
+
+.erp-pos-main-card > .erp-card > .erp-card-body:first-child {
+  padding-top: 10px;
+}
+
+.erp-pos-cart-area {
+  flex: 1;
+  min-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #aca899;
+  background: #fff;
+  margin-top: 8px;
+}
+
+.erp-pos-cart-area:has(.erp-pos-empty-cart) {
+  border-style: dashed;
+  background: #f7f9fc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.erp-pos-cart-area table {
+  width: 100%;
+}
+
+.erp-pos-entry-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  border: 1px solid #d0d7e2;
+  background: #f8fafc;
+}
+
+.erp-pos-entry-labels,
+.erp-pos-entry-controls {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 10px 14px;
+  align-items: center;
+}
+
+.erp-pos-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0;
+  line-height: 1.2;
+}
+
+.erp-pos-cust-mode .erp-pos-seg-btn {
+  flex: 1;
+  min-height: 30px;
+  padding: 5px 8px;
+  text-align: center;
+  justify-content: center;
+  border-radius: 4px !important;
+}
+
+.erp-pos-cust-mode .erp-pos-seg-btn:hover {
+  background: #0f3d82;
+  border-color: #0a2d5c;
+  color: #fff;
+}
+
+.erp-pos-cust-mode {
+  display: flex;
+  width: 100%;
+  gap: 4px;
+  margin-bottom: 0;
+}
+
+.erp-pos-product-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.erp-pos-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #7a9fd4;
+  border-radius: 4px;
+  padding: 0 10px;
+  height: 30px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  color: #000;
+  outline: none;
+}
+
+.erp-pos-search-input:focus {
+  border-color: #1a4fa0;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(26, 79, 160, 0.28);
+}
+
+.erp-pos-entry-picker {
+  min-width: 0;
+}
+
+.erp-pos-entry-picker .erp-input,
+.erp-pos-entry-picker input {
+  width: 100%;
+}
+
+.erp-pos-customer-col .erp-pos-seg-group {
+  margin-bottom: 6px;
+}
+
+.erp-pos-search-col label,
+.erp-pos-customer-col > div:first-child {
+  font-size: 10px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.erp-pos-search-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.erp-pos-secondary-panel > .erp-card {
+  background: #fff;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-empty-cart {
+  text-align: center;
+  padding: 28px 16px;
+  color: #555;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  margin: 0;
+  width: 100%;
+}
+
+.erp-pos-empty-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 4px;
+}
+
+.erp-pos-empty-sub {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.erp-pos-free-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.erp-pos-free-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #1a4fa0;
+}
+
+.erp-pos-free-sub {
+  font-size: 10px;
+  color: #666;
+  margin-top: 2px;
+}
+
+.erp-pos-pay-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.erp-pos-complete-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #d0d0d0;
+}
+
+.erp-pos-complete-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@media (max-width: 960px) {
+  .erp-pos-shell .erp-pos {
+    flex-direction: column;
+  }
+
+  .erp-pos-right {
+    width: 100%;
+    flex: none;
+    border-left: none;
+    border-top: 1px solid #8ea8cc;
+  }
+
+  .erp-pos-entry-labels,
+  .erp-pos-entry-controls {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
+
+.erp-pos-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 5px 8px;
+}
+
+.erp-pos-toolbar .erp-pos-seg-group {
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  padding: 2px;
+  gap: 2px;
+}
+
+.erp-page-header .erp-pos-toolbar .erp-pos-seg-group {
+  background: transparent;
+  border: none;
+  padding: 0;
+  gap: 0;
+}
+
+.erp-pos-seg-btn {
+  border: 1px solid #aca899;
+  background: #fff;
+  color: #333;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: default;
+  font-family: inherit;
+  border-radius: 4px;
+}
+
+.erp-pos-seg-btn.active {
+  background: #1a4fa0;
+  border-color: #0a2d5c;
+  color: #fff;
+  font-weight: 700;
+}
+
+.erp-pos-seg-group {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.erp-btn-wa {
+  background: linear-gradient(180deg, #4caf50 0%, #2e7d32 100%) !important;
+  border-color: #1b5e20 !important;
+  color: #fff !important;
+}
+
+.erp-btn-hold {
+  min-width: 140px;
+  padding: 5px 12px !important;
+}
+
+.erp-pos-panel-hdr {
+  background: linear-gradient(180deg, #3a6eb5 0%, #1a4fa0 100%);
+  color: #fff;
+  padding: 6px 10px;
+  border-bottom: 1px solid #0a2d5c;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.erp-pos-panel-hdr-sub {
+  font-size: 10px;
+  opacity: 0.9;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.erp-pos-panel-body {
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.erp-pos-edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff8e1;
+  border: 1px solid #c9a227;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #7c5700;
+}
+
+.erp-pos-total-box {
+  background: #f5f8fc;
+  border: 1px solid #aca899;
+  padding: 8px 10px;
+  margin: 10px 0;
+}
+
+.erp-pos-total-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  font-size: 11px;
+  border-bottom: 1px dotted #c0c0c0;
+  color: #333;
+}
+
+.erp-pos-total-row.grand {
+  border-bottom: none;
+  border-top: 2px solid #1a4fa0;
+  margin-top: 4px;
+  padding-top: 7px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0a2d5c;
+}
+
+.erp-pos-checkout-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 12px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+}
+
+/* POS dropdowns */
+.erp-pos-dropdown {
+  position: fixed;
+  background: #fff;
+  border: 1px solid #aca899;
+  z-index: 9999;
+  max-height: 260px;
+  overflow-y: auto;
+  box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.erp-pos-dropdown-item {
+  padding: 6px 10px;
+  cursor: default;
+  font-size: 11px;
+  border-bottom: 1px solid #e0e0e0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.erp-pos-dropdown-item:hover,
+.erp-pos-dropdown-item.active {
+  background: #e8f0fc;
+}
+
+/* Restaurant POS — classic panel instead of dark theme */
+.erp-pos-restaurant .erp-pos-panel-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.erp-pos-rest-type-btn {
+  border: 1px solid #aca899;
+  background: #fff;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+  font-family: inherit;
+  border-radius: 2px;
+}
+
+.erp-pos-rest-type-btn.active {
+  background: #e8f0fc;
+  border-color: #316ac5;
+  color: #1a4fa0;
+}
+
+.erp-pos-table-btn {
+  border: 1px solid #aca899;
+  padding: 8px;
+  background: #fafafa;
+  text-align: left;
+  cursor: default;
+  font-family: inherit;
+  min-height: 74px;
+  border-radius: 2px;
+}
+
+.erp-pos-table-btn.active {
+  border: 2px solid #316ac5;
+  background: #e8f0fc;
+}
+
+/* Settings wizard panels */
+.erp-wiz-panel {
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.erp-settings-info {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #e8f0fc;
+  border: 1px solid #7a9fd4;
+  padding: 8px 10px;
+  font-size: 11px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.erp-settings-info-warn {
+  background: #fff8e1;
+  border-color: #c9a227;
+}
+
+.erp-settings-subtabs {
+  display: flex;
+  gap: 2px;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  padding: 2px;
+  margin-bottom: 8px;
+}
+
+/* Override inline rounded shadows inside phase-4 scopes */
+.erp-pos .erp-card,
+.erp-settings-scope .erp-card,
+.erp-accounts-scope .erp-card {
+  box-shadow: none;
+}
+
+.erp-accounts-scope .erp-kpi-strip {
+  margin-bottom: 0;
+}

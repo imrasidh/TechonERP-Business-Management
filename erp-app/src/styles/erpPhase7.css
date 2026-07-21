@@ -1,0 +1,2977 @@
+/* TechonERP ? Phase 7: Final classic UI enforcement */
+
+/* ?? Workspace: flatten stray inline modern styles (!important beats inline) ??
+   Sales (.erp-pos-modern), Dashboard (.erp-md-dash), Purchases (.erp-pur-modern), Inventory (.erp-inv-modern), Invoices (.erp-si-modern), Core (.erp-core-scope) keep rounded UI.
+   Modal overlays are excluded here; classic flat modals are flattened by the .erp-modal-shell rule below. */
+.erp-app-root .erp-page-content *:not(:is(.erp-core-scope, .erp-core-scope *, .erp-pos-modern, .erp-pos-modern *, .erp-md-dash, .erp-md-dash *, .erp-pur-modern, .erp-pur-modern *, .erp-inv-modern, .erp-inv-modern *, .erp-si-modern, .erp-si-modern *, .erp-modal-overlay, .erp-modal-overlay *, .erp-pur-form-modal, .erp-pur-form-modal *, .erp-pur-newprod-modal, .erp-pur-newprod-modal *)) {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-modal-shell:not(.erp-pur-form-modal):not(.erp-pur-newprod-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal):not(.erp-party-modal):not(.erp-inv-product-modal) *:not(.erp-split-pay-btn):not(.erp-split-pay-add):not(.erp-split-pay-remove):not(.erp-split-pay-summary):not(.erp-split-pay-sum):not(.erp-split-pay-row):not(.erp-split-pay-field input):not(.erp-split-pay-field select):not(.erp-sale-action-btn):not(.erp-sale-picker-btn):not(.erp-dialog-btn):not(.erp-pos-chq-add-btn):not(.erp-pos-chq-remove):not(.erp-pos-chq-panel):not(.erp-pos-chq-row):not(.erp-pos-chq-empty):not(.erp-pos-chq-total):not(.erp-money-method-btn):not(.erp-money-suggest):not(.erp-money-banner):not(.erp-party-kind-btn),
+.erp-app-root .erp-system-dialog *:not(.erp-dialog-btn),
+.erp-system-dialog *:not(.erp-dialog-btn) {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-modal-shell,
+.erp-app-root .erp-system-dialog .erp-system-dialog-shell {
+  box-shadow: 4px 4px 12px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* Restore intentional classic control styling */
+.erp-app-root .erp-btn,
+.erp-app-root .erp-input,
+.erp-app-root .erp-select,
+.erp-app-root .erp-tab-btn,
+.erp-app-root .erp-folder-tab,
+.erp-app-root .erp-pos-seg-btn,
+.erp-app-root .erp-settings-seg-btn,
+.erp-app-root .erp-ob-step-btn,
+.erp-gate-scope .erp-btn,
+.erp-setup-scope .erp-btn {
+  border-radius: 4px !important;
+}
+
+.erp-app-root .erp-modal-shell.erp-pur-newprod-modal .erp-btn,
+.erp-app-root .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-btn,
+.erp-app-root .erp-modal-shell.erp-pur-newprod-modal .erp-input,
+.erp-app-root .erp-modal-shell.erp-pur-newprod-modal .erp-select,
+.erp-app-root .erp-modal-shell.erp-pos-chq-modal .erp-btn,
+.erp-app-root .erp-modal-shell.erp-pos-chq-modal .erp-input,
+.erp-app-root .erp-modal-shell.erp-pos-chq-modal .erp-select,
+.erp-app-root .erp-modal-shell.erp-money-modal .erp-btn,
+.erp-app-root .erp-modal-shell.erp-money-modal .erp-input,
+.erp-app-root .erp-modal-shell.erp-money-modal .erp-select {
+  border-radius: 8px !important;
+}
+
+.erp-app-root .erp-badge {
+  border-radius: 4px !important;
+}
+
+/* Native controls in modules */
+.erp-app-root .erp-page-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not(.erp-pos-search-input):not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):not(.erp-pur-add-search-input):not(.erp-pur-supp-search-input),
+.erp-app-root .erp-page-content select:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field),
+.erp-app-root .erp-page-content textarea,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body select,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body textarea,
+.erp-modal-overlay .erp-modal-shell.erp-money-modal .erp-money-party-input {
+  border: 1px solid #b8d0ea !important;
+  background: #fff !important;
+  color: #0f172a !important;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif !important;
+  font-size: 12px !important;
+  padding: 7px 10px !important;
+  border-radius: 8px !important;
+  outline: none !important;
+  box-shadow: none !important;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease !important;
+}
+
+.erp-app-root .erp-page-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not(.erp-pos-search-input):not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):not(.erp-pur-add-search-input):not(.erp-pur-supp-search-input):focus,
+.erp-app-root .erp-page-content select:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):focus,
+.erp-app-root .erp-page-content textarea:focus,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body select:focus,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body textarea:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.14) !important;
+}
+
+.erp-app-root .erp-page-content input[type="range"] {
+  padding: 0 !important;
+}
+
+/* Buttons without shared class ? flat classic */
+.erp-app-root .erp-page-content button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-settings-seg-btn):not(.erp-pos-table-btn):not(.erp-pos-order-card):not(.erp-pos-kitchen-btn):not(.erp-pos-rest-type-btn):not(.erp-pos-chip-btn):not(.erp-pos-order-action-btn):not(.erp-settings-tax-help-btn):not(.erp-settings-add-tax-btn):not(.erp-pin-key):not(.erp-auth-link-btn):not(.erp-hold-action-btn):not(.erp-page-header-link):not(.erp-keys-hint button):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-split-btn):not(.erp-sale-cust-toggle):not(.erp-cust-picker-btn):not(.erp-pos-cart-remove-btn):not(.erp-pos-cart-dup-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-md-refresh):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-sale-hold-btn):not(.erp-sale-hold-trigger):not(.erp-sale-picker-btn):not(.erp-dialog-btn):not(.erp-btn-hold):not(.erp-pur-btn-primary):not(.erp-pur-btn-apply):not(.erp-pur-btn-clear):not(.erp-pur-act):not(.erp-pur-quick):not(.erp-pur-inv):not(.erp-pur-inv-link):not(.erp-pur-icon-btn):not(.erp-pur-pager-btn):not(.erp-pur-date-refresh):not(.erp-pur-search-clear):not(.erp-pur-newprod-extra-add):not(.erp-act-btn):not(.erp-inv-act-btn):not(.erp-acc-tab):not(.erp-inv-tab):not(.erp-inv-chip):not(.erp-inv-subtab):not(.erp-acc-pill):not(.erp-acc-step):not(.erp-rpt-tab):not(.erp-rpt-pill):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(:is(.erp-si-fv *)),
+.erp-app-root .erp-modal-shell:not(.erp-pur-form-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body button:not(.erp-btn):not(.erp-pos-order-action-btn):not(.erp-settings-table-del-btn):not(.erp-settings-dismiss-btn):not(.erp-network-copy-btn):not(.erp-network-remove-btn):not(.erp-pin-key):not(.erp-auth-link-btn):not(.erp-hold-action-btn):not(.erp-split-pay-btn):not(.erp-split-pay-add):not(.erp-split-pay-remove):not(.erp-sale-action-btn):not(.erp-sale-split-btn):not(.erp-sale-picker-btn):not(.erp-sale-hold-btn):not(.erp-sale-hold-trigger):not(.erp-dialog-btn):not(.erp-btn-hold):not(.erp-pos-chq-add-btn):not(.erp-pos-chq-remove):not(.erp-money-method-btn):not(.erp-money-suggest-item):not(.erp-money-suggest-add):not(.erp-money-btn) {
+  border: 1px solid #c5cdd8 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #1e293b !important;
+  font-family: inherit !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 4px 12px !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-page-content button:not(.erp-btn):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-settings-seg-btn):not(.erp-pos-chip-btn):not(.erp-pos-table-btn):not(.erp-pos-rest-type-btn):not(.erp-pin-key):not(.erp-auth-link-btn):not(.erp-hold-action-btn):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-split-btn):not(.erp-sale-cust-toggle):not(.erp-pos-cart-remove-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-md-refresh):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-btn-hold):not(.erp-pur-btn-primary):not(.erp-pur-btn-apply):not(.erp-pur-btn-clear):not(.erp-pur-act):not(.erp-pur-quick):not(.erp-pur-inv):not(.erp-pur-inv-link):not(.erp-pur-icon-btn):not(.erp-pur-pager-btn):not(.erp-pur-date-refresh):not(.erp-pur-search-clear):not(.erp-act-btn):not(.erp-inv-act-btn):not(.erp-acc-tab):not(.erp-inv-tab):not(.erp-inv-chip):not(.erp-inv-subtab):not(.erp-acc-pill):not(.erp-acc-step):not(.erp-rpt-tab):not(.erp-rpt-pill):not(.erp-sale-hold-btn):not(.erp-sale-hold-trigger):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(:is(.erp-si-fv *)):hover:not(:disabled),
+.erp-app-root .erp-modal-shell:not(.erp-pur-form-modal):not(.erp-pos-chq-modal):not(.erp-money-modal):not(.erp-inv-product-modal) .erp-modal-body button:not(.erp-btn):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-split-pay-btn):not(.erp-split-pay-add):not(.erp-split-pay-remove):not(.erp-btn-hold):not(.erp-pos-chq-add-btn):not(.erp-pos-chq-remove):not(.erp-money-method-btn):not(.erp-money-suggest-item):not(.erp-money-suggest-add):not(.erp-money-btn):not(.erp-sale-hold-trigger):hover:not(:disabled) {
+  border-color: #7a9fd4 !important;
+  background: #f1f5f9 !important;
+  background-image: none !important;
+}
+
+/* Kill modern gradient panel backgrounds in workspace (not dialog headers / purchase form / view-print) */
+.erp-app-root .erp-page-content div[style*="linear-gradient"]:not(.erp-modal-header):not(.erp-modal-overlay *):not(.erp-system-dialog *):not(:is(.erp-si-fv, .erp-si-fv *)),
+.erp-app-root .erp-page-content button[style*="linear-gradient"]:not(.erp-modal-overlay *):not(.erp-system-dialog *):not(.erp-act-btn):not(.erp-inv-act-btn):not(.erp-acc-tab):not(.erp-inv-tab):not(.erp-inv-chip):not(.erp-inv-subtab):not(.erp-acc-pill):not(.erp-acc-step):not(.erp-rpt-tab):not(.erp-rpt-pill):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(:is(.erp-si-fv *)) {
+  background-image: none !important;
+}
+
+/* Dialog title bars ? dark purple brand (matches menu bar / icons) */
+.erp-app-root .erp-modal-header,
+.erp-app-root .erp-page-content .erp-modal-overlay .erp-modal-header,
+.erp-app-root .erp-system-dialog-shell > div:first-child {
+  background: linear-gradient(180deg, #3d2375 0%, #4a2a8f 55%, #321b5c 100%) !important;
+  background-image: linear-gradient(180deg, #3d2375 0%, #4a2a8f 55%, #321b5c 100%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #fff !important;
+  padding: 7px 12px !important;
+  min-height: 36px !important;
+}
+
+.erp-app-root .erp-page-content label[style*="borderRadius"],
+.erp-app-root .erp-page-content label[style*="border-radius"] {
+  border: 1px solid #aca899 !important;
+  background: #fff !important;
+  padding: 8px 10px !important;
+}
+
+.erp-app-root .erp-page-content label[style*="borderRadius"].active,
+.erp-app-root .erp-page-content label.active {
+  background: #e8f0fc !important;
+  border-color: #316ac5 !important;
+}
+
+/* ?? System dialogs (alert / confirm) ????????????????????????? */
+.erp-system-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.erp-system-dialog-shell {
+  background: #fff;
+  border: 1px solid #aca899;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 92vh;
+  width: calc(100vw - 48px);
+}
+
+.erp-system-dialog-body {
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #000;
+}
+
+.erp-system-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 14px 12px;
+}
+
+.erp-system-dialog-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #aca899;
+  margin-bottom: 10px;
+}
+
+.erp-system-dialog-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #e0e0e0;
+  cursor: default;
+  font-size: 12px;
+  background: #fff;
+}
+
+.erp-system-dialog-list label.selected {
+  background: #e8f0fc;
+  border-left: 3px solid #1a4fa0;
+  padding-left: 7px;
+}
+
+/* ?? Payment / split UI (App.jsx) ????????????????????????????? */
+.erp-split-pay-panel {
+  background: #fafafa;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+}
+
+.erp-split-pay-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+  margin: 0 0 10px;
+  letter-spacing: 0.01em;
+}
+
+.erp-split-pay-sub {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin: -2px 0 12px;
+}
+
+.erp-split-pay {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.erp-split-pay-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  background: #e2e8f0;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.erp-split-pay-sum {
+  background: #fff;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.erp-split-pay-sum span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.erp-split-pay-sum strong {
+  font-size: 15px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.erp-split-pay-sum.ok {
+  background: #f0fdf4;
+}
+
+.erp-split-pay-sum.ok strong {
+  color: #15803d;
+}
+
+.erp-split-pay-sum.due {
+  background: #fef2f2;
+}
+
+.erp-split-pay-sum.due strong {
+  color: #b91c1c;
+}
+
+.erp-split-pay-grid {
+  display: none;
+}
+
+.erp-split-pay-kpi {
+  display: none;
+}
+
+.erp-app-root .erp-modal-header.erp-modal-header-color-only {
+  min-height: 28px !important;
+  height: 28px !important;
+  padding: 0 6px !important;
+}
+
+.erp-app-root .erp-modal-header.erp-modal-header-color-only .erp-modal-title {
+  display: none !important;
+}
+
+.erp-split-pay-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.erp-split-pay-row {
+  border: 1px solid #e1e8f5;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  margin-bottom: 0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.erp-split-pay-row.cheque {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+.erp-split-pay-row-grid {
+  display: grid;
+  grid-template-columns: 150px minmax(120px, 1fr) minmax(160px, 1.4fr) 32px;
+  gap: 10px;
+  align-items: end;
+}
+
+.erp-split-pay-field label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.erp-split-pay-field input,
+.erp-split-pay-field select {
+  width: 100%;
+  box-sizing: border-box;
+  height: 34px;
+  border: 1px solid #7a9fd4;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fff;
+  color: #334155;
+}
+
+.erp-split-pay-field input:focus,
+.erp-split-pay-field select:focus {
+  outline: none;
+  border-color: #2979ff;
+  box-shadow: 0 0 0 2px rgba(41, 121, 255, 0.18);
+}
+
+.erp-split-pay-row-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 34px;
+}
+
+.erp-split-pay-remove {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #dc2626;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.erp-split-pay-remove-spacer {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+}
+
+.erp-split-pay-cheque {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #fcd34d;
+}
+
+.erp-split-pay-cheque-hint {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: #92400e;
+  font-weight: 600;
+}
+
+.erp-split-pay-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.erp-split-pay-add {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 6px;
+  border: 1px dashed #7a9fd4;
+  background: #f0f4ff;
+  color: #2255d4;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.erp-split-pay-add:hover {
+  background: #e8eef6;
+  border-color: #2979ff;
+}
+
+.erp-split-pay-status {
+  text-align: right;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.erp-split-pay-status strong { color: #0f172a; }
+.erp-split-pay-status strong.bad,
+.erp-split-pay-status .bad { color: #b91c1c; font-weight: 700; }
+.erp-split-pay-status .warn { color: #b45309; font-weight: 700; font-size: 11px; margin-top: 2px; }
+.erp-split-pay-status .ok { color: #15803d; font-weight: 700; font-size: 11px; margin-top: 2px; }
+
+.erp-split-pay-footer {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid #e1e8f5;
+  margin-top: 4px;
+}
+
+.erp-split-pay-btn {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  box-shadow: none;
+}
+
+.erp-split-pay-btn.primary {
+  background: linear-gradient(135deg, #2979ff 0%, #2255d4 100%);
+  border-color: #1a4fa0;
+  color: #fff;
+  font-weight: 800;
+}
+
+.erp-split-pay-btn.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.erp-split-pay-btn.accent {
+  background: #16a34a;
+  border-color: #15803d;
+  color: #fff;
+  font-weight: 800;
+}
+
+.erp-split-pay-btn:hover:not(:disabled) {
+  filter: brightness(1.03);
+}
+
+@media (max-width: 720px) {
+  .erp-split-pay-summary {
+    grid-template-columns: 1fr;
+  }
+  .erp-split-pay-row-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .erp-split-pay-cheque {
+    grid-template-columns: 1fr;
+  }
+}
+
+.erp-cheque-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+  padding: 6px 8px;
+  border: 1px solid #aca899;
+  background: #fff8e1;
+}
+
+.erp-cheque-line.out {
+  background: #fde8ed;
+}
+
+/* ?? Pay match toast ?????????????????????????????????????????? */
+.erp-pay-toast {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 99998;
+  max-width: 480px;
+  width: calc(100vw - 32px);
+  background: #fff;
+  color: #000;
+  border: 1px solid #aca899;
+  padding: 10px 14px;
+  box-shadow: 4px 4px 12px rgba(0, 0, 0, 0.2) !important;
+  font-size: 12px;
+}
+
+.erp-pay-toast.ok {
+  border-color: #2e7d32;
+  background: #e8f5e9;
+}
+
+/* ?? Update / about panel ????????????????????????????????????? */
+.erp-about-panel {
+  background: #fff;
+  border: 1px solid #aca899;
+  overflow: hidden;
+}
+
+.erp-about-header {
+  background: linear-gradient(180deg, #1e3a5f 0%, #16304f 100%);
+  padding: 12px 14px;
+  color: #fff;
+  border-bottom: 1px solid #0f2438;
+}
+
+.erp-about-body {
+  padding: 12px 14px;
+}
+
+.erp-update-info {
+  background: #f5f5f5;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.erp-progress-track {
+  height: 8px;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  overflow: hidden;
+}
+
+.erp-progress-fill {
+  height: 100%;
+  background: #1a4fa0;
+  transition: width 0.2s ease;
+}
+
+/* ?? License gate & setup wizard ???????????????????????????? */
+.erp-gate-scope,
+.erp-setup-scope {
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+  font-size: 12px;
+  color: #000;
+  background: #f4f5f7;
+  min-height: 100vh;
+}
+
+.erp-gate-scope *,
+.erp-setup-scope * {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.erp-gate-card,
+.erp-setup-card {
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 12px 14px;
+}
+
+.erp-gate-title {
+  background: linear-gradient(180deg, #1e3a5f 0%, #16304f 100%);
+  color: #fff;
+  padding: 8px 12px;
+  border-bottom: 1px solid #0f2438;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.erp-gate-banner {
+  border: 1px solid #aca899;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.erp-gate-banner.warn {
+  background: #fff8e1;
+  border-color: #c9a227;
+  color: #7c5700;
+}
+
+.erp-gate-banner.trial {
+  background: #e8f0fc;
+  border-color: #7a9fd4;
+  color: #1a4fa0;
+}
+
+.erp-gate-banner.danger {
+  background: #fde8ed;
+  border-color: #c00000;
+  color: #991b1b;
+}
+
+/* ?? About / Settings license status panels ????????????????? */
+.erp-license-panel {
+  border: 1px solid #aca899;
+  padding: 12px 14px;
+  height: 100%;
+  box-sizing: border-box;
+  background: #fff;
+}
+
+.erp-license-panel.danger {
+  background: #fde8ed;
+  border-color: #c00000;
+}
+
+.erp-license-panel.warn {
+  background: #fff8e1;
+  border-color: #c9a227;
+}
+
+.erp-license-panel.success {
+  background: #e8f5e9;
+  border-color: #2e7d32;
+}
+
+.erp-license-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.erp-license-panel-icon {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  border: 1px solid #aca899;
+  background: #ece9d8;
+}
+
+.erp-license-panel-icon.danger { background: #c00000; color: #fff; border-color: #8b0000; }
+.erp-license-panel-icon.warn { background: #c9a227; color: #fff; border-color: #8a6d00; }
+.erp-license-panel-icon.success { background: #2e7d32; color: #fff; border-color: #1b5e20; }
+
+.erp-license-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  background: #f5f5f5;
+  border: 1px solid #aca899;
+  padding: 5px 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+/* ?? Settings format toggle ????????????????????????????????? */
+.erp-settings-fmt-bar {
+  display: flex;
+  gap: 0;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  padding: 2px;
+}
+
+.erp-settings-fmt-tab {
+  flex: 1;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #555;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-settings-fmt-tab.active {
+  background: #fff;
+  border-color: #aca899;
+  color: #1a4fa0;
+  font-weight: 700;
+}
+
+.erp-settings-restore-upload {
+  display: block;
+  text-align: center;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, #fff 0%, #ece9d8 100%);
+  border: 1px solid #aca899;
+  color: #000;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-settings-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  padding: 8px 12px;
+  border: 1px solid #aca899;
+  background: #fff;
+}
+
+.erp-settings-toggle-label.active {
+  background: #e8f0fc;
+  border-color: #7a9fd4;
+}
+
+.erp-settings-logo-align-bar {
+  display: flex;
+  gap: 4px;
+}
+
+/* ?? POS checkout panels ???????????????????????????????????? */
+.erp-pos-edit-badge {
+  font-size: 10px;
+  font-weight: 700;
+  background: #fff8e1;
+  color: #7c5700;
+  border: 1px solid #c9a227;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+.erp-pos-pay-status {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-pay-status.paid { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+.erp-pos-pay-status.partial { background: #fff8e1; border-color: #c9a227; color: #7c5700; }
+.erp-pos-pay-status.unpaid { background: #fde8ed; border-color: #c00000; color: #991b1b; }
+
+.erp-pos-split-panel {
+  background: #e8f5e9;
+  border: 1px solid #2e7d32;
+  padding: 8px 10px;
+  cursor: default;
+}
+
+.erp-pos-cheque-panel {
+  background: #e8f0fc;
+  border: 1px solid #7a9fd4;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  cursor: default;
+}
+
+.erp-pos-pay-btn {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #1b5e20;
+  background: linear-gradient(180deg, #4caf50 0%, #2e7d32 100%);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: default;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.erp-pos-pay-btn:disabled {
+  background: #e5e7eb;
+  border-color: #9ca3af;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+
+.erp-pos-warranty-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+  margin: 10px 0;
+  padding: 8px 10px;
+  border: 1px solid #aca899;
+  background: #fff;
+}
+
+.erp-pos-warranty-label.active {
+  background: #e8f0fc;
+  border-color: #7a9fd4;
+}
+
+/* ?? Gate lock screen buttons ??????????????????????????????? */
+.erp-gate-wa-btn {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid #1b5e20;
+  background: linear-gradient(180deg, #4caf50 0%, #2e7d32 100%) !important;
+  color: #fff !important;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.erp-gate-support-btn {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #aca899;
+  background: linear-gradient(180deg, #fff 0%, #ece9d8 100%) !important;
+  color: #1a4fa0 !important;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.erp-gate-activate-btn {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #0a2d5c;
+  background: linear-gradient(180deg, #3a6eb5 0%, #1a4fa0 100%) !important;
+  color: #fff !important;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* WhatsApp icon button */
+.erp-wa-icon-btn {
+  background: linear-gradient(180deg, #4caf50 0%, #2e7d32 100%) !important;
+  border: 1px solid #1b5e20 !important;
+  color: #fff !important;
+  padding: 4px 8px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-wa-icon-btn:disabled {
+  background: #ccc !important;
+  border-color: #999 !important;
+}
+
+/* ?? Settings invoice preview ??????????????????????????????? */
+.erp-settings-range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.erp-settings-range-value {
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 36px;
+  text-align: right;
+}
+
+.erp-settings-range-value.blue { color: #1a4fa0; }
+.erp-settings-range-value.orange { color: #c9a227; }
+
+.erp-settings-font-preview {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #f5f5f5;
+  border: 1px solid #aca899;
+}
+
+.erp-settings-font-preview.thermal {
+  background: #fff8e1;
+  text-align: center;
+}
+
+.erp-settings-font-preview-info {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #f5f5f5;
+  border: 1px solid #aca899;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.erp-settings-font-preview-info.thermal {
+  background: #fff8e1;
+  text-align: center;
+}
+
+.erp-settings-logo-thumb {
+  object-fit: contain;
+  border: 1px solid #aca899;
+  background: #fff;
+  padding: 4px;
+}
+
+.erp-settings-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.erp-settings-preview-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #000;
+}
+
+.erp-settings-preview-btn {
+  padding: 4px 12px;
+  border: 1px solid #aca899;
+  background: #fff;
+  color: #1a4fa0;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-settings-preview-btn.orange {
+  color: #7c5700;
+  background: #fff8e1;
+  border-color: #c9a227;
+}
+
+.erp-settings-preview-frame {
+  background: #fff;
+  border: 1px solid #aca899;
+  overflow: hidden;
+}
+
+.erp-settings-preview-frame.h320 { height: 320px; }
+.erp-settings-preview-frame.h260 { height: 260px; }
+
+.erp-settings-mono-path {
+  background: #f5f5f5;
+  border: 1px solid #aca899;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #000;
+  font-family: Consolas, monospace;
+  word-break: break-all;
+}
+
+.erp-settings-table-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #aca899;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.erp-settings-table-status {
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid #aca899;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.erp-settings-table-status.free { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+.erp-settings-table-status.occupied { background: #fde8ed; border-color: #c00000; color: #991b1b; }
+.erp-settings-table-status.pending { background: #fff8e1; border-color: #c9a227; color: #7c5700; }
+
+.erp-settings-table-del-btn {
+  border: 1px solid #c00000;
+  background: #fde8ed;
+  color: #991b1b;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+  font-family: inherit;
+}
+
+/* ?? POS cart line editor ??????????????????????????????????? */
+.erp-pos-cart-row {
+  background: #fafafa;
+  border-bottom: 1px solid #aca899;
+}
+
+.erp-pos-cart-row.newest {
+  background: #eef5ff;
+  border-left: 3px solid #1a4fa0;
+}
+
+.erp-pos-cart-row:hover {
+  background: #f3f7ff;
+}
+
+.erp-pos-cart-row.newest:hover {
+  background: #e5efff;
+}
+
+.erp-pos-cart-row.no-detail {
+  border-bottom: 1px solid #aca899;
+}
+
+.erp-pos-cart-detail-row {
+  border-bottom: 1px solid #aca899;
+  background: #f4f6f9;
+}
+
+.erp-pos-cart-detail-row.newest {
+  background: #f3f8ff;
+}
+
+.erp-pos-cart-modifier-wrap {
+  margin-top: 6px;
+  max-width: 220px;
+}
+
+.erp-pos-cart-modifier-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #444;
+  margin-bottom: 3px;
+}
+
+.erp-pos-cart-modifier-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #aca899;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.erp-pos-cart-dup-btn {
+  background: #e8f0fc;
+  border: 1px solid #7a9fd4;
+  color: #1a4fa0;
+  cursor: default;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 2px 5px;
+  font-family: inherit;
+  margin-right: 2px;
+}
+
+.erp-pos-cart-dup-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.erp-pos-cart-remove-btn {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  border-radius: 3px;
+  color: #dc2626;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  font-family: inherit;
+}
+
+.erp-pos-cart-remove-btn:hover:not(:disabled) {
+  background: #fee2e2;
+  border-color: #ef4444;
+}
+
+.erp-pos-cart-remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.erp-pos-unit-seg-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px 4px;
+  background: #e8eef7;
+  border: 1px solid #b6c4d8;
+}
+
+.erp-pos-unit-seg-btn {
+  font-size: 11px;
+  padding: 4px 8px;
+  border: 1px solid #aca899;
+  background: #fff;
+  color: #333;
+  cursor: default;
+  font-family: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.erp-pos-unit-seg-btn.active {
+  background: #1a4fa0;
+  border-color: #0a2d5c;
+  color: #fff;
+}
+
+.erp-pos-unit-seg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.erp-pos-qty-pack-btn {
+  font-size: 10px;
+  padding: 3px 8px;
+  border: 1px solid #aca899;
+  background: #fff;
+  color: #1a4fa0;
+  font-weight: 700;
+  cursor: default;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.erp-pos-qty-pack-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.erp-pos-qty-quick-btn {
+  font-size: 9px;
+  padding: 2px 6px;
+  border: 1px solid #aca899;
+  background: #fff;
+  color: #555;
+  font-weight: 600;
+  cursor: default;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.erp-pos-qty-quick-btn.active {
+  background: #e8f0fc;
+  border-color: #7a9fd4;
+  color: #1a4fa0;
+  font-weight: 700;
+}
+
+.erp-pos-qty-quick-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.erp-pos-cart-comment-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #aca899;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  background: #fff;
+  height: 24px;
+}
+
+/* ?? Settings Network tab ????????????????????????????????????? */
+.erp-network-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border: 1px solid #aca899;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.erp-network-status.ok { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+.erp-network-status.warn { background: #fff8e1; border-color: #c9a227; color: #7c5700; }
+.erp-network-status.danger { background: #fde8ed; border-color: #c00000; color: #991b1b; }
+.erp-network-status.info { background: #e8f0fc; border-color: #7a9fd4; color: #1a4fa0; }
+
+.erp-network-info-panel {
+  border: 1px solid #aca899;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.erp-network-info-panel.info { background: #e8f0fc; border-color: #7a9fd4; }
+.erp-network-info-panel.warn { background: #fff8e1; border-color: #c9a227; }
+.erp-network-info-panel.key { background: #fff8e1; border-color: #c9a227; }
+
+.erp-network-info-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+
+.erp-network-info-value {
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.erp-network-info-value.blue { color: #1a4fa0; }
+.erp-network-info-value.warn { color: #7c5700; }
+
+.erp-network-server-hdr {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.erp-network-server-icon {
+  width: 42px;
+  height: 42px;
+  background: #e8f5e9;
+  border: 1px solid #2e7d32;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.erp-network-role-badge {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #e8f5e9;
+  border: 1px solid #2e7d32;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1b5e20;
+}
+
+.erp-network-role-dot {
+  width: 7px;
+  height: 7px;
+  background: #2e7d32;
+  display: inline-block;
+}
+
+.erp-network-copy-btn {
+  margin-top: 8px;
+  padding: 4px 12px;
+  border: 1px solid #aca899;
+  background: linear-gradient(180deg, #fff 0%, #ece9d8 100%);
+  color: #1a4fa0;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-network-copy-btn.orange {
+  color: #7c5700;
+  background: #fff8e1;
+  border-color: #c9a227;
+}
+
+.erp-network-label-input {
+  flex: 1 1 120px;
+  min-width: 100px;
+  padding: 5px 8px;
+  border: 1px solid #aca899;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.erp-network-label-input.flash {
+  border: 2px solid #c9a227;
+  background: #fff8e1;
+}
+
+.erp-network-remove-btn {
+  background: #fde8ed;
+  color: #991b1b;
+  border: 1px solid #c00000;
+  padding: 4px 10px;
+  cursor: default;
+  font-weight: 700;
+  font-size: 11px;
+  font-family: inherit;
+}
+
+/* ?? POS Restaurant workflow ???????????????????????????????? */
+.erp-pos-rest-order-panel {
+  border: 1px solid #aca899;
+  padding: 10px;
+  background: #fff;
+  margin-bottom: 8px;
+}
+
+.erp-pos-rest-order-type-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.erp-pos-rest-delivery-grid {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.erp-pos-rest-meta-chip {
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid #aca899;
+  padding: 3px 9px;
+}
+
+.erp-pos-rest-meta-chip.warn { background: #fff8e1; border-color: #c9a227; color: #7c5700; }
+.erp-pos-rest-meta-chip.danger { background: #fde8ed; border-color: #c00000; color: #991b1b; }
+.erp-pos-rest-meta-chip.info { background: #e8f0fc; border-color: #7a9fd4; color: #1a4fa0; }
+
+.erp-pos-rest-table-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.erp-pos-rest-status-msg {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.erp-pos-rest-status-msg.accent { color: #1a4fa0; }
+.erp-pos-rest-status-msg.muted { color: #555; }
+.erp-pos-rest-status-msg.ok { color: #1b5e20; }
+
+.erp-pos-chip-btn {
+  font-size: 11px;
+  border: 1px solid #aca899;
+  padding: 4px 9px;
+  background: #fff;
+  color: #333;
+  cursor: default;
+  font-weight: 700;
+  font-family: inherit;
+}
+
+.erp-pos-chip-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.erp-pos-chip-btn.active {
+  background: #e8f0fc;
+  border-color: #7a9fd4;
+  color: #1a4fa0;
+}
+
+.erp-pos-category-chip {
+  font-size: 10px;
+  border: 1px solid #aca899;
+  padding: 2px 7px;
+  background: #f5f5f5;
+  color: #333;
+  font-weight: 700;
+}
+
+.erp-pos-rest-orders-empty {
+  text-align: center;
+  padding: 22px 12px;
+  color: #555;
+  font-size: 13px;
+  border: 1px dashed #aca899;
+  background: #fafafa;
+}
+
+/* ?? Settings tax / currency ???????????????????????????????? */
+.erp-settings-section-hdr {
+  font-size: 11px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 8px;
+}
+
+.erp-settings-currency-preview {
+  padding: 8px 10px;
+  background: #e8f0fc;
+  border: 1px solid #aca899;
+}
+
+.erp-settings-currency-preview-label {
+  font-size: 10px;
+  color: #555;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+
+.erp-settings-currency-preview-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1a4fa0;
+}
+
+.erp-settings-currency-hint {
+  font-size: 12px;
+  color: #555;
+  line-height: 1.4;
+  padding: 4px 0;
+}
+
+.erp-settings-tax-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 88px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid #aca899;
+  background: #fafafa;
+}
+
+.erp-settings-tax-row.cascade {
+  grid-template-columns: 28px minmax(0, 1fr) 88px 120px;
+}
+
+.erp-settings-tax-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #333;
+}
+
+.erp-settings-tax-rate-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.erp-settings-tax-rate-input {
+  width: 64px;
+  text-align: right;
+  font-family: Consolas, monospace;
+}
+
+.erp-settings-tax-empty {
+  font-size: 12px;
+  color: #555;
+  padding: 8px 10px;
+  border: 1px dashed #aca899;
+  background: #fafafa;
+}
+
+.erp-settings-tax-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.erp-settings-tax-help-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid #aca899;
+  background: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1a4fa0;
+  line-height: 1;
+  padding: 0;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-settings-tax-tooltip {
+  position: absolute;
+  z-index: 120;
+  left: 0;
+  bottom: 100%;
+  margin-bottom: 6px;
+  width: 260px;
+  padding: 10px 12px;
+  border: 1px solid #aca899;
+  background: #fff;
+  font-size: 11px;
+  color: #333;
+  line-height: 1.5;
+}
+
+.erp-settings-tax-tooltip-title {
+  font-weight: 800;
+  margin-bottom: 6px;
+  color: #1a4fa0;
+}
+
+.erp-settings-add-tax-btn {
+  padding: 6px 12px;
+  border: 1px dashed #7a9fd4;
+  background: #e8f0fc;
+  color: #1a4fa0;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-settings-toggle-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #333;
+}
+
+.erp-settings-toggle-label.active .erp-settings-toggle-title {
+  color: #1a4fa0;
+}
+
+.erp-settings-toggle-sub {
+  font-size: 11px;
+  color: #555;
+  margin-top: 2px;
+}
+
+.erp-settings-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+.erp-settings-divider {
+  border-top: 1px solid #aca899;
+}
+
+/* ?? POS order detail modal ????????????????????????????????? */
+.erp-pos-order-detail-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.erp-pos-order-detail-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #000;
+}
+
+.erp-pos-order-detail-item {
+  border-bottom: 1px solid #d4d0c8;
+  padding-bottom: 8px;
+}
+
+.erp-pos-order-detail-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.erp-pos-order-detail-item-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #000;
+}
+
+.erp-pos-order-detail-item-meta {
+  font-size: 11px;
+  color: #555;
+  margin-top: 2px;
+}
+
+.erp-pos-order-detail-item-note {
+  font-size: 11px;
+  color: #333;
+  margin-top: 3px;
+}
+
+.erp-pos-order-detail-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.erp-pos-order-action-btn {
+  font-size: 11px;
+  border: 1px solid #aca899;
+  padding: 4px 8px;
+  background: #fff;
+  cursor: default;
+  font-family: inherit;
+  font-weight: 600;
+}
+
+.erp-pos-order-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.erp-pos-order-action-btn.primary {
+  background: #1a4fa0;
+  border-color: #0d3a7a;
+  color: #fff;
+  font-weight: 800;
+}
+
+.erp-pos-order-action-btn.teal {
+  background: #0f766e;
+  border-color: #0d5d57;
+  color: #fff;
+  font-weight: 800;
+}
+
+.erp-pos-order-split-section {
+  border-top: 1px dashed #aca899;
+  padding-top: 10px;
+}
+
+.erp-pos-order-split-hdr {
+  font-size: 11px;
+  font-weight: 800;
+  color: #555;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.erp-pos-order-split-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #333;
+}
+
+.erp-pos-order-split-pick span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erp-pos-status-pill.pending { background: #fff8e1; border-color: #c9a227; color: #7c5700; }
+.erp-pos-status-pill.preparing { background: #e8f0fc; border-color: #7a9fd4; color: #1a4fa0; }
+.erp-pos-status-pill.ready { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+.erp-pos-status-pill.served { background: #f5f5f5; border-color: #aca899; color: #333; }
+.erp-pos-status-pill.billed { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+
+.erp-pos-manage-row input {
+  flex: 1;
+  border: 1px solid #aca899;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+}
+
+.erp-pos-manage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.erp-pos-manage-hint {
+  font-size: 11px;
+  color: #555;
+  line-height: 1.45;
+}
+
+/* ?? Settings shop / modules ?????????????????????????????????? */
+.erp-settings-info-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  margin-bottom: 2px;
+}
+
+.erp-settings-info-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #333;
+}
+
+.erp-settings-info-value.accent { color: #1a4fa0; }
+
+.erp-settings-info-meta {
+  font-size: 11px;
+  color: #555;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.erp-settings-info-stat {
+  font-size: 11px;
+  color: #000;
+  margin-top: 6px;
+}
+
+.erp-settings-module-group-hdr {
+  font-size: 11px;
+  font-weight: 800;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+}
+
+.erp-settings-module-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid #d4d0c8;
+}
+
+.erp-settings-module-row-title {
+  display: block;
+  font-weight: 800;
+  font-size: 12px;
+  color: #000;
+}
+
+.erp-settings-module-row-blurb {
+  display: block;
+  font-size: 12px;
+  color: #555;
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.erp-settings-field-hdr {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+}
+
+.erp-form-hint-error {
+  font-size: 11px;
+  color: #991b1b;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.erp-settings-active-note {
+  font-size: 12px;
+  color: #1b5e20;
+  font-weight: 600;
+}
+
+/* ?? PIN / auth modals ???????????????????????????????????????? */
+.erp-auth-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 100015;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.erp-auth-modal-shell {
+  background: #fff;
+  border: 1px solid #aca899;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 92vh;
+  box-shadow: 4px 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.erp-auth-modal-body {
+  padding: 16px 18px 18px;
+  overflow-y: auto;
+}
+
+.erp-auth-modal-body.center {
+  text-align: center;
+}
+
+.erp-auth-modal-hint {
+  font-size: 12px;
+  color: #555;
+  margin-bottom: 16px;
+  line-height: 1.55;
+}
+
+.erp-auth-modal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.erp-auth-modal-actions.col {
+  flex-direction: column;
+}
+
+.erp-pin-dots {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+
+.erp-pin-dot {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #aca899;
+  background: #f5f5f5;
+}
+
+.erp-pin-dot.filled {
+  background: #1a4fa0;
+  border-color: #1a4fa0;
+}
+
+.erp-pin-keypad {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.erp-pin-key {
+  padding: 12px 0;
+  border: 1px solid #aca899;
+  background: linear-gradient(180deg, #fff 0%, #ece9d8 100%);
+  font-size: 16px;
+  font-weight: 700;
+  color: #000;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-pin-key.backspace {
+  background: #fde8ed;
+  color: #991b1b;
+  font-size: 14px;
+}
+
+.erp-pin-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.erp-pin-divider-line {
+  flex: 1;
+  height: 1px;
+  background: #aca899;
+}
+
+.erp-pin-divider-text {
+  font-size: 10px;
+  color: #555;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.erp-pin-pw-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.erp-pin-pw-row input {
+  flex: 1;
+}
+
+.erp-pin-challenge-code {
+  font-family: Consolas, monospace;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  background: #e8f0fc;
+  border: 2px solid #7a9fd4;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  color: #1a4fa0;
+  user-select: all;
+}
+
+.erp-auth-link-btn {
+  margin-bottom: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1a4fa0;
+  background: none;
+  border: none;
+  cursor: default;
+  text-decoration: underline;
+  font-family: inherit;
+}
+
+/* ?? POS held / filters ??????????????????????????????????????? */
+.erp-pos-filter-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.erp-pos-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 540px;
+  overflow-y: auto;
+}
+
+.erp-pos-order-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #000;
+}
+
+.erp-pos-order-card-meta {
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 4px;
+}
+
+.erp-pos-order-card-by {
+  font-size: 11px;
+  color: #333;
+}
+
+.erp-pos-order-card-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.erp-pos-held-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #fafafa;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-held-pill {
+  font-size: 9px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-held-pill.sale { background: #e8f0fc; border-color: #7a9fd4; color: #1a4fa0; }
+.erp-pos-held-pill.quot { background: #fff8e1; border-color: #c9a227; color: #7c5700; }
+.erp-pos-held-pill.active { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+
+.erp-pos-held-count {
+  background: #1a4fa0;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 7px;
+  border: 1px solid #0a2d5c;
+}
+
+.erp-pos-table-count-chip {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-table-count-chip.free { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+.erp-pos-table-count-chip.occupied { background: #fde8ed; border-color: #c00000; color: #991b1b; }
+.erp-pos-table-count-chip.pending { background: #fff8e1; border-color: #c9a227; color: #7c5700; }
+
+/* ?? Hold / leave POS modal ??????????????????????????????????? */
+.erp-hold-modal-overlay {
+  background: rgba(15, 23, 42, 0.45) !important;
+}
+
+.erp-hold-modal-shell {
+  width: 100%;
+  max-width: 420px;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.28) !important;
+}
+
+.erp-hold-modal-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 800;
+  font-size: 13px;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+.erp-hold-summary {
+  padding: 14px 16px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.erp-hold-summary-hint {
+  font-size: 12px;
+  color: #64748b;
+  margin-bottom: 12px;
+  line-height: 1.45;
+}
+
+.erp-hold-summary-hint strong {
+  color: #1e3a5f;
+  font-weight: 700;
+}
+
+.erp-hold-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.erp-hold-summary-cell {
+  padding: 8px 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.erp-hold-summary-cell.highlight {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.erp-hold-summary-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+
+.erp-hold-summary-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erp-hold-summary-value.accent {
+  color: #1d4ed8;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.erp-hold-actions {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fff;
+}
+
+.erp-hold-action-btn {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px !important;
+  background: #fff;
+  background-image: none !important;
+  color: #0f172a;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: none !important;
+  transition: background .12s ease, border-color .12s ease;
+}
+
+.erp-hold-action-btn.primary {
+  justify-content: center;
+  min-height: 40px;
+  background: linear-gradient(180deg, #2a4a70 0%, #1e3a5f 100%) !important;
+  background-image: linear-gradient(180deg, #2a4a70 0%, #1e3a5f 100%) !important;
+  border-color: #16304f !important;
+  color: #fff !important;
+  font-weight: 800;
+}
+
+.erp-hold-action-btn.primary:hover {
+  filter: brightness(1.06);
+}
+
+.erp-hold-action-btn.hold {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border-color: #cbd5e1 !important;
+  color: #1e3a5f !important;
+}
+
+.erp-hold-action-btn.hold:hover {
+  background: #eff6ff !important;
+  border-color: #93c5fd !important;
+}
+
+.erp-hold-action-btn.discard {
+  background: #fff !important;
+  background-image: none !important;
+  border-color: #fecaca !important;
+  color: #b91c1c !important;
+}
+
+.erp-hold-action-btn.discard:hover {
+  background: #fef2f2 !important;
+  border-color: #f87171 !important;
+}
+
+.erp-hold-action-icon {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px !important;
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.erp-hold-action-btn.hold .erp-hold-action-icon {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.erp-hold-action-btn.discard .erp-hold-action-icon {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #dc2626;
+}
+
+.erp-hold-action-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.erp-hold-action-main {
+  display: block;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.erp-hold-action-sub {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+  margin-top: 1px;
+  line-height: 1.3;
+}
+
+.erp-hold-action-btn.discard .erp-hold-action-sub {
+  color: #f87171;
+}
+
+.erp-app-root .erp-hold-action-btn,
+.erp-app-root .erp-hold-modal-shell .erp-hold-action-btn {
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-hold-modal-shell .erp-hold-action-btn.primary {
+  background: linear-gradient(180deg, #2a4a70 0%, #1e3a5f 100%) !important;
+  background-image: linear-gradient(180deg, #2a4a70 0%, #1e3a5f 100%) !important;
+  border: 1px solid #16304f !important;
+  color: #fff !important;
+}
+
+.erp-app-root .erp-hold-modal-shell .erp-hold-action-btn.hold {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e3a5f !important;
+}
+
+.erp-app-root .erp-hold-modal-shell .erp-hold-action-btn.discard {
+  background: #fff !important;
+  background-image: none !important;
+  border: 1px solid #fecaca !important;
+  color: #b91c1c !important;
+}
+
+/* ?? Cloud sync helpers ??????????????????????????????????????? */
+.erp-cloud-msg {
+  border: 1px solid #aca899;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.erp-cloud-msg.success { background: #e8f5e9; border-color: #2e7d32; color: #1b5e20; }
+.erp-cloud-msg.error { background: #fde8ed; border-color: #c00000; color: #991b1b; }
+.erp-cloud-msg.info { background: #e8f0fc; border-color: #7a9fd4; color: #1a4fa0; }
+
+.erp-cloud-footer-hint {
+  font-size: 11px;
+  color: #555;
+  text-align: center;
+}
+
+/* Walk-in / Customer ? blue active/hover (beats cream flatten) */
+.erp-app-root .erp-page-content .erp-pos-cust-mode button.erp-pos-seg-btn,
+.erp-app-root .erp-pos-cust-mode button.erp-pos-seg-btn {
+  border-radius: 4px !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  border: 1px solid #7a9fd4 !important;
+  color: #1a4fa0 !important;
+}
+
+.erp-app-root .erp-page-content .erp-pos-cust-mode button.erp-pos-seg-btn.active,
+.erp-app-root .erp-pos-cust-mode button.erp-pos-seg-btn.active {
+  background: #1a4fa0 !important;
+  background-image: none !important;
+  border-color: #0a2d5c !important;
+  color: #ffffff !important;
+}
+
+.erp-app-root .erp-page-content .erp-pos-cust-mode button.erp-pos-seg-btn:hover,
+.erp-app-root .erp-pos-cust-mode button.erp-pos-seg-btn:hover {
+  background: #0f3d82 !important;
+  background-image: none !important;
+  border-color: #0a2d5c !important;
+  color: #ffffff !important;
+}
+
+/* ?? POS header tabs (must beat Phase 4 cream toolbar) ???????? */
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-toolbar {
+  background: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  padding: 0 2px !important;
+  margin: 0 !important;
+  gap: 14px !important;
+  align-items: center !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-seg-group {
+  background: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  padding: 0 !important;
+  gap: 4px !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-mode-tabs {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  padding: 2px !important;
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  border-radius: 6px !important;
+  background: rgba(0, 0, 0, 0.18) !important;
+  background-image: none !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-seg-btn {
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: rgba(255, 255, 255, 0.8) !important;
+  padding: 0 18px !important;
+  min-height: 22px !important;
+  min-width: 88px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  border-radius: 4px !important;
+  box-shadow: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  text-align: center !important;
+  line-height: 1 !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-mode-tab {
+  min-height: 22px !important;
+  min-width: 0 !important;
+  height: 22px !important;
+  padding: 0 12px !important;
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.01em !important;
+  color: rgba(255, 255, 255, 0.72) !important;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-seg-btn.active,
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-mode-tab.active {
+  background: #ffffff !important;
+  background-image: none !important;
+  border: 1px solid #ffffff !important;
+  color: #1e3a5f !important;
+  font-weight: 800 !important;
+  border-radius: 4px !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-seg-btn:hover:not(.active),
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-mode-tab:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.12) !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-pos-header-doc {
+  color: rgba(255, 255, 255, 0.95) !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.02em !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-btn-hold,
+.erp-app-root .erp-page-header .erp-module-bar-host button.erp-btn.erp-btn-hold {
+  border: 1px solid rgba(255, 255, 255, 0.65) !important;
+  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+  padding: 5px 14px !important;
+  font-weight: 700 !important;
+}
+
+.erp-app-root .erp-page-header .erp-module-bar-host .erp-btn-hold:hover:not(:disabled),
+.erp-app-root .erp-page-header .erp-module-bar-host button.erp-btn.erp-btn-hold:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.24) !important;
+  background-image: none !important;
+  border-color: #ffffff !important;
+  color: #ffffff !important;
+}
+
+/* ?? Input borders + focus glow (blue) ????????????????????????
+   Skip Add New Product modal ? it keeps a softer 10?12px radius. */
+.erp-app-root .erp-page-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+.erp-app-root .erp-page-content select,
+.erp-app-root .erp-page-content textarea,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal) .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal) .erp-modal-body select,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal) .erp-modal-body textarea,
+.erp-app-root .erp-system-dialog input:not([type="checkbox"]):not([type="radio"]),
+.erp-app-root .erp-system-dialog select,
+.erp-app-root .erp-system-dialog textarea,
+.erp-app-root .erp-input,
+.erp-app-root .erp-select,
+.erp-app-root .erp-pos-search-input,
+.erp-gate-scope input:not([type="checkbox"]):not([type="radio"]),
+.erp-gate-scope select,
+.erp-gate-scope textarea,
+.erp-setup-scope input:not([type="checkbox"]):not([type="radio"]),
+.erp-setup-scope select,
+.erp-setup-scope textarea {
+  border-radius: 4px !important;
+  border-color: #7a9fd4 !important;
+}
+
+.erp-app-root .erp-page-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not(.erp-pur-field-ctrl):not(.erp-si-field):focus,
+.erp-app-root .erp-page-content select:not(.erp-pur-field-ctrl):not(.erp-si-field):focus,
+.erp-app-root .erp-page-content textarea:focus,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal) .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]):focus,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal) .erp-modal-body select:focus,
+.erp-app-root .erp-modal-shell:not(.erp-pur-newprod-modal) .erp-modal-body textarea:focus,
+.erp-app-root .erp-system-dialog input:not([type="checkbox"]):not([type="radio"]):focus,
+.erp-app-root .erp-system-dialog select:focus,
+.erp-app-root .erp-system-dialog textarea:focus,
+.erp-app-root .erp-input:focus,
+.erp-app-root .erp-select:focus,
+.erp-app-root .erp-pos-search-input:focus,
+.erp-gate-scope input:not([type="checkbox"]):not([type="radio"]):focus,
+.erp-gate-scope select:focus,
+.erp-gate-scope textarea:focus,
+.erp-setup-scope input:not([type="checkbox"]):not([type="radio"]):focus,
+.erp-setup-scope select:focus,
+.erp-setup-scope textarea:focus {
+  border-color: #1a4fa0 !important;
+  outline: none !important;
+  box-shadow: 0 0 0 2px rgba(26, 79, 160, 0.28) !important;
+}
+
+/* ?? Glass dark green ? license gate & setup wizard ONLY (workspace uses erpCoreModern.css) ?? */
+.erp-gate-scope button,
+.erp-setup-scope button {
+  border-radius: 4px !important;
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.04) 42%, rgba(0, 0, 0, 0.18) 100%),
+    linear-gradient(180deg, #2d6a4f 0%, #1b4332 55%, #081c15 100%) !important;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0.04) 42%, rgba(0, 0, 0, 0.18) 100%),
+    linear-gradient(180deg, #2d6a4f 0%, #1b4332 55%, #081c15 100%) !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
+}
+
+/* System Confirm / Alert ? navy / slate (never glass-green)
+   AppDialog renders outside .erp-app-root, so do NOT require that ancestor. */
+.erp-system-dialog button.erp-dialog-btn,
+.erp-system-dialog-shell button.erp-dialog-btn,
+button.erp-dialog-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 88px !important;
+  min-height: 34px !important;
+  height: 34px !important;
+  padding: 0 16px !important;
+  border-radius: 8px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif !important;
+  cursor: pointer !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
+  background-image: none !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease !important;
+}
+
+.erp-system-dialog button.erp-dialog-btn.primary,
+.erp-system-dialog-shell button.erp-dialog-btn.primary,
+button.erp-dialog-btn.primary {
+  border: none !important;
+  background: linear-gradient(180deg, #2a4a70 0%, #1e3a5f 55%, #16304f 100%) !important;
+  background-image: linear-gradient(180deg, #2a4a70 0%, #1e3a5f 55%, #16304f 100%) !important;
+  color: #ffffff !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 2px rgba(15, 23, 42, 0.12) !important;
+}
+
+.erp-system-dialog button.erp-dialog-btn.primary:hover:not(:disabled),
+.erp-system-dialog-shell button.erp-dialog-btn.primary:hover:not(:disabled),
+button.erp-dialog-btn.primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #34587f 0%, #244866 55%, #1e3a5f 100%) !important;
+  background-image: linear-gradient(180deg, #34587f 0%, #244866 55%, #1e3a5f 100%) !important;
+  color: #ffffff !important;
+  border: none !important;
+}
+
+.erp-system-dialog button.erp-dialog-btn.cancel,
+.erp-system-dialog-shell button.erp-dialog-btn.cancel,
+button.erp-dialog-btn.cancel {
+  border: 1px solid #cbd5e1 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #334155 !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+}
+
+.erp-system-dialog button.erp-dialog-btn.cancel:hover:not(:disabled),
+.erp-system-dialog-shell button.erp-dialog-btn.cancel:hover:not(:disabled),
+button.erp-dialog-btn.cancel:hover:not(:disabled) {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  border-color: #94a3b8 !important;
+  color: #1e3a5f !important;
+}
+
+.erp-system-dialog-actions {
+  display: flex !important;
+  justify-content: flex-end !important;
+  align-items: center !important;
+  gap: 8px !important;
+  flex-wrap: wrap !important;
+  padding: 4px 14px 14px !important;
+}
+
+/* Dashboard controls ? never inherit glass-green (styled in erpDashboard.css) */
+.erp-app-root .erp-page-content .erp-md-dash button {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button:hover:not(:disabled) {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+
+.erp-gate-scope button:hover:not(:disabled),
+.erp-setup-scope button:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0.06) 42%, rgba(0, 0, 0, 0.16) 100%),
+    linear-gradient(180deg, #3a7d5c 0%, #245a40 55%, #0d2a1c 100%) !important;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0.06) 42%, rgba(0, 0, 0, 0.16) 100%),
+    linear-gradient(180deg, #3a7d5c 0%, #245a40 55%, #0d2a1c 100%) !important;
+  border-color: rgba(255, 255, 255, 0.55) !important;
+  color: #ffffff !important;
+}
+
+/* Keep WhatsApp readable as green accent in workspace */
+.erp-app-root .erp-btn-wa,
+.erp-app-root button.erp-btn-wa {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 42%, rgba(0, 0, 0, 0.15) 100%),
+    linear-gradient(180deg, #25d366 0%, #128c7e 55%, #075e54 100%) !important;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.05) 42%, rgba(0, 0, 0, 0.15) 100%),
+    linear-gradient(180deg, #25d366 0%, #128c7e 55%, #075e54 100%) !important;
+  border-color: rgba(255, 255, 255, 0.45) !important;
+  color: #ffffff !important;
+}
+
+/* Purchases modern ? reset unstyled buttons only; never nuke .erp-pur-* chrome */
+.erp-app-root .erp-page-content .erp-pur-modern button:not(.erp-pager-btn):not([class*="erp-pur-"]) {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button:not(.erp-pager-btn):not([class*="erp-pur-"]):hover:not(:disabled) {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern input.erp-pur-field-ctrl,
+.erp-app-root .erp-page-content .erp-pur-modern select.erp-pur-field-ctrl {
+  border: 1px solid #cbd5e1 !important;
+  border-color: #cbd5e1 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #0f172a !important;
+  box-shadow: none !important;
+  outline: none !important;
+  padding: 0 8px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
+  font-size: 11px !important;
+  line-height: 26px !important;
+  box-sizing: border-box !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern input.erp-pur-field-ctrl:focus,
+.erp-app-root .erp-page-content .erp-pur-modern select.erp-pur-field-ctrl:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12) !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern .erp-pur-date-range {
+  border: 1px solid #cbd5e1 !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern .erp-pur-date-range input.erp-pur-field-ctrl {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-btn-primary,
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-btn-apply {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border: none !important;
+  background: #2563eb !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+  border-radius: 8px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 12px !important;
+  font-size: 11px !important;
+  font-family: inherit !important;
+  line-height: 1 !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-btn-apply {
+  display: block !important;
+  width: 100% !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-btn-primary:hover:not(:disabled),
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-btn-apply:hover:not(:disabled) {
+  background: #1d4ed8 !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-btn-clear {
+  display: block !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  margin-top: 3px !important;
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #64748b !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  font-size: 9.5px !important;
+  font-family: inherit !important;
+  padding: 2px 0 !important;
+  text-decoration: underline !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-btn-clear:hover:not(:disabled) {
+  background: transparent !important;
+  color: #334155 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-icon-btn {
+  border: 1px solid #3b82f6 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #475569 !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-act {
+  border: 1px solid #bfdbfe !important;
+  background: #eff6ff !important;
+  background-image: none !important;
+  color: #2563eb !important;
+  box-shadow: none !important;
+  border-radius: 4px !important;
+  width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-act.void {
+  color: #dc2626 !important;
+  border-color: #fecaca !important;
+  background: #fef2f2 !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-quick {
+  min-height: 32px !important;
+  height: auto !important;
+  max-height: none !important;
+  padding: 0 8px !important;
+  border-radius: 7px !important;
+  flex: 1 1 0 !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-date-refresh,
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-pager-btn,
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-search-clear {
+  background-image: none !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-pager-btn.active {
+  background: #2563eb !important;
+  border-color: #2563eb !important;
+  color: #ffffff !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-inv,
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-inv-link,
+.erp-app-root .erp-core-scope .erp-pur-modern button.erp-pur-inv,
+.erp-app-root .erp-core-scope .erp-pur-modern button.erp-pur-inv-link {
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #2563eb !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  height: auto !important;
+  min-height: 0 !important;
+  border-radius: 0 !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+}
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-inv:hover:not(:disabled),
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-inv-link:hover:not(:disabled),
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-inv:focus,
+.erp-app-root .erp-page-content .erp-pur-modern button.erp-pur-inv-link:focus,
+.erp-app-root .erp-core-scope .erp-pur-modern button.erp-pur-inv:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-pur-modern button.erp-pur-inv-link:hover:not(:disabled) {
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #1d4ed8 !important;
+  box-shadow: none !important;
+}
+
+/* Inventory modern ? reset unstyled buttons; preserve .erp-inv-* chrome */
+.erp-app-root .erp-page-content .erp-inv-modern button:not(.erp-pager-btn):not([class*="erp-inv-"]):not(.erp-act-btn):not(.erp-inv-act-btn):not(.erp-acc-tab):not(.erp-inv-tab):not(.erp-inv-chip):not(.erp-inv-subtab):not(.erp-acc-pill):not(.erp-acc-step):not(.erp-rpt-tab):not(.erp-rpt-pill) {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button:not(.erp-pager-btn):not([class*="erp-inv-"]):not(.erp-act-btn):not(.erp-inv-act-btn):not(.erp-acc-tab):not(.erp-inv-tab):not(.erp-inv-chip):not(.erp-inv-subtab):not(.erp-acc-pill):not(.erp-acc-step):not(.erp-rpt-tab):not(.erp-rpt-pill):hover:not(:disabled) {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern input.erp-inv-field-ctrl,
+.erp-app-root .erp-page-content .erp-inv-modern select.erp-inv-field-ctrl {
+  border: 1px solid #cbd5e1 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #0f172a !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern input.erp-inv-field-ctrl:focus,
+.erp-app-root .erp-page-content .erp-inv-modern select.erp-inv-field-ctrl:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12) !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern .erp-inv-date-range {
+  border: 1px solid #cbd5e1 !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern .erp-inv-date-range input.erp-inv-field-ctrl {
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-toolbar {
+  border: 1px solid #cbd5e1 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #334155 !important;
+  box-shadow: none !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern .erp-tab-btn.active {
+  background: #15803d !important;
+  border-color: #15803d !important;
+  color: #ffffff !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-primary,
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-attention {
+  border: none !important;
+  background: #2563eb !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: none !important;
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-primary {
+  background: #15803d !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-apply {
+  display: block !important;
+  width: 100% !important;
+  border: 1px solid #93c5fd !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #2563eb !important;
+  box-shadow: none !important;
+  border-radius: 10px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-clear,
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-outline {
+  border: 1px solid #cbd5e1 !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #475569 !important;
+  box-shadow: none !important;
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-btn-outline {
+  border-color: #bfdbfe !important;
+  color: #2563eb !important;
+  font-weight: 700 !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-alert-item {
+  border: 1px solid #eef2f7 !important;
+  background: #fafbfc !important;
+  background-image: none !important;
+  color: #334155 !important;
+  box-shadow: none !important;
+  border-radius: 10px !important;
+  cursor: pointer !important;
+}
+.erp-app-root .erp-page-content .erp-inv-modern button.erp-inv-date-refresh {
+  background-image: none !important;
+}
+
+/* Invoices modern ? protect erp-si-* chrome from generic page button resets */
+.erp-app-root .erp-page-content .erp-si-modern button:not(.erp-pager-btn):not([class*="erp-si-"]):not(.erp-act-btn):not(.erp-badge):not(:is(.erp-si-fv *)) {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  box-shadow: none !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-tab {
+  border: none !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-tab.is-active {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 55%, #1e40af 100%) !important;
+  background-image: linear-gradient(135deg, #2563eb 0%, #1d4ed8 55%, #1e40af 100%) !important;
+  color: #fff !important;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-btn-add {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+  background-image: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+  color: #fff !important;
+  border: none !important;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-btn-add.is-quot {
+  background: linear-gradient(135deg, #ea580c 0%, #c2410c 100%) !important;
+  background-image: linear-gradient(135deg, #ea580c 0%, #c2410c 100%) !important;
+  box-shadow: 0 3px 10px rgba(234, 88, 12, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2) !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-btn-panel {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+  background-image: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+  color: #fff !important;
+  border: none !important;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.26) !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-btn-panel.is-ghost {
+  background: #fff !important;
+  background-image: none !important;
+  color: #1e3a5f !important;
+  border: 1.5px solid #93c5fd !important;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.08) !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-chip.is-active {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+  background-image: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+  color: #fff !important;
+  border-color: #1d4ed8 !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern input.erp-si-field,
+.erp-app-root .erp-page-content .erp-si-modern select.erp-si-field,
+.erp-app-root .erp-core-scope .erp-page.erp-si-modern input.erp-si-field,
+.erp-app-root .erp-core-scope .erp-page.erp-si-modern select.erp-si-field {
+  border: 1px solid #cbd5e1 !important;
+  border-color: #cbd5e1 !important;
+  background-color: #fff !important;
+  color: #0f172a !important;
+  box-shadow: none !important;
+  outline: none !important;
+  height: 30px !important;
+  min-height: 30px !important;
+  max-height: 30px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  line-height: normal !important;
+  box-sizing: border-box !important;
+  vertical-align: middle !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern input.erp-si-field,
+.erp-app-root .erp-core-scope .erp-page.erp-si-modern input.erp-si-field {
+  padding: 0 8px !important;
+  background-image: none !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern select.erp-si-field,
+.erp-app-root .erp-core-scope .erp-page.erp-si-modern select.erp-si-field {
+  padding: 0 26px 0 10px !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%2364748b' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 8px center !important;
+  background-size: 9px 5px !important;
+  text-indent: 0 !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern input.erp-si-field:focus,
+.erp-app-root .erp-page-content .erp-si-modern select.erp-si-field:focus,
+.erp-app-root .erp-core-scope .erp-page.erp-si-modern input.erp-si-field:focus,
+.erp-app-root .erp-core-scope .erp-page.erp-si-modern select.erp-si-field:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12) !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-inv-link,
+.erp-app-root .erp-core-scope .erp-si-modern button.erp-si-inv-link {
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #2563eb !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  height: auto !important;
+  min-height: 0 !important;
+  border-radius: 0 !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+}
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-inv-link:hover:not(:disabled),
+.erp-app-root .erp-page-content .erp-si-modern button.erp-si-inv-link:focus,
+.erp-app-root .erp-core-scope .erp-si-modern button.erp-si-inv-link:hover:not(:disabled) {
+  border: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #1d4ed8 !important;
+  box-shadow: none !important;
+  text-decoration: underline !important;
+}

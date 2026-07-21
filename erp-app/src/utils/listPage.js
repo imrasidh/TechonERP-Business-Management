@@ -1,5 +1,5 @@
 /** Default rows per page for ERP list tables (invoices, purchases, etc.). */
-export var LIST_PAGE_SIZE = 25;
+export var LIST_PAGE_SIZE = 15;
 
 /** Newest records first — by date, then time/createdAt, then id. */
 export function sortNewestFirst(items) {

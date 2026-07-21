@@ -4,6 +4,19 @@ import { isVoidedTxn } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
+import { stampUpdatedAt, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import {
+  assertPaymentFitsPurchaseBalance,
+  loadFreshPurchaseForPayment,
+  pushKeysNow,
+} from "../utils/concurrencyGuards.js";
+import {
+  buildInvoiceEditLockIdentity,
+  checkForeignInvoiceEditLock,
+  findActiveInvoiceEditLock,
+  formatInvoiceEditLockMessage,
+  readInvoiceEditLocks,
+} from "../utils/invoiceEditLocks.js";
 
 /* ═══════════════════════════════════════════════════════════
    ENHANCED PAYABLES — Purchase invoices + Manual (Borrowed, Other)
@@ -14,6 +27,7 @@ var EnhancedPayables = function (props) {
   var S = props.S;
   var today = props.today;
   var uid = props.uid;
+  var tcTrialGuard = props.tcTrialGuard;
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var addAudit = props.addAudit;
@@ -33,6 +47,19 @@ var EnhancedPayables = function (props) {
   var SplitPaymentModal = props.SplitPaymentModal;
   var usePager = props.usePager;
   var Pager = props.Pager;
+
+  var lockIdentity = buildInvoiceEditLockIdentity({
+    currentUser: props.currentUser || null,
+    clientMachineLabel: String(props.clientMachineLabel || "").trim(),
+  });
+  var assertPurchaseUnlockedForPayment = function (purchaseId) {
+    var lock = findActiveInvoiceEditLock(readInvoiceEditLocks(S), purchaseId);
+    if (lock && String(lock.deviceId || "") !== String(lockIdentity.deviceId || "")) {
+      showAlert(formatInvoiceEditLockMessage(lock) + " Cannot record payment until they finish.");
+      return false;
+    }
+    return true;
+  };
 
   var [ptab, setPtab] = useState("all");
   var [search, setSearch] = useState("");
@@ -77,7 +104,9 @@ var EnhancedPayables = function (props) {
   var saveManual = function () {
     if (!newForm.source.trim()) { showAlert("Please enter source (person / company)."); return; }
     if (!newForm.amount || parseFloat(newForm.amount) <= 0) { showAlert("Please enter a valid amount."); return; }
-    var entry = { id: uid(), date: newForm.date, source: newForm.source.trim(), type: newForm.type, amount: parseFloat(newForm.amount), paymentMethod: newForm.paymentMethod || "Cash", reference: newForm.reference || "", note: newForm.note || "", paymentHistory: [], createdAt: new Date().toISOString() };
+    if (!tcTrialGuard(manualPays, "manualPayables")) return;
+    var payTs = new Date().toISOString();
+    var entry = stampTransactionIsoDateTime({ id: uid(), date: newForm.date, source: newForm.source.trim(), type: newForm.type, amount: parseFloat(newForm.amount), paymentMethod: newForm.paymentMethod || "Cash", reference: newForm.reference || "", note: newForm.note || "", paymentHistory: [], createdAt: payTs, updatedAt: payTs }, payTs);
     var list = manualPays.concat([entry]);
     S.set("tc3_manualPayables", list);
     /* Fix 4: Trigger re-render so cash balance and payable totals update immediately */
@@ -98,6 +127,7 @@ var EnhancedPayables = function (props) {
     /* ── Cheque: save ALL cheques in chequeList ── */
     if (payMethod === "Cheque") {
       if (chequeList.length === 0) { showAlert("Add at least one cheque using the + Add Cheque button."); return; }
+      if (item._type === "purchase" && !assertPurchaseUnlockedForPayment(item.id)) return;
       var chqTotal = chequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
       if (chqTotal <= 0) { showAlert("Total cheque amount must be greater than zero."); return; }
       var nch = (state.cheques || []).slice();
@@ -105,7 +135,8 @@ var EnhancedPayables = function (props) {
       chequeList.forEach(function (chq) {
         var chqAmt = parseFloat(chq.amount) || 0;
         if (chqAmt <= 0 || !chq.no.trim()) return;
-        var newCheque = {
+        var chTs = new Date().toISOString();
+        var newCheque = stampTransactionIsoDateTime({
           id: uid(), type: "outgoing", status: "Pending",
           chequeNo: chq.no.trim(), bankName: (chq.bank || "").trim(),
           amount: chqAmt, dueDate: chq.due || today(), issuedDate: today(),
@@ -113,8 +144,8 @@ var EnhancedPayables = function (props) {
           purchaseId: item._type === "purchase" ? item.id : "",
           purchaseNo: item.reference || "",
           manualPayableId: item._type === "manual" ? item.id : "",
-          note: payNote || "", createdAt: today()
-        };
+          note: payNote || "", createdAt: chTs, updatedAt: chTs
+        }, chTs);
         nch.push(newCheque);
         phEntries.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque",
           note: "Cheque #" + chq.no.trim() + " " + getCurrencySymbol() + " " + fmtNum(chqAmt) + " (Pending — due " + chq.due + ")" + (payNote ? " | " + payNote : ""),
@@ -123,7 +154,7 @@ var EnhancedPayables = function (props) {
       if (item._type === "purchase") {
         var pur = state.purchases.find(function (p) { return p.id === item.id; });
         if (pur) {
-          var updPur = Object.assign({}, pur, { paymentHistory: (pur.paymentHistory || []).concat(phEntries) });
+          var updPur = stampUpdatedAt(Object.assign({}, pur, { paymentHistory: (pur.paymentHistory || []).concat(phEntries) }));
           var np0 = state.purchases.map(function (p) { return p.id === item.id ? updPur : p; });
           S.set("tc3_purchases", np0); S.set("tc3_cheques", nch);
           addAudit(chequeList.length + " Cheque(s) Issued " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.reference || "");
@@ -132,7 +163,7 @@ var EnhancedPayables = function (props) {
       } else {
         var list0 = S.get("tc3_manualPayables", []);
         var upd0 = list0.map(function (mp) {
-          return mp.id !== item.id ? mp : Object.assign({}, mp, { paymentHistory: (mp.paymentHistory || []).concat(phEntries) });
+          return mp.id !== item.id ? mp : stampUpdatedAt(Object.assign({}, mp, { paymentHistory: (mp.paymentHistory || []).concat(phEntries) }));
         });
         S.set("tc3_manualPayables", upd0); S.set("tc3_cheques", nch);
         addAudit(chequeList.length + " Cheque(s) Issued " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.source || "");
@@ -143,24 +174,56 @@ var EnhancedPayables = function (props) {
       return;
     }
     if (item._type === "purchase") {
-      var pur = state.purchases.find(function (p) { return p.id === item.id; });
-      if (!pur) return;
-      var newPaid = (pur.paidAmount || 0) + amt; /* overpayment allowed — creates credit balance */
-      var newBal = pur.total - newPaid;
-      var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-      var ph = (pur.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: (payMethod || "Cash") + (payNote ? ": " + payNote : "") }]);
-      var updPur = Object.assign({}, pur, { paidAmount: newPaid, balance: newBal, status: newStatus, paymentHistory: ph });
-      /* Supplier payable is computed dynamically — no manual mutation needed */
-      var np = state.purchases.map(function (p) { return p.id === item.id ? updPur : p; });
-      S.set("tc3_purchases", np);
-      addAudit("Purchase Payment: Rs " + amt, pur.invoiceNo || pur.id.slice(0, 8));
-      setState(function (st) { return Object.assign({}, st, { purchases: np }); });
+      loadFreshPurchaseForPayment(S, item.id)
+        .then(function (fresh) {
+          return checkForeignInvoiceEditLock(S, item.id, lockIdentity).then(function (fl) {
+            if (fl) {
+              showAlert(formatInvoiceEditLockMessage(fl) + " Cannot record payment until they finish.");
+              return;
+            }
+            var pur = fresh.purchase || state.purchases.find(function (p) { return p.id === item.id; });
+            if (!pur) return;
+            if (isVoidedTxn(pur)) { showAlert("Cannot record payment on a voided purchase."); return; }
+            var fit = assertPaymentFitsPurchaseBalance(pur, amt);
+            if (!fit.ok) { showAlert(fit.message); return; }
+            var newPaid = (pur.paidAmount || 0) + amt;
+            var newBal = pur.total - newPaid;
+            var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+            var ph = (pur.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: (payMethod || "Cash") + (payNote ? ": " + payNote : "") }]);
+            var updPur = stampUpdatedAt(Object.assign({}, pur, { paidAmount: newPaid, balance: newBal, status: newStatus, paymentHistory: ph }));
+            var np = (fresh.purchases || state.purchases).map(function (p) { return p.id === item.id ? updPur : p; });
+            S.set("tc3_purchases", np);
+            try { pushKeysNow([["tc3_purchases", np]]); } catch (_e) { /* ignore */ }
+            addAudit("Purchase Payment: Rs " + amt, pur.invoiceNo || pur.id.slice(0, 8));
+            setState(function (st) { return Object.assign({}, st, { purchases: np }); });
+            setPayModal(null); setPayAmt(""); setPayMethod("Cash"); setPayNote("");
+          });
+        })
+        .catch(function () {
+          if (!assertPurchaseUnlockedForPayment(item.id)) return;
+          var pur = state.purchases.find(function (p) { return p.id === item.id; });
+          if (!pur) return;
+          var fit = assertPaymentFitsPurchaseBalance(pur, amt);
+          if (!fit.ok) { showAlert(fit.message); return; }
+          var newPaid = (pur.paidAmount || 0) + amt;
+          var newBal = pur.total - newPaid;
+          var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+          var ph = (pur.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: (payMethod || "Cash") + (payNote ? ": " + payNote : "") }]);
+          var updPur = stampUpdatedAt(Object.assign({}, pur, { paidAmount: newPaid, balance: newBal, status: newStatus, paymentHistory: ph }));
+          var np = state.purchases.map(function (p) { return p.id === item.id ? updPur : p; });
+          S.set("tc3_purchases", np);
+          try { pushKeysNow([["tc3_purchases", np]]); } catch (_e) { /* ignore */ }
+          addAudit("Purchase Payment: Rs " + amt, pur.invoiceNo || pur.id.slice(0, 8));
+          setState(function (st) { return Object.assign({}, st, { purchases: np }); });
+          setPayModal(null); setPayAmt(""); setPayMethod("Cash"); setPayNote("");
+        });
+      return;
     } else {
       var list = S.get("tc3_manualPayables", []);
       var updated = list.map(function (mp) {
         if (mp.id !== item.id) return mp;
         var ph2 = (mp.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: payNote || "" }]);
-        return Object.assign({}, mp, { paymentHistory: ph2 });
+        return stampUpdatedAt(Object.assign({}, mp, { paymentHistory: ph2 }));
       });
       S.set("tc3_manualPayables", updated);
       addAudit("Manual Payable Payment: Rs " + amt, item.source || item.reference || "");
@@ -175,31 +238,55 @@ var EnhancedPayables = function (props) {
     var newCheques = (state.cheques || []).slice();
     splits.forEach(function (row) { var amt = parseFloat(row.amount) || 0; if (amt > 0) { totalAdded += amt; if (row.method !== "Cheque") totalNonCheque += amt; } });
     if (entry._type === "purchase") {
-      var pur = entry._purObj;
-      var newPh = (pur.paymentHistory || []).slice();
-      splits.forEach(function (row) {
-        var amt = parseFloat(row.amount) || 0; if (amt <= 0) return;
-        if (row.method === "Cheque") {
-          var nc = { id: uid(), type: "outgoing", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), supplierName: pur.supplier || "", purchaseId: pur.id, purchaseNo: pur.invoiceNo || "", note: row.note || "", createdAt: today() };
-          newCheques.push(nc);
-          newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + (row.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + (row.chequeDueDate || today()) + ")" + (row.note ? " | " + row.note : ""), chequeId: nc.id });
-        } else {
-          var cm = (row.method === "Bank" || row.method === "Online" || row.method === "Card") ? "Bank" : "Cash";
-          newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
-        }
-      });
-      var newPaid = (pur.paidAmount || 0) + totalNonCheque; var newBal = pur.total - newPaid;
-      var updPur = Object.assign({}, pur, { paidAmount: newPaid, balance: newBal, status: newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid", paymentHistory: newPh });
-      var np = state.purchases.map(function (p) { return p.id === pur.id ? updPur : p; });
-      S.set("tc3_purchases", np); S.set("tc3_cheques", newCheques);
-      setState(function (st) { return Object.assign({}, st, { purchases: np, cheques: newCheques }); });
+      var applyPurSplit = function (pur, purchasesBase) {
+        if (!pur) return;
+        var fit = assertPaymentFitsPurchaseBalance(pur, totalNonCheque);
+        if (!fit.ok) { showAlert(fit.message); return; }
+        var newPh = (pur.paymentHistory || []).slice();
+        splits.forEach(function (row) {
+          var amt = parseFloat(row.amount) || 0; if (amt <= 0) return;
+          if (row.method === "Cheque") {
+            var chTs = new Date().toISOString();
+            var nc = stampTransactionIsoDateTime({ id: uid(), type: "outgoing", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), supplierName: pur.supplier || "", purchaseId: pur.id, purchaseNo: pur.invoiceNo || "", note: row.note || "", createdAt: chTs, updatedAt: chTs }, chTs);
+            newCheques.push(nc);
+            newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + (row.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + (row.chequeDueDate || today()) + ")" + (row.note ? " | " + row.note : ""), chequeId: nc.id });
+          } else {
+            var cm = (row.method === "Bank" || row.method === "Online" || row.method === "Card") ? "Bank" : "Cash";
+            newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
+          }
+        });
+        var newPaid = (pur.paidAmount || 0) + totalNonCheque; var newBal = pur.total - newPaid;
+        var updPur = stampUpdatedAt(Object.assign({}, pur, { paidAmount: newPaid, balance: newBal, status: newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid", paymentHistory: newPh }));
+        var np = (purchasesBase || state.purchases).map(function (p) { return p.id === pur.id ? updPur : p; });
+        S.set("tc3_purchases", np); S.set("tc3_cheques", newCheques);
+        try { pushKeysNow([["tc3_purchases", np], ["tc3_cheques", newCheques]]); } catch (_e) { /* ignore */ }
+        setState(function (st) { return Object.assign({}, st, { purchases: np, cheques: newCheques }); });
+        setSplitPayModal(null);
+        addAudit("Payment " + getCurrencySymbol() + " " + fmtNum(totalAdded), entry.reference || entry.id.slice(0, 8));
+      };
+      loadFreshPurchaseForPayment(S, entry.id)
+        .then(function (fresh) {
+          return checkForeignInvoiceEditLock(S, entry.id, lockIdentity).then(function (fl) {
+            if (fl) {
+              showAlert(formatInvoiceEditLockMessage(fl) + " Cannot record payment until they finish.");
+              return;
+            }
+            applyPurSplit(fresh.purchase || entry._purObj, fresh.purchases || state.purchases);
+          });
+        })
+        .catch(function () {
+          if (!assertPurchaseUnlockedForPayment(entry.id)) return;
+          applyPurSplit(entry._purObj, state.purchases);
+        });
+      return;
     } else {
       var manPays = S.get("tc3_manualPayables", []);
       var newPh2 = [];
       splits.forEach(function (row) {
         var amt = parseFloat(row.amount) || 0; if (amt <= 0) return;
         if (row.method === "Cheque") {
-          var nc2 = { id: uid(), type: "outgoing", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), manualPayableId: entry.id, note: row.note || "", createdAt: today() };
+          var chTs2 = new Date().toISOString();
+          var nc2 = stampTransactionIsoDateTime({ id: uid(), type: "outgoing", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), manualPayableId: entry.id, note: row.note || "", createdAt: chTs2, updatedAt: chTs2 }, chTs2);
           newCheques.push(nc2);
           newPh2.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + (row.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + (row.chequeDueDate || today()) + ")", chequeId: nc2.id });
         } else {
@@ -207,7 +294,7 @@ var EnhancedPayables = function (props) {
           newPh2.push({ id: uid(), date: today(), amount: amt, cashMethod: cm2, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
         }
       });
-      var updMan = manPays.map(function (mp) { return mp.id === entry.id ? Object.assign({}, mp, { paymentHistory: (mp.paymentHistory || []).concat(newPh2) }) : mp; });
+      var updMan = manPays.map(function (mp) { return mp.id === entry.id ? stampUpdatedAt(Object.assign({}, mp, { paymentHistory: (mp.paymentHistory || []).concat(newPh2) })) : mp; });
       S.set("tc3_manualPayables", updMan); S.set("tc3_cheques", newCheques);
       setState(function (st) { return Object.assign({}, st, { cheques: newCheques }); });
     }
@@ -289,12 +376,12 @@ var EnhancedPayables = function (props) {
                     <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: C.muted }}>{e.reference || "—"}</td>
                     <td style={actBtnCellStyle}>
                       <ActBtnGroup>
-                        <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }}>🧾</ActBtn>
+                        <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
                         {isOut && (state.cheques || []).some(function (ch) { return ch.purchaseId === e.id && ch.status === "Pending"; }) ? (
                           <span title="Has pending cheque(s)" style={{ fontSize: 11, lineHeight: 1 }}>🕐</span>
                         ) : null}
-                        {isOut ? <ActBtn tone="orange" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
-                        {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }}>✕</ActBtn> : null}
+                        {isOut ? <ActBtn tone="orange" icon="pay" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
+                        {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }} /> : null}
                       </ActBtnGroup>
                     </td>
                   </tr>

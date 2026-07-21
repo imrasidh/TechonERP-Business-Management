@@ -1,0 +1,744 @@
+/* Global tactile click / press feedback — loaded last in App.jsx */
+
+.erp-app-root {
+  --erp-press-scale: 0.97;
+  --erp-press-scale-sm: 0.98;
+}
+
+/* ── Global StatCard = Dashboard compact style (all pages) ── */
+.erp-app-root .stat-card-hover,
+.erp-app-root .erp-stat-card-ui,
+.stat-card-hover.erp-stat-card-ui {
+  background: #fff !important;
+  border-radius: 9px !important;
+  padding: 7px 9px 6px !important;
+  border: 1.5px solid #e1e8f5 !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+  position: relative !important;
+  overflow: hidden !important;
+  min-width: 0;
+  height: 100%;
+  box-sizing: border-box !important;
+}
+
+.erp-app-root .stat-card-hover .erp-stat-card-bar,
+.erp-app-root .erp-stat-card-ui .erp-stat-card-bar,
+.stat-card-hover > div:first-child {
+  height: 3px !important;
+  border-radius: 9px 9px 0 0 !important;
+}
+
+.erp-app-root .stat-card-hover .erp-stat-card-head,
+.erp-app-root .erp-stat-card-ui .erp-stat-card-head {
+  font-size: 9px !important;
+  font-weight: 700 !important;
+  margin-bottom: 3px !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase !important;
+}
+
+.erp-app-root .stat-card-hover .erp-stat-card-ico,
+.erp-app-root .erp-stat-card-ui .erp-stat-card-ico,
+.erp-app-root .stat-card-hover .tc-emoji {
+  font-size: 14px !important;
+}
+
+.erp-app-root .stat-card-hover .erp-stat-value,
+.erp-app-root .erp-stat-card-ui .erp-stat-value {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+  line-height: 1.15 !important;
+  margin-bottom: 1px !important;
+}
+
+.erp-app-root .stat-card-hover .erp-stat-card-sub,
+.erp-app-root .erp-stat-card-ui .erp-stat-card-sub {
+  font-size: 9px !important;
+  line-height: 1.2 !important;
+  font-weight: 500 !important;
+}
+
+/* Shared StatCard rows (Inventory / Purchases / Accounts) */
+.erp-inv-stat-row,
+.erp-pur-stat-row,
+.erp-acc-stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.erp-inv-stat-row.is-compact,
+.erp-pur-stat-row.is-compact {
+  gap: 5px;
+}
+
+@media (max-width: 1100px) {
+  .erp-inv-stat-row,
+  .erp-pur-stat-row,
+  .erp-acc-stat-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.erp-acc-ov-kpi-strip.erp-acc-stat-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+/* Pointer cursor on interactive controls app-wide */
+.erp-app-root button:not(:disabled):not([aria-disabled="true"]),
+.erp-app-root [role="button"]:not([aria-disabled="true"]),
+.erp-app-root [role="tab"]:not([aria-disabled="true"]),
+.erp-app-root summary {
+  cursor: pointer !important;
+}
+
+.erp-app-root button:disabled,
+.erp-app-root button[disabled],
+.erp-app-root button[aria-disabled="true"] {
+  cursor: not-allowed !important;
+}
+
+/* Shared motion — any class-based ERP control */
+.erp-app-root button[class*="erp-"]:not(:disabled):not([aria-disabled="true"]),
+.erp-app-root .erp-dialog-btn:not(:disabled),
+.erp-app-root .erp-pin-key:not(:disabled) {
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    transform 0.1s ease,
+    box-shadow 0.12s ease,
+    filter 0.1s ease,
+    background 0.12s ease,
+    background-color 0.12s ease,
+    border-color 0.12s ease !important;
+}
+
+/* Default press — scale down slightly */
+.erp-app-root button:active:not(:disabled):not([aria-disabled="true"]):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-pos-order-card):not(.erp-pos-table-btn) {
+  transform: scale(var(--erp-press-scale)) !important;
+  filter: brightness(0.96);
+}
+
+/* Full-width row buttons — brightness only */
+.erp-app-root .erp-md-summary-row:active:not(:disabled),
+.erp-app-root .erp-md-stock-row:active:not(:disabled),
+.erp-app-root .erp-pos-order-card:active:not(:disabled),
+.erp-app-root .erp-pos-table-btn:active:not(:disabled) {
+  transform: none !important;
+  filter: brightness(0.92);
+}
+
+/* Primary action buttons — slightly deeper press */
+.erp-app-root .erp-btn:active:not(:disabled),
+.erp-app-root .erp-dialog-btn:active:not(:disabled),
+.erp-app-root .erp-sale-action-btn:active:not(:disabled),
+.erp-app-root .erp-pur-btn-primary:active:not(:disabled),
+.erp-app-root .erp-inv-btn-add:active:not(:disabled),
+.erp-app-root .erp-inv-btn-primary:active:not(:disabled),
+.erp-app-root .erp-inv-btn-attention:active:not(:disabled) {
+  transform: scale(0.96) !important;
+  filter: brightness(0.9);
+  box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.18) !important;
+}
+
+/* Icon / table action buttons */
+.erp-app-root .erp-act-btn:active:not(:disabled),
+.erp-app-root .erp-inv-act-btn:active:not(:disabled) {
+  transform: scale(0.92) !important;
+  filter: brightness(0.94);
+}
+
+/* Tab strips */
+.erp-app-root .erp-tab-btn:active:not(:disabled):not(.active),
+.erp-app-root .erp-folder-tab:active:not(:disabled):not(.active),
+.erp-app-root .erp-acc-tab:active:not(:disabled):not(.is-active),
+.erp-app-root .erp-inv-tab:active:not(:disabled):not(.is-active),
+.erp-app-root .erp-rpt-tab:active:not(:disabled):not(.is-active),
+.erp-app-root .erp-pos-seg-btn:active:not(:disabled):not(.active),
+.erp-app-root .erp-settings-seg-btn:active:not(:disabled):not(.active),
+.erp-app-root .erp-md-seg-btn:active:not(:disabled):not(.active) {
+  transform: scale(0.96) !important;
+  filter: brightness(0.94);
+}
+
+/* Pager / small chips */
+.erp-app-root .erp-pager-btn:active:not(:disabled):not(.active),
+.erp-app-root .erp-pur-pager-btn:active:not(:disabled),
+.erp-app-root .erp-acc-pill:active:not(:disabled):not(.is-active),
+.erp-app-root .erp-inv-chip:active:not(:disabled):not(.is-active),
+.erp-app-root .erp-inv-subtab:active:not(:disabled):not(.is-active),
+.erp-app-root .erp-rpt-pill:active:not(:disabled):not(.is-active),
+.erp-app-root .erp-pos-chip-btn:active:not(:disabled):not(.active) {
+  transform: scale(0.95) !important;
+}
+
+/* PIN pad keys */
+.erp-app-root .erp-pin-key:active:not(:disabled) {
+  transform: scale(0.94) !important;
+  filter: brightness(0.92);
+  box-shadow: inset 0 2px 4px rgba(15, 23, 42, 0.15) !important;
+}
+
+/* Classic toolbar — press the icon tile */
+.erp-app-root .erp-toolbar-btn {
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-toolbar-btn .erp-toolbar-icon {
+  transition: transform 0.1s ease, box-shadow 0.1s ease, border-color 0.1s ease;
+}
+
+.erp-app-root .erp-toolbar-btn:active:not(:disabled) {
+  transform: none !important;
+  filter: none;
+}
+
+.erp-app-root .erp-toolbar-btn:active:not(:disabled) .erp-toolbar-icon {
+  transform: scale(0.9);
+  box-shadow: inset 0 2px 4px rgba(15, 23, 42, 0.12);
+}
+
+/* Menu bar dropdowns */
+.erp-app-root .erp-menu-btn {
+  cursor: pointer !important;
+  transition: background 0.1s ease, filter 0.1s ease, transform 0.1s ease !important;
+}
+
+.erp-app-root .erp-menu-btn:active:not(:disabled) {
+  transform: scale(0.98) !important;
+  filter: brightness(0.94);
+}
+
+.erp-app-root .erp-menu-dropdown button:not(:disabled),
+.erp-app-root .erp-menu-flyout button:not(:disabled) {
+  cursor: pointer !important;
+  transition: background 0.1s ease, filter 0.1s ease, transform 0.1s ease !important;
+}
+
+.erp-app-root .erp-menu-dropdown button:active:not(:disabled),
+.erp-app-root .erp-menu-flyout button:active:not(:disabled) {
+  transform: scale(0.98) !important;
+  filter: brightness(0.94);
+}
+
+/* Collapsible section headers */
+.erp-app-root .erp-acc-fold-head:active {
+  transform: scale(0.995) !important;
+  filter: brightness(0.97);
+}
+
+/* Flat Phase7 workspace buttons — hover lift + press */
+.erp-app-root .erp-page-content button:not(:disabled):not([aria-disabled="true"]):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-pos-order-card):not(.erp-pos-table-btn):hover {
+  filter: brightness(0.98);
+}
+
+.erp-app-root .erp-page-content button:not(:disabled):not([aria-disabled="true"]):not(.erp-btn):not(.erp-act-btn):not(.erp-tab-btn):not(.erp-acc-tab):not(.erp-inv-tab):active {
+  box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.12) !important;
+}
+
+/* Modal / system dialog OK buttons */
+.erp-app-root .erp-system-dialog .erp-dialog-btn:active:not(:disabled),
+.erp-app-root .erp-modal-overlay .erp-btn:active:not(:disabled) {
+  transform: scale(0.96) !important;
+  filter: brightness(0.9);
+}
+
+/* Portals outside .erp-app-root (AppDialog, etc.) */
+.erp-system-dialog button:not(:disabled):not([aria-disabled="true"]),
+.erp-system-dialog-overlay button:not(:disabled):not([aria-disabled="true"]) {
+  cursor: pointer !important;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.1s ease, filter 0.1s ease, box-shadow 0.12s ease !important;
+}
+
+.erp-system-dialog button:active:not(:disabled):not([aria-disabled="true"]),
+.erp-system-dialog-overlay button:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(0.96) !important;
+  filter: brightness(0.92);
+  box-shadow: inset 0 1px 3px rgba(15, 23, 42, 0.15) !important;
+}
+
+/* ── All modal / dialog headings: dark purple brand + shorter bar (portaled-safe) ── */
+.erp-modal-overlay .erp-modal-header,
+.erp-modal-shell .erp-modal-header,
+.erp-system-dialog-shell > div:first-child,
+.erp-app-root .erp-modal-header,
+.erp-app-root .erp-modal-overlay .erp-modal-header,
+.erp-app-root .erp-page-content .erp-modal-overlay .erp-modal-header,
+.erp-app-root .erp-modal-shell .erp-modal-header,
+.erp-app-root .erp-system-dialog-shell > div:first-child {
+  background: linear-gradient(180deg, #3d2375 0%, #4a2a8f 55%, #321b5c 100%) !important;
+  background-image: linear-gradient(180deg, #3d2375 0%, #4a2a8f 55%, #321b5c 100%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
+  color: #fff !important;
+  padding: 6px 12px !important;
+  min-height: 34px !important;
+  height: auto !important;
+}
+
+.erp-modal-overlay .erp-modal-title,
+.erp-modal-shell .erp-modal-title,
+.erp-system-dialog-shell > div:first-child,
+.erp-app-root .erp-modal-header .erp-modal-title,
+.erp-app-root .erp-modal-overlay .erp-modal-title {
+  color: #fff !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1.2 !important;
+}
+
+.erp-modal-overlay .erp-modal-header-icon,
+.erp-app-root .erp-modal-header .erp-modal-header-icon,
+.erp-app-root .erp-modal-overlay .erp-modal-header-icon {
+  width: 28px !important;
+  height: 28px !important;
+}
+
+.erp-modal-overlay .erp-modal-subtitle,
+.erp-app-root .erp-modal-header .erp-modal-subtitle,
+.erp-app-root .erp-modal-overlay .erp-modal-subtitle {
+  font-size: 11px !important;
+  margin-top: 1px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   GLOBAL wide-compact modals (portaled to body — loads last)
+   ═══════════════════════════════════════════════════════════════ */
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.2) !important;
+  max-width: 96vw !important;
+  max-height: 92vh !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--compact {
+  width: min(480px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--default {
+  width: min(860px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--medium {
+  width: min(960px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide {
+  width: min(1120px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body {
+  padding: 8px 10px 10px !important;
+  background: #f1f5f9 !important;
+}
+
+/* Soft white content card when body children are a plain column */
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body > div:only-child,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body > form:only-child {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+
+/* Skip card chrome for named shells that already wrap content */
+.erp-modal-overlay .erp-modal-shell.erp-party-modal .erp-modal-body > div:only-child,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body > div:only-child,
+.erp-modal-overlay .erp-modal-shell.erp-money-modal .erp-modal-body > div:only-child,
+.erp-modal-overlay .erp-modal-shell.erp-inv-product-modal .erp-modal-body > div:only-child,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal .erp-modal-body > div:only-child,
+.erp-modal-overlay .erp-modal-shell.erp-pos-chq-modal .erp-modal-body > div:only-child {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body label {
+  display: block;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  color: #475569 !important;
+  letter-spacing: 0.02em !important;
+  text-transform: none !important;
+  margin-bottom: 2px !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body select,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body textarea,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body .erp-input,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body .erp-select {
+  display: block !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  border: 1.5px solid #94a3b8 !important;
+  border-radius: 7px !important;
+  background: #ffffff !important;
+  color: #0f172a !important;
+  font-size: 12px !important;
+  font-family: inherit !important;
+  padding: 5px 9px !important;
+  min-height: 30px !important;
+  height: auto !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body input:focus,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body select:focus,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body textarea:focus,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body .erp-input:focus,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body .erp-select:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body textarea {
+  min-height: 52px !important;
+  resize: vertical;
+  line-height: 1.35;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body .erp-btn,
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body button.erp-btn {
+  border-radius: 7px !important;
+  min-height: 32px !important;
+  padding: 0 14px !important;
+  font-weight: 700 !important;
+  font-size: 12px !important;
+  box-shadow: none !important;
+}
+
+/* Dense auto grids used inline in many edit modals */
+.erp-modal-overlay .erp-modal-shell.erp-modal--wide-compact .erp-modal-body [style*="grid-template-columns"] {
+  gap: 8px !important;
+}
+
+/* Named shells keep their intended widths (beat size-token classes above) */
+.erp-modal-overlay .erp-modal-shell.erp-party-modal {
+  width: min(960px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal,
+.erp-modal-overlay .erp-modal-shell.erp-inv-newprod-modal {
+  width: min(1120px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-money-modal {
+  width: min(960px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-inv-product-modal {
+  width: min(960px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-inv-product-modal.erp-modal--wide {
+  width: min(1120px, 96vw) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal:not(.erp-pur-newprod-modal) {
+  width: min(1120px, 96vw) !important;
+}
+
+/* POS cheque modal — Add Cheque button (portal-safe, loads last) */
+.erp-modal-overlay .erp-modal-shell.erp-pos-chq-modal button.erp-pos-chq-add-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  margin-top: 10px !important;
+  height: 36px !important;
+  min-height: 36px !important;
+  padding: 0 16px !important;
+  border: none !important;
+  border-radius: 8px !important;
+  background: linear-gradient(180deg, #3b82f6 0%, #2563eb 55%, #1d4ed8 100%) !important;
+  color: #ffffff !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18) !important;
+  line-height: 1 !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pos-chq-modal button.erp-pos-chq-add-btn:hover {
+  background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 55%, #1e40af 100%) !important;
+  color: #ffffff !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pos-chq-modal .erp-pos-chq-form-row {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr !important;
+  gap: 8px 10px !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pos-chq-modal .erp-pos-chq-footer {
+  display: flex !important;
+  justify-content: flex-end !important;
+  gap: 8px !important;
+}
+
+/* On Hold list modal — portal-safe */
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal {
+  width: min(720px, 94vw) !important;
+  max-height: 86vh !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-modal-header {
+  background: linear-gradient(180deg, #b91c1c 0%, #7f1d1d 100%) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-modal-body {
+  padding: 12px 14px 14px !important;
+  overflow: auto !important;
+  max-height: calc(86vh - 48px) !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-hold-list-modal-hint {
+  margin: 0 0 10px !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+  color: #64748b !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-hold-list-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-hold-list-empty {
+  text-align: center;
+  padding: 28px 12px;
+  color: #64748b;
+  font-size: 13px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-hold-list-row {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  padding: 10px 12px !important;
+  background: #f8fafc !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 8px !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-sale-hold-info {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-sale-hold-name {
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  color: #0f172a !important;
+  white-space: normal !important;
+  overflow: visible !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-sale-hold-meta {
+  font-size: 12px !important;
+  color: #64748b !important;
+  margin-top: 2px;
+  white-space: normal !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-sale-hold-actions {
+  display: flex !important;
+  gap: 6px !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal button.erp-sale-hold-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 30px !important;
+  height: 30px !important;
+  padding: 0 12px !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  font-family: inherit !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal button.erp-sale-hold-btn.continue {
+  border: none !important;
+  background: linear-gradient(180deg, #2a4a70 0%, #1e3a5f 55%, #16304f 100%) !important;
+  color: #ffffff !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal button.erp-sale-hold-btn.delete {
+  border: 1px solid #fecaca !important;
+  background: #ffffff !important;
+  color: #b91c1c !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-pos-held-pill {
+  font-size: 9px !important;
+  font-weight: 800 !important;
+  padding: 2px 7px !important;
+  border-radius: 999px !important;
+  border: 1px solid transparent !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-pos-held-pill.sale {
+  background: #dbeafe !important;
+  border-color: #93c5fd !important;
+  color: #1e3a5f !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-pos-held-pill.quot {
+  background: #ffedd5 !important;
+  border-color: #fdba74 !important;
+  color: #9a3412 !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-pos-held-pill.pur {
+  background: #ede9fe !important;
+  border-color: #c4b5fd !important;
+  color: #5b21b6 !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-pos-held-pill.active {
+  background: #e0e7ff !important;
+  border-color: #a5b4fc !important;
+  color: #312e81 !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-hold-list-modal .erp-hold-list-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
+}
+
+/* On Hold trigger — beat phase7/core flat button resets (loads last) */
+.erp-app-root .erp-core-scope .erp-page-content.pos-page .erp-pos-modern button.erp-sale-hold-trigger,
+.erp-app-root .erp-core-scope .erp-page-content button.erp-sale-hold-trigger,
+.erp-app-root .erp-core-scope button.erp-sale-hold-trigger,
+.erp-app-root button.erp-sale-hold-trigger,
+.erp-app-root .erp-page-content button.erp-sale-hold-trigger,
+.erp-app-root .erp-pos-modern button.erp-sale-hold-trigger,
+.erp-app-root .erp-pur-entry button.erp-sale-hold-trigger,
+button.erp-sale-hold-trigger {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  margin-top: 6px !important;
+  flex: 0 0 auto !important;
+  flex-shrink: 0 !important;
+  min-height: 44px !important;
+  height: auto !important;
+  padding: 8px 10px !important;
+  border: 1px solid #991b1b !important;
+  border-radius: 8px !important;
+  background: #b91c1c !important;
+  background-color: #b91c1c !important;
+  background-image: linear-gradient(180deg, #dc2626 0%, #b91c1c 55%, #7f1d1d 100%) !important;
+  color: #ffffff !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  box-shadow: 0 1px 3px rgba(127, 29, 29, 0.28) !important;
+  text-align: left !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page-content.pos-page .erp-pos-modern button.erp-sale-hold-trigger:hover,
+.erp-app-root .erp-core-scope button.erp-sale-hold-trigger:hover,
+.erp-app-root button.erp-sale-hold-trigger:hover,
+.erp-app-root .erp-page-content button.erp-sale-hold-trigger:hover,
+button.erp-sale-hold-trigger:hover {
+  background: #991b1b !important;
+  background-color: #991b1b !important;
+  background-image: linear-gradient(180deg, #ef4444 0%, #b91c1c 55%, #7f1d1d 100%) !important;
+  border-color: #7f1d1d !important;
+  color: #ffffff !important;
+}
+
+.erp-app-root .erp-core-scope button.erp-sale-hold-trigger .erp-sale-hold-trigger-ico,
+.erp-app-root button.erp-sale-hold-trigger .erp-sale-hold-trigger-ico,
+button.erp-sale-hold-trigger .erp-sale-hold-trigger-ico {
+  font-size: 14px !important;
+  line-height: 1 !important;
+  color: #ffffff !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-app-root .erp-core-scope button.erp-sale-hold-trigger .erp-sale-hold-trigger-text,
+.erp-app-root button.erp-sale-hold-trigger .erp-sale-hold-trigger-text,
+button.erp-sale-hold-trigger .erp-sale-hold-trigger-text {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-start !important;
+  gap: 1px !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+.erp-app-root .erp-core-scope button.erp-sale-hold-trigger .erp-sale-hold-trigger-label,
+.erp-app-root button.erp-sale-hold-trigger .erp-sale-hold-trigger-label,
+button.erp-sale-hold-trigger .erp-sale-hold-trigger-label {
+  display: block !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  color: #ffffff !important;
+  line-height: 1.2 !important;
+  visibility: visible !important;
+}
+
+.erp-app-root .erp-core-scope button.erp-sale-hold-trigger .erp-sale-hold-trigger-sub,
+.erp-app-root button.erp-sale-hold-trigger .erp-sale-hold-trigger-sub,
+button.erp-sale-hold-trigger .erp-sale-hold-trigger-sub {
+  display: block !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  color: #fee2e2 !important;
+  line-height: 1.2 !important;
+  visibility: visible !important;
+}
+
+.erp-app-root .erp-core-scope button.erp-sale-hold-trigger .erp-pos-held-count,
+.erp-app-root button.erp-sale-hold-trigger .erp-pos-held-count,
+button.erp-sale-hold-trigger .erp-pos-held-count {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: rgba(255, 255, 255, 0.22) !important;
+  border: 1px solid rgba(255, 255, 255, 0.45) !important;
+  color: #ffffff !important;
+  border-radius: 999px !important;
+  padding: 2px 9px !important;
+  font-size: 12px !important;
+  font-weight: 800 !important;
+  min-width: 24px !important;
+  margin-left: auto !important;
+  flex-shrink: 0 !important;
+  visibility: visible !important;
+}

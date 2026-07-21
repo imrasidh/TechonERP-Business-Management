@@ -1,9 +1,36 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import "./styles/erpClassicShell.css";
+import "./styles/erpModules.css";
+import "./styles/erpPhase4.css";
+import "./styles/erpPhase5.css";
+import "./styles/erpPhase6.css";
+import "./styles/erpPhase7.css";
+import "./styles/erpSalesModern.css";
+import "./styles/erpInventoryModern.css";
+import "./styles/erpPurchasesModern.css";
+import "./styles/erpInvoicesModern.css";
+import "./styles/erpCoreModern.css";
+import "./styles/erpAccountsModern.css";
+import "./styles/erpReportsModern.css";
+import "./styles/erpClickFeedback.css";
+import "./styles/erpSiViewPrint.css";
+import "./styles/erpPartiesModern.css";
+import "./styles/erpSettingsModern.css";
+import { ErpClassicShellLayout } from "./components/ErpClassicShellLayout.jsx";
+import { MoneyInOutModal } from "./components/MoneyInOutModal.jsx";
+import ToolbarCustomizePanel from "./components/ToolbarCustomizePanel.jsx";
+import {
+  getToolbarKeys,
+  persistToolbarKeys,
+  resolveToolbarItems,
+} from "./utils/toolbarConfig.js";
 import { IS_PRODUCTION, COMPUTER_SHOP_EDITION, validateJsonBackupPayload, enforceProductionStrictPeriodLock } from "./productionConfig.js";
 import { defaultStrictPeriodLock } from "./productionDefaults.js";
-import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, pushKeysToServer, NETWORK_KV_KEYS, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId } from "./sync/SyncEngine.js";
+import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, pushKeysToServer, NETWORK_KV_KEYS, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId, isSyncHydrating } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
-import { isVoidedTxn, activeSales, activePurchases } from "./utils/voidInvoice.js";
+import { isVoidedTxn, activeSales, activePurchases, computeNetCOGS, computeNetCOGSForRange } from "./utils/voidInvoice.js";
+import { LIST_PAGE_SIZE } from "./utils/listPage.js";
 import { generateDocumentNumber } from "./utils/docNumbers.js";
 import {
   MASTER_EDITION_ID,
@@ -46,7 +73,7 @@ import {
 import { deriveInventoryEconomics, reconcileInventoryToLedger } from "./accounting/inventoryEngine.js";
 import { buildFinancialSnapshot, appendSnapshot, sanitizeFinancialSnapshots, verifyFinancialSnapshotsHmac } from "./accounting/financialSnapshot.js";
 import { validateAccountingCommitInvariants } from "./accounting/commitInvariants.js";
-import { collectStrictPeriodLockOverrideIds } from "./accounting/periodLockOverride.js";
+import { collectStrictPeriodLockOverrideIds, productCostChanged } from "./accounting/periodLockOverride.js";
 import { buildOperationalHealthSnapshot } from "./ops/operationalHealth.js";
 import { isProductionLicenseSecretMissingBlock } from "./ops/accountingGuards.js";
 import { handleOperationalGuardAudit } from "./ops/operationalGuard.js";
@@ -70,14 +97,14 @@ import {
   getUnitCostFromRows,
 } from "./units/productUnits.js";
 import Inventory from "./pages/Inventory.jsx";
-import Customers from "./pages/Customers.jsx";
-import Suppliers from "./pages/Suppliers.jsx";
+import Parties from "./pages/Parties.jsx";
 import Expenses from "./pages/Expenses.jsx";
 import Repairs from "./pages/Repairs.jsx";
 import CodDatabase from "./pages/CodDatabase.jsx";
 import AuditLog from "./pages/AuditLog.jsx";
 import Barcodes from "./pages/Barcodes.jsx";
 import Purchases from "./pages/Purchases.jsx";
+import PurchaseEntry from "./pages/PurchaseEntry.jsx";
 import Returns from "./pages/Returns.jsx";
 import Cheques from "./pages/Cheques.jsx";
 import Receivables from "./pages/Receivables.jsx";
@@ -88,7 +115,18 @@ import Dashboard from "./pages/Dashboard.jsx";
 import Reports from "./pages/Reports.jsx";
 import Settings from "./pages/Settings.jsx";
 import Accounts from "./pages/Accounts.jsx";
-import { ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, canAccessPageByRole, hasPermission, normalizeRole } from "./security/rbac.js";
+import {
+  ROLE_ADMIN,
+  ROLE_CASHIER,
+  ROLE_LABELS,
+  assertNoForeignLockOnDocMetaWrite,
+  assertRoleAllowsStorageMutation,
+  canAccessPageByRole,
+  getSessionActor,
+  hasPermission,
+  normalizeRole,
+  setSessionActor,
+} from "./security/rbac.js";
 import { showPermissionDenied as showPermissionDeniedUi } from "./utils/permissionUi.js";
 import { UI } from "./utils/uiIcons.js";
 import CloseIconButton from "./components/CloseIconButton.jsx";
@@ -235,12 +273,12 @@ var setLoginPassword = function (hashed, opts) {
   if (idx < 0 && users.length === 1) idx = 0;
   if (idx >= 0) {
     var next = users.slice();
-    next[idx] = Object.assign({}, next[idx], { passwordHash: hashed });
+    next[idx] = Object.assign({}, next[idx], { passwordHash: hashed, updatedAt: new Date().toISOString() });
     S.set("tc3_users", next);
     return next[idx];
   }
   if (opts.user) {
-    var row = Object.assign({}, opts.user, { passwordHash: hashed });
+    var row = Object.assign({}, opts.user, { passwordHash: hashed, updatedAt: new Date().toISOString() });
     S.set("tc3_users", [row]);
     return row;
   }
@@ -307,7 +345,7 @@ var repairLoginAuthOnLoad = function () {
   }
   if (u && !normalizeLoginUsername(u.username)) {
     var next = users.slice();
-    next[idx] = Object.assign({}, u, { username: "admin", passwordHash: appHash });
+    next[idx] = Object.assign({}, u, { username: "admin", passwordHash: appHash, updatedAt: new Date().toISOString() });
     S.set("tc3_users", next);
   }
 };
@@ -1093,8 +1131,8 @@ var AppDialog = function () {
         })}
         onClick={function (e) { e.stopPropagation(); }}
       >
-        <div style={modalHeaderBarStyle()}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>{dlgTitle}</div>
+        <div className="erp-modal-header" style={modalHeaderBarStyle()}>
+          <div className="erp-modal-title" style={{ fontWeight: 700, fontSize: 15 }}>{dlgTitle}</div>
           <CloseIconButton
             onClick={function () {
               if (dlg.type === "alert") handleOk();
@@ -1546,6 +1584,7 @@ var GL_TRIGGER_KEYS = {
   tc3_gl_mode: 1,
   tc3_raw_material_usage: 1,
   tc3_raw_material_counts: 1,
+  tc3_damageLog: 1,
 };
 
 /* Core storage write (no GL side-effects) - used for journal + internal keys */
@@ -1553,6 +1592,89 @@ var _coreStorageSet = function (k, v) {
   _idbCache[k] = v;
   _idbWrite(k, v);
   _mirrorTc3ToLocalStorage(k, v);
+};
+
+var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_others", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals", "tc3_invoice_edit_locks", "tc3_users"];
+
+var TC3_EXTRA_STORAGE_KEYS = [
+  "tc3_businessType", "tc3_apppass", "tc3_admin_name", "tc3_held_invoices", "tc3_autobak", "tc3_autobak_time",
+  "tc3_last_manual_backup", "tc3_restore_grace_until", "tc3_startup_wizard_done",
+  "tc3_restaurant_tables", "tc3_restaurant_default_order_type", "tc3_restaurant_orders",
+  "tc3_gl_last_error", "tc3_pay_dup_name_mem", "tc3_repair_prefill",
+];
+
+var collectAllTc3StorageKeys = function () {
+  var keySet = {};
+  var addKeys = function (list) {
+    (list || []).forEach(function (k) {
+      if (k && k.indexOf("tc3_") === 0) keySet[k] = true;
+    });
+  };
+  addKeys(TC_FULL_BACKUP_KEYS);
+  addKeys(TC3_EXTRA_STORAGE_KEYS);
+  Object.keys(_idbCache).forEach(function (k) {
+    if (k.indexOf("tc3_") === 0) keySet[k] = true;
+  });
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var lk = localStorage.key(i);
+      if (lk && lk.indexOf("tc3_") === 0) keySet[lk] = true;
+    }
+  } catch (eLs) { /* ignore */ }
+  return Object.keys(keySet);
+};
+
+var purgeAllTc3FromMemoryAndLocal = function () {
+  collectAllTc3StorageKeys().forEach(function (k) {
+    delete _idbCache[k];
+    _mirrorTc3ToLocalStorage(k, null);
+  });
+  try {
+    for (var j = localStorage.length - 1; j >= 0; j--) {
+      var kk = localStorage.key(j);
+      if (kk && kk.indexOf("tc3_") === 0) localStorage.removeItem(kk);
+    }
+  } catch (eLsClear) { /* ignore */ }
+  try {
+    var ssRemove = [];
+    for (var si = 0; si < sessionStorage.length; si++) {
+      var sk = sessionStorage.key(si);
+      if (sk && sk.indexOf("tc3_") === 0) ssRemove.push(sk);
+    }
+    ssRemove.forEach(function (k) { sessionStorage.removeItem(k); });
+  } catch (eSs) { /* ignore */ }
+};
+
+var ensureIdbReadyForBulkWrite = function () {
+  if (_idbDB && _idbDB.objectStoreNames.contains(_IDB_STORE)) {
+    return Promise.resolve(_idbDB);
+  }
+  return _idbEnsureSchema().then(function (db) {
+    _idbDB = db;
+    return db;
+  });
+};
+
+var bulkWriteTc3Payload = function (payload) {
+  var entries = [];
+  Object.keys(payload || {}).forEach(function (k) {
+    if (k.indexOf("tc3_") !== 0) return;
+    _idbCache[k] = payload[k];
+    _mirrorTc3ToLocalStorage(k, payload[k]);
+    entries.push({ key: k, promise: _idbWriteAsync(k, payload[k]) });
+  });
+  return Promise.all(entries.map(function (e) { return e.promise; })).then(function (results) {
+    var failed = [];
+    results.forEach(function (ok, i) {
+      if (!ok) failed.push(entries[i].key);
+    });
+    if (failed.length) {
+      throw new Error(
+        "Failed to save " + failed.length + " database key(s) (" + failed.slice(0, 4).join(", ") +
+        (failed.length > 4 ? "…" : "") + "). Close other TechonERP windows and try again."
+      );
+    }
+  });
 };
 
 var getFreshResetBlankSettings = function () {
@@ -1588,7 +1710,7 @@ var buildFreshResetLocalPayload = function () {
   return payload;
 };
 
-/** Wipe all local ERP data and optionally push empty state to network server (Settings → Reset). */
+/** Wipe all local ERP data and optionally push empty state to network server (Settings ? Reset). */
 var wipeAllErpDataForReset = function (opts) {
   opts = opts || {};
   var withTimeout = function (promise, ms, label) {
@@ -1615,62 +1737,26 @@ var wipeAllErpDataForReset = function (opts) {
 
   /* Close SyncEngine connection first — otherwise deleteDatabase hangs forever. */
   try { destroySyncEngine(); } catch (eSync0) { /* ignore */ }
-
-  var keySet = {};
-  var addKeys = function (list) {
-    (list || []).forEach(function (k) {
-      if (k && k.indexOf("tc3_") === 0) keySet[k] = true;
-    });
-  };
-  addKeys(typeof TC_FULL_BACKUP_KEYS !== "undefined" ? TC_FULL_BACKUP_KEYS : []);
-  addKeys([
-    "tc3_users", "tc3_apppass", "tc3_admin_name", "tc3_held_invoices", "tc3_autobak", "tc3_autobak_time",
-    "tc3_last_manual_backup", "tc3_restore_grace_until", "tc3_businessType", "tc3_startup_wizard_done",
-    "tc3_restaurant_tables", "tc3_restaurant_default_order_type", "tc3_gl_last_error",
-  ]);
-  Object.keys(_idbCache).forEach(function (k) {
-    if (k.indexOf("tc3_") === 0) keySet[k] = true;
-  });
-  try {
-    for (var i = 0; i < localStorage.length; i++) {
-      var lk = localStorage.key(i);
-      if (lk && lk.indexOf("tc3_") === 0) keySet[lk] = true;
-    }
-  } catch (eLsScan) { /* ignore */ }
-
-  try {
-    var ssRemove = [];
-    for (var si = 0; si < sessionStorage.length; si++) {
-      var sk = sessionStorage.key(si);
-      if (sk && sk.indexOf("tc3_") === 0) ssRemove.push(sk);
-    }
-    ssRemove.forEach(function (k) { sessionStorage.removeItem(k); });
-  } catch (eSs) { /* ignore */ }
-
-  Object.keys(_idbCache).forEach(function (k) { delete _idbCache[k]; });
-  Object.keys(keySet).forEach(function (k) { _mirrorTc3ToLocalStorage(k, null); });
-  try {
-    for (var j = localStorage.length - 1; j >= 0; j--) {
-      var kk = localStorage.key(j);
-      if (kk && kk.indexOf("tc3_") === 0) localStorage.removeItem(kk);
-    }
-  } catch (eLsClear) { /* ignore */ }
+  purgeAllTc3FromMemoryAndLocal();
 
   var finishFreshLocal = function () {
-    var fresh = buildFreshResetLocalPayload();
-    Object.keys(fresh).forEach(function (k) {
-      _idbCache[k] = fresh[k];
-      _mirrorTc3ToLocalStorage(k, fresh[k]);
-    });
-    var writes = Object.keys(fresh).map(function (k) {
-      return _idbWriteAsync(k, fresh[k]);
-    });
-    return Promise.all(writes).then(function () { return { ok: true }; }).catch(function () {
-      return { ok: true };
+    return ensureIdbReadyForBulkWrite().then(function () {
+      var fresh = buildFreshResetLocalPayload();
+      return bulkWriteTc3Payload(fresh).then(function () {
+        var sales = (_idbCache.tc3_sales && _idbCache.tc3_sales.length) || 0;
+        var products = (_idbCache.tc3_products && _idbCache.tc3_products.length) || 0;
+        if (sales > 0 || products > 0) {
+          throw new Error("Reset verification failed — old data still present (" + sales + " sales, " + products + " products).");
+        }
+        initAndLoadIDB._done = false;
+        initAndLoadIDB._promise = null;
+        return { ok: true };
+      });
     });
   };
 
   var maybePushServer = function (localResult) {
+    if (localResult && localResult.ok === false) return localResult;
     if (!(opts.pushServer && opts.authConfig && opts.authConfig.apiUrl)) {
       return localResult || { ok: true };
     }
@@ -1688,27 +1774,42 @@ var wipeAllErpDataForReset = function (opts) {
     });
   };
 
-  /* Prefer clearing the store (fast, never hangs). Fall back to deleteDatabase with timeout. */
-  return _idbClearAllKeys().then(function (cleared) {
-    if (cleared) {
-      return finishFreshLocal().then(maybePushServer);
-    }
-    return withTimeout(_idbDeleteDb().then(function () {
-      _idbDB = null;
-      initAndLoadIDB._done = false;
-      initAndLoadIDB._promise = null;
-      return true;
-    }), 5000, "deleteDatabase").then(function (delRes) {
-      if (delRes && delRes.timeout) {
-        /* Still write empty local state into LS + cache so reload is fresh enough. */
-        return finishFreshLocal().then(maybePushServer);
-      }
-      _idbDB = null;
-      initAndLoadIDB._done = false;
-      initAndLoadIDB._promise = null;
-      return finishFreshLocal().then(maybePushServer);
+  var clearIdbAndFinish = function () {
+    return _idbClearAllKeys().then(function (cleared) {
+      if (cleared) return finishFreshLocal();
+      return withTimeout(_idbDeleteDb().then(function () {
+        _idbDB = null;
+        initAndLoadIDB._done = false;
+        initAndLoadIDB._promise = null;
+        return true;
+      }), 5000, "deleteDatabase").then(function () {
+        _idbDB = null;
+        initAndLoadIDB._done = false;
+        initAndLoadIDB._promise = null;
+        return finishFreshLocal();
+      });
     });
+  };
+
+  return ensureIdbReadyForBulkWrite()
+    .then(function () { return clearIdbAndFinish(); })
+    .then(maybePushServer)
+    .catch(function (err) {
+      return { ok: false, message: err && err.message ? err.message : String(err) };
+    });
+};
+
+var buildRestorePayloadFromBackup = function (data) {
+  var payload = {};
+  TC_FULL_BACKUP_KEYS.forEach(function (k) {
+    if (data[k] !== undefined) payload[k] = data[k];
+    else if (k === "tc3_settings") payload[k] = getFreshResetBlankSettings();
+    else if (k === "tc3_gl_mode") payload[k] = "live";
+    else payload[k] = [];
   });
+  if (data.tc3_businessType !== undefined) payload.tc3_businessType = data.tc3_businessType;
+  payload.tc3_restore_grace_until = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  return payload;
 };
 
 /** Restore backup.data into cache + IndexedDB + localStorage (awaitable). */
@@ -1716,33 +1817,40 @@ var applyBackupRestoreData = function (data) {
   if (!data || typeof data !== "object") {
     return Promise.reject(new Error("Invalid backup data"));
   }
+  try { destroySyncEngine(); } catch (eSync0) { /* ignore */ }
   try {
     window._tcRestoreInProgress = true;
   } catch (e0) { /* ignore */ }
-  var keys = TC_FULL_BACKUP_KEYS.concat(["tc3_businessType"]);
-  var writes = [];
-  keys.forEach(function (k) {
-    if (data[k] === undefined) return;
-    _idbCache[k] = data[k];
-    _mirrorTc3ToLocalStorage(k, data[k]);
-    writes.push(_idbWriteAsync(k, data[k]));
-  });
-  var graceUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  _idbCache.tc3_restore_grace_until = graceUntil;
-  _mirrorTc3ToLocalStorage("tc3_restore_grace_until", graceUntil);
-  writes.push(_idbWriteAsync("tc3_restore_grace_until", graceUntil));
-  return Promise.all(writes).then(function () {
-    try {
-      window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
-      keys.forEach(function (k) {
-        if (data[k] !== undefined) window._tcRecentLocalWrites[k] = Date.now();
+
+  var runRestore = function () {
+    purgeAllTc3FromMemoryAndLocal();
+    return _idbClearAllKeys().then(function () {
+      var payload = buildRestorePayloadFromBackup(data);
+      return bulkWriteTc3Payload(payload).then(function () {
+        var expectedSales = (data.tc3_sales && data.tc3_sales.length) || 0;
+        var cachedSales = (_idbCache.tc3_sales && _idbCache.tc3_sales.length) || 0;
+        if (expectedSales > 0 && cachedSales < expectedSales) {
+          throw new Error("Restore verification failed - sales count mismatch (" + cachedSales + "/" + expectedSales + ").");
+        }
+        initAndLoadIDB._done = false;
+        initAndLoadIDB._promise = null;
+        try {
+          window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
+          Object.keys(payload).forEach(function (k) {
+            window._tcRecentLocalWrites[k] = Date.now();
+          });
+        } catch (eRw) { /* ignore */ }
+        try { window._tcRestoreInProgress = false; } catch (e1) { /* ignore */ }
       });
-    } catch (eRw) { /* ignore */ }
-    try { window._tcRestoreInProgress = false; } catch (e1) { /* ignore */ }
-  }).catch(function (err) {
-    try { window._tcRestoreInProgress = false; } catch (e2) { /* ignore */ }
-    throw err;
-  });
+    });
+  };
+
+  return ensureIdbReadyForBulkWrite()
+    .then(function () { return runRestore(); })
+    .catch(function (err) {
+      try { window._tcRestoreInProgress = false; } catch (e2) { /* ignore */ }
+      throw err;
+    });
 };
 
 /* Debounced live journal refresh - replaced after loadState() with real scheduler */
@@ -1862,8 +1970,6 @@ var S = {
 };
 /* Expose S globally so SyncEngine can patch S.set for network sync */
 window._tcS = S;
-
-var TC_FULL_BACKUP_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
 
 /** JSON backup download before GL/inventory repair - same key set as auto-backup. */
 var downloadPreRepairJsonBackup = function () {
@@ -2335,30 +2441,9 @@ var toastAfterCustomerPaymentApplied = function (customers, res) {
    When a sale is returned, sale.total is reduced (net revenue) but sale.items
    remain intact (good for viewing receipts). This means raw COGS from sale.items
    is GROSS COGS - it includes cost of returned goods.
-   FIX 1+3: Each return now stores r.cost at save time, so we use r.cost * r.qty
-   directly - no lookup map needed, no cross-period inaccuracy. */
-var getNetCOGS = function (sales, salesReturns) {
-  var grossCOGS = (sales || []).reduce(function (a, s) {
-    return a + (s.items || []).reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0);
-  }, 0);
-  /* Use the cost stored on the return entry - exact match to original transaction */
-  var returnedCOGS = (salesReturns || []).reduce(function (a, r) {
-    return a + (r.qty || 0) * (r.cost || 0);
-  }, 0);
-  return Math.max(0, grossCOGS - returnedCOGS);
-};
-
-/* Scoped version for a filtered subset of sales/returns (used in period P&L).
-   r.cost is stored on the return itself so cross-period returns work correctly. */
-var getNetCOGSForRange = function (rSales, rSalesReturns) {
-  var grossCOGS = (rSales || []).reduce(function (a, s) {
-    return a + (s.items || []).reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0);
-  }, 0);
-  var returnedCOGS = (rSalesReturns || []).reduce(function (a, r) {
-    return a + (r.qty || 0) * (r.cost || 0);
-  }, 0);
-  return Math.max(0, grossCOGS - returnedCOGS);
-};
+   Only subtract returns whose parent sale is active (non-voided) in the sales set. */
+var getNetCOGS = computeNetCOGS;
+var getNetCOGSForRange = computeNetCOGSForRange;
 
 var getCashBalances = function (state) {
   try {
@@ -2510,6 +2595,7 @@ var SEED = {
   products: [],
   customers: [],
   suppliers: [],
+  others: [],
   sales: [], purchases: [], expenses: [], repairs: [], assets: [],
   damageLog: [], productLog: []
 };
@@ -2658,6 +2744,7 @@ var loadState = function () {
     products: S.get("tc3_products", SEED.products),
     customers: S.get("tc3_customers", SEED.customers),
     suppliers: S.get("tc3_suppliers", SEED.suppliers),
+    others: S.get("tc3_others", []),
     sales: S.get("tc3_sales", SEED.sales),
     purchases: S.get("tc3_purchases", SEED.purchases),
     rawMaterialCounts: S.get("tc3_raw_material_counts", []),
@@ -2730,6 +2817,7 @@ var buildCloudSyncPayload = function () {
     products: S.get("tc3_products", []),
     customers: S.get("tc3_customers", []),
     suppliers: S.get("tc3_suppliers", []),
+    others: S.get("tc3_others", []),
     expenses: S.get("tc3_expenses", []),
     repairs: S.get("tc3_repairs", []),
     cheques: S.get("tc3_cheques", []),
@@ -2749,12 +2837,30 @@ var buildCloudSyncPayload = function () {
 };
 
 validateAccountingMutation = function (k, v, oldV) {
+  /* Storage-level RBAC + soft-lock meta guard (UI bypass protection).
+     Skip during sync hydration so peer writes still apply on cashier PCs. */
+  try {
+    if (!isSyncHydrating()) {
+      var actor = getSessionActor();
+      var rbac = assertRoleAllowsStorageMutation(actor, k, v, oldV);
+      if (!rbac.ok) return rbac;
+      var lockGuard = assertNoForeignLockOnDocMetaWrite(
+        function () { return S.get("tc3_invoice_edit_locks", []) || []; },
+        getOrCreateDeviceId(),
+        k,
+        v,
+        oldV
+      );
+      if (!lockGuard.ok) return lockGuard;
+    }
+  } catch (_rbacE) { /* never block on helper failure */ }
+
   var settings = Object.assign({}, SEED.settings, S.get("tc3_settings", {}));
   if (k === "tc3_products" && settings.preventNegativeStock === true) {
     var arr = Array.isArray(v) ? v : [];
     for (var i = 0; i < arr.length; i++) {
       if ((arr[i].stock || 0) < 0) {
-        return { ok: false, message: "Negative stock is not allowed. Enable negative stock in Settings → Accounting (advanced) or adjust quantities." };
+        return { ok: false, message: "Negative stock is not allowed. Enable negative stock in Settings ? Accounting (advanced) or adjust quantities." };
       }
     }
   }
@@ -2763,16 +2869,17 @@ validateAccountingMutation = function (k, v, oldV) {
   var lockMsg =
     "This period is locked. Changes are not allowed." +
     (lockThrough ? "\n\nLocked through: " + lockThrough + " (inclusive)." : "") +
-    "\n\nUnlock Admin accounting (PIN) under Settings → Period & GL if you must override.";
+    "\n\nUnlock Admin accounting (PIN) under Settings ? Period & GL if you must override.";
   var strictLockMsg =
     "This period is locked. Changes are not allowed." +
     (lockThrough ? "\n\nLocked through: " + lockThrough + " (inclusive)." : "") +
     "\n\nStrict lock is on — Admin override may still be audited.";
   var strictLock = settings.strictPeriodLock === true;
   if (lock && !window._tcAccountingPeriodAdmin) {
-    var newRowViolatesPeriodLock = function (row) {
+    var newRowViolatesPeriodLock = function (row, key) {
       if (!row) return false;
-      if (isLockedThroughDate(row.date, lock)) return true;
+      var rowDate = key === "tc3_repairs" ? (row.dateIn || row.date) : row.date;
+      if (isLockedThroughDate(rowDate, lock)) return true;
       var ph = row.paymentHistory;
       if (!Array.isArray(ph)) return false;
       for (var pi = 0; pi < ph.length; pi++) {
@@ -2808,16 +2915,18 @@ validateAccountingMutation = function (k, v, oldV) {
       }
       return false;
     };
-    var rowTouchesLockedPeriodWhenChanged = function (prevRow, row) {
+    var rowTouchesLockedPeriodWhenChanged = function (prevRow, row, key) {
       if (!row) return false;
-      if (!prevRow) return newRowViolatesPeriodLock(row);
+      if (!prevRow) return newRowViolatesPeriodLock(row, key);
       try {
         if (JSON.stringify(prevRow) === JSON.stringify(row)) return false;
       } catch (e) {
-        return newRowViolatesPeriodLock(row);
+        return newRowViolatesPeriodLock(row, key);
       }
-      if (String(row.date || "") !== String(prevRow.date || "")) {
-        if (isLockedThroughDate(row.date, lock)) return true;
+      var dNew = key === "tc3_repairs" ? (row.dateIn || row.date) : row.date;
+      var dOld = key === "tc3_repairs" ? (prevRow.dateIn || prevRow.date) : prevRow.date;
+      if (String(dNew || "") !== String(dOld || "")) {
+        if (isLockedThroughDate(dNew, lock)) return true;
       }
       return paymentHistoryDeltaViolatesLock(prevRow, row);
     };
@@ -2834,6 +2943,9 @@ validateAccountingMutation = function (k, v, oldV) {
       tc3_profitDist: 1,
       tc3_raw_material_usage: 1,
       tc3_raw_material_counts: 1,
+      tc3_repairs: 1,
+      tc3_cheques: 1,
+      tc3_damageLog: 1,
     };
     if (periodLockArrayKeys[k] && Array.isArray(v)) {
       var oldArr = Array.isArray(oldV) ? oldV : [];
@@ -2851,7 +2963,8 @@ validateAccountingMutation = function (k, v, oldV) {
         for (var od = 0; od < oldArr.length; od++) {
           var oDel = oldArr[od];
           if (!oDel || oDel.id == null) continue;
-          if (!newIds[String(oDel.id)] && isLockedThroughDate(oDel.date, lock)) {
+          var oDelDate = k === "tc3_repairs" ? (oDel.dateIn || oDel.date) : oDel.date;
+          if (!newIds[String(oDel.id)] && isLockedThroughDate(oDelDate, lock)) {
             return { ok: false, message: strictLockMsg };
           }
         }
@@ -2865,17 +2978,52 @@ validateAccountingMutation = function (k, v, oldV) {
         } else if (li < oldArr.length && oldArr[li] && !nrow.id && !oldArr[li].id) {
           prevN = oldArr[li];
         }
-        if (strictLock && prevN && isLockedThroughDate(prevN.date, lock)) {
-          try {
-            if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
+        if (strictLock && prevN) {
+          var prevLockDate = k === "tc3_repairs" ? (prevN.dateIn || prevN.date) : prevN.date;
+          if (isLockedThroughDate(prevLockDate, lock)) {
+            try {
+              if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
+                return { ok: false, message: strictLockMsg };
+              }
+            } catch (e) {
               return { ok: false, message: strictLockMsg };
             }
-          } catch (e) {
+            continue;
+          }
+        }
+        if (rowTouchesLockedPeriodWhenChanged(prevN, nrow, k)) {
+          return { ok: false, message: lockMsg };
+        }
+      }
+    }
+    /* Product cost + strict delete — stock moves via sales/purchases/damageLog (dated). */
+    if (k === "tc3_products" && Array.isArray(v)) {
+      var oldProdArr = Array.isArray(oldV) ? oldV : [];
+      var oldProdById = {};
+      for (var opi = 0; opi < oldProdArr.length; opi++) {
+        var oPr = oldProdArr[opi];
+        if (oPr && oPr.id != null) oldProdById[String(oPr.id)] = oPr;
+      }
+      if (strictLock) {
+        var newProdIds = {};
+        for (var npi = 0; npi < v.length; npi++) {
+          var nPr = v[npi];
+          if (nPr && nPr.id != null) newProdIds[String(nPr.id)] = true;
+        }
+        for (var opd = 0; opd < oldProdArr.length; opd++) {
+          var oDelP = oldProdArr[opd];
+          if (!oDelP || oDelP.id == null) continue;
+          if (!newProdIds[String(oDelP.id)]) {
             return { ok: false, message: strictLockMsg };
           }
-          continue;
         }
-        if (rowTouchesLockedPeriodWhenChanged(prevN, nrow)) {
+      }
+      for (var pxi = 0; pxi < v.length; pxi++) {
+        var nProd = v[pxi];
+        if (!nProd || nProd.id == null) continue;
+        var prevProd = oldProdById[String(nProd.id)];
+        if (!prevProd) continue;
+        if (productCostChanged(prevProd, nProd)) {
           return { ok: false, message: lockMsg };
         }
       }
@@ -3293,7 +3441,7 @@ var C = {
 };
 
 /* --- GLOBAL CSS ------------------------------------ */
-var GCSS = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}body{font-family:'Plus Jakarta Sans',system-ui,sans-serif}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#f0f4ff;border-radius:4px}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#a8bcf0,#7499e8);border-radius:4px}::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#2979ff,#2255d4)}input[type=number]::-webkit-inner-spin-button{opacity:.4}@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.erp-page{animation:fadeIn .18s cubic-bezier(.22,1,.36,1)}.no-print{display:block}@media print{.no-print{display:none!important}.print-only{display:block!important}}.stat-card-hover{transition:transform .18s,box-shadow .18s}.stat-card-hover:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(13,27,62,0.13)!important}.nav-btn{transition:all .15s cubic-bezier(.22,1,.36,1)!important}.nav-btn:hover{background:rgba(41,121,255,0.12)!important;transform:translateX(2px)}.erp-page table{border-collapse:collapse}.erp-page table th,.erp-page table td{border-right:1px solid #e1e8f5;border-bottom:1px solid #eef2fb;vertical-align:middle}.erp-page table th:last-child,.erp-page table td:last-child{border-right:none}.erp-page table thead th{border-bottom:2px solid #e1e8f5}.table-row-hover:hover td{background:#f4f7ff!important}.tc-snapshot-badge:focus:not(:focus-visible){outline:none}.tc-snapshot-badge:focus-visible{outline:2px solid #2979ff;outline-offset:2px;border-radius:999px}@media (prefers-reduced-motion:reduce){.tc-snapshot-badge,.tc-snapshot-badge *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}";
+var GCSS = "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}body{font-family:'Plus Jakarta Sans',system-ui,-apple-system,'Segoe UI',Arial,sans-serif,'Segoe UI Emoji','Segoe UI Symbol','Noto Color Emoji',sans-serif}.tc-emoji{font-family:'Segoe UI Emoji','Segoe UI Symbol','Noto Color Emoji','Apple Color Emoji',sans-serif;font-style:normal;line-height:1}::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:#f0f4ff;border-radius:4px}::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#a8bcf0,#7499e8);border-radius:4px}::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,#2979ff,#2255d4)}input[type=number]::-webkit-inner-spin-button{opacity:.4}@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.erp-page{animation:fadeIn .18s cubic-bezier(.22,1,.36,1)}.no-print{display:block}@media print{.no-print{display:none!important}.print-only{display:block!important}}.stat-card-hover{transition:transform .18s,box-shadow .18s}.stat-card-hover:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(13,27,62,0.13)!important}.nav-btn{transition:all .15s cubic-bezier(.22,1,.36,1)!important}.nav-btn:hover{background:rgba(41,121,255,0.12)!important;transform:translateX(2px)}.erp-page table{border-collapse:collapse}.erp-page table th,.erp-page table td{border-right:1px solid #e1e8f5;border-bottom:1px solid #eef2fb;vertical-align:middle}.erp-page table th:last-child,.erp-page table td:last-child{border-right:none}.erp-page table thead th{border-bottom:2px solid #e1e8f5}.table-row-hover:hover td{background:#f4f7ff!important}.tc-snapshot-badge:focus:not(:focus-visible){outline:none}.tc-snapshot-badge:focus-visible{outline:2px solid #2979ff;outline-offset:2px;border-radius:999px}@media (prefers-reduced-motion:reduce){.tc-snapshot-badge,.tc-snapshot-badge *{animation:none!important;transition:none!important;scroll-behavior:auto!important}}";
 if (!document.getElementById("erp-gcss")) {
   var _s = document.createElement("style");
   _s.id = "erp-gcss";
@@ -3501,31 +3649,49 @@ var HeaderKeysHint = function (props) {
   var [open, setOpen] = useState(false);
   var hideTimer = useRef(null);
   var ALL = [
-    { scope: "sales", keys: "Ctrl + S", text: "Save only" },
-    { scope: "sales", keys: "Ctrl + P", text: "Print" },
-    { scope: "sales", keys: "Ctrl + W", text: "WhatsApp" },
-    { scope: "sales", keys: "Ctrl + H", text: "Hold cart" },
-    { scope: "sales", keys: "Alt", text: "Switch Walk-in / Customer" },
+    { scope: "sales", keys: "F2", text: "Focus product / barcode search" },
+    { scope: "sales", keys: "F3", text: "Focus product / barcode search" },
+    { scope: "sales", keys: "F4", text: "Split payment" },
+    { scope: "sales", keys: "F5", text: "Save & Print" },
+    { scope: "sales", keys: "F6", text: "Save Only" },
+    { scope: "sales", keys: "F7", text: "Print View (no save)" },
+    { scope: "sales", keys: "F8", text: "WhatsApp / Share" },
+    { scope: "sales", keys: "F9", text: "Hold cart" },
+    { scope: "sales", keys: "Del", text: "Remove last cart row" },
+    { scope: "sales", keys: "Alt (tap)", text: "Switch Walk-in / Customer" },
+    { scope: "sales", keys: "Ctrl (tap)", text: "Switch Sales / Quotation" },
     { scope: "sales", keys: "/", text: "Focus product search" },
-    { scope: "sales", keys: "Esc", text: "Return to product search" },
-    { scope: "sales", keys: "A", text: "Print/WhatsApp picker — A4" },
-    { scope: "sales", keys: "T", text: "Print/WhatsApp picker — Thermal" },
-    { scope: "sales", keys: "Esc", text: "Close print/WhatsApp picker" },
-    { scope: "purchases", keys: "Ctrl + +", text: "Add product" },
+    { scope: "sales", keys: "Esc", text: "Focus search (or close picker)" },
+    { scope: "sales", keys: "A", text: "Picker: A4 / paper format" },
+    { scope: "sales", keys: "T", text: "Picker: Thermal format" },
+    { scope: "sales", keys: "F11", text: "New purchase" },
+    { scope: "sales", keys: "F12", text: "Add new product" },
+    { scope: "purchases", keys: "F4", text: "Split payment" },
+    { scope: "purchases", keys: "F6", text: "Set / edit payment method" },
+    { scope: "purchases", keys: "F7", text: "Save purchase" },
+    { scope: "purchases", keys: "F8", text: "Save + print barcodes" },
+    { scope: "purchases", keys: "F9", text: "Hold purchase" },
+    { scope: "purchases", keys: "F11", text: "New purchase" },
+    { scope: "purchases", keys: "F12", text: "Add new product" },
+    { scope: "purchases", keys: "Esc", text: "Cancel / leave new purchase" },
+    { scope: "purchases", keys: "Ctrl + +", text: "Add new product" },
     { scope: "purchases", keys: "/", text: "Focus product search" },
-    { scope: "purchases", keys: "Esc", text: "Return to product search" },
+    { scope: "inventory", keys: "F11", text: "New purchase" },
+    { scope: "inventory", keys: "F12", text: "Add product" },
     { scope: "inventory", keys: "Ctrl + +", text: "Add product" },
+    { scope: "accounts", keys: "F11", text: "New purchase" },
+    { scope: "accounts", keys: "F12", text: "Add product (opening balance stock step)" },
     { scope: "accounts", keys: "Ctrl + +", text: "Add product (opening balance stock step)" },
     { scope: "barcodes", keys: "Space", text: "Hold to pan" },
     { scope: "barcodes", keys: "Ctrl + +", text: "Zoom in" },
-    { scope: "barcodes", keys: "Ctrl + −", text: "Zoom out" },
+    { scope: "barcodes", keys: "Ctrl + -", text: "Zoom out" },
     { scope: "barcodes", keys: "Ctrl + 0", text: "Reset zoom" },
     { scope: "barcodes", keys: "Arrows", text: "Nudge element" },
   ];
   var pageScope = null;
   var scopeTitle = "All shortcuts";
   if (pageId === "pos") { pageScope = "sales"; scopeTitle = "Sales shortcuts"; }
-  else if (pageId === "purchases") { pageScope = "purchases"; scopeTitle = "Purchases shortcuts"; }
+  else if (pageId === "purchases" || pageId === "purchase-entry") { pageScope = "purchases"; scopeTitle = "Purchases shortcuts"; }
   else if (pageId === "inventory") { pageScope = "inventory"; scopeTitle = "Inventory shortcuts"; }
   else if (pageId === "accounts") { pageScope = "accounts"; scopeTitle = "Accounts shortcuts"; }
   else if (pageId === "barcodeprint") { pageScope = "barcodes"; scopeTitle = "Barcode shortcuts"; }
@@ -3556,52 +3722,45 @@ var HeaderKeysHint = function (props) {
   }, []);
   return (
     <div
-      style={{ position: "relative", display: "inline-flex" }}
+      className="erp-keys-hint"
       onMouseEnter={show}
       onMouseLeave={hideSoon}
     >
       <button
         type="button"
-        style={{
-          display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 11px", borderRadius: 999,
-          border: "1.5px solid " + (open ? "#2979ff" : "#93c5fd"),
-          background: open ? "#dbeafe" : "#eff6ff",
-          color: "#1d4ed8",
-          fontSize: 11, fontWeight: 800, cursor: "default", fontFamily: "inherit", whiteSpace: "nowrap",
-          letterSpacing: "0.01em",
-          boxShadow: open ? "0 0 0 3px rgba(41,121,255,0.15)" : "none",
-        }}
+        className={"erp-page-header-link" + (open ? " open" : "")}
       >
-        <span aria-hidden="true" style={{ fontSize: 12, lineHeight: 1 }}>⌨</span>
-        ShortCut Keys
+        <svg
+          aria-hidden="true"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ marginRight: 5, flexShrink: 0 }}
+        >
+          <rect x="2" y="6" width="20" height="12" rx="2" />
+          <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M10 14h4M18 14h.01" />
+        </svg>
+        Shortcuts
       </button>
       {open ? (
         <div
+          className="erp-keys-dropdown"
           onMouseEnter={show}
           onMouseLeave={hideSoon}
-          style={{
-            position: "absolute", top: "100%", left: 0, marginTop: 6, zIndex: 4000,
-            width: 320, maxHeight: 360, overflowY: "auto", padding: "8px 0",
-            background: "#fff", border: "1px solid #bfdbfe", borderRadius: 10,
-            boxShadow: "0 12px 32px rgba(29,78,216,0.16)",
-          }}
         >
-          <div style={{ fontSize: 10, fontWeight: 800, color: "#2563eb", textTransform: "uppercase", letterSpacing: "0.07em", padding: "2px 12px 8px" }}>{scopeTitle}</div>
+          <div className="erp-keys-dropdown-title">{scopeTitle}</div>
           {rows.length === 0 ? (
-            <div style={{ fontSize: 11, color: "#94a3b8", padding: "6px 12px" }}>No shortcuts for this page.</div>
+            <div style={{ fontSize: 11, color: "#666", padding: "6px 10px" }}>No shortcuts for this page.</div>
           ) : rows.map(function (r, i) {
             return (
-              <div key={i} style={{
-                display: "grid",
-                gridTemplateColumns: "88px 1fr",
-                gap: 8,
-                alignItems: "baseline",
-                padding: "4px 12px",
-                borderTop: i === 0 ? "1px solid #eff6ff" : "none",
-                background: i % 2 === 0 ? "#fff" : "#f8fbff",
-              }}>
-                <span style={{ fontSize: 11, fontWeight: 800, color: "#1d4ed8", fontFamily: "ui-monospace, Consolas, monospace", whiteSpace: "nowrap" }}>{r.keys}</span>
-                <span style={{ fontSize: 11, color: "#475569", fontWeight: 500, lineHeight: 1.35 }}>{r.text}</span>
+              <div key={i} className="erp-keys-dropdown-row">
+                <span className="erp-keys-dropdown-key">{r.keys}</span>
+                <span className="erp-keys-dropdown-text">{r.text}</span>
               </div>
             );
           })}
@@ -3717,7 +3876,7 @@ var Card = function (props) {
     ? { background: "#fff", borderRadius: 12, border: "1px solid #e8ecf4", boxShadow: "0 2px 16px rgba(15,23,42,0.05)", marginBottom: 10 }
     : { background: "#ffffff", borderRadius: 12, border: "1.5px solid " + C.border, boxShadow: C.shadowCard };
   return (
-    <div style={Object.assign({ padding: pad, transition: "box-shadow .2s" }, base)}>
+    <div className={props.className || undefined} style={Object.assign({ padding: pad, transition: "box-shadow .2s" }, base)}>
       {props.children}
     </div>
   );
@@ -3747,35 +3906,77 @@ var Modal = function (props) {
   var wide = props.wide;
   var title = props.title;
   var onClose = props.onClose;
-  var shellWidth = wide ? "1160px" : props.medium ? "720px" : "500px";
-  return (
-    <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.5)", backdropFilter: "blur(4px)", zIndex: props.zIndex || 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+  var sizeKey = wide ? "wide" : props.medium ? "medium" : props.compact ? "compact" : "default";
+  var shellWidth = sizeKey === "wide" ? "1120px" : sizeKey === "medium" ? "960px" : sizeKey === "compact" ? "480px" : "860px";
+  var shellClass = "erp-modal-shell erp-modal--wide-compact erp-modal--" + sizeKey + (props.className ? (" " + props.className) : "");
+  var hasSubtitle = !!props.subtitle;
+  var hasHeaderIcon = !!props.headerIcon;
+  var closeRound = props.closeRound !== false;
+
+  useEffect(function () {
+    if (!onClose) return;
+    var onKey = function (e) {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return function () { window.removeEventListener("keydown", onKey); };
+  }, [onClose]);
+
+  var content = (
+    <div
+      className="erp-modal-overlay"
+      style={{ zIndex: props.zIndex || 1000, backdropFilter: "blur(4px)" }}
+      onMouseDown={function (e) {
+        if (e.target === e.currentTarget && onClose) onClose();
+      }}
+    >
       <div
         role="dialog"
         aria-modal="true"
+        className={shellClass}
         style={modalShellStyle({ width: shellWidth, maxWidth: "96vw", maxHeight: "92vh" })}
+        onMouseDown={function (e) { e.stopPropagation(); }}
       >
-        <div style={modalHeaderBarStyle(props.headerBg)}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: "#fff", letterSpacing: "-0.01em", flex: 1, minWidth: 0, lineHeight: 1.35 }}>
-            {title}
+        <div className="erp-modal-header" style={modalHeaderBarStyle(props.headerBg)}>
+          <div className="erp-modal-title-wrap" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            {hasHeaderIcon ? (
+              <div className="erp-modal-header-icon" style={{ width: 28, height: 28, borderRadius: "50%", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 1px 4px rgba(0,0,0,0.12)" }}>
+                {props.headerIcon}
+              </div>
+            ) : null}
+            <div style={{ minWidth: 0 }}>
+              <div className="erp-modal-title" style={{ fontWeight: 700, fontSize: hasSubtitle ? 14 : 13, letterSpacing: "-0.01em", lineHeight: 1.2, color: "#fff" }}>
+                {title}
+              </div>
+              {hasSubtitle ? (
+                <div className="erp-modal-subtitle" style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.85)", marginTop: 1, lineHeight: 1.25 }}>
+                  {props.subtitle}
+                </div>
+              ) : null}
+            </div>
           </div>
           {onClose ? (
             <CloseIconButton
               onClick={onClose}
-              size={32}
+              size={28}
               bg="rgba(255,255,255,0.12)"
               color="#fff"
-              borderRadius={8}
+              borderRadius={closeRound ? 999 : 8}
               ariaLabel="Close dialog"
             />
           ) : null}
         </div>
-        <div style={modalBodyStyle()}>
+        <div className="erp-modal-body" style={modalBodyStyle(props.bodyStyle)}>
           {props.children}
         </div>
       </div>
     </div>
   );
+
+  if (typeof document !== "undefined" && document.body) {
+    return createPortal(content, document.body);
+  }
+  return content;
 };
 
 /** Maps legacy ASCII icon tokens to symbols so labels read as "TOTAL PAID" not "OK TOTAL PAID". */
@@ -3793,9 +3994,56 @@ var resolveStatCardIcon = function (icon) {
     Out: "\uD83D\uDCC9",
     RM: "\uD83E\uDD44",
     Cost: "\uD83C\uDFF7\uFE0F",
+    cash: "\uD83D\uDCB5",
+    bank: "\uD83C\uDFE6",
+    recv: "\uD83D\uDCE5",
+    pay: "\uD83D\uDCE4",
+    briefcase: "\uD83D\uDCBC",
+    chart: "\uD83D\uDCCA",
+    cart: "\uD83D\uDED2",
+    expense: "\uD83D\uDCB8",
+    handshake: "\uD83E\uDD1D",
+    check: "\u2705",
+    chartup: "\uD83D\uDCC8",
+    moneybag: "\uD83D\uDCB0",
+    ledger: "\uD83D\uDCD2",
+    flag: "\uD83C\uDFC1",
+    scale: "\u2696\uFE0F",
+    search: "\uD83D\uDD0D",
+    building: "\uD83C\uDFE2",
+    package: "\uD83D\uDCE6",
+    "\uD83D\uDCB5": "\uD83D\uDCB5",
+    "\uD83D\uDCB0": "\uD83D\uDCB0",
+    "\uD83C\uDFE6": "\uD83C\uDFE6",
+    "\uD83D\uDCE5": "\uD83D\uDCE5",
+    "\uD83D\uDCE4": "\uD83D\uDCE4",
+    "\uD83D\uDCBC": "\uD83D\uDCBC",
+    "\uD83D\uDCC8": "\uD83D\uDCC8",
+    "\uD83D\uDCCA": "\uD83D\uDCCA",
+    "\uD83D\uDED2": "\uD83D\uDED2",
+    "\uD83D\uDCB8": "\uD83D\uDCB8",
+    "\uD83E\uDD1D": "\uD83E\uDD1D",
+    "\u2705": "\u2705",
+    "\uD83D\uDCE6": "\uD83D\uDCE6",
+    "\u26A0": "\u26A0\uFE0F",
+    "\u26A0\uFE0F": "\u26A0\uFE0F",
+    "\u2713": "\u2713",
+    "\u2714": "\u2714\uFE0F",
+    warn: "\u26A0\uFE0F",
+    check: "\u2713",
   };
   if (Object.prototype.hasOwnProperty.call(aliases, s)) return aliases[s];
   return s;
+};
+
+var EmptyStateGlyph = function (props) {
+  var sz = props.size || 48;
+  var iconId = props.icon || "customers";
+  return (
+    <div style={{ width: sz, height: sz, borderRadius: 12, background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto " + (props.marginBottom != null ? props.marginBottom : 14) + "px" }}>
+      <NavIcon id={iconId} size={Math.round(sz * 0.46)} color="#64748b" />
+    </div>
+  );
 };
 
 var StatCard = function (props) {
@@ -3815,18 +4063,19 @@ var StatCard = function (props) {
     }
   }
   var iconResolved = resolveStatCardIcon(props.icon);
+  var accent = props.accent || C.accent;
   return (
-    <div className="stat-card-hover" style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", border: "1.5px solid " + C.border, position: "relative", overflow: "hidden", boxShadow: C.shadowCard }}>
-      <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 4, background: props.accent || C.accent, borderRadius: "14px 14px 0 0" }}></div>
-      <div style={{ position: "absolute", top: 0, right: 0, width: 80, height: 80, background: (props.accent || C.accent) + "10", borderRadius: "0 14px 0 80px" }}></div>
-      <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-        <span style={{ flex: 1, minWidth: 0, lineHeight: 1.35 }}>{props.label}</span>
+    <div className="stat-card-hover erp-stat-card-ui" style={{ background: "#fff", borderRadius: 9, padding: "7px 9px 6px", border: "1.5px solid " + C.border, position: "relative", overflow: "hidden", boxShadow: C.shadowCard, height: "100%", minWidth: 0 }}>
+      <div className="erp-stat-card-bar" style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: accent, borderRadius: "9px 9px 0 0" }}></div>
+      <div className="erp-stat-card-glow" style={{ position: "absolute", top: 0, right: 0, width: 56, height: 56, background: accent + "12", borderRadius: "0 9px 0 56px", pointerEvents: "none" }}></div>
+      <div className="erp-stat-card-head" style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3, display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 6 }}>
+        <span style={{ flex: 1, minWidth: 0, lineHeight: 1.3 }}>{props.label}</span>
         {iconResolved ? (
-          <span style={{ fontSize: 18, lineHeight: 1.2, flexShrink: 0, marginTop: -1 }} aria-hidden="true">{iconResolved}</span>
+          <span className="tc-emoji erp-stat-card-ico" style={{ fontSize: 14, lineHeight: 1.2, flexShrink: 0, marginTop: -1 }} aria-hidden="true">{iconResolved}</span>
         ) : null}
       </div>
-      <div style={{ fontSize: 24, fontWeight: 800, color: C.text, marginBottom: 3, letterSpacing: "-0.02em" }}>{displayVal}</div>
-      {props.sub && <div style={{ fontSize: 11.5, color: C.muted, fontWeight: 500 }}>{props.sub}</div>}
+      <div className="erp-stat-value" style={{ fontSize: 15, fontWeight: 700, color: props.valueColor || C.text, marginBottom: 1, letterSpacing: "-0.01em", lineHeight: 1.15 }}>{displayVal}</div>
+      {props.sub ? <div className="erp-stat-card-sub" style={{ fontSize: 9, color: C.muted, fontWeight: 500, lineHeight: 1.2 }}>{props.sub}</div> : null}
     </div>
   );
 };
@@ -4282,6 +4531,7 @@ var InvoiceA4 = function (props) {
   var settings = props.settings;
   var documentKind = props.documentKind || "invoice";
   var isQuotation = documentKind === "quotation";
+  var previewMode = !!props.previewMode;
   var salesForBal = props.sales;
   if (!isQuotation && salesForBal == null) {
     try { salesForBal = S.get("tc3_sales", []) || []; } catch (eSalesA4) { salesForBal = []; }
@@ -4303,6 +4553,7 @@ var InvoiceA4 = function (props) {
   var shopName = settings.shopName || "Techon Computers";
   var logo = settings.invoiceLogo;
   var logoW = settings.invoiceLogoSize || 80;
+  if (previewMode && logoW > 64) logoW = 64;
 
   var now = new Date();
   var HH = String(now.getHours()).padStart(2, "0");
@@ -4311,27 +4562,28 @@ var InvoiceA4 = function (props) {
 
   /* A4 and A5 share identical design - only the page width differs */
   var mw = isA5 ? 560 : 794;
-  var pad = 24; /* same compact padding for both */
-  var fs = 11;  /* same font size for both */
+  var pad = previewMode ? 16 : 24;
+  var fs = previewMode ? 10.5 : 11;
   var px = pad + "px";
-  var vg = 14;  /* same vertical gap for both */
+  var vg = previewMode ? 8 : 14;
   var invGridBorder = "#cfd8e6";
   var invThSide = "1px solid rgba(255,255,255,0.35)";
   var invTdSide = "1px solid " + invGridBorder;
-  var invCellPad = "7px 10px";
+  var invCellPad = previewMode ? "5px 8px" : "7px 10px";
+  var pageMinH = previewMode ? undefined : (isA5 ? "794px" : "1123px");
 
   return (
-    <div style={{ fontFamily: "'Segoe UI',Arial,sans-serif", background: "#fff", width: mw, margin: "0 auto", color: "#111", minHeight: isA5 ? "794px" : "1123px", display: "flex", flexDirection: "column" }}>
+    <div style={{ fontFamily: "'Segoe UI',Arial,sans-serif", background: "#fff", width: mw, margin: "0 auto", color: "#111", minHeight: pageMinH, display: "flex", flexDirection: "column" }}>
 
       {/* -- HEADER -- */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "24px " + px + " 16px" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: (previewMode ? "14px " : "24px ") + px + (previewMode ? " 10px" : " 16px") }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: previewMode ? 6 : 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {logo && <img src={logo} alt={shopName} style={{ width: logoW, height: "auto", objectFit: "contain", display: "block" }} />}
-            {!logo && <div style={{ fontSize: 20, fontWeight: 900, color: accent, letterSpacing: "-0.02em", textTransform: "uppercase" }}>{shopName}</div>}
+            {!logo && <div style={{ fontSize: previewMode ? 16 : 20, fontWeight: 900, color: accent, letterSpacing: "-0.02em", textTransform: "uppercase" }}>{shopName}</div>}
           </div>
-          <div style={{ lineHeight: 1.7 }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 3 }}>{shopName}</div>
+          <div style={{ lineHeight: previewMode ? 1.45 : 1.7 }}>
+            <div style={{ fontSize: previewMode ? 11 : 13, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>{shopName}</div>
             {settings.address && <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.address}</div>}
             {settings.phone && <div style={{ fontSize: fs - 1, color: "#555" }}>{L.phoneLabel} {settings.phone}{settings.phone2 ? " / " + settings.phone2 : ""}</div>}
             {settings.email && <div style={{ fontSize: fs - 1, color: "#555" }}>{L.emailLabel} {settings.email}</div>}
@@ -4340,7 +4592,7 @@ var InvoiceA4 = function (props) {
           </div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 18, fontWeight: 800, color: accent, letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: 1, marginBottom: 10 }}>{isQuotation ? L.quotationTitle : L.invoiceTitle}</div>
+          <div style={{ fontSize: previewMode ? 15 : 18, fontWeight: 800, color: accent, letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: 1, marginBottom: previewMode ? 6 : 10 }}>{isQuotation ? L.quotationTitle : L.invoiceTitle}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: fs }}>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
               <span style={{ color: "#888" }}>{isQuotation ? "Quotation No:" : L.invoiceNo}</span>
@@ -4365,8 +4617,8 @@ var InvoiceA4 = function (props) {
       {/* -- BODY -- */}
       <div style={{ }}>
         <div style={{ padding: "0 " + px, marginBottom: vg }}>
-          <div style={{ fontSize: fs + 1, fontWeight: 800, color: accent, marginBottom: 6 }}>{L.billTo}:</div>
-          <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ fontSize: fs + 1, fontWeight: 800, color: accent, marginBottom: previewMode ? 4 : 6 }}>{L.billTo}:</div>
+          <div style={{ borderTop: "1px solid #e5e7eb", paddingTop: previewMode ? 5 : 8, display: "flex", flexDirection: "column", gap: previewMode ? 2 : 4 }}>
             <div style={{ fontSize: fs, color: "#333" }}><span style={{ color: "#888" }}>{L.customerLabel} </span><span style={{ fontWeight: 600 }}>{inv.customerName || L.walkInCustomer}</span></div>
             <div style={{ fontSize: fs, color: "#333" }}><span style={{ color: "#888" }}>{L.phoneLabel} </span><span>{inv.customerPhone || "-"}</span></div>
           </div>
@@ -4375,7 +4627,9 @@ var InvoiceA4 = function (props) {
           var items = inv.items || [];
           var glassInvoice = invoiceHasGlassLines(items);
           var padded = items.slice();
-          while (padded.length < 5) { padded.push(null); }
+          if (!previewMode) {
+            while (padded.length < 5) { padded.push(null); }
+          }
           return (
             <div style={{ padding: "0 " + px, marginBottom: vg }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: fs, border: "1px solid " + invGridBorder }}>
@@ -4443,40 +4697,40 @@ var InvoiceA4 = function (props) {
       </div>
 
       {/* -- PAYMENT + TOTALS SUMMARY CARD -- */}
-      <div style={{ margin: "0 " + px, marginBottom: 14 }}>
-        <div style={{ border: "1px solid #e4e9f2", borderRadius: 10, background: "#fff", padding: "12px 14px" }}>
-          <div style={{ display: "flex", gap: 18, alignItems: "stretch" }}>
+      <div style={{ margin: "0 " + px, marginBottom: previewMode ? 10 : 14 }}>
+        <div style={{ border: "1px solid #e4e9f2", borderRadius: previewMode ? 8 : 10, background: "#fff", padding: previewMode ? "8px 10px" : "12px 14px" }}>
+          <div style={{ display: "flex", gap: previewMode ? 12 : 18, alignItems: "stretch" }}>
             {!isQuotation ? (
-              <div style={{ flex: "1 1 48%", paddingRight: 16, borderRight: "1px solid #edf1f6" }}>
-                <div style={{ fontSize: fs, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>
+              <div style={{ flex: "1 1 48%", paddingRight: previewMode ? 10 : 16, borderRight: "1px solid #edf1f6" }}>
+                <div style={{ fontSize: fs, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: previewMode ? 6 : 10 }}>
                   Payment Details
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 0, fontSize: fs }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: (previewMode ? "4px" : "7px") + " 0", borderBottom: "1px solid #eef2f7" }}>
                     <div style={{ color: "#5a6472", fontWeight: 600 }}>Payment Method</div>
                     <div style={{ color: "#111", fontWeight: 700 }}>{inv.cashMethod || (inv.payStatus === "Unpaid" ? "-" : "Cash")}</div>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: (previewMode ? "4px" : "7px") + " 0", borderBottom: "1px solid #eef2f7" }}>
                     <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.amountReceived}</div>
                     <div style={{ color: "#111", fontWeight: 700 }}>{fmtNum(inv.paid || 0)}</div>
                   </div>
                   {prevBal > 0 ? (
                     <React.Fragment>
-                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: (previewMode ? "4px" : "7px") + " 0", borderBottom: "1px solid #eef2f7" }}>
                         <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.previousBalance}</div>
                         <div style={{ color: "#dc2626", fontWeight: 700 }}>{fmtNum(prevBal)}</div>
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #eef2f7" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: (previewMode ? "4px" : "7px") + " 0", borderBottom: "1px solid #eef2f7" }}>
                         <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.thisInvoice}</div>
                         <div style={{ color: balance > 0 ? "#dc2626" : "#111", fontWeight: 700 }}>{fmtNum(balance)}</div>
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0 0" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: (previewMode ? "4px" : "7px") + " 0 0" }}>
                         <div style={{ color: "#5a6472", fontWeight: 700 }}>{L.totalDue}</div>
                         <div style={{ color: "#dc2626", fontWeight: 800 }}>{fmtNum(totalDue)}</div>
                       </div>
                     </React.Fragment>
                   ) : (
-                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: "7px 0 0" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", alignItems: "center", padding: (previewMode ? "4px" : "7px") + " 0 0" }}>
                       <div style={{ color: "#5a6472", fontWeight: 600 }}>{L.balanceDue}</div>
                       <div style={{ color: balance > 0 ? "#dc2626" : "#111", fontWeight: 700 }}>{fmtNum(balance)}</div>
                     </div>
@@ -4485,7 +4739,7 @@ var InvoiceA4 = function (props) {
               </div>
             ) : null}
             <div style={{ flex: isQuotation ? "1 1 100%" : "1 1 52%", paddingLeft: isQuotation ? 0 : 4 }}>
-              <div style={{ fontSize: fs, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 10 }}>
+              <div style={{ fontSize: fs, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: previewMode ? 6 : 10 }}>
                 Summary
               </div>
               <table style={{ width: "100%", fontSize: fs, borderCollapse: "collapse" }}>
@@ -4516,9 +4770,9 @@ var InvoiceA4 = function (props) {
                   )}
                 </tbody>
               </table>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1.05fr", marginTop: 12, borderRadius: 8, overflow: "hidden", border: "1px solid #dbe5f4" }}>
-                <div style={{ background: "#f3f7ff", color: "#1a2740", fontWeight: 800, fontSize: fs + 2, padding: "10px 12px", textAlign: "center", textTransform: "uppercase", letterSpacing: "0.03em" }}>Grand Total</div>
-                <div style={{ background: accent, color: "#fff", fontWeight: 900, fontSize: fs + 4, padding: "10px 14px", textAlign: "right" }}>{fmtNum(inv.total)}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1.05fr", marginTop: previewMode ? 8 : 12, borderRadius: 8, overflow: "hidden", border: "1px solid #dbe5f4" }}>
+                <div style={{ background: "#f3f7ff", color: "#1a2740", fontWeight: 800, fontSize: fs + (previewMode ? 1 : 2), padding: previewMode ? "7px 10px" : "10px 12px", textAlign: "center", textTransform: "uppercase", letterSpacing: "0.03em" }}>Grand Total</div>
+                <div style={{ background: accent, color: "#fff", fontWeight: 900, fontSize: fs + (previewMode ? 2 : 4), padding: previewMode ? "7px 10px" : "10px 14px", textAlign: "right" }}>{fmtNum(inv.total)}</div>
               </div>
             </div>
           </div>
@@ -4545,7 +4799,7 @@ var InvoiceA4 = function (props) {
       )}
 
       {/* -- Spacer pushes footer to bottom of page -- */}
-      <div style={{ flex: 1 }}></div>
+      {!previewMode ? <div style={{ flex: 1 }}></div> : <div style={{ height: vg }}></div>}
 
       {/* -- FOOTER -- */}
       <div style={{ margin: "0 " + px, paddingTop: 8, paddingBottom: 10, marginTop: vg }}>
@@ -4566,7 +4820,7 @@ var InvoiceA4 = function (props) {
 };
 
 var usePager = function (data, pageSize) {
-  var size = pageSize || 25;
+  var size = pageSize || LIST_PAGE_SIZE;
   var pageTuple = useState(1);
   var page = pageTuple[0];
   var setPage = pageTuple[1];
@@ -4582,7 +4836,7 @@ var usePager = function (data, pageSize) {
 
 var Pager = function (props) {
   var p = props.pager;
-  if (p.totalPages <= 1 && p.total <= 25) return null;
+  if (p.totalPages <= 1) return null;
   var pages = [];
   var tp = p.totalPages;
   var cp = p.page;
@@ -4680,105 +4934,105 @@ var SplitPaymentModal = function (props) {
     });
 
   return (
-    <Modal title={props.title} onClose={props.onClose} wide>
-      {/* Summary bar */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 16, background: "#f7f9ff", padding: "12px 16px", borderRadius: 10 }}>
-        <div><div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 3 }}>Invoice Total</div><div style={{ fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(props.invoiceTotal || 0)}</div></div>
-        <div><div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 3 }}>Already Paid</div><div style={{ fontWeight: 700, color: C.green }}>{getCurrencySymbol()} {fmtNum(props.alreadyPaid || 0)}</div></div>
-        <div><div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 3 }}>Balance Due</div><div style={{ fontWeight: 800, color: C.red, fontSize: 16 }}>{getCurrencySymbol()} {fmtNum(balance)}</div></div>
-      </div>
-
-      {/* Split rows */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
-        {rows.map(function (row, idx) {
-          return (
-            <div key={row.id} style={{ border: "1.5px solid " + (row.method === "Cheque" ? "#ddd6fe" : C.border), borderRadius: 10, padding: "12px 14px", background: row.method === "Cheque" ? "#faf8ff" : "#fff" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "160px 1fr 1fr auto", gap: 8, alignItems: "end" }}>
-                {/* Method */}
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 4 }}>Method</div>
-                  <select value={row.method} onChange={function (e) { updateRow(row.id, { method: e.target.value }); }}
-                    style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 7, padding: "8px 10px", fontSize: 13, fontFamily: "inherit", outline: "none", background: "#fff" }}>
-                    {METHODS.map(function (m) { return <option key={m[0]} value={m[0]}>{m[1]}</option>; })}
-                  </select>
-                </div>
-                {/* Amount */}
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 4 }}>Amount</div>
-                  <input type="number" value={row.amount} min="0"
-                    onChange={function (e) { updateRow(row.id, { amount: e.target.value }); }}
-                    placeholder={"0"}
-                    style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 7, padding: "8px 10px", fontSize: 13, fontFamily: "inherit", outline: "none" }} />
-                </div>
-                {/* Note */}
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 4 }}>Note (optional)</div>
-                  <input value={row.note} onChange={function (e) { updateRow(row.id, { note: e.target.value }); }}
-                    placeholder="Ref, receipt no..."
-                    style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 7, padding: "8px 10px", fontSize: 13, fontFamily: "inherit", outline: "none" }} />
-                </div>
-                {/* Remove */}
-                <div style={{ paddingBottom: 1 }}>
-                  {rows.length > 1 && (
-                    <button onClick={function () { removeRow(row.id); }}
-                      style={{ width: 34, height: 36, borderRadius: 7, border: "none", background: "#fee2e2", color: C.red, fontWeight: 800, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>-</button>
-                  )}
-                </div>
-              </div>
-              {/* Cheque details */}
-              {row.method === "Cheque" && (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 10 }}>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "#7c3aed", textTransform: "uppercase", marginBottom: 4 }}>Cheque No *</div>
-                    <input value={row.chequeNo} onChange={function (e) { updateRow(row.id, { chequeNo: e.target.value }); }}
-                      placeholder="e.g. 001234"
-                      style={{ width: "100%", border: "1.5px solid #ddd6fe", borderRadius: 7, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", outline: "none" }} />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "#7c3aed", textTransform: "uppercase", marginBottom: 4 }}>Bank Name</div>
-                    <input value={row.chequeBankName} onChange={function (e) { updateRow(row.id, { chequeBankName: e.target.value }); }}
-                      placeholder="e.g. HNB"
-                      style={{ width: "100%", border: "1.5px solid #ddd6fe", borderRadius: 7, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", outline: "none" }} />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: "#7c3aed", textTransform: "uppercase", marginBottom: 4 }}>Due Date *</div>
-                    <input type="date" value={row.chequeDueDate || today()} onChange={function (e) { updateRow(row.id, { chequeDueDate: e.target.value }); }}
-                      style={{ width: "100%", border: "1.5px solid #ddd6fe", borderRadius: 7, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", outline: "none" }} />
-                  </div>
-                  <div style={{ gridColumn: "1/-1", fontSize: 11, color: "#7c3aed", fontWeight: 600 }}>{UI.info} Cash/Bank balance updates only when cheque is cleared in Cheque Register</div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Add row + totals */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <button onClick={addRow} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", borderRadius: 8, border: "1.5px dashed " + C.border, background: "#fff", color: C.accent, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>+ Add Payment Row</button>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 12, color: C.muted }}>
-            Split total: <strong style={{ color: totalSplit > balance + 0.01 ? C.red : C.text }}>{getCurrencySymbol()} {fmtNum(totalSplit)}</strong>
-            {" / "}{getCurrencySymbol()} {fmtNum(balance)}
+    <Modal title={props.title} onClose={props.onClose} wide zIndex={props.zIndex || 1100}>
+      <div className="erp-split-pay">
+        <div className="erp-split-pay-summary">
+          <div className="erp-split-pay-sum">
+            <span>Invoice Total</span>
+            <strong>{getCurrencySymbol()} {fmtNum(props.invoiceTotal || 0)}</strong>
           </div>
-          {remaining > 0.01 && <div style={{ fontSize: 11, color: C.amber, fontWeight: 700 }}>Still unallocated: {getCurrencySymbol()} {fmtNum(remaining)}</div>}
-          {remaining < -0.01 && <div style={{ fontSize: 11, color: C.red, fontWeight: 700 }}>Overpayment: {getCurrencySymbol()} {fmtNum(Math.abs(remaining))}</div>}
-          {Math.abs(remaining) <= 0.01 && totalSplit > 0 && <div style={{ fontSize: 11, color: C.green, fontWeight: 700 }}>{UI.ok} Fully allocated</div>}
+          <div className="erp-split-pay-sum ok">
+            <span>Already Paid</span>
+            <strong>{getCurrencySymbol()} {fmtNum(props.alreadyPaid || 0)}</strong>
+          </div>
+          <div className="erp-split-pay-sum due">
+            <span>Balance Due</span>
+            <strong>{getCurrencySymbol()} {fmtNum(balance)}</strong>
+          </div>
         </div>
-      </div>
 
-      <div style={{ display: "flex", gap: 8 }}>
-        <Btn col={isSale ? "cyan" : "orange"} onClick={function () { props.onSave(rows.filter(function (r) { return parseFloat(r.amount) > 0; })); }} disabled={!canSave}>Save Payment ({getCurrencySymbol()} {fmtNum(totalSplit)})
-        </Btn>
-        <Btn col="green" onClick={function () {
-          /* Fill remaining balance into first empty row or last row */
-          setRows(function (prev) {
-            var emptyIdx = prev.findIndex(function (r) { return !(parseFloat(r.amount) > 0); });
-            var targetIdx = emptyIdx >= 0 ? emptyIdx : prev.length - 1;
-            return prev.map(function (r, i) { return i === targetIdx ? Object.assign({}, r, { amount: String(balance) }) : r; });
-          });
-        }}>Full Amount</Btn>
-        <Btn col="gray" onClick={props.onClose}>Cancel</Btn>
+        <div className="erp-split-pay-rows">
+          {rows.map(function (row) {
+            return (
+              <div key={row.id} className={"erp-split-pay-row" + (row.method === "Cheque" ? " cheque" : "")}>
+                <div className="erp-split-pay-row-grid">
+                  <div className="erp-split-pay-field">
+                    <label>Method</label>
+                    <select value={row.method} onChange={function (e) { updateRow(row.id, { method: e.target.value }); }}>
+                      {METHODS.map(function (m) { return <option key={m[0]} value={m[0]}>{m[1]}</option>; })}
+                    </select>
+                  </div>
+                  <div className="erp-split-pay-field">
+                    <label>Amount</label>
+                    <input type="number" value={row.amount} min="0" placeholder="0"
+                      onChange={function (e) { updateRow(row.id, { amount: e.target.value }); }} />
+                  </div>
+                  <div className="erp-split-pay-field">
+                    <label>Note (optional)</label>
+                    <input value={row.note} placeholder="Ref, receipt no..."
+                      onChange={function (e) { updateRow(row.id, { note: e.target.value }); }} />
+                  </div>
+                  <div className="erp-split-pay-row-actions">
+                    {rows.length > 1 ? (
+                      <button type="button" className="erp-split-pay-remove" onClick={function () { removeRow(row.id); }} aria-label="Remove row">−</button>
+                    ) : (
+                      <span className="erp-split-pay-remove-spacer" aria-hidden="true" />
+                    )}
+                  </div>
+                </div>
+                {row.method === "Cheque" ? (
+                  <div className="erp-split-pay-cheque">
+                    <div className="erp-split-pay-field">
+                      <label>Cheque No *</label>
+                      <input value={row.chequeNo} placeholder="e.g. 001234"
+                        onChange={function (e) { updateRow(row.id, { chequeNo: e.target.value }); }} />
+                    </div>
+                    <div className="erp-split-pay-field">
+                      <label>Bank Name</label>
+                      <input value={row.chequeBankName} placeholder="e.g. HNB"
+                        onChange={function (e) { updateRow(row.id, { chequeBankName: e.target.value }); }} />
+                    </div>
+                    <div className="erp-split-pay-field">
+                      <label>Due Date *</label>
+                      <input type="date" value={row.chequeDueDate || today()}
+                        onChange={function (e) { updateRow(row.id, { chequeDueDate: e.target.value }); }} />
+                    </div>
+                    <div className="erp-split-pay-cheque-hint">{UI.info} Cash/Bank balance updates only when cheque is cleared in Cheque Register</div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="erp-split-pay-meta">
+          <button type="button" className="erp-split-pay-add" onClick={addRow}>+ Add Payment Row</button>
+          <div className="erp-split-pay-status">
+            <div>
+              Split total: <strong className={totalSplit > balance + 0.01 ? "bad" : ""}>{getCurrencySymbol()} {fmtNum(totalSplit)}</strong>
+              {" / "}{getCurrencySymbol()} {fmtNum(balance)}
+            </div>
+            {remaining > 0.01 ? <div className="warn">Still unallocated: {getCurrencySymbol()} {fmtNum(remaining)}</div> : null}
+            {remaining < -0.01 ? <div className="bad">Overpayment: {getCurrencySymbol()} {fmtNum(Math.abs(remaining))}</div> : null}
+            {Math.abs(remaining) <= 0.01 && totalSplit > 0 ? <div className="ok">{UI.ok} Fully allocated</div> : null}
+          </div>
+        </div>
+
+        <div className="erp-split-pay-footer">
+          <button type="button" className="erp-split-pay-btn primary"
+            disabled={!canSave}
+            onClick={function () { props.onSave(rows.filter(function (r) { return parseFloat(r.amount) > 0; })); }}>
+            Save Payment ({getCurrencySymbol()} {fmtNum(totalSplit)})
+          </button>
+          <button type="button" className="erp-split-pay-btn accent" onClick={function () {
+            setRows(function (prev) {
+              var emptyIdx = prev.findIndex(function (r) { return !(parseFloat(r.amount) > 0); });
+              var targetIdx = emptyIdx >= 0 ? emptyIdx : prev.length - 1;
+              return prev.map(function (r, i) { return i === targetIdx ? Object.assign({}, r, { amount: String(balance) }) : r; });
+            });
+          }}>Full Amount</button>
+          <button type="button" className="erp-split-pay-btn" onClick={props.onClose}>Cancel</button>
+        </div>
       </div>
     </Modal>
   );
@@ -4923,7 +5177,7 @@ var checkPeriodClose = function (recordDate, settings, onProceed) {
   if (lock && recordDate && isLockedThroughDate(recordDate, lock)) {
     var adminOk = typeof window !== "undefined" && window._tcAccountingPeriodAdmin;
     if (!adminOk) {
-      showAlert("Accounting period is locked through " + fmtDate(lock) + ". Unlock Admin (PIN) or change the lock date in Settings → Period & GL.");
+      showAlert("Accounting period is locked through " + fmtDate(lock) + ". Unlock Admin (PIN) or change the lock date in Settings ? Period & GL.");
       return;
     }
     onProceed();
@@ -4946,6 +5200,8 @@ var AboutTab = function (props) {
   var [updateState, setUpdateState] = useState("idle");
   var [updateInfo, setUpdateInfo] = useState(null);
   var [showUpdateModal, setShowUpdateModal] = useState(false);
+  var [downloadPercent, setDownloadPercent] = useState(0);
+  var [updateError, setUpdateError] = useState("");
   var [appVersion, setAppVersion] = useState("-");
   var [licCheckState, setLicCheckState] = useState("idle");
   var [licCheckMsg, setLicCheckMsg] = useState("");
@@ -4962,27 +5218,73 @@ var AboutTab = function (props) {
     }
   }, []);
 
-  var checkForUpdates = function () {
-    setUpdateState("checking");
-    var currentVersion = appVersion;
-    var versionPromise = (window.electronAPI && window.electronAPI.getAppVersion)
-      ? window.electronAPI.getAppVersion()
-      : Promise.resolve(currentVersion);
-    versionPromise.then(function (cv) {
-      currentVersion = cv || appVersion;
-      var manifestUrls = [
-        "https://raw.githubusercontent.com/imrasidh/TechonERP-releases/main/version.json?t=" + Date.now(),
-        "https://techon.lk/version.json?t=" + Date.now(),
-      ];
-      var loadManifest = function (i) {
-        if (i >= manifestUrls.length) return Promise.reject(new Error("manifest unavailable"));
-        return fetch(manifestUrls[i], { cache: "no-store" }).then(function (res) {
-          if (!res.ok) throw new Error("HTTP " + res.status);
-          return res.json();
-        }).catch(function () { return loadManifest(i + 1); });
-      };
-      return loadManifest(0);
-    }).then(function (data) {
+  useEffect(function () {
+    var api = window.electronAPI;
+    if (!api || typeof api.onAppUpdateEvent !== "function") return undefined;
+    var unsub = api.onAppUpdateEvent(function (ev) {
+      if (!ev || !ev.status) return;
+      if (ev.status === "checking") {
+        setUpdateState("checking");
+        return;
+      }
+      if (ev.status === "available") {
+        setUpdateInfo(function (prev) {
+          return Object.assign({}, prev || {}, {
+            latestVersion: ev.version || (prev && prev.latestVersion) || "",
+            notes: ev.releaseNotes || (prev && prev.notes) || "",
+            currentVersion: (prev && prev.currentVersion) || appVersion,
+            inApp: true,
+          });
+        });
+        setUpdateState("available");
+        setShowUpdateModal(true);
+        setDownloadPercent(0);
+        if (api.downloadAppUpdate) {
+          setUpdateState("downloading");
+          api.downloadAppUpdate();
+        }
+        return;
+      }
+      if (ev.status === "uptodate") {
+        setUpdateState("uptodate");
+        return;
+      }
+      if (ev.status === "downloading") {
+        setUpdateState("downloading");
+        setShowUpdateModal(true);
+        setDownloadPercent(typeof ev.percent === "number" ? Math.max(0, Math.min(100, ev.percent)) : 0);
+        return;
+      }
+      if (ev.status === "downloaded") {
+        setUpdateState("downloaded");
+        setDownloadPercent(100);
+        setShowUpdateModal(true);
+        if (api.installAppUpdatePrompt) {
+          api.installAppUpdatePrompt();
+        }
+        return;
+      }
+      if (ev.status === "error") {
+        setUpdateState("error");
+        setUpdateError(ev.message || "Update failed");
+      }
+    });
+    return typeof unsub === "function" ? unsub : undefined;
+  }, [appVersion]);
+
+  var fallbackZipCheck = function (currentVersion) {
+    var manifestUrls = [
+      "https://raw.githubusercontent.com/imrasidh/TechonERP-releases/main/version.json?t=" + Date.now(),
+      "https://techon.lk/version.json?t=" + Date.now(),
+    ];
+    var loadManifest = function (i) {
+      if (i >= manifestUrls.length) return Promise.reject(new Error("manifest unavailable"));
+      return fetch(manifestUrls[i], { cache: "no-store" }).then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      }).catch(function () { return loadManifest(i + 1); });
+    };
+    return loadManifest(0).then(function (data) {
       var latest = data.version || "0.0.0";
       var parseSemver = function (v) { return String(v).split(".").map(function (n) { return parseInt(n) || 0; }); };
       var cur = parseSemver(currentVersion);
@@ -4994,14 +5296,56 @@ var AboutTab = function (props) {
         if (b < a) { break; }
       }
       if (isNewer) {
-        setUpdateInfo({ currentVersion: currentVersion, latestVersion: latest, download: data.download || data.url, notes: data.notes || "" });
+        setUpdateInfo({
+          currentVersion: currentVersion,
+          latestVersion: latest,
+          download: data.download || data.url,
+          notes: data.notes || "",
+          inApp: false,
+        });
         setUpdateState("available");
         setShowUpdateModal(true);
       } else {
-        setUpdateInfo({ currentVersion: currentVersion, latestVersion: latest });
+        setUpdateInfo({ currentVersion: currentVersion, latestVersion: latest, inApp: false });
         setUpdateState("uptodate");
       }
-    }).catch(function () { setUpdateState("error"); });
+    });
+  };
+
+  var checkForUpdates = function () {
+    setUpdateState("checking");
+    setUpdateError("");
+    setDownloadPercent(0);
+    var currentVersion = appVersion;
+    var versionPromise = (window.electronAPI && window.electronAPI.getAppVersion)
+      ? window.electronAPI.getAppVersion()
+      : Promise.resolve(currentVersion);
+    versionPromise.then(function (cv) {
+      currentVersion = cv || appVersion;
+      var api = window.electronAPI;
+      if (api && typeof api.checkForAppUpdate === "function") {
+        return api.checkForAppUpdate().then(function (r) {
+          if (r && r.status === "dev") {
+            return fallbackZipCheck(currentVersion);
+          }
+          if (r && r.ok === false) {
+            return fallbackZipCheck(currentVersion);
+          }
+          setUpdateInfo(function (prev) {
+            return Object.assign({}, prev || {}, {
+              currentVersion: (r && r.currentVersion) || currentVersion,
+              latestVersion: (r && r.latestVersion) || (prev && prev.latestVersion) || "",
+              inApp: true,
+            });
+          });
+          /* available / uptodate / downloading driven by tc-update-event */
+          return null;
+        }).catch(function () {
+          return fallbackZipCheck(currentVersion);
+        });
+      }
+      return fallbackZipCheck(currentVersion);
+    }).catch(function () { setUpdateState("error"); setUpdateError("Update check failed"); });
   };
 
   var openDownload = function (url) {
@@ -5010,6 +5354,16 @@ var AboutTab = function (props) {
     } else {
       window.open(url, "_blank");
     }
+  };
+
+  var restartToInstall = function () {
+    var api = window.electronAPI;
+    if (api && api.installAppUpdate) {
+      setUpdateState("installing");
+      api.installAppUpdate();
+      return;
+    }
+    if (updateInfo && updateInfo.download) openDownload(updateInfo.download);
   };
 
   var checkLicenseStatus = function () {
@@ -5060,14 +5414,20 @@ var AboutTab = function (props) {
     <div style={{ width: "100%", maxWidth: 1040, margin: "0 auto", padding: "8px 12px 28px", boxSizing: "border-box" }}>
       {showUpdateModal && updateInfo && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.6)", zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={function (e) { if (e.target === e.currentTarget) setShowUpdateModal(false); }}>
+          onClick={function (e) { if (e.target === e.currentTarget && updateState !== "downloading" && updateState !== "installing") setShowUpdateModal(false); }}>
           <div style={modalShellStyle({ maxWidth: 440, width: "calc(100vw - 48px)" })} onClick={function (e) { e.stopPropagation(); }}>
             <div style={modalHeaderBarStyle()}>
-              <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>New version available</div>
-              <CloseIconButton onClick={function () { setShowUpdateModal(false); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>
+                {updateState === "downloaded" || updateState === "installing" ? "Update ready" : updateState === "downloading" ? "Downloading update" : "New version available"}
+              </div>
+              <CloseIconButton onClick={function () { if (updateState !== "downloading" && updateState !== "installing") setShowUpdateModal(false); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
             </div>
             <div style={modalBodyStyle({ padding: "22px 24px 24px" })}>
-            <div style={{ fontSize: 12, color: "#5a78a5", fontWeight: 500, marginBottom: 16 }}>A newer version of TechonERP is ready</div>
+            <div style={{ fontSize: 12, color: "#5a78a5", fontWeight: 500, marginBottom: 16 }}>
+              {updateInfo.inApp !== false
+                ? "This upgrades your existing install. Shop data stays on this PC."
+                : "A newer installer is ready to download"}
+            </div>
             <div style={{ background: "#f0f4ff", borderRadius: 10, padding: "14px 16px", marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
                 <span style={{ color: "#5a78a5", fontWeight: 600 }}>Current Version</span>
@@ -5084,17 +5444,40 @@ var AboutTab = function (props) {
                 <div style={{ fontSize: 13, color: "#0d1b3e", lineHeight: 1.6, background: "#f7f9ff", borderRadius: 8, padding: "10px 14px", border: "1px solid #e2e8f0" }}>{updateInfo.notes}</div>
               </div>
             ) : null}
+            {(updateState === "downloading" || updateState === "downloaded" || updateState === "installing") && updateInfo.inApp !== false ? (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 700, color: "#3d5280", marginBottom: 6 }}>
+                  <span>{updateState === "downloaded" || updateState === "installing" ? "Download complete" : "Downloading…"}</span>
+                  <span>{Math.round(downloadPercent)}%</span>
+                </div>
+                <div style={{ height: 10, borderRadius: 999, background: "#e2e8f0", overflow: "hidden" }}>
+                  <div style={{ width: Math.round(downloadPercent) + "%", height: "100%", background: "linear-gradient(90deg,#2979ff,#5ca8ff)", transition: "width 0.2s ease" }} />
+                </div>
+              </div>
+            ) : null}
             <div style={{ background: "#fef3e2", border: "1.5px solid #fcd34d", borderRadius: 9, padding: "10px 14px", marginBottom: 20, fontSize: 12.5, color: "#92400e", fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
               <span>{UI.warn}</span><span>Please backup your data before updating.</span>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={function () { openDownload(updateInfo.download); setShowUpdateModal(false); }}
-                style={{ flex: 1, padding: "11px", background: "linear-gradient(135deg,#2979ff,#5ca8ff)", color: "#fff", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                {UI.download} Download Update
-              </button>
-              <button onClick={function () { setShowUpdateModal(false); }}
-                style={{ padding: "11px 20px", background: "#f0f4ff", color: "#3d5280", border: "1.5px solid #c7d7f8", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                Cancel
+              {updateInfo.inApp !== false && (updateState === "downloaded" || updateState === "installing") ? (
+                <button onClick={restartToInstall}
+                  style={{ flex: 1, padding: "11px", background: "linear-gradient(135deg,#0a7a53,#16a34a)", color: "#fff", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                  Restart & Install Update
+                </button>
+              ) : updateInfo.inApp !== false && (updateState === "downloading" || updateState === "available") ? (
+                <button disabled
+                  style={{ flex: 1, padding: "11px", background: "#e2e8f0", color: "#5a78a5", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "not-allowed", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                  {updateState === "downloading" ? "Downloading update…" : "Preparing update…"}
+                </button>
+              ) : (
+                <button onClick={function () { openDownload(updateInfo.download); setShowUpdateModal(false); }}
+                  style={{ flex: 1, padding: "11px", background: "linear-gradient(135deg,#2979ff,#5ca8ff)", color: "#fff", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
+                  {UI.download} Download Installer
+                </button>
+              )}
+              <button onClick={function () { if (updateState !== "downloading" && updateState !== "installing") setShowUpdateModal(false); }}
+                style={{ padding: "11px 20px", background: "#f0f4ff", color: "#3d5280", border: "1.5px solid #c7d7f8", borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: updateState === "downloading" || updateState === "installing" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", opacity: updateState === "downloading" || updateState === "installing" ? 0.5 : 1 }}>
+                {updateState === "downloaded" ? "Later" : "Cancel"}
               </button>
             </div>
             </div>
@@ -5141,15 +5524,21 @@ var AboutTab = function (props) {
             <div style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
 
               <div>
-                <button onClick={checkForUpdates} disabled={updateState === "checking"}
-                  style={{ padding: "9px 22px", background: updateState === "checking" ? "#e2e8f0" : "linear-gradient(135deg,#0d47a1,#2979ff)", color: updateState === "checking" ? "#5a78a5" : "#fff", border: "none", borderRadius: 9, fontSize: 12.5, fontWeight: 800, cursor: updateState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: updateState === "checking" ? "none" : "0 3px 12px rgba(41,121,255,0.28)" }}>
-                  {updateState === "checking" ? UI.wait + " Checking..." : "Check for Updates"}
+                <button onClick={checkForUpdates} disabled={updateState === "checking" || updateState === "downloading" || updateState === "installing"}
+                  style={{ padding: "9px 22px", background: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "#e2e8f0" : "linear-gradient(135deg,#0d47a1,#2979ff)", color: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "#5a78a5" : "#fff", border: "none", borderRadius: 9, fontSize: 12.5, fontWeight: 800, cursor: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "none" : "0 3px 12px rgba(41,121,255,0.28)" }}>
+                  {updateState === "checking" ? UI.wait + " Checking..." : updateState === "downloading" ? UI.wait + " Downloading " + Math.round(downloadPercent) + "%" : updateState === "installing" ? UI.wait + " Installing..." : "Check for Updates"}
                 </button>
                 {updateState === "uptodate" && (
                   <div style={{ marginTop: 8, fontSize: 12, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>{UI.ok} Latest version.</div>
                 )}
                 {updateState === "error" && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>{UI.warn} Update server unreachable.</div>
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>{UI.warn} {updateError || "Update server unreachable."}</div>
+                )}
+                {updateState === "downloading" && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>Downloading update… {Math.round(downloadPercent)}%</div>
+                )}
+                {updateState === "downloaded" && (
+                  <div onClick={restartToInstall} style={{ marginTop: 8, fontSize: 12, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 12px", display: "inline-block", cursor: "pointer" }}>Update ready — click to restart & install</div>
                 )}
                 {updateState === "available" && !showUpdateModal && (
                   <div onClick={function () { setShowUpdateModal(true); }} style={{ marginTop: 8, fontSize: 12, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 7, padding: "6px 12px", display: "inline-block", cursor: "pointer" }}>Update available - click to view</div>
@@ -5356,6 +5745,7 @@ var NAV_ICONS = {
   inventory: "M20 7l-8-4-8 4m16 0v10l-8 4-8-4V7m8 4l8-4M4 7l8 4m0 10V11",
   purchases: "M6 2 3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4zM3 6h18M16 10a4 4 0 01-8 0",
   customers: "M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8z",
+  parties: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75M9 7a4 4 0 100 8 4 4 0 000-8z",
   suppliers: "M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2zM9 22V12h6v10",
   receivables: "M20 12V22H4V12M22 7H2v5h20V7zM12 22V7M12 7H7.5a2.5 2.5 0 010-5C11 2 12 7 12 7zM12 7h4.5a2.5 2.5 0 000-5C13 2 12 7 12 7z",
   payables: "M12 1v22M17 5H9.5a3.5 3.5 0 100 7h5a3.5 3.5 0 110 7H6",
@@ -5495,7 +5885,7 @@ var Statements = function (props) {
           date: r.date,
           type: "Return",
           ref: r.invoiceNo || r.returnId || String(r.id || "").slice(0, 8),
-          detail: (r.productName || "Sales return") + (r.reason ? (" — " + r.reason) : ""),
+          detail: (r.productName || "Sales return") + (r.reason ? (" · " + r.reason) : ""),
           debit: 0,
           credit: Number(r.amount) || 0,
         });
@@ -5560,7 +5950,7 @@ var Statements = function (props) {
           date: r.date,
           type: "Return",
           ref: r.purchaseNo || r.returnId || String(r.id || "").slice(0, 8),
-          detail: (r.productName || "Purchase return") + (r.reason ? (" — " + r.reason) : ""),
+          detail: (r.productName || "Purchase return") + (r.reason ? (" · " + r.reason) : ""),
           debit: 0,
           credit: Number(r.amount) || 0,
         });
@@ -5778,7 +6168,7 @@ var Statements = function (props) {
       {/* No selection state */}
       {!selected && (
         <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, padding: "60px 20px", textAlign: "center" }}>
-          <div style={{ fontSize: 44, marginBottom: 14, lineHeight: 1 }} aria-hidden="true">📋</div>
+          <EmptyStateGlyph icon={mode === "customer" ? "customers" : "suppliers"} size={52} marginBottom={14} />
           <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Select a {mode === "customer" ? "customer" : "supplier"}</div>
           <div style={{ fontSize: 13, color: C.muted }}>Choose from the dropdown above to view their full account statement.</div>
         </div>
@@ -5787,7 +6177,7 @@ var Statements = function (props) {
       {/* Transactions table */}
       {selected && withBalance.length === 0 && (
         <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, padding: "50px 20px", textAlign: "center" }}>
-          <div style={{ fontSize: 40, marginBottom: 12, lineHeight: 1 }} aria-hidden="true">📭</div>
+          <EmptyStateGlyph icon="invoices" size={48} marginBottom={12} />
           <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 6 }}>No transactions found</div>
           <div style={{ fontSize: 13, color: C.muted }}>No records for {selected.name}{(dateFrom || dateTo) ? " in this date range" : ""}.</div>
         </div>
@@ -6498,8 +6888,7 @@ var NAV_ITEMS = [
   { id: "invoices", label: "Invoices", icon: "invoices" },
   { id: "purchases", label: "Purchases", icon: "purchases" },
   { id: "inventory", label: "Inventory", icon: "inventory" },
-  { id: "customers", label: "Customers", icon: "customers" },
-  { id: "suppliers", label: "Suppliers", icon: "suppliers" },
+  { id: "parties", label: "Parties", icon: "parties" },
   { id: "statements", label: "Statements", icon: "receivables" },
   { id: "receivables", label: "Receivables", icon: "receivables" },
   { id: "payables", label: "Payables", icon: "payables" },
@@ -6517,10 +6906,20 @@ var NAV_ITEMS = [
 var NAV_GROUPS = [
   { label: "MAIN", ids: ["dashboard", "pos", "invoices"] },
   { label: "STOCK", ids: ["purchases", "inventory"] },
-  { label: "PEOPLE", ids: ["customers", "suppliers", "statements"] },
+  { label: "PEOPLE", ids: ["parties", "statements"] },
   { label: "FINANCE", ids: ["receivables", "payables", "accounts", "cheques"] },
   { label: "OPS", ids: ["repairs", "coddatabase", "expenses", "returns"] },
   { label: "INSIGHT", ids: ["reports", "barcodeprint", "auditlog", "settings"] }
+];
+
+var ERP_TREE_GROUPS = [
+  { label: "Dashboard", ids: ["dashboard"], flat: true },
+  { label: "Transactions", ids: ["pos", "invoices", "purchases", "returns", "expenses"] },
+  { label: "Masters", ids: ["inventory", "parties", "statements"] },
+  { label: "Accounts", ids: ["receivables", "payables", "accounts", "cheques"] },
+  { label: "Reports", ids: ["reports"] },
+  { label: "Utilities", ids: ["repairs", "coddatabase", "barcodeprint", "auditlog"] },
+  { label: "Settings", ids: ["settings"], flat: true },
 ];
 
 /* --- NAV SVG ICON ---------------------------------- */
@@ -6528,8 +6927,14 @@ var NavIcon = function (niProps) {
   var d = NAV_ICONS[niProps.id] || "";
   var sz = niProps.size || 18;
   var col = niProps.color || "currentColor";
+  if (!d) {
+    var letter = String(niProps.id || "?").charAt(0).toUpperCase();
+    return (
+      <span style={{ fontSize: sz * 0.72, fontWeight: 800, color: col, lineHeight: 1, fontFamily: "'Plus Jakarta Sans',sans-serif" }} aria-hidden="true">{letter}</span>
+    );
+  }
   return (
-    <svg width={sz} height={sz} viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+    <svg width={sz} height={sz} viewBox="0 0 24 24" fill="none" stroke={col} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }} aria-hidden="true">
       <path d={d} />
     </svg>
   );
@@ -6569,8 +6974,27 @@ var LoginScreen = function (props) {
   var [loginForgotUnlock, setLoginForgotUnlock] = useState("");
   var [loginForgotBusy, setLoginForgotBusy] = useState(false);
   var [loginForgotCopyHint, setLoginForgotCopyHint] = useState(false);
+  var [loginUserOpen, setLoginUserOpen] = useState(false);
   var loginForgotUnlockRef = useRef("");
+  var loginUserWrapRef = useRef(null);
   useEffect(function () { loginForgotUnlockRef.current = loginForgotUnlock; }, [loginForgotUnlock]);
+  useEffect(function () {
+    if (!loginUserOpen) return;
+    var onDoc = function (e) {
+      if (loginUserWrapRef.current && !loginUserWrapRef.current.contains(e.target)) {
+        setLoginUserOpen(false);
+      }
+    };
+    var onKey = function (e) {
+      if (e.key === "Escape") setLoginUserOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return function () {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [loginUserOpen]);
   useEffect(function () {
     if (!loginForgotOpen) return;
     if (!loginForgotChallenge) setLoginForgotChallenge(generateSupportChallengeCode());
@@ -6774,14 +7198,78 @@ var LoginScreen = function (props) {
           font-size: 11px !important; font-weight: 600 !important; color: #64748b !important;
           text-transform: uppercase; letter-spacing: 0.07em; margin: 0 !important; line-height: 1.2; min-height: 14px;
         }
-        .tc-login-fields-row input,
-        .tc-login-fields-row select {
-          width: 100% !important; box-sizing: border-box !important; height: 40px !important;
+        .tc-login-fields-row input {
+          width: 100% !important; box-sizing: border-box !important; height: 44px !important;
           border: 1.5px solid #e2e8f0 !important; border-radius: 8px !important;
           padding: 9px 13px !important; font-size: 13px !important; font-weight: 400 !important;
-          color: #0f172a !important; background: #fff !important; outline: none; font-family: inherit;
+          color: #0f172a !important; background: #fff !important; outline: none !important;
+          box-shadow: none !important; font-family: inherit;
+          transition: border-color 0.12s ease;
         }
-        .tc-login-fields-row select { cursor: pointer; }
+        .tc-login-fields-row input:focus,
+        .tc-login-fields-row input:focus-visible {
+          border-color: #3b82f6 !important;
+          box-shadow: none !important;
+          outline: none !important;
+        }
+        .tc-login-user-wrap { position: relative; min-width: 0; }
+        .tc-login-user-trigger {
+          width: 100%; box-sizing: border-box; min-height: 44px; height: 44px;
+          display: flex; align-items: center; gap: 10px;
+          padding: 0 10px 0 8px; margin: 0;
+          border: 1.5px solid #e2e8f0; border-radius: 8px;
+          background: #fff; cursor: pointer; font-family: inherit;
+          transition: border-color 0.12s ease;
+          text-align: left;
+        }
+        .tc-login-user-trigger:hover { border-color: #cbd5e1; }
+        .tc-login-user-trigger.is-open,
+        .tc-login-user-trigger:focus,
+        .tc-login-user-trigger:focus-visible {
+          border-color: #3b82f6; outline: none; box-shadow: none;
+        }
+        .tc-login-user-avatar {
+          width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+          display: inline-flex; align-items: center; justify-content: center;
+          font-size: 11px; font-weight: 800; color: #fff;
+          letter-spacing: -0.02em;
+        }
+        .tc-login-user-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0; line-height: 1.15; }
+        .tc-login-user-name {
+          font-size: 13px; font-weight: 700; color: #0f172a;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .tc-login-user-sub {
+          font-size: 10px; font-weight: 600; color: #94a3b8;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .tc-login-user-role {
+          flex-shrink: 0; font-size: 9px; font-weight: 800; letter-spacing: 0.04em;
+          text-transform: uppercase; padding: 3px 7px; border-radius: 999px;
+          line-height: 1;
+        }
+        .tc-login-user-chevron {
+          flex-shrink: 0; color: #94a3b8; font-size: 10px; line-height: 1;
+          transition: transform 0.15s ease;
+        }
+        .tc-login-user-trigger.is-open .tc-login-user-chevron { transform: rotate(180deg); color: #3b82f6; }
+        .tc-login-user-menu {
+          position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 40;
+          background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+          box-shadow: 0 14px 36px rgba(15, 23, 42, 0.14), 0 2px 8px rgba(15, 23, 42, 0.06);
+          padding: 6px; max-height: 240px; overflow-y: auto;
+        }
+        .tc-login-user-option {
+          width: 100%; display: flex; align-items: center; gap: 10px;
+          padding: 8px; border: none; border-radius: 8px; background: transparent;
+          cursor: pointer; font-family: inherit; text-align: left;
+        }
+        .tc-login-user-option:hover { background: #f1f5f9; }
+        .tc-login-user-option.is-active { background: #eff6ff; }
+        .tc-login-user-check {
+          width: 16px; flex-shrink: 0; text-align: center;
+          color: #3b82f6; font-size: 12px; font-weight: 800;
+        }
         .tc-login-unlock-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
         .tc-login-unlock-label { font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 8px; line-height: 1.2; min-height: 12px; }
         .tc-login-unlock-box { min-height: 58px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; border-radius: 12px; }
@@ -6804,7 +7292,7 @@ var LoginScreen = function (props) {
           background: "#fff", borderRadius: 24, overflow: "hidden",
           boxShadow: "0 28px 70px rgba(0,0,0,0.42), 0 0 0 1px rgba(255,255,255,0.06)",
         }}>
-          {/* — Brand panel — */}
+          {/* Brand panel */}
           <div className="tc-login-brand" style={{
             padding: "40px 36px 36px",
             background: "linear-gradient(165deg,#0c1528 0%,#152238 42%,#1e1b4b 100%)",
@@ -6840,7 +7328,7 @@ var LoginScreen = function (props) {
             </div>
           </div>
 
-          {/* — Form panel — */}
+          {/* Form panel */}
           <div className="tc-login-form" style={{ padding: "36px 40px 32px", display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
             {err ? (
               <div style={{ background: "#fef2f2", color: "#dc2626", borderRadius: 10, padding: "11px 14px", fontSize: 13, fontWeight: 600, marginBottom: 16, border: "1px solid #fecaca" }}>{err}</div>
@@ -6927,18 +7415,89 @@ var LoginScreen = function (props) {
                 <div className="tc-login-fields-row">
                   <div>
                     <label>User</label>
-                    <select
-                      value={username}
-                      onChange={function (e) { setUsername(e.target.value); setErr(""); }}
-                      onKeyDown={handleKeyDown}
-                    >
-                      {(loginUsers.length ? loginUsers : [{ username: "admin", name: "Admin", role: ROLE_ADMIN }]).map(function (u) {
-                        var un = u.username || "admin";
-                        var label = (u.name || un) + " (" + un + ")";
-                        if (u.role && ROLE_LABELS[u.role]) label += " — " + ROLE_LABELS[u.role];
-                        return <option key={u.id || un} value={un}>{label}</option>;
-                      })}
-                    </select>
+                    {(function () {
+                      var users = loginUsers.length ? loginUsers : [{ username: "admin", name: "Admin", role: ROLE_ADMIN }];
+                      var selected = null;
+                      for (var i = 0; i < users.length; i++) {
+                        if (normalizeUserName(users[i].username) === normalizeUserName(username)) {
+                          selected = users[i];
+                          break;
+                        }
+                      }
+                      if (!selected) selected = users[0];
+                      var selUn = (selected && selected.username) || "admin";
+                      var selName = (selected && (selected.name || selected.username)) || "Admin";
+                      var selRole = (selected && selected.role) || ROLE_ADMIN;
+                      var selRoleLbl = ROLE_LABELS[selRole] || "User";
+                      var roleTone = function (role) {
+                        if (role === ROLE_ADMIN) return { bg: "#dbeafe", fg: "#1d4ed8", av: "linear-gradient(135deg,#3b82f6,#1d4ed8)" };
+                        if (role === "manager") return { bg: "#fef3c7", fg: "#b45309", av: "linear-gradient(135deg,#f59e0b,#d97706)" };
+                        return { bg: "#e2e8f0", fg: "#475569", av: "linear-gradient(135deg,#64748b,#475569)" };
+                      };
+                      var selTone = roleTone(selRole);
+                      var initial = String(selName).trim().charAt(0).toUpperCase() || "U";
+                      return (
+                        <div className="tc-login-user-wrap" ref={loginUserWrapRef}>
+                          <button
+                            type="button"
+                            className={"tc-login-user-trigger" + (loginUserOpen ? " is-open" : "")}
+                            aria-haspopup="listbox"
+                            aria-expanded={loginUserOpen}
+                            onClick={function () { setLoginUserOpen(function (o) { return !o; }); setErr(""); }}
+                            onKeyDown={function (e) {
+                              if (e.key === "Enter" && !loginUserOpen) return;
+                              if (e.key === "ArrowDown" || e.key === "Enter") {
+                                e.preventDefault();
+                                setLoginUserOpen(true);
+                              }
+                            }}
+                          >
+                            <span className="tc-login-user-avatar" style={{ background: selTone.av }} aria-hidden="true">{initial}</span>
+                            <span className="tc-login-user-meta">
+                              <span className="tc-login-user-name">{selName}</span>
+                              <span className="tc-login-user-sub">@{selUn}</span>
+                            </span>
+                            <span className="tc-login-user-role" style={{ background: selTone.bg, color: selTone.fg }}>{selRoleLbl}</span>
+                            <span className="tc-login-user-chevron" aria-hidden="true">▾</span>
+                          </button>
+                          {loginUserOpen ? (
+                            <div className="tc-login-user-menu" role="listbox" aria-label="Select user">
+                              {users.map(function (u) {
+                                var un = u.username || "admin";
+                                var nm = u.name || un;
+                                var role = u.role || ROLE_ADMIN;
+                                var roleLbl = ROLE_LABELS[role] || "User";
+                                var tone = roleTone(role);
+                                var active = normalizeUserName(un) === normalizeUserName(username);
+                                var ini = String(nm).trim().charAt(0).toUpperCase() || "U";
+                                return (
+                                  <button
+                                    key={u.id || un}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={active}
+                                    className={"tc-login-user-option" + (active ? " is-active" : "")}
+                                    onClick={function () {
+                                      setUsername(un);
+                                      setErr("");
+                                      setLoginUserOpen(false);
+                                    }}
+                                  >
+                                    <span className="tc-login-user-avatar" style={{ background: tone.av }} aria-hidden="true">{ini}</span>
+                                    <span className="tc-login-user-meta">
+                                      <span className="tc-login-user-name">{nm}</span>
+                                      <span className="tc-login-user-sub">@{un}</span>
+                                    </span>
+                                    <span className="tc-login-user-role" style={{ background: tone.bg, color: tone.fg }}>{roleLbl}</span>
+                                    <span className="tc-login-user-check" aria-hidden="true">{active ? "✓" : ""}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <Input label="Password" type="password" value={pw} onChange={function (e) { setPw(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="Enter password" />
                 </div>
@@ -7182,6 +7741,7 @@ function App(props) {
   var [idbReady, setIdbReady] = useState(true);
   var [idbStartupError, setIdbStartupError] = useState(null);
   var [active, _setActive] = useState("pos");   /* Sales Mode default = POS */
+  var [partyTab, setPartyTab] = useState("customer");
   var [loggedIn, setLoggedIn] = useState(false);
   var [currentUser, setCurrentUser] = useState(null);
   /* Sync status for UI indicator (network modes only) */
@@ -7229,6 +7789,19 @@ function App(props) {
   /** Stays true until a user signs in from the login screen (prevents auto-login after Switch user). */
   var forceLoginScreenRef = useRef(false);
   var [loginScreenKey, setLoginScreenKey] = useState(0);
+  var [erpMenuOpen, setErpMenuOpen] = useState(null);
+  var [moneyModalMode, setMoneyModalMode] = useState(null);
+  var [toolbarCustomizeOpen, setToolbarCustomizeOpen] = useState(false);
+  var [toolbarDraftKeys, setToolbarDraftKeys] = useState(null);
+  var [shellAppVersion, setShellAppVersion] = useState("2.0.3");
+  var [shellClock, setShellClock] = useState("");
+  useEffect(function () {
+    if (window.electronAPI && window.electronAPI.getAppVersion) {
+      window.electronAPI.getAppVersion().then(function (v) {
+        if (v) setShellAppVersion(v);
+      }).catch(function () { /* keep default */ });
+    }
+  }, []);
   useEffect(function () {
     try {
       if (sessionStorage.getItem("tc3_force_login_once") === "1") {
@@ -7282,7 +7855,7 @@ function App(props) {
       if (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) {
         console.warn(
           "[TechonERP] Dev server storage is separate from the installed .exe (see main.cjs). " +
-          "Use Settings → backup JSON from the desktop app, then Restore here to test with real data."
+          "Use Settings  →  backup JSON from the desktop app, then Restore here to test with real data."
         );
       }
     } catch (e) {}
@@ -7319,6 +7892,17 @@ function App(props) {
     if (lines && lines.length) return;
     persistTechonGLJournal("bootstrap_empty_journal");
   }, [loggedIn]);
+  useEffect(function () {
+    var tick = function () {
+      setShellClock(new Date().toLocaleString("en-GB", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit", hour12: true,
+      }));
+    };
+    tick();
+    var id = setInterval(tick, 30000);
+    return function () { clearInterval(id); };
+  }, []);
 
   /* Network client: after successful sync, verify journal hash vs server */
   useEffect(function () {
@@ -7417,7 +8001,7 @@ function App(props) {
       setPinModal(false);
       resetPinModalUi();
       safeSetActive("settings");
-      showAlert("Unlocked. Set a new Admin PIN under Settings → Security, then tap Update Settings.");
+      showAlert("Unlocked. Set a new Admin PIN under Settings  →  Security, then tap Update Settings.");
     }).catch(function () {
       if (!appMountedRef.current) return;
       setSupportUnlockBusy(false);
@@ -7996,10 +8580,19 @@ function App(props) {
   var _landingNav = function () { return getDefaultLandingNavId(state && state.settings, businessType, _activeProfile, _netRole, _userRole); };
   var SALES_MODE_PAGES = ["pos"]
     .concat(_navOn("invoices") ? ["invoices"] : [])
-    .concat(_navOn("customers") ? ["customers"] : [])
-    .concat(_navOn("purchases") ? ["purchases"] : [])
+    .concat(_navOn("parties") ? ["parties"] : [])
+    .concat(_navOn("purchases") ? ["purchases", "purchase-entry"] : [])
     .concat(_navOn("returns") ? ["returns"] : [])
     .concat(_repairsModuleOn ? ["repairs"] : []);
+
+  /** Alias hidden entry screens onto their parent nav module for feature flags. */
+  var resolveNavModuleId = function (id) {
+    if (id === "purchase-entry") return "purchases";
+    if (id === "customers" || id === "suppliers") return "parties";
+    return id;
+  };
+
+  var openNewPurchase = null; /* assigned after safeSetActive */
   var canViewReports = hasPermission(normalizedCurrentUser, "reports.view");
   var canViewSettings = hasPermission(normalizedCurrentUser, "settings.view");
   var canEditInvoices = hasPermission(normalizedCurrentUser, "invoices.edit");
@@ -8029,7 +8622,14 @@ function App(props) {
 
   /* POS terminal: allowed sidebar pages from counterModuleToggles (configured on counter Settings → Modules). */
   var clientPosPages = isNetworkClient
-    ? listEnabledNavIds(state && state.settings, businessType, _activeProfile, "network_client")
+    ? (function () {
+        var ids = listEnabledNavIds(state && state.settings, businessType, _activeProfile, "network_client");
+        /* Hidden entry routes share parent module toggles (e.g. purchase-entry → purchases). */
+        if (ids.indexOf("purchases") >= 0 && ids.indexOf("purchase-entry") < 0) {
+          ids = ids.concat(["purchase-entry"]);
+        }
+        return ids;
+      })()
     : [];
 
   var openSettingsWithPassword = function (pendingNav) {
@@ -8070,6 +8670,13 @@ function App(props) {
   };
 
   var setActive = function (id) {
+    if (id === "customers") {
+      setPartyTab("customer");
+      id = "parties";
+    } else if (id === "suppliers") {
+      setPartyTab("supplier");
+      id = "parties";
+    }
     if (id === "settings") {
       if (!settingsPwBypassRef.current) {
         openSettingsWithPassword(id);
@@ -8078,15 +8685,16 @@ function App(props) {
       settingsPwBypassRef.current = false;
     }
     if (isNetworkClient) {
-      var allowedClient = listEnabledNavIds(state && state.settings, businessType, _activeProfile, "network_client");
-      if (allowedClient.indexOf(id) < 0) {
+      var allowedClient = clientPosPages;
+      var clientMod = resolveNavModuleId(id);
+      if (allowedClient.indexOf(id) < 0 && allowedClient.indexOf(clientMod) < 0) {
         if (tcIsDevEnv()) {
           console.warn("[TC_CLIENT] blocked route (module off):", id);
         }
         _setActive("pos");
         return;
       }
-      if (!canAccessPageByRole(normalizedCurrentUser, id)) {
+      if (!canAccessPageByRole(normalizedCurrentUser, clientMod)) {
         showPermissionDenied("open this page");
         _setActive("pos");
         return;
@@ -8094,7 +8702,7 @@ function App(props) {
       _setActive(id);
       return;
     }
-    if (!canAccessPageByRole(normalizedCurrentUser, id)) {
+    if (!canAccessPageByRole(normalizedCurrentUser, resolveNavModuleId(id))) {
       if (id === "reports" || id === "accounts" || id === "auditlog") showPermissionDenied("open reports");
       else if (id === "settings") showPermissionDenied("open settings");
       else showPermissionDenied("open this page");
@@ -8221,11 +8829,12 @@ function App(props) {
       setActive(id);
       return;
     }
-    if (!canAccessPageByRole(normalizedCurrentUser, id)) {
+    var navMod = resolveNavModuleId(id);
+    if (!canAccessPageByRole(normalizedCurrentUser, navMod)) {
       showPermissionDenied("open this page");
       return;
     }
-    if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, id, _netRole, _userRole)) {
+    if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, navMod, _netRole, _userRole)) {
       return;
     }
     /* Network server: full navigation - no sales/admin mode gate */
@@ -8236,10 +8845,66 @@ function App(props) {
     setActive(id);
   };
 
+  openNewPurchase = function () {
+    safeSetActive("purchase-entry");
+  };
+
+  /* Global ERP shortcuts: F11 = New Purchase, F12 = Add Product (any page) */
+  useEffect(function () {
+    if (!loggedIn) return;
+    var handler = function (e) {
+      if (e.defaultPrevented) return;
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      var key = e.key;
+      var code = e.keyCode;
+      var isF11 = key === "F11" || code === 122;
+      var isF12 = key === "F12" || code === 123;
+      if (!isF11 && !isF12) return;
+
+      if (isF11) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (isNetworkClient) return;
+        if (!canAccessPageByRole(normalizedCurrentUser, "purchases")) return;
+        if (!isNavModuleEnabled(state && state.settings, businessType, _activeProfile, "purchases", _netRole, _userRole)) return;
+        openNewPurchase();
+        return;
+      }
+
+      /* F12 — Add Product */
+      e.preventDefault();
+      e.stopPropagation();
+      if (isNetworkClient) return;
+      if (!canAccessPageByRole(normalizedCurrentUser, "inventory") && !canAccessPageByRole(normalizedCurrentUser, "purchases")) return;
+
+      var page = String(active || "");
+      var localPages = { "purchase-entry": 1, purchases: 1, inventory: 1, accounts: 1 };
+      if (localPages[page]) {
+        try {
+          window.dispatchEvent(new CustomEvent("tc3-add-product"));
+        } catch (_e) { /* ignore */ }
+        return;
+      }
+      try { sessionStorage.setItem("tc3_pending_add_product", "1"); } catch (_e2) { /* ignore */ }
+      if (canAccessPageByRole(normalizedCurrentUser, "inventory") && isNavModuleEnabled(state && state.settings, businessType, _activeProfile, "inventory", _netRole, _userRole)) {
+        safeSetActive("inventory");
+      } else if (canAccessPageByRole(normalizedCurrentUser, "purchases") && isNavModuleEnabled(state && state.settings, businessType, _activeProfile, "purchases", _netRole, _userRole)) {
+        openNewPurchase();
+        try {
+          window.setTimeout(function () {
+            try { window.dispatchEvent(new CustomEvent("tc3-add-product")); } catch (_e3) { /* ignore */ }
+          }, 80);
+        } catch (_e4) { /* ignore */ }
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return function () { window.removeEventListener("keydown", handler, true); };
+  }, [loggedIn, active, state, businessType, isNetworkClient, normalizedCurrentUser]);
+
   useEffect(function () {
     if (!loggedIn || !state || isNetworkClient) return;
     if (CORE_NAV_IDS.indexOf(active) >= 0) return;
-    if (isNavModuleEnabled(state.settings, businessType, _activeProfile, active, _netRole, _userRole)) return;
+    if (isNavModuleEnabled(state.settings, businessType, _activeProfile, resolveNavModuleId(active), _netRole, _userRole)) return;
     setActive("pos");
   }, [loggedIn, state, active, businessType, isNetworkClient]);
 
@@ -8270,13 +8935,13 @@ function App(props) {
       setActive("pos");
       return;
     }
-    if (canAccessPageByRole(normalizedCurrentUser, active)) return;
+    if (canAccessPageByRole(normalizedCurrentUser, resolveNavModuleId(active))) return;
     setActive("pos");
   }, [loggedIn, active, normalizedCurrentUser && normalizedCurrentUser.role, isNetworkClient, clientPosPages.length]);
 
   useEffect(function () {
     if (!loggedIn) return;
-    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
+    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_others", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
     var buildBackup = function () {
       var st = S.get("tc3_settings", null);
       var sn = st ? (st.shopName || "Techon") : "Techon";
@@ -8338,7 +9003,7 @@ function App(props) {
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [loggedIn]);
-  /* Mirror React state → local cache/IDB only. Never queue network sync here — pages call
+  /* Mirror React state  →  local cache/IDB only. Never queue network sync here  →  pages call
      S.set on real edits; re-syncing full snapshots on every state tick overwrote server merges
      and drowned out counter-terminal patches. */
   useEffect(function () {
@@ -8347,6 +9012,7 @@ function App(props) {
     _coreStorageSet("tc3_products", state.products);
     _coreStorageSet("tc3_customers", state.customers);
     _coreStorageSet("tc3_suppliers", state.suppliers);
+    _coreStorageSet("tc3_others", state.others || []);
     _coreStorageSet("tc3_sales", state.sales);
     _coreStorageSet("tc3_purchases", state.purchases);
     _coreStorageSet("tc3_raw_material_counts", state.rawMaterialCounts || []);
@@ -8368,7 +9034,7 @@ function App(props) {
       clearTimeout(window._bakDebounce);
       window._bakDebounce = setTimeout(function () {
         try {
-          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
+          var bakKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_others", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
           var st = _idbCache["tc3_settings"] || {};
           var sn = st.shopName || "Techon";
           var bk = { version: 2, timestamp: new Date().toISOString(), shopName: sn, data: {} };
@@ -8511,8 +9177,9 @@ function App(props) {
 
   var PAGE_COMPONENTS = {
     dashboard: Dashboard, pos: Sales, invoices: Invoices,
-    inventory: Inventory, purchases: Purchases, customers: Customers,
-    suppliers: Suppliers, statements: Statements, receivables: Receivables, payables: Payables,
+    inventory: Inventory, purchases: Purchases, "purchase-entry": PurchaseEntry,
+    parties: Parties, customers: Parties, suppliers: Parties,
+    statements: Statements, receivables: Receivables, payables: Payables,
     accounts: Accounts,
     repairs: Repairs, coddatabase: CodDatabase, expenses: Expenses, returns: Returns, cheques: Cheques, reports: Reports,
     barcodeprint: Barcodes, auditlog: AuditLog, settings: Settings
@@ -8522,585 +9189,608 @@ function App(props) {
   var periodLockTransactionMinDate = state && state.settings && state.settings.lockedUntilDate ? nextCalendarDay(state.settings.lockedUntilDate) : undefined;
   var showPeriodLockBanner = !!(state && state.settings && state.settings.lockedUntilDate && String(today()) <= String(state.settings.lockedUntilDate));
 
+  var shellAdminN = normalizedCurrentUser && (normalizedCurrentUser.name || normalizedCurrentUser.username)
+    ? (normalizedCurrentUser.name || normalizedCurrentUser.username)
+    : S.get("tc3_admin_name", "Admin");
+  var shellBranch = (state && state.settings && state.settings.shopName) ? state.settings.shopName : "Main Branch";
+  var shellDbLabel = isNetworkServer ? "MySQL Server" : (isNetworkClient ? "LAN Client DB" : "TECHONERP_LOCAL");
+  var shellModeLabel = isNetworkServer ? "Server Mode" : (isNetworkClient ? "POS Mode" : "Standalone");
+
+  var shellFilterNavItems = function (ids) {
+    var activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
+    var navEnabled = function (id) { return isNavModuleEnabled(state.settings, businessType, activeProfile, id, isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone"), _userRole); };
+    return NAV_ITEMS.filter(function (n) {
+      if (ids.indexOf(n.id) < 0) return false;
+      if (isNetworkClient) {
+        if (clientPosPages.indexOf(n.id) < 0) return false;
+        if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
+        return true;
+      }
+      if (isNetworkServer) {
+        if (!navEnabled(n.id)) return false;
+        if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
+        return true;
+      }
+      if (isNetworkMode && !isAdminMode && n.id !== "pos") return false;
+      if (!COMPUTER_SHOP_EDITION && !isNetworkMode && !isAdminMode && !SALES_MODE_PAGES.includes(n.id)) return false;
+      if (!navEnabled(n.id)) return false;
+      if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
+      return true;
+    });
+  };
+
+  var handleShellNavClick = function (itemId) {
+    if (!itemId) return;
+    var dirty = sessionStorage.getItem("tc3_dirty");
+    if (dirty === "pos" || dirty === "purchase") {
+      setHoldModal(itemId);
+      return;
+    }
+    if (dirty) {
+      showConfirm("You have unsaved changes. Leave this page?", function () {
+        sessionStorage.removeItem("tc3_dirty");
+        safeSetActive(itemId);
+      });
+      return;
+    }
+    safeSetActive(itemId);
+  };
+
+  var handleShellMenuAction = function (action) {
+    if (action === "exit") {
+      try {
+        if (window.electronAPI && typeof window.electronAPI.quitApp === "function") {
+          window.electronAPI.quitApp();
+        } else {
+          window.close();
+        }
+      } catch (e) {
+        try { window.close(); } catch (e2) { /* ignore */ }
+      }
+      return;
+    }
+    if (action === "calc") {
+      try {
+        if (window.electronAPI && typeof window.electronAPI.openCalculator === "function") {
+          window.electronAPI.openCalculator();
+        }
+      } catch (e) { /* ignore */ }
+      return;
+    }
+    if (action === "money_in") {
+      setMoneyModalMode("in");
+      return;
+    }
+    if (action === "money_out") {
+      setMoneyModalMode("out");
+      return;
+    }
+    if (action === "customize_toolbar") {
+      setToolbarDraftKeys(getToolbarKeys(state.settings));
+      setToolbarCustomizeOpen(true);
+      return;
+    }
+    if (action === "switch_user") {
+      showConfirm("Switch user now?\n\nAny saved data remains safe. You will return to the login screen.", function () {
+        switchUser("manual_switch");
+      });
+    }
+  };
+
+  var shellConnMap = {
+    connected: { dot: "#22c55e", label: "Connected" },
+    reconnecting: { dot: "#f59e0b", label: "Connecting" },
+    disconnected: { dot: "#ef4444", label: "Offline" },
+    unknown: { dot: "#94a3b8", label: "Connecting" },
+  };
+  var shellSyncMap = {
+    saving: { dot: "#f59e0b", label: "Saving" },
+    synced: { dot: "#22c55e", label: "Synced" },
+    error: { dot: "#ef4444", label: "Sync failed" },
+    failed: { dot: "#ef4444", label: "Sync failed" },
+    idle: { dot: "#94a3b8", label: "Ready" },
+  };
+  var shellNetUi = resolveHeaderNetStatus({
+    isNetworkClient: isNetworkClient,
+    isNetworkServer: isNetworkServer,
+    isNetworkMode: isNetworkMode,
+    connStatus: connStatus,
+    wsConnStatus: wsConnStatus,
+    syncStatus: syncStatus,
+    syncCfg: shellSyncMap[syncStatus] || shellSyncMap.idle,
+    connCfg: shellConnMap[connStatus] || shellConnMap.unknown,
+    lastSyncTime: lastSyncTime,
+  });
+
+  var shellLicenseReadOnlyBanner = null;
+  if (licenseInfo && licenseInfo.isReadOnly) {
+    shellLicenseReadOnlyBanner = (function () {
+      var rr = String(licenseInfo.readOnlyReason || "");
+      if (rr === "license_expired") return "Read-only mode: License expired. Renew to continue full usage.";
+      if (rr === "blocked") return "Read-only mode: Client limit reached. Contact server admin.";
+      if (rr === "clock_tamper") return UI.warn + " System time change detected. Please correct your date/time or connect to internet.";
+      var d = parseInt(licenseInfo.offlineDays || 0, 10) || 0;
+      var ts = null;
+      if (!d && licenseInfo.lastSuccessfulSyncTime) {
+        var ago = Date.now() - parseInt(licenseInfo.lastSuccessfulSyncTime, 10);
+        if (!isNaN(ago) && ago > 0) d = Math.floor(ago / (24 * 3600 * 1000));
+      }
+      if (licenseInfo.lastSuccessfulSyncTime) {
+        var dt = new Date(parseInt(licenseInfo.lastSuccessfulSyncTime, 10));
+        if (!isNaN(dt.getTime())) ts = dt.toLocaleString();
+      }
+      var extra = d > 0 ? (" Last synced: " + d + " day" + (d !== 1 ? "s" : "") + " ago" + (ts ? (" (" + ts + ")") : "") + ".") : "";
+      return "System is in read-only mode. Connect internet to restore full access." + extra;
+    })();
+  }
+
+  var shellLicenseWarningBanner = null;
+  if (licenseInfo && !licenseInfo.isReadOnly && licenseInfo.offlineWarning) {
+    shellLicenseWarningBanner = (function () {
+      var d2 = parseInt(licenseInfo.offlineDays || 0, 10) || 0;
+      if (!d2 && licenseInfo.lastSuccessfulSyncTime) {
+        var ago2 = Date.now() - parseInt(licenseInfo.lastSuccessfulSyncTime, 10);
+        if (!isNaN(ago2) && ago2 > 0) d2 = Math.floor(ago2 / (24 * 3600 * 1000));
+      }
+      var msg = (d2 >= 10 && d2 < 15)
+        ? "You have a few days before read-only mode."
+        : "Offline license verification warning.";
+      var extra2 = d2 > 0 ? (" Offline for " + d2 + " day" + (d2 !== 1 ? "s" : "") + ".") : "";
+      var soft = (d2 >= 10 && d2 < 15) ? " Please connect internet once to keep the system active." : "";
+      return UI.warn + " " + msg + " Connect internet soon." + soft + extra2;
+    })();
+  }
+
+  var shellFiscalYear = (function () {
+    var now = new Date();
+    var y = now.getFullYear();
+    var m = now.getMonth() + 1;
+    var startY = m >= 4 ? y : y - 1;
+    var endY = startY + 1;
+    return "01/04/" + startY + " - 31/03/" + endY;
+  })();
+
+  var shellShowAdminToggle = !isNetworkClient && !isNetworkServer && !COMPUTER_SHOP_EDITION;
+  var shellAdminToggleLabel = isAdminMode ? "Lock to Sales Mode" : "Unlock Admin Mode";
+
+  var shellToolbarItems = resolveToolbarItems(state.settings, {
+    isNavAllowed: function (navId) {
+      var filtered = shellFilterNavItems([navId]);
+      return filtered && filtered.length > 0;
+    },
+  });
+
   return (
     <React.Fragment>
-      <div style={{ display: "flex", flex: 1, width: "100%", minHeight: 0, minWidth: 0, background: C.bg, fontFamily: "'Plus Jakarta Sans',system-ui,sans-serif", overflow: "hidden", boxSizing: "border-box" }}>
-        {/* Sidebar */}
-        <div className="erp-sidebar" style={{ width: 200, background: "linear-gradient(180deg,#0a1628 0%,#0d1e38 60%,#0a1628 100%)", display: "flex", flexDirection: "column", height: "100%", minHeight: 0, overflow: "hidden", flexShrink: 0, borderRight: "1px solid rgba(255,255,255,0.06)" }}>
-
-          {/* Logo */}
-          <div onClick={function () { if (isNetworkClient) { safeSetActive("pos"); } else { safeSetActive(_landingNav()); } }} style={{ padding: "22px 20px 18px", borderBottom: "1px solid rgba(255,255,255,0.06)", cursor: "pointer" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {/* Logo - filter drop-shadow: no hard ring, pure glow */}
-              <div style={{ width: 40, height: 40, flexShrink: 0, filter: "drop-shadow(0 0 6px rgba(180,100,255,0.8)) drop-shadow(0 0 14px rgba(120,100,255,0.4))" }}>
-                <img src={TECHON_LOGO} alt="Techon ERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
-              </div>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 900, color: "#ffffff", letterSpacing: "-0.03em", lineHeight: 1.1, fontFamily: "'Plus Jakarta Sans',sans-serif" }}>TechonERP</div>
-                <div style={{ fontSize: 9.5, color: "rgba(138,170,212,0.8)", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginTop: 2 }}>Business Management</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Mode banner — below logo */}
-          {(function () {
-            var bannerLabel = isNetworkServer ? "Server Mode" : (isNetworkClient ? "POS MODE" : "STANDALONE MODE");
-            var bannerSuffix = isNetworkServer ? "MySQL" : (isNetworkClient ? "LAN" : "Local");
-            return (
-              <div style={{ padding: "6px 14px", background: "rgba(15,158,110,0.18)", borderBottom: "1px solid rgba(15,158,110,0.3)", display: "flex", alignItems: "center", gap: 6 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22d88f", boxShadow: "0 0 6px #22d88f", flexShrink: 0 }}></div>
-                <span style={{ color: "#22d88f", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.12em" }}>{bannerLabel}</span>
-                <span style={{ color: "rgba(34,216,143,0.6)", fontSize: 9, marginLeft: "auto" }}>{bannerSuffix}</span>
-              </div>
-            );
-          })()}
-
-          {/* Nav */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "10px 10px 6px" }}>
-            {NAV_GROUPS.map(function (group) {
-              var activeProfile = BUSINESS_PROFILES[businessType] || BUSINESS_PROFILES.tech;
-              var navEnabled = function (id) { return isNavModuleEnabled(state.settings, businessType, activeProfile, id, isNetworkClient ? "network_client" : (isNetworkServer ? "network_server" : "standalone"), _userRole); };
-              var groupItems = NAV_ITEMS.filter(function (n) {
-                if (group.ids.indexOf(n.id) < 0) return false;
-                /* POS terminal: sidebar from synced counter module toggles */
-                if (isNetworkClient) {
-                  if (clientPosPages.indexOf(n.id) < 0) return false;
-                  if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
-                  return true;
+      <ErpClassicShellLayout
+        active={active}
+        activeItem={activeItem}
+        treeGroups={ERP_TREE_GROUPS}
+        toolbarItems={shellToolbarItems}
+        filterNavItems={shellFilterNavItems}
+        onNavigate={handleShellNavClick}
+        onMenuAction={handleShellMenuAction}
+        menuOpen={erpMenuOpen}
+        setMenuOpen={setErpMenuOpen}
+        shellAdminN={shellAdminN}
+        shellModeLabel={shellModeLabel}
+        shellBranch={shellBranch}
+        shellDbLabel={shellDbLabel}
+        shellAppVersion={shellAppVersion}
+        shellClock={shellClock}
+        shellFiscalYear={shellFiscalYear}
+        showPeriodLockBanner={showPeriodLockBanner}
+        periodLockText={showPeriodLockBanner ? ("System locked through " + fmtDateFull(state.settings.lockedUntilDate) + " - transactions on or before this date are frozen unless Admin (PIN) unlocks accounting.") : ""}
+        licenseReadOnlyBanner={shellLicenseReadOnlyBanner}
+        licenseWarningBanner={shellLicenseWarningBanner}
+        dbHealthError={dbHealthError}
+        onDismissDbHealth={function () { setDbHealthError(null); }}
+        isNetworkServer={isNetworkServer}
+        isNetworkMode={isNetworkMode}
+        shellNetUi={shellNetUi}
+        fmtDateFull={fmtDateFull}
+        today={today}
+        posRestaurantHeader={active === "pos" && String(businessType || "").toLowerCase() === "restaurant" ? posHeaderRestaurantLoggedIn : null}
+        onSwitchUser={function () {
+          showConfirm("Switch user now?\n\nAny saved data remains safe. You will return to the login screen.", function () {
+            switchUser("manual_switch");
+          });
+        }}
+        showAdminToggle={shellShowAdminToggle}
+        onAdminToggle={function () { if (isAdminMode) { lockToSalesMode(); } else { var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4; if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); } else { setIsAdminMode(true); } } }}
+        adminToggleLabel={shellAdminToggleLabel}
+        HeaderKeysHint={HeaderKeysHint}
+      >
+        <div style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
+          <ActivePage
+            key={active}
+            cloudSyncBump={cloudSyncBump}
+            currentUser={normalizedCurrentUser}
+            canViewReports={canViewReports}
+            canViewSettings={canViewSettings}
+            canEditInvoices={canEditInvoices}
+            canDeleteInvoices={canDeleteInvoices}
+            canOverrideDiscount={canOverrideDiscount}
+            currentUserRole={normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role)}
+            showPermissionDenied={showPermissionDenied}
+            canManageUsers={normalizedCurrentUser && normalizedCurrentUser.role === ROLE_ADMIN}
+            state={state}
+            setState={setState}
+            setActive={safeSetActive}
+            partyTab={partyTab}
+            setPartyTab={setPartyTab}
+            openNewPurchase={openNewPurchase}
+            onUnsavedPurchaseLeave={function (dest) { setHoldModal(dest || "purchases"); }}
+            licenseInfo={props.licenseInfo}
+            onActivate={props.onActivate}
+            onLicenseRefresh={props.onLicenseRefresh}
+            systemConfig={systemConfig}
+            clientConnStatus={connStatus}
+            isNetworkClient={isNetworkClient}
+            clientPosOfflineBar={isNetworkClient && active === "pos" && (connStatus === "disconnected" || connStatus === "reconnecting")}
+            inventoryQtyForTotals={inventoryQtyForTotals}
+            getBusinessProfile={getBusinessProfile}
+            businessType={businessType}
+            setBusinessType={setBusinessType}
+            BUSINESS_PROFILES={BUSINESS_PROFILES}
+            updateCurrencySymbol={updateCurrencySymbol}
+            _idbCache={_idbCache}
+            _idbWrite={_idbWrite}
+            wipeAllDataForReset={wipeAllErpDataForReset}
+            applyBackupRestore={function (data) {
+              return applyBackupRestoreData(data).then(function () {
+                var jl = S.get("tc3_journal_lines", []);
+                var jv = validateJournalBalanced(Array.isArray(jl) ? jl : []);
+                if (!jv.ok) {
+                  persistTechonGLJournal("post_restore_rebuild", { forceCanonical: true });
                 }
-                /* Network server: module toggles + role access */
-                if (isNetworkServer) {
-                  if (!navEnabled(n.id)) return false;
-                  if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
-                  return true;
-                }
-                /* Network mode + Sales Mode (non-server): POS page only */
-                if (isNetworkMode && !isAdminMode && n.id !== "pos") return false;
-                /* Standalone Sales Mode: only show allowed pages */
-                if (!COMPUTER_SHOP_EDITION && !isNetworkMode && !isAdminMode && !SALES_MODE_PAGES.includes(n.id)) return false;
-                /* Settings module toggles */
-                if (!navEnabled(n.id)) return false;
-                if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
-                return true;
-              });
-              if (groupItems.length === 0) return null;
-              return (
-                <div key={group.label} style={{ marginBottom: 2 }}>
-                  <div style={{ fontSize: 9, fontWeight: 800, color: "rgba(90,120,165,0.9)", letterSpacing: "0.16em", padding: "12px 12px 5px", textTransform: "uppercase", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>{group.label}</div>
-                  {groupItems.map(function (item) {
-                    var isActive = active === item.id;
-                    return (
-                      <button key={item.id} onClick={function () {
-                        var dirty = sessionStorage.getItem("tc3_dirty");
-                        if (dirty === "pos") {
-                          var targetId = item.id;
-                          setHoldModal(targetId);
-                          return;
-                        }
-                        if (dirty) {
-                          var targetId2 = item.id;
-                          showConfirm("You have unsaved changes. Leave this page?", function () {
-                            sessionStorage.removeItem("tc3_dirty");
-                            safeSetActive(targetId2);
-                          });
-                          return;
-                        }
-                        safeSetActive(item.id);
-                      }}
-                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 11, padding: "9px 12px", background: isActive ? "linear-gradient(90deg,rgba(41,121,255,0.22),rgba(41,121,255,0.08))" : "transparent", border: "none", cursor: "pointer", textAlign: "left", borderRadius: 10, marginBottom: 2, transition: "all .15s cubic-bezier(.22,1,.36,1)", position: "relative", outline: "none" }}>
-                        {isActive && <div style={{ position: "absolute", left: 0, top: "20%", bottom: "20%", width: 3, background: "linear-gradient(180deg,#5ca8ff,#2979ff)", borderRadius: "0 3px 3px 0" }}></div>}
-                        <div style={{ width: 32, height: 32, borderRadius: 9, background: isActive ? "linear-gradient(135deg,#2979ff,#5591ff)" : "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .15s", boxShadow: isActive ? "0 3px 10px rgba(41,121,255,0.4)" : "none" }}>
-                          <NavIcon id={item.icon} size={16} color={isActive ? "#ffffff" : "rgba(138,170,212,0.75)"} />
-                        </div>
-                        <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: isActive ? 700 : 500, color: isActive ? "#ffffff" : "rgba(138,170,212,0.85)", letterSpacing: "-0.005em", lineHeight: 1.25, fontFamily: "'Plus Jakarta Sans',sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.label}</span>
-                        {isActive && <div style={{ marginLeft: "auto", width: 5, height: 5, borderRadius: "50%", background: "#5ca8ff", boxShadow: "0 0 8px rgba(92,168,255,0.9)", flexShrink: 0 }}></div>}
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* User footer - reads admin name from localStorage */}
-          {(function () {
-            var adminN = normalizedCurrentUser && (normalizedCurrentUser.name || normalizedCurrentUser.username)
-              ? (normalizedCurrentUser.name || normalizedCurrentUser.username)
-              : S.get("tc3_admin_name", "Admin");
-            var initial = adminN ? adminN.charAt(0).toUpperCase() : "A";
-            return (
-              <div style={{ padding: "14px 16px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 11 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 10, background: "linear-gradient(135deg,#2979ff,#5ca8ff)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, color: "#fff", fontSize: 14, flexShrink: 0, boxShadow: "0 2px 10px rgba(41,121,255,0.4)", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>{initial}</div>
-                <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#e8f1ff", letterSpacing: "-0.01em", fontFamily: "'Plus Jakarta Sans',sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{adminN}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
-                    <div style={{ width: 6, height: 6, borderRadius: "50%", background: isNetworkClient ? "#5ca8ff" : (uiAdminMode ? "#f59e0b" : "#22d88f"), boxShadow: "0 0 6px " + (isNetworkClient ? "#5ca8ff" : (uiAdminMode ? "#f59e0b" : "#22d88f")) }}></div>
-                    <span style={{ fontSize: 10, color: isNetworkClient ? "#5ca8ff" : (uiAdminMode ? "#f59e0b" : "#22d88f"), fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em" }}>{ROLE_LABELS[normalizedCurrentUser.role] || (isNetworkClient ? "Client" : (COMPUTER_SHOP_EDITION || uiAdminMode ? "Admin" : "Sales"))}</span>
-                  </div>
-                </div>
-                {!isNetworkClient && !isNetworkServer && !COMPUTER_SHOP_EDITION ? (
-                <button onClick={function () { if (isAdminMode) { lockToSalesMode(); } else { var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4; if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); } else { setIsAdminMode(true); } } }}
-                  title={isAdminMode ? "Lock to Sales Mode" : "Unlock Admin Mode"}
-                  style={{ width: 32, height: 32, borderRadius: 8, background: isAdminMode ? "#fff4dd" : "#e8f7ef", border: "1px solid " + (isAdminMode ? "#f2c66d" : "#9ee8ce"), color: isAdminMode ? "#92400e" : "#065f46", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, flexShrink: 0, transition: "all .15s" }}>
-                  {isAdminMode ? "A" : "S"}
-                </button>
-                ) : null}
-              </div>
-            );
-          })()}
-        </div>
-
-        {/* Main area */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, minHeight: 0 }}>
-          {showPeriodLockBanner && (
-            <div style={{ padding: "10px 16px", background: "linear-gradient(90deg,#fff4e6,#ffe8cc)", borderBottom: "1.5px solid #f59e0b", color: "#7c2d12", fontSize: 12.5, fontWeight: 700, textAlign: "center", flexShrink: 0 }}>
-              System locked through {fmtDateFull(state.settings.lockedUntilDate)} — transactions on or before this date are frozen unless Admin (PIN) unlocks accounting.
-            </div>
-          )}
-          {/* Header */}
-          <div style={{ minHeight: 58, background: "#fff", borderBottom: "1.5px solid " + C.border, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 20px", flexShrink: 0, boxShadow: "0 1px 8px rgba(13,27,62,0.05)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {activeItem && <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#2979ff,#5591ff)", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px rgba(41,121,255,0.3)" }}><NavIcon id={activeItem.icon} size={16} color="#ffffff" /></div>}
-                <span onClick={function () { setActive(active); }} style={{ fontWeight: 800, fontSize: 16, color: C.text, letterSpacing: "-0.02em", fontFamily: "'Plus Jakarta Sans',sans-serif", cursor: "pointer", userSelect: "none", padding: "4px 8px", borderRadius: 7, transition: "background .14s" }}
-                  onMouseEnter={function (e) { e.currentTarget.style.background = C.accentSoft; }}
-                  onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}>
-                  {activeItem ? activeItem.label : "Dashboard"}
-                </span>
-              </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, minWidth: 0 }}>
-              {active === "pos" && String(businessType || "").toLowerCase() === "restaurant" && (
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, lineHeight: 1.25, textAlign: "right", width: "100%" }}>
-                  Logged in as: <span style={{ color: C.text, fontWeight: 800 }}>{posHeaderRestaurantLoggedIn}</span>
-                </div>
-              )}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end", flexDirection: "row" }}>
-              {dbHealthError && isNetworkServer && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fde8ed", border: "1px solid #f9a8ba", borderRadius: 8, padding: "5px 12px", fontSize: 11, color: "#9b1c34" }}>
-                  <span>Server database issue - {dbHealthError}. Please restore from backup.</span>
-                  <button onClick={function () { setDbHealthError(null); }} style={{ background: "none", border: "none", color: "#9b1c34", cursor: "pointer", fontSize: 14, lineHeight: 1 }}>-</button>
-                </div>
-              )}
-              {(function () {
-                var modeLabel = isNetworkClient ? "CounterPC-Mode" : (isNetworkServer ? "MainServer-Mode" : "Standalone-Mode");
-                var modeColor = "#15803d";
-                var connMap = {
-                  connected: { dot: "#22c55e", label: "Connected" },
-                  reconnecting: { dot: "#f59e0b", label: "Connecting" },
-                  disconnected: { dot: "#ef4444", label: "Offline" },
-                  unknown: { dot: "#94a3b8", label: "Connecting" },
-                };
-                var syncMap = {
-                  saving: { dot: "#f59e0b", label: "Saving" },
-                  synced: { dot: "#22c55e", label: "Synced" },
-                  error: { dot: "#ef4444", label: "Sync failed" },
-                  failed: { dot: "#ef4444", label: "Sync failed" },
-                  idle: { dot: "#94a3b8", label: "Ready" },
-                };
-                var connCfg = connMap[connStatus] || connMap.unknown;
-                var syncCfg = syncMap[syncStatus] || syncMap.idle;
-                var netUi = resolveHeaderNetStatus({
-                  isNetworkClient: isNetworkClient,
-                  isNetworkServer: isNetworkServer,
-                  isNetworkMode: isNetworkMode,
-                  connStatus: connStatus,
-                  wsConnStatus: wsConnStatus,
-                  syncStatus: syncStatus,
-                  syncCfg: syncCfg,
-                  connCfg: connCfg,
-                  lastSyncTime: lastSyncTime,
-                });
-                var metaParts = [
-                  { key: "mode", text: modeLabel, emphasis: true, color: modeColor },
-                ];
-                return (
-                  <React.Fragment>
-                    <HeaderKeysHint pageId={active} />
-                    <HeaderMetaChip
-                      parts={metaParts}
-                      maxWidth={360}
-                      title={modeLabel}
-                    />
-                    {isNetworkMode ? (
-                      <HeaderNetDot dot={netUi.dot} label={netUi.label} title={netUi.title} />
-                    ) : null}
-                    <button
-                      onClick={function () {
-                        showConfirm("Switch user now?\n\nAny saved data remains safe. You will return to the login screen.", function () {
-                          switchUser("manual_switch");
-                        });
-                      }}
-                      style={{ display: "inline-flex", alignItems: "center", padding: "5px 10px", borderRadius: 999, border: "none", background: "transparent", color: "#64748b", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
-                      title="Switch user"
-                      onMouseEnter={function (e) { e.currentTarget.style.background = "#f1f5f9"; e.currentTarget.style.color = "#334155"; }}
-                      onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#64748b"; }}
-                    >
-                      Switch user
-                    </button>
-                    <time dateTime={today()} style={{ fontSize: 12, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.01em", whiteSpace: "nowrap", padding: "2px 0" }}>
-                      {fmtDateFull(today())}
-                    </time>
-                  </React.Fragment>
-                );
-              })()}
-              </div>
-            </div>
-          </div>
-          {licenseInfo && licenseInfo.isReadOnly && (
-            <div style={{ padding: "6px 14px", background: "linear-gradient(90deg,#fff7ed,#fef2f2)", borderBottom: "1px solid #f9a8ba", color: "#9a3412", fontSize: 11.5, fontWeight: 700 }}>
-              {(function () {
-                var rr = String(licenseInfo.readOnlyReason || "");
-                if (rr === "license_expired") return "Read-only mode: License expired. Renew to continue full usage.";
-                if (rr === "blocked") return "Read-only mode: Client limit reached. Contact server admin.";
-                if (rr === "clock_tamper") return UI.warn + " System time change detected. Please correct your date/time or connect to internet.";
-                var d = parseInt(licenseInfo.offlineDays || 0, 10) || 0;
-                var ts = null;
-                if (!d && licenseInfo.lastSuccessfulSyncTime) {
-                  var ago = Date.now() - parseInt(licenseInfo.lastSuccessfulSyncTime, 10);
-                  if (!isNaN(ago) && ago > 0) d = Math.floor(ago / (24 * 3600 * 1000));
-                }
-                if (licenseInfo.lastSuccessfulSyncTime) {
-                  var dt = new Date(parseInt(licenseInfo.lastSuccessfulSyncTime, 10));
-                  if (!isNaN(dt.getTime())) ts = dt.toLocaleString();
-                }
-                var extra = d > 0 ? (" Last synced: " + d + " day" + (d !== 1 ? "s" : "") + " ago" + (ts ? (" (" + ts + ")") : "") + ".") : "";
-                return "System is in read-only mode. Connect internet to restore full access." + extra;
-              })()}
-            </div>
-          )}
-          {licenseInfo && !licenseInfo.isReadOnly && licenseInfo.offlineWarning && (
-            <div style={{ padding: "6px 14px", background: "linear-gradient(90deg,#fefce8,#fff7ed)", borderBottom: "1px solid #fde68a", color: "#92400e", fontSize: 11.5, fontWeight: 700 }}>
-              {(function () {
-                var d2 = parseInt(licenseInfo.offlineDays || 0, 10) || 0;
-                if (!d2 && licenseInfo.lastSuccessfulSyncTime) {
-                  var ago2 = Date.now() - parseInt(licenseInfo.lastSuccessfulSyncTime, 10);
-                  if (!isNaN(ago2) && ago2 > 0) d2 = Math.floor(ago2 / (24 * 3600 * 1000));
-                }
-                var msg = (d2 >= 10 && d2 < 15)
-                  ? "You have a few days before read-only mode."
-                  : "Offline license verification warning.";
-                var extra2 = d2 > 0 ? (" Offline for " + d2 + " day" + (d2 !== 1 ? "s" : "") + ".") : "";
-                var soft = (d2 >= 10 && d2 < 15) ? " Please connect internet once to keep the system active." : "";
-                return UI.warn + " " + msg + " Connect internet soon." + soft + extra2;
-              })()}
-            </div>
-          )}
-          {/* key=active on the component directly - React unmounts+remounts on every navigation */}
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: active === "pos" ? "8px 20px 16px 20px" : "18px 20px", minWidth: 0, position: "relative" }}>
-            <ActivePage
-              key={active}
-              cloudSyncBump={cloudSyncBump}
-              currentUser={normalizedCurrentUser}
-              canViewReports={canViewReports}
-              canViewSettings={canViewSettings}
-              canEditInvoices={canEditInvoices}
-              canDeleteInvoices={canDeleteInvoices}
-              canOverrideDiscount={canOverrideDiscount}
-              currentUserRole={normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role)}
-              showPermissionDenied={showPermissionDenied}
-              canManageUsers={normalizedCurrentUser && normalizedCurrentUser.role === ROLE_ADMIN}
-              state={state}
-              setState={setState}
-              setActive={safeSetActive}
-              licenseInfo={props.licenseInfo}
-              onActivate={props.onActivate}
-              onLicenseRefresh={props.onLicenseRefresh}
-              systemConfig={systemConfig}
-              clientConnStatus={connStatus}
-              isNetworkClient={isNetworkClient}
-              clientPosOfflineBar={isNetworkClient && active === "pos" && (connStatus === "disconnected" || connStatus === "reconnecting")}
-              inventoryQtyForTotals={inventoryQtyForTotals}
-              getBusinessProfile={getBusinessProfile}
-              businessType={businessType}
-              setBusinessType={setBusinessType}
-              BUSINESS_PROFILES={BUSINESS_PROFILES}
-              updateCurrencySymbol={updateCurrencySymbol}
-              _idbCache={_idbCache}
-              _idbWrite={_idbWrite}
-              wipeAllDataForReset={wipeAllErpDataForReset}
-              applyBackupRestore={function (data) {
-                return applyBackupRestoreData(data).then(function () {
-                  var loaded = loadState();
-                  setState(loaded);
-                  var bt = data && data.tc3_businessType ? data.tc3_businessType : S.get("tc3_businessType", null);
-                  if (bt && BUSINESS_PROFILES[bt]) setBusinessType(bt);
-                  var jl = S.get("tc3_journal_lines", []);
-                  if (!jl || !jl.length) {
-                    persistTechonGLJournal("post_restore_rebuild", { forceCanonical: true });
-                    setState(loadState());
-                  }
-                  var pushPromise = Promise.resolve({ ok: true });
-                  if (isNetworkMode && systemConfig && systemConfig.apiUrl) {
-                    ensureSyncConfig(systemConfig);
-                    var pushKeys = TC_FULL_BACKUP_KEYS.filter(function (k) { return data[k] !== undefined; });
-                    pushPromise = pushKeysToServer(pushKeys, { authConfig: systemConfig }).catch(function (err) {
-                      if (tcIsDevEnv()) {
-                        try { console.warn("[TC_NET] Restore upload to server failed:", err && err.message ? err.message : err); } catch (ePush) {}
-                      }
-                      return { ok: false, message: err && err.message ? err.message : String(err) };
-                    });
-                  }
-                  return pushPromise.then(function (pushResult) {
-                    addAudit("Backup restored", "restore", {
-                      sales: (loaded.sales || []).length,
-                      products: (loaded.products || []).length,
-                      journalLines: (S.get("tc3_journal_lines", []) || []).length,
-                      serverUpload: !!(pushResult && pushResult.ok),
-                    });
-                    if (isNetworkMode && pushResult && !pushResult.ok) {
-                      try {
-                        showAlert("Backup restored on this PC, but upload to the MySQL server failed. Keep this PC online and try Settings → Backup → Restore again, or check the server connection.");
-                      } catch (eAlert) { /* ignore */ }
-                    }
+                var loaded = loadState();
+                setState(loaded);
+                var bt = data && data.tc3_businessType ? data.tc3_businessType : S.get("tc3_businessType", null);
+                if (bt && BUSINESS_PROFILES[bt]) setBusinessType(bt);
+                try {
+                  window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
+                  NETWORK_KV_KEYS.forEach(function (k) {
+                    window._tcRecentLocalWrites[k] = Date.now();
                   });
+                } catch (eRw) { /* ignore */ }
+                var pushPromise = Promise.resolve({ ok: true });
+                if (isNetworkMode && systemConfig && systemConfig.apiUrl) {
+                  ensureSyncConfig(systemConfig);
+                  var pushKeys = NETWORK_KV_KEYS;
+                  pushPromise = pushKeysToServer(pushKeys, { authConfig: systemConfig }).catch(function (err) {
+                    if (tcIsDevEnv()) {
+                      try { console.warn("[TC_NET] Restore upload to server failed:", err && err.message ? err.message : err); } catch (ePush) {}
+                    }
+                    return { ok: false, message: err && err.message ? err.message : String(err) };
+                  });
+                }
+                return pushPromise.then(function (pushResult) {
+                  addAudit("Backup restored", "restore", {
+                    sales: (loaded.sales || []).length,
+                    products: (loaded.products || []).length,
+                    journalLines: (S.get("tc3_journal_lines", []) || []).length,
+                    serverUpload: !!(pushResult && pushResult.ok),
+                  });
+                  if (isNetworkMode && pushResult && !pushResult.ok) {
+                    try {
+                      showAlert("Backup restored on this PC, but upload to the MySQL server failed. Keep this PC online and try Settings  →  Backup  →  Restore again, or check the server connection.");
+                    } catch (eAlert) { /* ignore */ }
+                  }
                 });
-              }}
-              AboutTab={AboutTab}
-              showAlert={showAlert}
-              showConfirm={showConfirm}
-              tcTrialGuard={tcTrialGuard}
-              toTitleCase={toTitleCase}
-              checkProductName={checkProductName}
-              genBarcode={genBarcode}
-              nextProductId={nextProductId}
-              S={S}
-              today={today}
-              uid={uid}
-              addAudit={addAudit}
-              getCurrencySymbol={getCurrencySymbol}
-              fmtNum={fmtNum}
-              genInvNo={genInvNo}
-              roundQty={roundQty}
-              C={C}
-              usePager={usePager}
-              fmtSumQty={fmtSumQty}
-              StatCard={StatCard}
-              Btn={Btn}
-              Modal={Modal}
-              Input={Input}
-              Sel={Sel}
-              getBulkDisplayParts={getBulkDisplayParts}
-              fmtStockDual={fmtStockDual}
-              fmtStock={fmtStock}
-              getCats={getCats}
-              Card={Card}
-              CardTitle={CardTitle}
-              TH={TH}
-              TR={TR}
-              TD={TD}
-              Badge={Badge}
-              Pager={Pager}
-              fmtDateFull={fmtDateFull}
-              getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys}
-              normalizePaymentCustomerName={normalizePaymentCustomerName}
-              fmtDate={fmtDate}
-              escapeHtml={escapeHtml}
-              PRINT_FONT_LINK={PRINT_FONT_LINK}
-              shareViaWhatsApp={shareViaWhatsApp}
-              WABtn={WABtn}
-              encodeCost={encodeCost}
-              JsBarcodeWidget={JsBarcodeWidget}
-              genPurNo={genPurNo}
-              validateTxnAmounts={validateTxnAmounts}
-              toProductBaseQty={toProductBaseQty}
-              isDecimalUnit={isDecimalUnit}
-              getUnitSellPrice={getUnitSellPrice}
-              getUnitCostPrice={getUnitCostPrice}
-              getPosSellPricePerSaleUnit={getPosSellPricePerSaleUnit}
-              getBaseSellPcsPrice={getBaseSellPcsPrice}
-              getBaseCostPcsPrice={getBaseCostPcsPrice}
-              getPosCostPerSaleUnit={getPosCostPerSaleUnit}
-              getQuickAmounts={getQuickAmounts}
-              remainingPcsAfterCartForProduct={remainingPcsAfterCartForProduct}
-              fmtDualFromPcs={fmtDualFromPcs}
-              fmtQtyUnit={fmtQtyUnit}
-              posSetupBlocksCriticalActions={posSetupBlocksCriticalActions}
-              validateCoreStartupIdentity={validateCoreStartupIdentity}
-              getCoreStartupIdentityAlertMessage={getCoreStartupIdentityAlertMessage}
-              TC_SETUP_DISABLE_TITLE={TC_SETUP_DISABLE_TITLE}
-              checkPeriodClose={checkPeriodClose}
-              SplitPaymentModal={SplitPaymentModal}
-              resolvePaymentCreditTargetIds={resolvePaymentCreditTargetIds}
-              warnPaymentCustomerMatchSafety={warnPaymentCustomerMatchSafety}
-              maybeShowPaymentMatchToasts={maybeShowPaymentMatchToasts}
-              showPaymentDupPick={showPaymentDupPick}
-              toastAfterCustomerPaymentApplied={toastAfterCustomerPaymentApplied}
-              PaymentBreakdown={PaymentBreakdown}
-              getInvoicePrintLabels={getInvoicePrintLabels}
-              getAllowedInvoiceLangCodes={getAllowedInvoiceLangCodes}
-              INVOICE_LANG_NAMES={INVOICE_LANG_NAMES}
-              InvoiceThermal={InvoiceThermal}
-              InvoiceA4={InvoiceA4}
-              BarcodeLabelSheet={BarcodeLabelSheet}
-              COST_KEY={COST_KEY}
-              getTotalSupplierPayable={getTotalSupplierPayable}
-              getSupplierPayableFromPurchases={getSupplierPayableFromPurchases}
-              getTotalReceivableDerived={getTotalReceivableDerived}
-              getCustomerOutstandingBalance={getCustomerOutstandingBalance}
-              getTotalPayableDerived={getTotalPayableDerived}
-              getCashBalances={getCashBalances}
-              buildCloudSyncPayload={buildCloudSyncPayload}
-              getTrialBalanceSnapshot={function () {
-                var lines = S.get("tc3_journal_lines", []);
-                var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
-                return trialBalance(lines, chart);
-              }}
-              getBalanceSheetFromLedger={function (asOfDate) {
-                return balanceSheetFromLedger(S.get("tc3_journal_lines", []), S.get("tc3_gl_accounts", DEFAULT_GL_CHART), asOfDate);
-              }}
-              getProfitAndLossFromLedger={function (fromDate, toDate) {
-                return profitAndLossFromLedger(S.get("tc3_journal_lines", []), S.get("tc3_gl_accounts", DEFAULT_GL_CHART), fromDate, toDate);
-              }}
-              rebuildGeneralLedger={function () {
-                showConfirm(
-                  "Rebuild the general ledger from all transactions?\n\nA JSON backup file will be downloaded first. Continue?",
-                  function () {
-                    if (!downloadPreRepairJsonBackup()) {
-                      showAlert("Backup download failed - rebuild cancelled.");
-                      addAudit("Journal rebuild cancelled", "manual_rebuild", { reason: "backup_failed" });
-                      return;
+              });
+            }}
+            AboutTab={AboutTab}
+            showAlert={showAlert}
+            showConfirm={showConfirm}
+            tcTrialGuard={tcTrialGuard}
+            toTitleCase={toTitleCase}
+            checkProductName={checkProductName}
+            genBarcode={genBarcode}
+            nextProductId={nextProductId}
+            S={S}
+            today={today}
+            uid={uid}
+            addAudit={addAudit}
+            getCurrencySymbol={getCurrencySymbol}
+            fmtNum={fmtNum}
+            genInvNo={genInvNo}
+            roundQty={roundQty}
+            C={C}
+            usePager={usePager}
+            fmtSumQty={fmtSumQty}
+            StatCard={StatCard}
+            Btn={Btn}
+            Modal={Modal}
+            Input={Input}
+            Sel={Sel}
+            getBulkDisplayParts={getBulkDisplayParts}
+            fmtStockDual={fmtStockDual}
+            fmtStock={fmtStock}
+            getCats={getCats}
+            Card={Card}
+            CardTitle={CardTitle}
+            TH={TH}
+            TR={TR}
+            TD={TD}
+            Badge={Badge}
+            Pager={Pager}
+            fmtDateFull={fmtDateFull}
+            getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys}
+            normalizePaymentCustomerName={normalizePaymentCustomerName}
+            fmtDate={fmtDate}
+            escapeHtml={escapeHtml}
+            PRINT_FONT_LINK={PRINT_FONT_LINK}
+            shareViaWhatsApp={shareViaWhatsApp}
+            WABtn={WABtn}
+            encodeCost={encodeCost}
+            JsBarcodeWidget={JsBarcodeWidget}
+            genPurNo={genPurNo}
+            validateTxnAmounts={validateTxnAmounts}
+            toProductBaseQty={toProductBaseQty}
+            isDecimalUnit={isDecimalUnit}
+            getUnitSellPrice={getUnitSellPrice}
+            getUnitCostPrice={getUnitCostPrice}
+            getPosSellPricePerSaleUnit={getPosSellPricePerSaleUnit}
+            getBaseSellPcsPrice={getBaseSellPcsPrice}
+            getBaseCostPcsPrice={getBaseCostPcsPrice}
+            getPosCostPerSaleUnit={getPosCostPerSaleUnit}
+            getQuickAmounts={getQuickAmounts}
+            remainingPcsAfterCartForProduct={remainingPcsAfterCartForProduct}
+            fmtDualFromPcs={fmtDualFromPcs}
+            fmtQtyUnit={fmtQtyUnit}
+            posSetupBlocksCriticalActions={posSetupBlocksCriticalActions}
+            validateCoreStartupIdentity={validateCoreStartupIdentity}
+            getCoreStartupIdentityAlertMessage={getCoreStartupIdentityAlertMessage}
+            TC_SETUP_DISABLE_TITLE={TC_SETUP_DISABLE_TITLE}
+            checkPeriodClose={checkPeriodClose}
+            SplitPaymentModal={SplitPaymentModal}
+            resolvePaymentCreditTargetIds={resolvePaymentCreditTargetIds}
+            warnPaymentCustomerMatchSafety={warnPaymentCustomerMatchSafety}
+            maybeShowPaymentMatchToasts={maybeShowPaymentMatchToasts}
+            showPaymentDupPick={showPaymentDupPick}
+            toastAfterCustomerPaymentApplied={toastAfterCustomerPaymentApplied}
+            PaymentBreakdown={PaymentBreakdown}
+            getInvoicePrintLabels={getInvoicePrintLabels}
+            getAllowedInvoiceLangCodes={getAllowedInvoiceLangCodes}
+            INVOICE_LANG_NAMES={INVOICE_LANG_NAMES}
+            InvoiceThermal={InvoiceThermal}
+            InvoiceA4={InvoiceA4}
+            BarcodeLabelSheet={BarcodeLabelSheet}
+            COST_KEY={COST_KEY}
+            getTotalSupplierPayable={getTotalSupplierPayable}
+            getSupplierPayableFromPurchases={getSupplierPayableFromPurchases}
+            getTotalReceivableDerived={getTotalReceivableDerived}
+            getCustomerOutstandingBalance={getCustomerOutstandingBalance}
+            getTotalPayableDerived={getTotalPayableDerived}
+            getCashBalances={getCashBalances}
+            buildCloudSyncPayload={buildCloudSyncPayload}
+            getTrialBalanceSnapshot={function () {
+              var lines = S.get("tc3_journal_lines", []);
+              var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+              return trialBalance(lines, chart);
+            }}
+            getBalanceSheetFromLedger={function (asOfDate) {
+              return balanceSheetFromLedger(S.get("tc3_journal_lines", []), S.get("tc3_gl_accounts", DEFAULT_GL_CHART), asOfDate);
+            }}
+            getProfitAndLossFromLedger={function (fromDate, toDate) {
+              return profitAndLossFromLedger(S.get("tc3_journal_lines", []), S.get("tc3_gl_accounts", DEFAULT_GL_CHART), fromDate, toDate);
+            }}
+            rebuildGeneralLedger={function () {
+              showConfirm(
+                "Rebuild the general ledger from all transactions?\n\nA JSON backup file will be downloaded first. Continue?",
+                function () {
+                  if (!downloadPreRepairJsonBackup()) {
+                    showAlert("Backup download failed - rebuild cancelled.");
+                    addAudit("Journal rebuild cancelled", "manual_rebuild", { reason: "backup_failed" });
+                    return;
+                  }
+                  addAudit("Journal rebuild started", "manual_rebuild", {});
+                  var r = persistTechonGLJournal("manual_rebuild", { forceCanonical: true });
+                  var ok = r && r.validate && r.validate.ok && r.valid && !r.commitFailed;
+                  if (!ok) {
+                    addAudit("Journal rebuild failed", "manual_rebuild", {
+                      validateOk: !!(r && r.validate && r.validate.ok),
+                      valid: !!(r && r.valid),
+                      commitFailed: !!(r && r.commitFailed),
+                    });
+                    var glErr = S.get("tc3_gl_last_error", null);
+                    var msg = "Journal rebuild failed.";
+                    if (r && r.commitFailed && r.commitError) {
+                      msg = String(r.commitError);
+                    } else if (glErr && glErr.type === "missing_license_secret") {
+                      msg = "Accounting is disabled: license secret not configured on this install.";
+                    } else if (r && r.warnings && r.warnings.length) {
+                      msg = "Journal rebuild blocked: " + r.warnings.slice(0, 2).join("; ");
+                    } else if (glErr && glErr.type === "inventory_vs_gl") {
+                      msg = "Inventory vs GL mismatch blocked save. Difference: " + (glErr.detail && glErr.detail.difference != null ? glErr.detail.difference : "see Reconciliation tab");
                     }
-                    addAudit("Journal rebuild started", "manual_rebuild", {});
-                    var r = persistTechonGLJournal("manual_rebuild", { forceCanonical: true });
-                    var ok = r && r.validate && r.validate.ok && r.valid && !r.commitFailed;
-                    if (!ok) {
-                      addAudit("Journal rebuild failed", "manual_rebuild", {
-                        validateOk: !!(r && r.validate && r.validate.ok),
-                        valid: !!(r && r.valid),
-                        commitFailed: !!(r && r.commitFailed),
-                      });
-                      var glErr = S.get("tc3_gl_last_error", null);
-                      var msg = "Journal rebuild failed.";
-                      if (r && r.commitFailed && r.commitError) {
-                        msg = String(r.commitError);
-                      } else if (glErr && glErr.type === "missing_license_secret") {
-                        msg = "Accounting is disabled: license secret not configured on this install.";
-                      } else if (r && r.warnings && r.warnings.length) {
-                        msg = "Journal rebuild blocked: " + r.warnings.slice(0, 2).join("; ");
-                      } else if (glErr && glErr.type === "inventory_vs_gl") {
-                        msg = "Inventory vs GL mismatch blocked save. Difference: " + (glErr.detail && glErr.detail.difference != null ? glErr.detail.difference : "see Reconciliation tab");
-                      }
-                      showAlert(msg);
-                      return r;
-                    }
-                    addAudit("Journal rebuild completed", "manual_rebuild", { lineCount: (r.lines || []).length, forceCanonical: true });
-                    setState(loadState());
-                    showAlert("Journal rebuilt successfully.");
+                    showAlert(msg);
                     return r;
                   }
-                );
-              }}
-              createFinancialSnapshot={function (opts) {
-                var lines = S.get("tc3_journal_lines", []);
-                var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
-                var invDer = deriveInventoryEconomics(loadState(), S);
-                invDer.reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
-                var snap = buildFinancialSnapshot(S, lines, chart, invDer, opts || {});
-                appendSnapshot(S, snap, { addAudit: addAudit }).then(function () {
+                  addAudit("Journal rebuild completed", "manual_rebuild", { lineCount: (r.lines || []).length, forceCanonical: true });
                   setState(loadState());
-                  showAlert("Financial snapshot saved and sealed (" + (snap.id || "ok") + ").");
-                }).catch(function () {
-                  showAlert("Could not save or seal the financial snapshot. Try again.");
-                });
-              }}
-              repairInventoryLayersFromReplay={function () {
-                showConfirm(
-                  "Inventory / journal repair will replay all transactions to rebuild the ledger and inventory layers.\n\nA JSON backup file will be downloaded first. Continue?",
-                  function () {
-                    if (!downloadPreRepairJsonBackup()) {
-                      showAlert("Backup download failed - repair cancelled.");
-                      addAudit("Repair cancelled", "inventory_layers", { reason: "backup_failed" });
-                      return;
-                    }
-                    addAudit("Repair started", "inventory_layers", { source: "repair_layers" });
-                    var r = persistTechonGLJournal("repair_layers", { forceCanonical: true });
-                    var ok = r && r.validate && r.validate.ok && r.valid;
-                    addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, commitFailed: !!(r && r.commitFailed), warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
-                    if (ok) {
-                      setState(loadState());
-                      showAlert("Inventory layers updated from full transaction replay.");
-                    } else {
-                      showAlert(r && r.commitFailed ? "Repair did not apply - the journal could not be saved." : "Repair did not apply - resolve journal warnings or check the console.");
-                    }
+                  showAlert("Journal rebuilt successfully.");
+                  return r;
+                }
+              );
+            }}
+            createFinancialSnapshot={function (opts) {
+              var lines = S.get("tc3_journal_lines", []);
+              var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+              var invDer = deriveInventoryEconomics(loadState(), S);
+              invDer.reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
+              var snap = buildFinancialSnapshot(S, lines, chart, invDer, opts || {});
+              appendSnapshot(S, snap, { addAudit: addAudit }).then(function () {
+                setState(loadState());
+                showAlert("Financial snapshot saved and sealed (" + (snap.id || "ok") + ").");
+              }).catch(function () {
+                showAlert("Could not save or seal the financial snapshot. Try again.");
+              });
+            }}
+            repairInventoryLayersFromReplay={function () {
+              showConfirm(
+                "Inventory / journal repair will replay all transactions to rebuild the ledger and inventory layers.\n\nA JSON backup file will be downloaded first. Continue?",
+                function () {
+                  if (!downloadPreRepairJsonBackup()) {
+                    showAlert("Backup download failed - repair cancelled.");
+                    addAudit("Repair cancelled", "inventory_layers", { reason: "backup_failed" });
+                    return;
                   }
-                );
-              }}
-              getGlAccountRunning={function (accountId) {
-                var lines = S.get("tc3_journal_lines", []);
-                var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
-                var row = (chart || DEFAULT_GL_CHART).find(function (a) { return a.id === accountId; });
-                return runningBalanceForAccount(lines, accountId, row || { normal: "debit" });
-              }}
-              getNetCOGS={getNetCOGS}
-              getNetCOGSForRange={getNetCOGSForRange}
-              getInventoryReconciliation={function () {
-                var lines = S.get("tc3_journal_lines", []);
-                var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
-                var invDer = deriveInventoryEconomics(loadState(), S);
-                var reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
-                var invLines = (lines || []).filter(function (ln) {
-                  return ln.accountId === GL.INV;
-                });
-                invLines.sort(function (a, b) {
-                  var od = String(b.date || "").localeCompare(String(a.date || ""));
-                  if (od !== 0) return od;
-                  return String(b.id || "").localeCompare(String(a.id || ""));
-                });
-                var recentGlInvLines = invLines.slice(0, 35).map(function (ln) {
-                  return {
-                    id: ln.id,
-                    date: ln.date,
-                    debit: ln.debit,
-                    credit: ln.credit,
-                    memo: ln.memo,
-                    referenceType: ln.referenceType,
-                    referenceId: ln.referenceId,
-                  };
-                });
-                var drilldown;
-                if (tcIsDevEnv()) try { console.time("tc_inv_recon_explain"); } catch (e) {}
-                drilldown = explainInventoryDifference(lines, chart, { maxLines: 500, maxPerBucket: 10 });
-                if (tcIsDevEnv()) try { console.timeEnd("tc_inv_recon_explain"); } catch (e) {}
-                return { reconciliation: reconciliation, recentGlInvLines: recentGlInvLines, drilldown: drilldown };
-              }}
-              getInventoryReconTimeTravel={function (from, to) {
-                return buildInventoryReconTimeSeries(loadState(), S, S.get("tc3_journal_lines", []), S.get("tc3_gl_accounts", DEFAULT_GL_CHART), from, to);
-              }}
-              exportSupportBundle={function (opts) {
-                var st = loadState();
-                var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
-                return buildSupportBundlePayload(st, S, chart, opts || {});
-              }}
-              downloadSupportBundleJson={downloadSupportBundleJson}
-              periodLockTransactionMinDate={periodLockTransactionMinDate}
-              getInventoryReplayDebug={function (productId, from, to, replayOpts) {
-                var invDer = deriveInventoryEconomics(loadState(), S);
-                if (tcIsDevEnv()) try { console.time("tc_inv_replay_window"); } catch (e) {}
-                var r = buildInventoryReplayWindow(invDer, productId, from, to, replayOpts || {});
-                if (tcIsDevEnv()) try { console.timeEnd("tc_inv_replay_window"); } catch (e) {}
-                return r;
-              }}
-              pwMatchesAsync={pwMatchesAsync}
-              verifyAdminPassword={verifyAdminPassword}
-              hashPw={hashPw}
-              setLoginPassword={setLoginPassword}
-              isAdminMode={uiAdminMode}
-              glDeveloperTools={!IS_PRODUCTION && ((typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) || uiAdminMode)}
-              setupIncomplete={!isNetworkClient && !isStartupFlowSatisfied()}
-              onRequestSetupWizard={function () {
-                try {
-                  sessionStorage.setItem("tc3_open_settings_shop_tab", "1");
-                } catch (e) { /* ignore */ }
-                setIsAdminMode(true);
-                setActive("settings");
-              }}
-            />
-          </div>
+                  addAudit("Repair started", "inventory_layers", { source: "repair_layers" });
+                  var r = persistTechonGLJournal("repair_layers", { forceCanonical: true });
+                  var ok = r && r.validate && r.validate.ok && r.valid;
+                  addAudit("Repair finished", "inventory_layers", { source: "repair_layers", ok: !!ok, commitFailed: !!(r && r.commitFailed), warnings: r && r.warnings ? r.warnings.slice(0, 30) : [] });
+                  if (ok) {
+                    setState(loadState());
+                    showAlert("Inventory layers updated from full transaction replay.");
+                  } else {
+                    showAlert(r && r.commitFailed ? "Repair did not apply - the journal could not be saved." : "Repair did not apply - resolve journal warnings or check the console.");
+                  }
+                }
+              );
+            }}
+            getGlAccountRunning={function (accountId) {
+              var lines = S.get("tc3_journal_lines", []);
+              var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+              var row = (chart || DEFAULT_GL_CHART).find(function (a) { return a.id === accountId; });
+              return runningBalanceForAccount(lines, accountId, row || { normal: "debit" });
+            }}
+            getNetCOGS={getNetCOGS}
+            getNetCOGSForRange={getNetCOGSForRange}
+            getInventoryReconciliation={function () {
+              var lines = S.get("tc3_journal_lines", []);
+              var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+              var invDer = deriveInventoryEconomics(loadState(), S);
+              var reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
+              var invLines = (lines || []).filter(function (ln) {
+                return ln.accountId === GL.INV;
+              });
+              invLines.sort(function (a, b) {
+                var od = String(b.date || "").localeCompare(String(a.date || ""));
+                if (od !== 0) return od;
+                return String(b.id || "").localeCompare(String(a.id || ""));
+              });
+              var recentGlInvLines = invLines.slice(0, 35).map(function (ln) {
+                return {
+                  id: ln.id,
+                  date: ln.date,
+                  debit: ln.debit,
+                  credit: ln.credit,
+                  memo: ln.memo,
+                  referenceType: ln.referenceType,
+                  referenceId: ln.referenceId,
+                };
+              });
+              var drilldown;
+              if (tcIsDevEnv()) try { console.time("tc_inv_recon_explain"); } catch (e) {}
+              drilldown = explainInventoryDifference(lines, chart, { maxLines: 500, maxPerBucket: 10 });
+              if (tcIsDevEnv()) try { console.timeEnd("tc_inv_recon_explain"); } catch (e) {}
+              return { reconciliation: reconciliation, recentGlInvLines: recentGlInvLines, drilldown: drilldown };
+            }}
+            getInventoryReconTimeTravel={function (from, to) {
+              return buildInventoryReconTimeSeries(loadState(), S, S.get("tc3_journal_lines", []), S.get("tc3_gl_accounts", DEFAULT_GL_CHART), from, to);
+            }}
+            exportSupportBundle={function (opts) {
+              var st = loadState();
+              var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+              return buildSupportBundlePayload(st, S, chart, opts || {});
+            }}
+            downloadSupportBundleJson={downloadSupportBundleJson}
+            periodLockTransactionMinDate={periodLockTransactionMinDate}
+            getInventoryReplayDebug={function (productId, from, to, replayOpts) {
+              var invDer = deriveInventoryEconomics(loadState(), S);
+              if (tcIsDevEnv()) try { console.time("tc_inv_replay_window"); } catch (e) {}
+              var r = buildInventoryReplayWindow(invDer, productId, from, to, replayOpts || {});
+              if (tcIsDevEnv()) try { console.timeEnd("tc_inv_replay_window"); } catch (e) {}
+              return r;
+            }}
+            pwMatchesAsync={pwMatchesAsync}
+            verifyAdminPassword={verifyAdminPassword}
+            hashPw={hashPw}
+            setLoginPassword={setLoginPassword}
+            isAdminMode={uiAdminMode}
+            glDeveloperTools={!IS_PRODUCTION && ((typeof import.meta !== "undefined" && import.meta.env && import.meta.env.DEV) || uiAdminMode)}
+            setupIncomplete={!isNetworkClient && !isStartupFlowSatisfied()}
+            onRequestSetupWizard={function () {
+              try {
+                sessionStorage.setItem("tc3_open_settings_shop_tab", "1");
+              } catch (e) { /* ignore */ }
+              setIsAdminMode(true);
+              setActive("settings");
+            }}
+          />
         </div>
-      </div>
+      </ErpClassicShellLayout>
       <AppDialog />
       <PayMatchToast />
+
+      {moneyModalMode && (
+        <MoneyInOutModal
+          mode={moneyModalMode}
+          S={S}
+          today={today}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+          showAlert={showAlert}
+          addAudit={addAudit}
+          setState={setState}
+          onClose={function () { setMoneyModalMode(null); }}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          getCurrencySymbol={getCurrencySymbol}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+        />
+      )}
+
+      {toolbarCustomizeOpen && (
+        <Modal
+          title="Customize Toolbar"
+          subtitle="Wide preview · one-click add/remove · drag to reorder"
+          onClose={function () {
+            setToolbarCustomizeOpen(false);
+            setToolbarDraftKeys(null);
+          }}
+          wide
+          bodyStyle={{ padding: "8px 10px 10px", background: "#f8fafc" }}
+        >
+          <ToolbarCustomizePanel
+            keys={toolbarDraftKeys || getToolbarKeys(state.settings)}
+            onChange={setToolbarDraftKeys}
+            C={C}
+          />
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10, flexWrap: "wrap" }}>
+            <Btn
+              col="gray"
+              onClick={function () {
+                setToolbarCustomizeOpen(false);
+                setToolbarDraftKeys(null);
+              }}
+            >
+              Cancel
+            </Btn>
+            <Btn
+              col="blue"
+              onClick={function () {
+                var keys = toolbarDraftKeys || getToolbarKeys(state.settings);
+                var ns = Object.assign({}, state.settings, persistToolbarKeys(keys));
+                S.set("tc3_settings", ns);
+                setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+                setToolbarCustomizeOpen(false);
+                setToolbarDraftKeys(null);
+                showAlert("Toolbar updated.");
+              }}
+            >
+              Save toolbar
+            </Btn>
+          </div>
+        </Modal>
+      )}
 
     {/* -- Sync Pending Close Warning Modal -- */}
     {showCloseWarn && (
@@ -9134,22 +9824,43 @@ function App(props) {
     )}
 
 
-    {/* -- Hold Invoice Modal - shown when user tries to leave POS with active cart -- */}
+    {/* -- Hold Invoice / Purchase Modal - shown when user tries to leave with active cart -- */}
     {holdModal && (function () {
+      var dirtyKind = sessionStorage.getItem("tc3_dirty");
+      var isPurchaseLeave = dirtyKind === "purchase";
       var posState = window._techon_pos_snapshot || {};
-      var cartLines = posState.cart || [];
-      var isQuotation = posState.posPageTab === "quotation" || posState.holdKind === "quotation";
-      var docLabel = isQuotation ? "Quotation" : "Invoice";
-      var custLabel = posState.custSearch || (posState.custMode === "walkin" ? "Walk-in" : ((posState.newCust && posState.newCust.name) ? posState.newCust.name : "Walk-in"));
-      var itemCount = cartLines.length + ((posState.freeCart || []).length);
-      var refNo = isQuotation ? (posState.quotationNo || "—") : (posState.invoiceNo || "—");
-      var cartTotal = cartLines.reduce(function (a, it) {
-        var amt = (Number(it.price) || 0) * (Number(it.qty) || 0);
-        if (it.isGlassLine && it.glassTotalSqFt) amt = (Number(it.price) || 0) * (Number(it.glassTotalSqFt) || 0);
-        return a + amt;
-      }, 0);
+      var purState = window._techon_pur_snapshot || {};
+      var cartLines = isPurchaseLeave ? (purState.items || (purState.form && purState.form.items) || []) : (posState.cart || []);
+      var isQuotation = !isPurchaseLeave && (posState.posPageTab === "quotation" || posState.holdKind === "quotation");
+      var docLabel = isPurchaseLeave ? "Purchase" : (isQuotation ? "Quotation" : "Invoice");
+      var custLabel = isPurchaseLeave
+        ? (purState.supplier || (purState.form && purState.form.supplier) || purState.suppSearch || "No supplier")
+        : (posState.custSearch || (posState.custMode === "walkin" ? "Walk-in" : ((posState.newCust && posState.newCust.name) ? posState.newCust.name : "Walk-in")));
+      var itemCount = isPurchaseLeave
+        ? cartLines.length
+        : (cartLines.length + ((posState.freeCart || []).length));
+      var refNo = isPurchaseLeave
+        ? (purState.invoiceNo || (purState.form && purState.form.invoiceNo) || "—")
+        : (isQuotation ? (posState.quotationNo || "—") : (posState.invoiceNo || "—"));
+      var cartTotal = isPurchaseLeave
+        ? cartLines.reduce(function (a, it) {
+            var qty = Number(it.qty) || 0;
+            var cost = Number(it.cost) || 0;
+            var line = it.lineStockValue != null ? Number(it.lineStockValue) : (qty * cost);
+            return a + (line || 0);
+          }, 0)
+        : cartLines.reduce(function (a, it) {
+            var amt = (Number(it.price) || 0) * (Number(it.qty) || 0);
+            if (it.isGlassLine && it.glassTotalSqFt) amt = (Number(it.price) || 0) * (Number(it.glassTotalSqFt) || 0);
+            return a + amt;
+          }, 0);
       var destNav = NAV_ITEMS.find(function (n) { return n.id === holdModal; });
-      var destLabel = destNav ? destNav.label : "another page";
+      var destLabel = holdModal === "purchases"
+        ? "Purchases"
+        : (holdModal === "purchase-entry"
+          ? "New Purchase"
+          : (destNav ? destNav.label : "another page"));
+      var leaveFromLabel = isPurchaseLeave ? "Purchases" : "Sales";
 
       var holdBtnStyle = {
         width: "100%",
@@ -9191,6 +9902,39 @@ function App(props) {
       };
 
       var runHold = function () {
+        if (isPurchaseLeave) {
+          var purForm = purState.form || {};
+          var purItems = purForm.items || purState.items || [];
+          if (purItems.length > 0) {
+            var heldPur = S.get("tc3_held_purchases", []) || [];
+            var existingPurId = purState._activeHeldId || purState.activeHeldPurId;
+            var purEntry = {
+              form: Object.assign({}, purForm, {
+                items: purItems.map(function (it) { return Object.assign({}, it); }),
+                splitRows: (purForm.splitRows || []).map(function (r) { return Object.assign({}, r); }),
+                attachments: (purForm.attachments || []).slice(),
+              }),
+              suppSearch: purState.suppSearch || purForm.supplier || "",
+              label: (purForm.supplier || purState.supplier || "No supplier") + " — " + (purForm.invoiceNo || purState.invoiceNo || "") + " — " + purItems.length + " item(s)",
+              heldAt: new Date().toISOString(),
+            };
+            if (existingPurId) {
+              purEntry.id = existingPurId;
+              heldPur = heldPur.map(function (h) { return h.id === existingPurId ? purEntry : h; });
+              if (!heldPur.find(function (h) { return h.id === existingPurId; })) heldPur = heldPur.concat([purEntry]);
+            } else {
+              purEntry.id = "held_pur_" + Date.now();
+              heldPur = heldPur.concat([purEntry]);
+            }
+            S.set("tc3_held_purchases", heldPur);
+          }
+          window._techon_pur_snapshot = null;
+          sessionStorage.removeItem("tc3_dirty");
+          var purDest = holdModal;
+          setHoldModal(null);
+          safeSetActive(purDest);
+          return;
+        }
         if (posState && posState.cart && posState.cart.length > 0) {
           var held = S.get("tc3_held_invoices", []);
           var existingId = posState._activeHeldId;
@@ -9215,6 +9959,14 @@ function App(props) {
       };
 
       var runDiscard = function () {
+        if (isPurchaseLeave) {
+          window._techon_pur_snapshot = null;
+          sessionStorage.removeItem("tc3_dirty");
+          var purDiscardDest = holdModal;
+          setHoldModal(null);
+          safeSetActive(purDiscardDest === "purchase-entry" ? "purchases" : purDiscardDest);
+          return;
+        }
         window._techon_pos_snapshot = null;
         sessionStorage.removeItem("tc3_dirty");
         var dest = holdModal;
@@ -9241,11 +9993,11 @@ function App(props) {
 
             <div style={{ padding: "16px 22px", background: "#f8fafc", borderBottom: "1px solid " + C.borderLight }}>
               <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
-                You are leaving Sales for <strong style={{ color: C.textMd }}>{destLabel}</strong>. Choose what to do with this cart.
+                You are leaving {leaveFromLabel} for <strong style={{ color: C.textMd }}>{destLabel}</strong>. Choose what to do with this {isPurchaseLeave ? "purchase" : "cart"}.
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Customer</div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{isPurchaseLeave ? "Supplier" : "Customer"}</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{custLabel}</div>
                 </div>
                 <div>
@@ -9257,7 +10009,7 @@ function App(props) {
                   <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{itemCount}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Cart total</div>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{isPurchaseLeave ? "Total" : "Cart total"}</div>
                   <div style={{ fontSize: 13, fontWeight: 800, color: C.blue }}>{getCurrencySymbol()} {fmtNum(cartTotal)}</div>
                 </div>
               </div>
@@ -9271,14 +10023,14 @@ function App(props) {
                 <span style={{ width: 32, height: 32, borderRadius: 8, background: "#e8f0fe", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{UI.hold}</span>
                 <span>
                   <span style={{ display: "block" }}>Hold {docLabel.toLowerCase()}</span>
-                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, color: C.muted, marginTop: 2 }}>Save cart and open {destLabel}</span>
+                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, color: C.muted, marginTop: 2 }}>Save and open {destLabel}</span>
                 </span>
               </button>
               <button type="button" onClick={runDiscard} style={discardBtnStyle}>
                 <span style={{ width: 32, height: 32, borderRadius: 8, background: "#fee2e2", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{UI.cancel}</span>
                 <span>
                   <span style={{ display: "block" }}>Discard {docLabel.toLowerCase()}</span>
-                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, color: "#b91c1c", marginTop: 2 }}>Clear cart and leave Sales</span>
+                  <span style={{ display: "block", fontSize: 11, fontWeight: 500, color: "#b91c1c", marginTop: 2 }}>Clear and leave {leaveFromLabel}</span>
                 </span>
               </button>
             </div>
@@ -9501,4 +10253,5 @@ var WrappedApp = function (props) {
   return React.createElement(AppErrorBoundary, null, React.createElement(App, props));
 };
 export default WrappedApp;
+
 

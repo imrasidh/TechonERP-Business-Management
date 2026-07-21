@@ -1,5 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { purchaseReturnUiStatus, displayStatusForPurchase } from "../utils/returnDisplay.js";
+
+function purchaseStatusMeta(status) {
+  var s = String(status || "");
+  if (s === "Paid") return { icon: "✓", tone: "paid", label: "Paid" };
+  if (s === "Partial") return { icon: "◐", tone: "partial", label: "Partial" };
+  if (s === "Unpaid") return { icon: "✕", tone: "unpaid", label: "Unpaid" };
+  if (s === "Partially Returned") return { icon: "↩", tone: "return", label: "Part. Return" };
+  if (s === "Returned") return { icon: "↻", tone: "returned", label: "Returned" };
+  if (s === "Voided") return { icon: "—", tone: "void", label: "Voided" };
+  return { icon: "•", tone: "other", label: s || "—" };
+}
 import { buildVoidPurchaseUpdates, isVoidedTxn, activePurchases, VOID_REASON_OPTIONS, voidPurchaseBlockReason } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import CloseIconButton from "../components/CloseIconButton.jsx";
@@ -19,12 +30,6 @@ import {
 } from "../utils/purchaseValuation.js";
 import { computeSaleTax } from "../tax/taxCompute.js";
 import {
-  RAW_MATERIAL_PRICE_COST_HINT,
-  isRawMaterialGuardBaseUnit,
-  rawMaterialEnteredLooksLikePackTotal,
-  rawMaterialPackPricingConfirmMessage,
-} from "../utils/rawMaterialPricingGuard.js";
-import {
   purchaseUnitConversionMissingMessage,
   isPurchaseInputUnitMissingFactor,
   resolvePurchaseInputUnit,
@@ -32,28 +37,40 @@ import {
   purchasePackTotalVsCatalogueMessage,
   catalogSellPricePerBaseFromLine as catalogSellPricePerBaseFromLineCalc,
 } from "../utils/purchaseUnitGuard.js";
+import { stampProductStock, stampUpdatedAt, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import {
+  acquireInvoiceEditLockSynced,
+  buildInvoiceEditLockIdentity,
+  checkForeignInvoiceEditLock,
+  findActiveInvoiceEditLock,
+  formatInvoiceEditLockMessage,
+  INVOICE_EDIT_LOCK_HEARTBEAT_MS,
+  INVOICE_EDIT_LOCK_OWNERSHIP_MS,
+  readInvoiceEditLocks,
+  refreshInvoiceEditLocksFromServer,
+  releaseInvoiceEditLock,
+  renewInvoiceEditLockSynced,
+} from "../utils/invoiceEditLocks.js";
+import { pushKeysNow } from "../utils/concurrencyGuards.js";
 import {
   productMatchesSearch,
   productMatchesSearchExact,
   findActiveProductByExactSearch,
 } from "../utils/productSearch.js";
 import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
-import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
-import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
-import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
+import AddNewProductModal, { blankNewProductForm } from "../components/AddNewProductModal.jsx";
+import AddPartyModal from "../components/AddPartyModal.jsx";
+import { createAndPersistSupplier } from "../utils/supplierCreate.js";
 import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
 import {
   isGlassProduct,
   isGlassStockProductForm,
-  validateGlassProductForm,
   applyGlassProductFields,
-  glassCostPriceLabels,
   glassFormFieldsOnUnitChange,
   glassPurchaseEconomics,
   formatGlassStockLabel,
 } from "../utils/glassProduct.js";
 import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
-import CategorySelect from "../components/CategorySelect.jsx";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 
@@ -64,21 +81,8 @@ var Purchases = React.memo(function (props) {
   var today = props.today;
   var S = props.S;
   var shopSettings = hydrateShopSettings(state.settings, S.get("tc3_businessType", null));
-  var onProductCategoryChange = function (setForm, cat) {
-    var units = getUnitsForSubCategory(cat, shopSettings);
-    setForm(function (x) {
-      var nextUnit = units.indexOf(x.unit) >= 0 ? x.unit : (units[0] || "Pcs");
-      return Object.assign({}, x, { category: cat, unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit));
-    });
-  };
   var blankNewProd = function (extra) {
-    var cat = getDefaultProductCategory(shopSettings);
-    var unit = getDefaultProductUnit(shopSettings, cat);
-    return Object.assign({
-      name: "", barcode: genBarcode(), category: cat, unit: unit, type: "stock",
-      cost: "", price: "", description: "", stock: "0", extraUnits: [],
-      require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
-    }, extra || {});
+    return blankNewProductForm(shopSettings, genBarcode, Object.assign({ stock: "0" }, extra || {}));
   };
   var uid = props.uid;
   var tcTrialGuard = props.tcTrialGuard;
@@ -119,6 +123,16 @@ var Purchases = React.memo(function (props) {
   var getUnitSellPrice = props.getUnitSellPrice;
   var checkPeriodClose = props.checkPeriodClose;
   var setActive = props.setActive;
+  var openNewPurchase = typeof props.openNewPurchase === "function"
+    ? props.openNewPurchase
+    : function () { if (typeof setActive === "function") setActive("purchase-entry"); };
+  var viewMode = props.viewMode === "entry" ? "entry" : "list";
+  var goPurchasesList = function () {
+    if (typeof setActive === "function") setActive("purchases");
+  };
+  var onUnsavedPurchaseLeave = typeof props.onUnsavedPurchaseLeave === "function"
+    ? props.onUnsavedPurchaseLeave
+    : null;
   var SplitPaymentModal = props.SplitPaymentModal;
   var PaymentBreakdown = props.PaymentBreakdown;
   var BarcodeLabelSheet = props.BarcodeLabelSheet;
@@ -126,12 +140,24 @@ var Purchases = React.memo(function (props) {
   var showPermissionDenied = typeof props.showPermissionDenied === "function"
     ? props.showPermissionDenied
     : function () { showAlert("You do not have permission for this action."); };
+  var lockIdentity = buildInvoiceEditLockIdentity({
+    currentUser: props.currentUser || null,
+    clientMachineLabel: String(props.clientMachineLabel || "").trim(),
+  });
   var COST_KEY = props.COST_KEY;
-  var BLANK = { supplier: "", invoiceNo: genPurNo(), date: today(), payMode: "unpaid", paidAmount: "", cashMethod: "Cash", items: [], chequeList: [], splitRows: [], purchaseTaxAmount: "" };
+  var BLANK = { supplier: "", invoiceNo: genPurNo(), date: today(), payMode: "unpaid", paidAmount: "", cashMethod: "Cash", items: [], chequeList: [], splitRows: [], purchaseTaxAmount: "", note: "", attachments: [], invDiscount: "0.00", invDiscountType: "%" };
+  var PUR_CART_ICON = (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3949AB" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" />
+      <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" />
+    </svg>
+  );
   var [purChqForm, setPurChqForm] = useState({ no: "", bank: "", amount: "", due: today() });
   var [show, setShow] = useState(false);
   var [f, setF] = useState(BLANK);
   var [editPur, setEditPur] = useState(null);
+  var [editLockBusy, setEditLockBusy] = useState(false);
+  var [lockTick, setLockTick] = useState(0);
   var [viewPur, setViewPur] = useState(null);
   var [barcodeItems, setBarcodeItems] = useState(null);
   var [labelQtyModal, setLabelQtyModal] = useState(null);
@@ -140,25 +166,7 @@ var Purchases = React.memo(function (props) {
   var [newProd, setNewProd] = useState(null);
 
   var [newProdKey, setNewProdKey] = useState(0);
-  var newProductNameMatch = useMemo(function () {
-    if (!newProd || !String(newProd.name || "").trim()) return null;
-    return evaluateProductNameMatch(newProd.name, state.products, null);
-  }, [newProd, state.products]);
-  var newProductNameExactDup = !!(newProductNameMatch && newProductNameMatch.type === "exact");
-  var newNameHint = useProductNameHintControls(newProd ? newProd.name : "");
 
-  /* Ctrl++ shortcut — open Add New Product */
-  useEffect(function () {
-    var handler = function (e) {
-      if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
-        if (!show) return; /* only active when New Purchase modal is open */
-        e.preventDefault();
-        setNewProd(null); setTimeout(function () { setNewProd(blankNewProd());; }, 30);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return function () { window.removeEventListener("keydown", handler); };
-  }, [show]); /* new purchase split payment modal */ /* [{id,name,purchaseQty,printQty}] */
   var [ps, setPs] = useState("");
   var [pq, setPq] = useState(1);
   var [pUnit, setPUnit] = useState("Pcs");
@@ -170,40 +178,96 @@ var Purchases = React.memo(function (props) {
   var [pCostInputMode, setPCostInputMode] = useState(COST_INPUT_PER_BASE);
   var [search, setSearch] = useState("");
   var [filterStatus, setFilterStatus] = useState("Active");
+  var [dateFrom, setDateFrom] = useState("");
+  var [dateTo, setDateTo] = useState("");
+  var [filterSupplier, setFilterSupplier] = useState("");
+  var [filterPayStatus, setFilterPayStatus] = useState("");
+  var [sideDatePreset, setSideDatePreset] = useState("all");
+  var [sideSupplier, setSideSupplier] = useState("");
+  var [sideStatus, setSideStatus] = useState("Active");
+  var [sidePayStatus, setSidePayStatus] = useState("");
   var [voidPurTarget, setVoidPurTarget] = useState(null);
   var [voidReason, setVoidReason] = useState("");
-  var newProdSelectEnterState = React.useRef({ main: false, sub: false, type: false, unit: false });
-  var focusById = function (id) {
-    setTimeout(function () {
-      var el = document.getElementById(id);
-      if (el && typeof el.focus === "function") el.focus();
-    }, 0);
-  };
-  var openSelectById = function (id) {
-    setTimeout(function () {
-      var el = document.getElementById(id);
-      if (!el) return;
-      if (typeof el.focus === "function") el.focus();
-      if (typeof el.click === "function") el.click();
-    }, 0);
-  };
-  var markSelectEnterStage = function (key, val) {
-    if (!newProdSelectEnterState.current) return;
-    newProdSelectEnterState.current[key] = !!val;
-  };
-  var handleSelectEnter = function (key, id, onSecondEnter) {
-    if (!newProdSelectEnterState.current[key]) {
-      markSelectEnterStage(key, true);
-      openSelectById(id);
-      return;
-    }
-    markSelectEnterStage(key, false);
-    if (typeof onSecondEnter === "function") onSecondEnter();
-  };
   var purSearchRef = useRef(null);
+  var suppSearchRef = useRef(null);
+  var purDateRef = useRef(null);
   var pendingPurFocusRef = useRef(null);
   var [showPurDrop, setShowPurDrop] = useState(false);
   var [purDropIdx, setPurDropIdx] = useState(-1);
+  var [purDropPos, setPurDropPos] = useState(null);
+  var [suppSearch, setSuppSearch] = useState("");
+  var [showSuppDrop, setShowSuppDrop] = useState(false);
+  var [suppDropIdx, setSuppDropIdx] = useState(-1);
+  var [suppDropPos, setSuppDropPos] = useState(null);
+  var [heldPurchases, setHeldPurchases] = useState(function () {
+    try { return S.get("tc3_held_purchases", []) || []; } catch (_e) { return []; }
+  });
+  var [activeHeldPurId, setActiveHeldPurId] = useState(null);
+  var [showHoldModal, setShowHoldModal] = useState(false);
+  var PUR_PROD_DROP_LIMIT = 20;
+  var PUR_SUPP_DROP_LIMIT = 20;
+
+  var openPurDatePicker = useCallback(function () {
+    var el = purDateRef.current;
+    if (!el) return;
+    if (typeof el.showPicker === "function") {
+      try { el.showPicker(); return; } catch (_e) { /* fall through */ }
+    }
+    el.focus();
+    el.click();
+  }, []);
+
+  var updatePurDropPos = useCallback(function () {
+    try {
+      var wrap = purSearchRef.current;
+      if (!wrap) return;
+      var el = wrap.querySelector("input") || wrap;
+      var r = el.getBoundingClientRect();
+      setPurDropPos({
+        top: Math.round(r.bottom + 4),
+        left: Math.round(r.left),
+        width: Math.round(Math.max(r.width, 360)),
+      });
+    } catch (_e) { /* ignore */ }
+  }, []);
+
+  var updateSuppDropPos = useCallback(function () {
+    try {
+      var wrap = suppSearchRef.current;
+      if (!wrap) return;
+      var el = wrap.querySelector("input") || wrap;
+      var r = el.getBoundingClientRect();
+      setSuppDropPos({
+        top: Math.round(r.bottom + 4),
+        left: Math.round(r.left),
+        width: Math.round(r.width),
+      });
+    } catch (_e) { /* ignore */ }
+  }, []);
+
+  useEffect(function () {
+    if (!showPurDrop) return;
+    updatePurDropPos();
+    var onWin = function () { updatePurDropPos(); };
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return function () {
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, [showPurDrop, ps, updatePurDropPos]);
+
+  useEffect(function () {
+    if (!showSuppDrop) return;
+    updateSuppDropPos();
+    var onWin = function () { updateSuppDropPos(); };
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    return function () {
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+    };
+  }, [showSuppDrop, suppSearch, updateSuppDropPos]);
 
   useEffect(function () {
     var pick = pPickedProduct || (ps.trim() ? findActiveProductByExactSearch(state.products, ps) : null);
@@ -323,30 +387,337 @@ var Purchases = React.memo(function (props) {
   }, [show, editPur, focusPurSearch]);
 
   useEffect(function () {
-    if (show) focusPurSearch("new");
+    if (viewMode !== "entry") return;
+    resetPurchaseEntryForm();
+    refreshHeldPurchases();
+    focusSupplierInput();
+  }, [viewMode]);
+
+  /* Keep leave-hold snapshot + dirty flag in sync (same pattern as Sales) */
+  useEffect(function () {
+    if (viewMode !== "entry") {
+      if (window._techon_pur_snapshot) window._techon_pur_snapshot = null;
+      return;
+    }
+    var itemCount = (f.items || []).length;
+    window._techon_pur_snapshot = {
+      form: f,
+      suppSearch: suppSearch,
+      activeHeldPurId: activeHeldPurId,
+      items: f.items || [],
+      invoiceNo: f.invoiceNo || "",
+      supplier: f.supplier || "",
+      _activeHeldId: activeHeldPurId,
+    };
+    try {
+      if (itemCount > 0) sessionStorage.setItem("tc3_dirty", "purchase");
+      else if (sessionStorage.getItem("tc3_dirty") === "purchase") sessionStorage.removeItem("tc3_dirty");
+    } catch (_e) { /* ignore */ }
+  }, [viewMode, f, suppSearch, activeHeldPurId]);
+
+  useEffect(function () {
+    if (viewMode !== "entry") return;
+    return function () {
+      window._techon_pur_snapshot = null;
+    };
+  }, [viewMode]);
+
+  useEffect(function () {
+    if (viewMode !== "entry") return;
+    var onBeforeUnload = function (e) {
+      if ((f.items || []).length > 0) {
+        e.preventDefault();
+        e.returnValue = "You have an unsaved purchase. Are you sure you want to leave?";
+        return e.returnValue;
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return function () { window.removeEventListener("beforeunload", onBeforeUnload); };
+  }, [viewMode, f.items]);
+
+  useEffect(function () {
+    if (show) {
+      setSuppSearch(f.supplier || "");
+      setShowSuppDrop(false);
+      focusPurSearch("new");
+    }
   }, [show, focusPurSearch]);
 
   useEffect(function () {
-    if (editPur) focusPurSearch("edit");
+    if (editPur) {
+      setSuppSearch(editPur.supplier || "");
+      setShowSuppDrop(false);
+      focusPurSearch("edit");
+    }
   }, [editPur ? editPur.id : null, focusPurSearch]);
-  var [showNewSupp, setShowNewSupp] = useState(false);
-  var [newSuppF, setNewSuppF] = useState({ name: "", phone: "", email: "", address: "", note: "" });
+  var [showAddParty, setShowAddParty] = useState(false);
+  var [addPartyInitial, setAddPartyInitial] = useState({ name: "", phone: "", address: "", email: "", note: "" });
+
+  /* Entry shortcuts: F4/F6 split, F7 save, F8 barcodes, F9 hold, Esc cancel.
+     F11 (new purchase) / F12 (add product) are handled globally in App.jsx. */
   useEffect(function () {
-    var handler = function (e) { if (purSearchRef.current && !purSearchRef.current.contains(e.target)) { setShowPurDrop(false); } };
+    var openNewProductModal = function () {
+      if (purSplitModal || showAddParty || labelQtyModal || barcodeItems) return;
+      if (newProd) return;
+      setNewProdKey(function (k) { return k + 1; });
+      setNewProd(blankNewProd());
+    };
+    var onAddProduct = function () { openNewProductModal(); };
+    window.addEventListener("tc3-add-product", onAddProduct);
+    try {
+      if (viewMode === "entry" && sessionStorage.getItem("tc3_pending_add_product") === "1") {
+        sessionStorage.removeItem("tc3_pending_add_product");
+        openNewProductModal();
+      }
+    } catch (_e) { /* ignore */ }
+
+    var handler = function (e) {
+      if (viewMode !== "entry") {
+        if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
+          if (!show) return;
+          e.preventDefault();
+          openNewProductModal();
+        }
+        return;
+      }
+
+      var modalOpen = !!(purSplitModal || newProd || showAddParty || labelQtyModal || barcodeItems);
+      var key = e.key;
+      var code = e.keyCode;
+
+      if (key === "F4" || code === 115) {
+        if (modalOpen) return;
+        e.preventDefault();
+        setPurSplitModal(true);
+        return;
+      }
+      if (key === "F6" || code === 117) {
+        if (modalOpen) return;
+        e.preventDefault();
+        setPurSplitModal(true);
+        return;
+      }
+      if (key === "F7" || code === 118) {
+        if (modalOpen) return;
+        e.preventDefault();
+        if (f.supplier && (f.items || []).length && typeof doSavePurchase === "function") doSavePurchase(false);
+        return;
+      }
+      if (key === "F8" || code === 119) {
+        if (modalOpen) return;
+        e.preventDefault();
+        if (f.supplier && (f.items || []).length && typeof doSavePurchase === "function") doSavePurchase(true);
+        return;
+      }
+      if (key === "F9" || code === 120) {
+        if (modalOpen) return;
+        e.preventDefault();
+        if (typeof holdCurrentPurchase === "function") holdCurrentPurchase();
+        return;
+      }
+      if (key === "Escape" || code === 27) {
+        if (showPurDrop || showSuppDrop) {
+          e.preventDefault();
+          setShowPurDrop(false);
+          setPurDropIdx(-1);
+          setShowSuppDrop(false);
+          setSuppDropIdx(-1);
+          return;
+        }
+        if (purSplitModal) { e.preventDefault(); setPurSplitModal(false); return; }
+        if (newProd) { e.preventDefault(); setNewProd(null); return; }
+        if (showAddParty) { e.preventDefault(); setShowAddParty(false); return; }
+        if (labelQtyModal || barcodeItems) return;
+        e.preventDefault();
+        if (typeof requestLeavePurchaseEntry === "function") requestLeavePurchaseEntry("purchases");
+        return;
+      }
+      if (e.ctrlKey && (key === "=" || key === "+" || code === 187 || code === 107)) {
+        if (modalOpen) return;
+        e.preventDefault();
+        openNewProductModal();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return function () {
+      window.removeEventListener("keydown", handler);
+      window.removeEventListener("tc3-add-product", onAddProduct);
+    };
+  }, [show, viewMode, f, activeHeldPurId, purSplitModal, newProd, showAddParty, labelQtyModal, barcodeItems, showPurDrop, showSuppDrop]);
+
+  useEffect(function () {
+    var handler = function (e) {
+      if (purSearchRef.current && !purSearchRef.current.contains(e.target)) setShowPurDrop(false);
+      if (suppSearchRef.current && !suppSearchRef.current.contains(e.target)) setShowSuppDrop(false);
+    };
     document.addEventListener("mousedown", handler);
     return function () { document.removeEventListener("mousedown", handler); };
   }, []);
 
-  var saveNewSupplier = function () {
-    if (!newSuppF.name) return;
-    var ns = { id: uid(), name: newSuppF.name, phone: newSuppF.phone || "", email: newSuppF.email || "", address: newSuppF.address || "", note: newSuppF.note || "", payable: 0 };
-    if (!tcTrialGuard(state.suppliers, 'suppliers')) return;
-    var updated = state.suppliers.concat([ns]);
-    S.set("tc3_suppliers", updated);
-    setState(function (st) { return Object.assign({}, st, { suppliers: updated }); });
-    setF(function (x) { return Object.assign({}, x, { supplier: ns.name }); });
-    setNewSuppF({ name: "", phone: "", email: "", address: "", note: "" });
-    setShowNewSupp(false);
+  var handleCreatePurchaseSupplier = function (draft) {
+    var result = createAndPersistSupplier({
+      suppliers: state.suppliers,
+      setState: setState,
+      S: S,
+      uid: uid,
+      tcTrialGuard: tcTrialGuard,
+      draft: draft,
+    });
+    if (!result.ok) return null;
+    try { pushKeysNow([["tc3_suppliers", (state.suppliers || []).concat([result.supplier])]]); } catch (_e) { /* ignore */ }
+    return result.supplier;
+  };
+
+  var handlePurchaseSupplierSaved = function (created) {
+    if (!created) return;
+    setF(function (x) { return Object.assign({}, x, { supplier: created.name }); });
+    if (editPur) setEditPur(function (x) { return Object.assign({}, x, { supplier: created.name }); });
+    setSuppSearch(created.name);
+    setShowSuppDrop(false);
+    setShowAddParty(false);
+  };
+
+  var filteredSuppliers = useMemo(function () {
+    var q = String(suppSearch || "").toLowerCase().trim();
+    var list = state.suppliers || [];
+    if (!q) return list.slice(0, PUR_SUPP_DROP_LIMIT);
+    return list.filter(function (s) {
+      var name = String(s.name || "").toLowerCase();
+      var phone = String(s.phone || "").toLowerCase();
+      var email = String(s.email || "").toLowerCase();
+      return name.indexOf(q) >= 0 || phone.indexOf(q) >= 0 || email.indexOf(q) >= 0;
+    }).slice(0, PUR_SUPP_DROP_LIMIT);
+  }, [state.suppliers, suppSearch]);
+
+  var pickSupplier = function (name) {
+    var n = name || "";
+    setSuppSearch(n);
+    setShowSuppDrop(false);
+    setSuppDropIdx(-1);
+    if (editPur) setEditPur(function (x) { return Object.assign({}, x, { supplier: n }); });
+    else setF(function (x) { return Object.assign({}, x, { supplier: n }); });
+    focusPurSearch(editPur ? "edit" : "new");
+  };
+
+  var focusSupplierInput = useCallback(function () {
+    setTimeout(function () {
+      try {
+        var el = document.querySelector(".erp-pur-entry .erp-pur-supp-search-input")
+          || document.querySelector(".erp-pur-supp-search-input");
+        if (el) {
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        }
+      } catch (e) { /* ignore */ }
+    }, 80);
+  }, []);
+
+  var renderSupplierPicker = function () {
+    var current = editPur ? (editPur.supplier || "") : (f.supplier || "");
+    var purMode = editPur ? "edit" : "new";
+    return (
+      <div className="erp-pur-mock-supplier-row">
+        <div className="erp-pur-supp-search" ref={suppSearchRef}>
+          <span className="erp-pur-supp-search-ico" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3.5-3.5" />
+            </svg>
+          </span>
+          <input
+            type="text"
+            className="erp-pur-supp-search-input"
+            id="pur-supplier-search"
+            value={suppSearch}
+            placeholder="Search supplier..."
+            autoComplete="off"
+            onChange={function (e) {
+              var v = e.target.value;
+              setSuppSearch(v);
+              setShowSuppDrop(true);
+              setSuppDropIdx(-1);
+              updateSuppDropPos();
+              if (editPur) setEditPur(function (x) { return Object.assign({}, x, { supplier: "" }); });
+              else setF(function (x) { return Object.assign({}, x, { supplier: "" }); });
+            }}
+            onFocus={function () {
+              /* Keep dropdown closed on focus/autofocus — open only when typing or ArrowDown */
+              if (!suppSearch && current) setSuppSearch(current);
+            }}
+            onKeyDown={function (e) {
+              var list = filteredSuppliers;
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                if (!showSuppDrop) {
+                  setShowSuppDrop(true);
+                  updateSuppDropPos();
+                  setSuppDropIdx(list.length > 0 ? 0 : -1);
+                } else {
+                  setSuppDropIdx(function (i) { return Math.min(i + 1, list.length - 1); });
+                }
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                if (showSuppDrop) setSuppDropIdx(function (i) { return Math.max(i - 1, -1); });
+                return;
+              }
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (suppDropIdx >= 0 && list[suppDropIdx]) {
+                  pickSupplier(list[suppDropIdx].name);
+                  return;
+                }
+                if (list.length === 1) {
+                  pickSupplier(list[0].name);
+                  return;
+                }
+                if (list.length > 0 && suppSearch.trim()) {
+                  var exact = list.find(function (s) { return String(s.name || "").toLowerCase() === suppSearch.trim().toLowerCase(); });
+                  if (exact) {
+                    pickSupplier(exact.name);
+                    return;
+                  }
+                }
+                if (current && String(suppSearch || "").trim().toLowerCase() === String(current).toLowerCase()) {
+                  setShowSuppDrop(false);
+                  focusPurSearch(purMode);
+                }
+                return;
+              }
+              if (e.key === "Tab" && !e.shiftKey && current) {
+                setShowSuppDrop(false);
+              }
+              if (e.key === "Escape") { setShowSuppDrop(false); setSuppDropIdx(-1); }
+            }}
+          />
+          {showSuppDrop ? (
+            <div
+              className="erp-pur-supp-drop is-fixed"
+              style={suppDropPos ? { top: suppDropPos.top + "px", left: suppDropPos.left + "px", width: suppDropPos.width + "px" } : undefined}
+            >
+              {filteredSuppliers.map(function (s, si) {
+                return (
+                  <div
+                    key={s.id || s.name}
+                    className={"erp-pur-supp-drop-item" + (suppDropIdx === si ? " is-active" : "") + (current === s.name ? " is-selected" : "")}
+                    onMouseEnter={function () { setSuppDropIdx(si); }}
+                    onMouseDown={function (e) { e.preventDefault(); pickSupplier(s.name); }}
+                  >
+                    <div className="erp-pur-supp-drop-name">{s.name}</div>
+                    {(s.phone || s.email) ? <div className="erp-pur-supp-drop-meta">{[s.phone, s.email].filter(Boolean).join(" · ")}</div> : null}
+                  </div>
+                );
+              })}
+              {filteredSuppliers.length === 0 ? (
+                <div className="erp-pur-supp-drop-empty">No suppliers match "{suppSearch}"</div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        <button type="button" className="erp-pur-mock-btn-outline" onClick={function () { setAddPartyInitial({ name: String(suppSearch || "").trim(), phone: "", email: "", address: "", note: "" }); setShowAddParty(true); }}>+ New Supplier</button>
+      </div>
+    );
   };
 
   /** Same row shape as Save + Print Barcodes — reusable for reprint from saved purchase. */
@@ -447,20 +818,64 @@ var Purchases = React.memo(function (props) {
   });
 
   var formTotal = sumPurchaseLinesStockTotal(f.items);
+  var formDiscRaw = parseFloat(f.invDiscount) || 0;
+  var formDiscAmt = f.invDiscountType === "Rs"
+    ? Math.min(formTotal, Math.round(formDiscRaw * 100) / 100)
+    : Math.round(formTotal * formDiscRaw / 100 * 100) / 100;
+  var formAfterDisc = Math.max(0, Math.round((formTotal - formDiscAmt) * 100) / 100);
   var purTaxInclusive = !!(state.settings && state.settings.taxEnabled && state.settings.taxMode === "inclusive");
   var purTaxInput = (state.settings && state.settings.taxEnabled) ? Math.round((parseFloat(f.purchaseTaxAmount) || 0) * 100) / 100 : 0;
   var invoiceTotal = purTaxInclusive
-    ? formTotal
-    : (purTaxInput > 0.005 ? Math.round((formTotal + purTaxInput) * 100) / 100 : formTotal);
+    ? formAfterDisc
+    : (purTaxInput > 0.005 ? Math.round((formAfterDisc + purTaxInput) * 100) / 100 : formAfterDisc);
   var formPaid = f.payMode === "paid" ? invoiceTotal : (f.payMode === "partial" ? parseFloat(f.paidAmount) || 0 : 0);
   var formBal = invoiceTotal - formPaid;
   var formStatus = formPaid >= invoiceTotal ? "Paid" : formPaid > 0 ? "Partial" : "Unpaid";
+  var purDiscPctDisplay = f.invDiscountType === "%"
+    ? (f.invDiscount === "" || f.invDiscount == null ? "" : String(f.invDiscount))
+    : (formTotal > 0 && formDiscAmt > 0 ? String(Number(((formDiscAmt / formTotal) * 100).toFixed(2))) : "");
+  var purDiscAmtDisplay = f.invDiscountType === "Rs"
+    ? (f.invDiscount === "" || f.invDiscount == null ? "" : String(f.invDiscount))
+    : (formDiscAmt > 0 ? String(formDiscAmt) : "");
+  var applyPurDiscountPercent = function (raw) {
+    var pct = parseFloat(raw);
+    if (!isFinite(pct) || pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    setF(function (x) {
+      return Object.assign({}, x, { invDiscountType: "%", invDiscount: raw === "" ? "" : String(pct) });
+    });
+  };
+  var applyPurDiscountAmount = function (raw) {
+    var amt = parseFloat(raw);
+    if (!isFinite(amt) || amt < 0) amt = 0;
+    setF(function (x) {
+      return Object.assign({}, x, { invDiscountType: "Rs", invDiscount: raw === "" ? "" : String(amt) });
+    });
+  };
+  var selectPurPayMethod = function (method) {
+    setF(function (x) {
+      var next = Object.assign({}, x, {
+        cashMethod: method,
+        splitRows: [],
+        chequeList: method === "Cheque" ? (x.chequeList || []) : [],
+      });
+      if (method === "Cheque") return next;
+      return Object.assign({}, next, { payMode: "paid", paidAmount: "" });
+    });
+    if (method === "Cheque") setPurSplitModal(true);
+  };
 
   /* Edit purchase computed totals */
   var editLineTotal = editPur ? sumPurchaseLinesStockTotal(editPur.items || []) : 0;
+  var editDiscRaw = editPur ? (parseFloat(editPur.invDiscount != null ? editPur.invDiscount : editPur.discountValue) || 0) : 0;
+  var editDiscType = editPur ? (editPur.invDiscountType || editPur.discountType || "%") : "%";
+  var editDiscAmt = editDiscType === "Rs"
+    ? Math.min(editLineTotal, Math.round(editDiscRaw * 100) / 100)
+    : Math.round(editLineTotal * editDiscRaw / 100 * 100) / 100;
+  var editAfterDisc = Math.max(0, Math.round((editLineTotal - editDiscAmt) * 100) / 100);
   var editTaxAmt = editPur && state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editPur.totalTax) || 0) * 100) / 100 : 0;
   var editPurInclusive = !!(editPur && state.settings && state.settings.taxEnabled && (editPur.taxMode === "inclusive" || (editPur.taxMode !== "exclusive" && state.settings.taxMode === "inclusive")));
-  var editTotal = editPur ? (editPurInclusive ? editLineTotal : (editTaxAmt > 0.005 ? Math.round((editLineTotal + editTaxAmt) * 100) / 100 : editLineTotal)) : 0;
+  var editTotal = editPur ? (editPurInclusive ? editAfterDisc : (editTaxAmt > 0.005 ? Math.round((editAfterDisc + editTaxAmt) * 100) / 100 : editAfterDisc)) : 0;
   var editPaid = editPur ? (editPur.payMode === "paid" ? editTotal : (editPur.payMode === "partial" ? parseFloat(editPur.paidAmount) || 0 : 0)) : 0;
   var editBal = editTotal - editPaid;
   var editStatus = editPaid >= editTotal ? "Paid" : editPaid > 0 ? "Partial" : "Unpaid";
@@ -564,6 +979,7 @@ var Purchases = React.memo(function (props) {
       return Object.assign({}, x, { items: items.concat([it]) });
     });
     setPs(""); setPq(1); setPc(""); setPSell(""); setPPickedProduct(null);
+    focusPurSearch("edit");
     };
     if (purchaseLineBaseUnitLooksLikePackTotal(match, it, getUnitCostPrice, getUnitSellPrice)) {
       showConfirm(purchasePackTotalVsCatalogueMessage(), pushEditLine);
@@ -625,6 +1041,7 @@ var Purchases = React.memo(function (props) {
       return Object.assign({}, x, { items: x.items.concat([it]) });
     });
     setPs(""); setPq(1); setPc(""); setPSell(""); setPPickedProduct(null);
+    focusPurSearch("new");
     };
     if (purchaseLineBaseUnitLooksLikePackTotal(p, it, getUnitCostPrice, getUnitSellPrice)) {
       showConfirm(purchasePackTotalVsCatalogueMessage(), pushPurLine);
@@ -643,14 +1060,213 @@ var Purchases = React.memo(function (props) {
   var renderPurLineColgroup = function () {
     return (
       <colgroup>
+        <col style={{ width: 36 }} />
         <col />
-        <col style={{ width: 68 }} />
-        <col style={{ width: 80 }} />
-        <col style={{ width: 108 }} />
-        <col style={{ width: 88 }} />
-        <col style={{ width: 76 }} />
-        <col style={{ width: 34 }} />
+        <col style={{ width: 64 }} />
+        <col style={{ width: 72 }} />
+        <col style={{ width: 112 }} />
+        <col style={{ width: 112 }} />
+        <col style={{ width: 72 }} />
+        <col style={{ width: 100 }} />
+        <col style={{ width: 44 }} />
       </colgroup>
+    );
+  };
+
+  var renderPurProductToolbar = function (mode) {
+    var qtyId = purAddFieldId(mode, "qty");
+    var costId = purAddFieldId(mode, "cost");
+    var sellId = purAddFieldId(mode, "sell");
+    var searchId = purSearchId(mode);
+    var onAdd = mode === "edit" ? addEditItem : addMatchedItem;
+    var typedPick = pPickedProduct || findActiveProductByExactSearch(state.products, ps);
+    var selU = typedPick ? resolvePurchaseInputUnit(typedPick, pUnit || pBaseUnit) : "Pcs";
+    var bu2 = typedPick ? (typedPick.unit || "Pcs") : "Pcs";
+    var showCostToggle = typedPick && !isProductBaseUnitLabel(typedPick, selU);
+    var unitOpts = typedPick ? getProductUnitRows(typedPick).map(function (r) { return r.name; }) : [];
+    var hint = typedPick ? purUnitConversionHint(typedPick, selU) : null;
+    var addBase = typedPick ? toProductBaseQty(parseFloat(pq) || 0, selU, typedPick) : 0;
+    var curSt = typedPick ? (typedPick.stock || 0) : 0;
+    var afterSt = curSt + addBase;
+    var lowCost = typedPick ? purCostSeemsLow(typedPick, selU, pc, pCostInputMode) : false;
+    var expCost = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? getUnitCostPrice(typedPick, typedPick.unit || "Pcs") : (typedPick ? getUnitCostPrice(typedPick, selU) : 0);
+    var expLbl = typedPick && pCostInputMode === COST_INPUT_PER_BASE ? (typedPick.unit || "base") : selU;
+    var glassPur = typedPick && isGlassProduct(typedPick, shopSettings);
+    var glassEcon = glassPur ? glassPurchaseEconomics(parseFloat(pq) || 0, parseFloat(pc) || 0, typedPick) : null;
+    return (
+      <div className="erp-pur-add-wrap">
+        <div className="erp-pur-add-bar">
+          <div className="erp-pur-add-search" ref={purSearchRef}>
+            <span className="erp-pur-add-search-ico" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="7" />
+                <path d="M20 20l-3.5-3.5" />
+              </svg>
+            </span>
+            <input
+              id={searchId}
+              value={ps}
+              onChange={function (e) { setPs(e.target.value); setShowPurDrop(true); setPurDropIdx(-1); updatePurDropPos(); }}
+              onFocus={function () { setShowPurDrop(true); updatePurDropPos(); }}
+              onKeyDown={function (e) {
+                var list = fp.slice(0, PUR_PROD_DROP_LIMIT);
+                if (e.key === "ArrowDown") { e.preventDefault(); setPurDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
+                if (e.key === "ArrowUp") { e.preventDefault(); setPurDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
+                if ((e.key === "Enter" || e.key === "Tab") && list.length > 0) {
+                  var pick = purDropIdx >= 0 ? list[purDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, ps); }) || list[0]);
+                  if (pick) {
+                    var bu = pick.unit || "Pcs";
+                    setPs(pick.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(pick);
+                    syncCostModeAndDefaultsForUnit(pick, bu); setPSell(String(getUnitSellPrice(pick, bu)));
+                    setShowPurDrop(false); setPurDropIdx(-1);
+                    e.preventDefault();
+                    focusPurAddField(mode, "qty");
+                  } else { e.preventDefault(); }
+                  return;
+                }
+                if (e.key === "Escape") { setShowPurDrop(false); setPurDropIdx(-1); }
+              }}
+              placeholder="Search product by name, ID, barcode..."
+              className="erp-pur-add-search-input"
+              aria-label="Search products"
+            />
+            {showPurDrop && ps.trim().length > 0 && (
+              <div
+                className="erp-pur-add-drop is-fixed"
+                style={purDropPos ? { top: purDropPos.top + "px", left: purDropPos.left + "px", width: purDropPos.width + "px" } : undefined}
+              >
+                {fp.slice(0, PUR_PROD_DROP_LIMIT).map(function (p, pidx) {
+                  return (
+                    <div
+                      key={p.id}
+                      className={"erp-pur-add-drop-item" + (purDropIdx === pidx ? " is-active" : "")}
+                      onClick={function () {
+                        var bu = p.unit || "Pcs";
+                        setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p);
+                        syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu)));
+                        setShowPurDrop(false); setPurDropIdx(-1);
+                        focusPurAddField(mode, "qty");
+                      }}
+                      onMouseDown={function (e) { e.preventDefault(); }}
+                      onMouseEnter={function () { setPurDropIdx(pidx); }}
+                      onMouseLeave={function () { setPurDropIdx(-1); }}
+                    >
+                      <div>
+                        <div className="erp-pur-add-drop-name">{p.name}</div>
+                        <div className="erp-pur-add-drop-meta">{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
+                      </div>
+                      <div className="erp-pur-add-drop-price">{getCurrencySymbol()} {fmtNum(p.cost)} / {fmtNum(p.price)}</div>
+                    </div>
+                  );
+                })}
+                {fp.length === 0 && <div className="erp-pur-add-drop-empty">No matching products</div>}
+                {fp.length > PUR_PROD_DROP_LIMIT ? (
+                  <div className="erp-pur-add-drop-empty">Showing top {PUR_PROD_DROP_LIMIT} — type more to narrow</div>
+                ) : null}
+                <div className="erp-pur-add-drop-create" onClick={function () { setShowPurDrop(false); setNewProdKey(function (k) { return k + 1; }); setNewProd(blankNewProd()); }}>
+                  + Create "{ps}" as new product
+                </div>
+              </div>
+            )}
+          </div>
+          <input
+            id={qtyId}
+            type="number"
+            className="erp-pur-add-qty"
+            value={pq}
+            min="0"
+            step={isDecimalUnit(pUnit || pBaseUnit) ? "0.001" : "1"}
+            onChange={function (e) { setPq(e.target.value); }}
+            onKeyDown={function (e) {
+              if (e.key === "Enter") { e.preventDefault(); focusPurAddField(mode, "unit"); return; }
+              if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); focusPurAddField(mode, "unit"); }
+            }}
+            placeholder="Qty"
+            title="Quantity"
+            aria-label="Quantity"
+          />
+          <select
+            id={purAddFieldId(mode, "unit")}
+            className="erp-pur-add-unit"
+            value={pUnit || pBaseUnit || "Pcs"}
+            onChange={function (e) {
+              var uOpt = e.target.value;
+              if (!typedPick) { setPUnit(uOpt); return; }
+              setPUnit(uOpt); setPPickedProduct(typedPick);
+              syncCostModeAndDefaultsForUnit(typedPick, uOpt);
+              setPSell(String(getUnitSellPrice(typedPick, uOpt)));
+            }}
+            onKeyDown={function (e) {
+              if (e.key === "Enter") { e.preventDefault(); focusPurAddField(mode, "cost"); return; }
+              if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); focusPurAddField(mode, "cost"); }
+            }}
+            title="Unit"
+            aria-label="Unit"
+          >
+            {(unitOpts.length ? unitOpts : [pBaseUnit || "Pcs"]).map(function (uOpt) {
+              return <option key={uOpt} value={uOpt}>{uOpt}</option>;
+            })}
+          </select>
+          {showCostToggle ? (
+            <div className="erp-pur-add-cost-mode">
+              <button type="button" className={pCostInputMode === COST_INPUT_PER_INPUT ? "is-on" : ""} onClick={function () { setPCostInputMode(COST_INPUT_PER_INPUT); }}>/{selU}</button>
+              <button type="button" className={pCostInputMode === COST_INPUT_PER_BASE ? "is-on" : ""} onClick={function () { setPCostInputMode(COST_INPUT_PER_BASE); }}>/{bu2}</button>
+            </div>
+          ) : null}
+          <input
+            id={costId}
+            type="number"
+            className="erp-pur-add-cost"
+            value={pc}
+            onChange={function (e) { setPc(e.target.value); }}
+            onKeyDown={function (e) {
+              if (e.key === "Enter") { e.preventDefault(); focusPurAddField(mode, "sell"); return; }
+              if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); focusPurAddField(mode, "sell"); }
+            }}
+            placeholder="Cost"
+          />
+          <input
+            id={sellId}
+            type="number"
+            className="erp-pur-add-sell"
+            value={pSell}
+            onChange={function (e) { setPSell(e.target.value); }}
+            onKeyDown={function (e) {
+              if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
+                e.preventDefault();
+                if (ps.trim()) onAdd();
+              }
+            }}
+            placeholder="Sell"
+          />
+          <button type="button" className="erp-pur-add-plus" onClick={function () { onAdd(); }} disabled={!ps.trim()} aria-label="Add product">+</button>
+        </div>
+        {typedPick ? (
+          <div className="erp-pur-add-hint">
+            {hint ? <div>{hint}</div> : null}
+            <div>Current stock: <strong>{glassPur ? formatGlassStockLabel(typedPick, fmtNum) : fmtStock(curSt, typedPick.unit || "Pcs")}</strong> · After purchase: <strong className="ok">{glassPur ? formatGlassStockLabel(Object.assign({}, typedPick, { stock: (typedPick.stock || 0) + (parseFloat(pq) || 0) }), fmtNum) : fmtStock(afterSt, typedPick.unit || "Pcs")}</strong></div>
+            {glassPur && glassEcon && (parseFloat(pq) || 0) > 0 && (parseFloat(pc) || 0) > 0 ? (
+              <div className="erp-pur-add-glass">
+                {[
+                  { label: "Area / Sheet", val: glassEcon.sheetSqFt + " Sq Ft" },
+                  { label: "Total Sq Ft", val: fmtNum(glassEcon.totalSqFt) },
+                  { label: "Total Sq M", val: fmtNum(glassEcon.totalSqM) },
+                  { label: "Cost / Sq Ft", val: getCurrencySymbol() + " " + fmtNum(glassEcon.costPerSqFt) },
+                  { label: "Cost / Sq M", val: getCurrencySymbol() + " " + fmtNum(glassEcon.costPerSqM) },
+                ].map(function (row) {
+                  return (
+                    <div key={row.label} className="erp-pur-add-glass-cell">
+                      <div className="lbl">{row.label}</div>
+                      <div className="val">{row.val}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+            {lowCost ? <div className="erp-pur-add-warn">(!) Cost seems low vs catalogue (expected ~{getCurrencySymbol()} {fmtNum(expCost)} per {expLbl})</div> : null}
+          </div>
+        ) : null}
+      </div>
     );
   };
 
@@ -710,7 +1326,13 @@ var Purchases = React.memo(function (props) {
                 <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1.5px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 200, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.15)" }}>
                   {fp.slice(0, 7).map(function (p, pidx) {
                     return (
-                      <div key={p.id} onClick={function () { var bu = p.unit || "Pcs"; setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p); syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu))); setShowPurDrop(false); setPurDropIdx(-1); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
+                      <div key={p.id} onClick={function () {
+                        var bu = p.unit || "Pcs";
+                        setPs(p.name); setPBaseUnit(bu); setPUnit(bu); setPPickedProduct(p);
+                        syncCostModeAndDefaultsForUnit(p, bu); setPSell(String(getUnitSellPrice(p, bu)));
+                        setShowPurDrop(false); setPurDropIdx(-1);
+                        focusPurAddField(mode, "qty");
+                      }} onMouseDown={function (e) { e.preventDefault(); }} onMouseEnter={function () { setPurDropIdx(pidx); }} onMouseLeave={function () { setPurDropIdx(-1); }} style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: purDropIdx === pidx ? C.accentSoft : "#fff" }}>
                         <div>
                           <div style={{ fontWeight: 700, color: C.text }}>{p.name}</div>
                           <div style={{ fontSize: 11, color: C.muted }}>{p.category} · {fmtStock(p.stock, p.unit)} in stock</div>
@@ -881,18 +1503,23 @@ var Purchases = React.memo(function (props) {
       return pr ? normalizePurchaseLineItem(it, pr, toProductBaseQty) : it;
     });
     var stockLineTotal = sumPurchaseLinesStockTotal(normalizedSaveItems);
+    var discRawSave = parseFloat(f.invDiscount) || 0;
+    var discAmtSave = f.invDiscountType === "Rs"
+      ? Math.min(stockLineTotal, Math.round(discRawSave * 100) / 100)
+      : Math.round(stockLineTotal * discRawSave / 100 * 100) / 100;
+    var stockAfterDisc = Math.max(0, Math.round((stockLineTotal - discAmtSave) * 100) / 100);
     var taxModeSave = (state.settings && state.settings.taxEnabled)
       ? (state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive")
       : undefined;
     var purTaxSave = (state.settings && state.settings.taxEnabled) ? Math.round((parseFloat(f.purchaseTaxAmount) || 0) * 100) / 100 : 0;
-    if (taxModeSave === "inclusive" && purTaxSave <= 0.005 && stockLineTotal > 0) {
-      purTaxSave = Math.round((computeSaleTax(state.settings, stockLineTotal).totalTax || 0) * 100) / 100;
+    if (taxModeSave === "inclusive" && purTaxSave <= 0.005 && stockAfterDisc > 0) {
+      purTaxSave = Math.round((computeSaleTax(state.settings, stockAfterDisc).totalTax || 0) * 100) / 100;
     }
     var invoiceTotalSave = taxModeSave === "inclusive"
-      ? stockLineTotal
-      : (purTaxSave > 0.005 ? Math.round((stockLineTotal + purTaxSave) * 100) / 100 : stockLineTotal);
-    var purNetFactor = (taxModeSave === "inclusive" && stockLineTotal > 0 && purTaxSave > 0)
-      ? (stockLineTotal - purTaxSave) / stockLineTotal
+      ? stockAfterDisc
+      : (purTaxSave > 0.005 ? Math.round((stockAfterDisc + purTaxSave) * 100) / 100 : stockAfterDisc);
+    var purNetFactor = (taxModeSave === "inclusive" && stockAfterDisc > 0 && purTaxSave > 0)
+      ? (stockAfterDisc - purTaxSave) / stockAfterDisc
       : 1;
     if (splitRows) {
       var nonChequePaid = splitRows.reduce(function (a, r) { return r.method !== "Cheque" ? a + (parseFloat(r.amount) || 0) : a; }, 0);
@@ -918,7 +1545,8 @@ var Purchases = React.memo(function (props) {
     var purAmtErr = validateTxnAmounts("Purchase invoice", invoiceTotalSave, effPaid, effBal);
     if (purAmtErr) { showAlert("X " + purAmtErr); return; }
     var suppRow = (state.suppliers || []).find(function (s) { return s.name === f.supplier; });
-    var purObj = { id: uid(), supplier: f.supplier, supplierId: suppRow ? suppRow.id : "", invoiceNo: purInvNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave, taxMode: taxModeSave, createdAt: new Date().toISOString() };
+    var purTs = new Date().toISOString();
+    var purObj = stampTransactionIsoDateTime({ id: uid(), supplier: f.supplier, supplierId: suppRow ? suppRow.id : "", invoiceNo: purInvNo, date: f.date, payMode: f.payMode, items: normalizedSaveItems, total: invoiceTotalSave, paidAmount: effPaid, balance: effBal, status: effStatus, paymentHistory: initPurPh, totalTax: purTaxSave, taxMode: taxModeSave, note: f.note || "", discount: discAmtSave, discountType: f.invDiscountType || "%", discountValue: discRawSave, createdAt: purTs, updatedAt: purTs }, purTs);
     var np = state.products.slice();
     normalizedSaveItems.forEach(function (it) {
       var idx = np.findIndex(function (p) { return p.id === it.id; });
@@ -941,11 +1569,12 @@ var Purchases = React.memo(function (props) {
             newAvgCost = ((oldStock * oldCost) + (it.qty * lineCostForWac)) / newStock;
           }
           var catSell = catalogSellPricePerBaseFromLine(it, np[idx]);
-          np[idx] = Object.assign({}, np[idx], {
+          var prevProd = np[idx];
+          np[idx] = stampProductStock(Object.assign({}, prevProd, {
             stock: newStock,
             cost:  Math.round(newAvgCost * 100) / 100,
-            price: catSell != null ? Math.round(catSell * 100) / 100 : np[idx].price
-          });
+            price: catSell != null ? Math.round(catSell * 100) / 100 : prevProd.price
+          }), null, prevProd);
         }
     });
     /* Supplier payable is computed dynamically from purchases via getSupplierPayable(),
@@ -969,7 +1598,8 @@ var Purchases = React.memo(function (props) {
     }
     if (chequeRowsToCreate.length > 0) {
       var newPurCheques = chequeRowsToCreate.map(function (c) {
-        return { id: uid(), type: "outgoing", status: "Pending", chequeNo: c.no.trim(), bankName: c.bank.trim(), amount: c.amount, dueDate: c.due, issuedDate: today(), supplierName: f.supplier, purchaseId: purObj.id, purchaseNo: purObj.invoiceNo || "", note: "", createdAt: today() };
+        var chTs = new Date().toISOString();
+        return stampTransactionIsoDateTime({ id: uid(), type: "outgoing", status: "Pending", chequeNo: c.no.trim(), bankName: c.bank.trim(), amount: c.amount, dueDate: c.due, issuedDate: today(), supplierName: f.supplier, purchaseId: purObj.id, purchaseNo: purObj.invoiceNo || "", note: "", createdAt: chTs, updatedAt: chTs }, chTs);
       });
       var chqPurPh = newPurCheques.map(function (ch) { return { id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + ch.chequeNo + " " + getCurrencySymbol() + " " + fmtNum(ch.amount) + " (Pending — due " + ch.dueDate + ")", chequeId: ch.id }; });
       var updPurObj = Object.assign({}, purObj, { paymentHistory: initPurPh.concat(chqPurPh) });
@@ -979,18 +1609,202 @@ var Purchases = React.memo(function (props) {
       purStateUpdate = { products: np, purchases: np2WithCheque, cheques: nchPur };
       addAudit(newPurCheques.length + " Cheque(s) Issued " + getCurrencySymbol() + " " + fmtNum(newPurCheques.reduce(function (a, c) { return a + c.amount; }, 0)), purObj.invoiceNo || "");
     }
+    try {
+      var pushPairs = [["tc3_products", purStateUpdate.products], ["tc3_purchases", purStateUpdate.purchases]];
+      if (purStateUpdate.cheques) pushPairs.push(["tc3_cheques", purStateUpdate.cheques]);
+      pushKeysNow(pushPairs);
+    } catch (_e) { /* ignore */ }
     setState(function (st) { return Object.assign({}, st, purStateUpdate); });
     if (withBarcode) {
       setLabelQtyModal(buildLabelQtyRowsFromPurchaseItems(normalizedSaveItems, np));
     }
     sessionStorage.removeItem("tc3_dirty");
-    setShow(false); setF(BLANK); setPurSplitModal(false);
+    if (activeHeldPurId) {
+      deleteHeldPurchase(activeHeldPurId);
+    }
+    setShow(false); setF(BLANK); setPurSplitModal(false); setSuppSearch(""); setShowSuppDrop(false);
+    setActiveHeldPurId(null);
+    if (viewMode === "entry") goPurchasesList();
   };
 
   var goPurchaseReturn = function () {
     try { sessionStorage.setItem("tc3_returns_tab", "purchasereturn"); } catch (e) { /* ignore */ }
     if (typeof setActive === "function") setActive("returns");
   };
+
+  var blankPurchaseForm = function () {
+    return {
+      supplier: "", invoiceNo: genPurNo(), date: today(), payMode: "unpaid", paidAmount: "", cashMethod: "Cash",
+      items: [], chequeList: [], splitRows: [], purchaseTaxAmount: "", note: "", attachments: [], invDiscount: "0.00", invDiscountType: "%",
+    };
+  };
+
+  var resetPurchaseEntryForm = function () {
+    setF(blankPurchaseForm());
+    setSuppSearch("");
+    setShowSuppDrop(false);
+    setPs("");
+    setPq(1);
+    setPc("");
+    setPSell("");
+    setPPickedProduct(null);
+    setActiveHeldPurId(null);
+    setPurSplitModal(false);
+    try {
+      if (sessionStorage.getItem("tc3_dirty") === "purchase") sessionStorage.removeItem("tc3_dirty");
+    } catch (_e) { /* ignore */ }
+    focusPurSearch("new");
+  };
+
+  var holdCurrentPurchase = function (opts) {
+    var silent = !!(opts && opts.silent);
+    if (!(f.items || []).length) {
+      if (!silent) showAlert("Add at least one product before holding.");
+      return false;
+    }
+    var held = S.get("tc3_held_purchases", []) || [];
+    var entry = {
+      form: Object.assign({}, f, {
+        items: (f.items || []).map(function (it) { return Object.assign({}, it); }),
+        splitRows: (f.splitRows || []).map(function (r) { return Object.assign({}, r); }),
+        attachments: (f.attachments || []).slice(),
+      }),
+      suppSearch: suppSearch || f.supplier || "",
+      label: (f.supplier || "No supplier") + " — " + (f.invoiceNo || "") + " — " + (f.items || []).length + " item(s)",
+      heldAt: new Date().toISOString(),
+    };
+    if (activeHeldPurId) {
+      entry.id = activeHeldPurId;
+      held = held.map(function (h) { return h.id === activeHeldPurId ? entry : h; });
+      if (!held.find(function (h) { return h.id === activeHeldPurId; })) held = held.concat([entry]);
+    } else {
+      entry.id = "held_pur_" + Date.now();
+      held = held.concat([entry]);
+    }
+    S.set("tc3_held_purchases", held);
+    setHeldPurchases(held);
+    addAudit("Held Purchase", f.invoiceNo || entry.id.slice(0, 12));
+    resetPurchaseEntryForm();
+    if (!silent) showAlert("Purchase held. Open it anytime from On Hold below.");
+    return true;
+  };
+
+  var requestLeavePurchaseEntry = function (dest) {
+    var target = dest || "purchases";
+    if (!(f.items || []).length) {
+      try {
+        if (sessionStorage.getItem("tc3_dirty") === "purchase") sessionStorage.removeItem("tc3_dirty");
+      } catch (_e) { /* ignore */ }
+      window._techon_pur_snapshot = null;
+      resetPurchaseEntryForm();
+      if (typeof setActive === "function") setActive(target);
+      return;
+    }
+    try { sessionStorage.setItem("tc3_dirty", "purchase"); } catch (_e) { /* ignore */ }
+    if (onUnsavedPurchaseLeave) {
+      onUnsavedPurchaseLeave(target);
+      return;
+    }
+    showConfirm("You have an unsaved purchase. Discard and leave?", function () {
+      resetPurchaseEntryForm();
+      if (typeof setActive === "function") setActive(target);
+    });
+  };
+
+  var loadHeldPurchase = function (h) {
+    if (!h || !h.form) return;
+    setF(Object.assign({}, blankPurchaseForm(), h.form, {
+      items: (h.form.items || []).map(function (it) { return Object.assign({}, it); }),
+      splitRows: (h.form.splitRows || []).map(function (r) { return Object.assign({}, r); }),
+      attachments: (h.form.attachments || []).slice(),
+    }));
+    setSuppSearch(h.suppSearch || h.form.supplier || "");
+    setActiveHeldPurId(h.id);
+    setPs("");
+    setShowPurDrop(false);
+    focusPurSearch("new");
+  };
+
+  var deleteHeldPurchase = function (id) {
+    var updated = (S.get("tc3_held_purchases", []) || []).filter(function (x) { return x.id !== id; });
+    S.set("tc3_held_purchases", updated);
+    setHeldPurchases(updated);
+    if (activeHeldPurId === id) setActiveHeldPurId(null);
+  };
+
+  var refreshHeldPurchases = function () {
+    setHeldPurchases(S.get("tc3_held_purchases", []) || []);
+  };
+
+  var foreignEditLockFor = function (purchaseId) {
+    var lock = findActiveInvoiceEditLock(readInvoiceEditLocks(S), purchaseId);
+    if (!lock) return null;
+    if (String(lock.deviceId || "") === String(lockIdentity.deviceId || "")) return null;
+    return lock;
+  };
+
+  var tryOpenPurchaseEdit = function (pur) {
+    if (!pur || isVoidedTxn(pur)) return;
+    if (editLockBusy) return;
+    setEditLockBusy(true);
+    acquireInvoiceEditLockSynced(S, pur.id, lockIdentity)
+      .then(function (acquired) {
+        if (!acquired || !acquired.ok) {
+          showAlert((acquired && acquired.message) || formatInvoiceEditLockMessage(acquired && acquired.conflict));
+          return;
+        }
+        setEditPur(Object.assign({}, pur, {
+          invDiscount: pur.discountValue != null ? String(pur.discountValue) : (pur.invDiscount != null ? String(pur.invDiscount) : "0.00"),
+          invDiscountType: pur.discountType || pur.invDiscountType || "%",
+          note: pur.note || "",
+          attachments: pur.attachments || [],
+        }));
+      })
+      .catch(function () {
+        showAlert("Could not lock this purchase for editing. Check network and try again.");
+      })
+      .finally(function () {
+        setEditLockBusy(false);
+      });
+  };
+
+  useEffect(function () {
+    if (!editPur || !editPur.id) return;
+    var purchaseId = editPur.id;
+    var alive = true;
+    var renew = function () {
+      renewInvoiceEditLockSynced(S, purchaseId, lockIdentity).then(function (r) {
+        if (!alive) return;
+        if (r && r.ok) return;
+        showAlert((r && r.message) || formatInvoiceEditLockMessage(r && r.conflict));
+        setEditPur(null);
+      }).catch(function () { /* ignore */ });
+    };
+    renew();
+    var hb = setInterval(renew, INVOICE_EDIT_LOCK_HEARTBEAT_MS);
+    var own = setInterval(function () {
+      checkForeignInvoiceEditLock(S, purchaseId, lockIdentity).then(function (foreign) {
+        if (!alive || !foreign) return;
+        showAlert(formatInvoiceEditLockMessage(foreign));
+        setEditPur(null);
+      }).catch(function () { /* ignore */ });
+    }, INVOICE_EDIT_LOCK_OWNERSHIP_MS);
+    return function () {
+      alive = false;
+      clearInterval(hb);
+      clearInterval(own);
+      releaseInvoiceEditLock(S, purchaseId, lockIdentity);
+    };
+  }, [editPur && editPur.id, lockIdentity.deviceId]);
+
+  useEffect(function () {
+    var t = setInterval(function () {
+      refreshInvoiceEditLocksFromServer(S).finally(function () {
+        setLockTick(function (n) { return n + 1; });
+      });
+    }, 4000);
+    return function () { clearInterval(t); };
+  }, []);
 
   var voidPurchaseInvoice = function (purchaseId, reason) {
     if (!canDeleteInvoices) {
@@ -1005,6 +1819,7 @@ var Purchases = React.memo(function (props) {
     S.set("tc3_products", result.products);
     S.set("tc3_purchases", result.purchases);
     S.set("tc3_cheques", result.cheques);
+    releaseInvoiceEditLock(S, purchaseId, lockIdentity, { force: true });
     setState(function (st) {
       return Object.assign({}, st, {
         products: result.products,
@@ -1021,6 +1836,11 @@ var Purchases = React.memo(function (props) {
   var promptVoidPurchase = function (pur) {
     if (!canDeleteInvoices) {
       showPermissionDenied("void purchases");
+      return;
+    }
+    var fl = foreignEditLockFor(pur && pur.id);
+    if (fl) {
+      showAlert(formatInvoiceEditLockMessage(fl) + " Cannot void until they finish.");
       return;
     }
     var block = voidPurchaseBlockReason(pur, state);
@@ -1061,21 +1881,40 @@ var Purchases = React.memo(function (props) {
       }
     }
     var eLine = sumPurchaseLinesStockTotal(normalizedEditItems);
+    var eDiscRaw = parseFloat(editPur.invDiscount != null ? editPur.invDiscount : editPur.discountValue) || 0;
+    var eDiscType = editPur.invDiscountType || editPur.discountType || "%";
+    var eDiscAmt = eDiscType === "Rs"
+      ? Math.min(eLine, Math.round(eDiscRaw * 100) / 100)
+      : Math.round(eLine * eDiscRaw / 100 * 100) / 100;
+    var eAfterDisc = Math.max(0, Math.round((eLine - eDiscAmt) * 100) / 100);
     var eTaxMode = (state.settings && state.settings.taxEnabled)
       ? (editPur.taxMode || (state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive"))
       : undefined;
     var eTax = state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editPur.totalTax) || 0) * 100) / 100 : 0;
-    if (eTaxMode === "inclusive" && eTax <= 0.005 && eLine > 0) {
-      eTax = Math.round((computeSaleTax(state.settings, eLine).totalTax || 0) * 100) / 100;
+    if (eTaxMode === "inclusive" && eTax <= 0.005 && eAfterDisc > 0) {
+      eTax = Math.round((computeSaleTax(state.settings, eAfterDisc).totalTax || 0) * 100) / 100;
     }
     var eTot = eTaxMode === "inclusive"
-      ? eLine
-      : (eTax > 0.005 ? Math.round((eLine + eTax) * 100) / 100 : eLine);
-    var ePurNetFactor = (eTaxMode === "inclusive" && eLine > 0 && eTax > 0) ? (eLine - eTax) / eLine : 1;
+      ? eAfterDisc
+      : (eTax > 0.005 ? Math.round((eAfterDisc + eTax) * 100) / 100 : eAfterDisc);
+    var ePurNetFactor = (eTaxMode === "inclusive" && eAfterDisc > 0 && eTax > 0) ? (eAfterDisc - eTax) / eAfterDisc : 1;
     var ePaid = editPur.payMode === "paid" ? eTot : (editPur.payMode === "partial" ? parseFloat(editPur.paidAmount) || 0 : 0);
     var eBal = eTot - ePaid;
     var eStat = ePaid >= eTot ? "Paid" : ePaid > 0 ? "Partial" : "Unpaid";
-    var purToSave = Object.assign({}, editPur, { items: normalizedEditItems, total: eTot, totalTax: eTax, taxMode: eTaxMode, paidAmount: ePaid, balance: eBal, status: eStat, updatedAt: new Date().toISOString() });
+    var purToSave = Object.assign({}, editPur, {
+      items: normalizedEditItems,
+      total: eTot,
+      totalTax: eTax,
+      taxMode: eTaxMode,
+      paidAmount: ePaid,
+      balance: eBal,
+      status: eStat,
+      note: editPur.note || "",
+      discount: eDiscAmt,
+      discountType: eDiscType,
+      discountValue: eDiscRaw,
+      updatedAt: new Date().toISOString(),
+    });
     var editPurAmtErr = validateTxnAmounts("Edited purchase invoice", eTot, ePaid, eBal);
     if (editPurAmtErr) { showAlert("X " + editPurAmtErr); return; }
     var orig = state.purchases.find(function (p) { return p.id === purToSave.id; });
@@ -1157,7 +1996,7 @@ var Purchases = React.memo(function (props) {
             preC = (totalVal - oldVal) / preS;
             if (preC < 0) preC = curC; /* safety: never negative cost */
           }
-          return Object.assign({}, p, { stock: preS, cost: Math.round(preC * 100) / 100 });
+          return stampProductStock(Object.assign({}, p, { stock: preS, cost: Math.round(preC * 100) / 100 }), null, p);
         });
       });
       /* Step 2: Apply new purchase stock with correct WAC from pre-purchase base */
@@ -1176,11 +2015,11 @@ var Purchases = React.memo(function (props) {
             newC = ((oldS * oldC) + ((ni.qty || 0) * (ni.cost || 0))) / newS;
           }
           var catSellEd = catalogSellPricePerBaseFromLine(ni, p);
-          return Object.assign({}, p, {
+          return stampProductStock(Object.assign({}, p, {
             stock: newS,
             cost: Math.round(newC * 100) / 100,
             price: catSellEd != null ? Math.round(catSellEd * 100) / 100 : p.price
-          });
+          }), null, p);
         });
       });
       S.set("tc3_products", np);
@@ -1213,89 +2052,128 @@ var Purchases = React.memo(function (props) {
        via getTotalSupplierPayable(). Mutating s.payable here would store stale values in DB. */
     var np2 = state.purchases.map(function (p) { return p.id === purToSave.id ? purToSave : p; });
     S.set("tc3_purchases", np2);
+    try {
+      var editPush = [["tc3_purchases", np2]];
+      var productsNow = S.get("tc3_products", state.products);
+      if (productsNow) editPush.push(["tc3_products", productsNow]);
+      pushKeysNow(editPush);
+    } catch (_e) { /* ignore */ }
     addAudit("Edited Purchase Invoice", purToSave.invoiceNo || purToSave.id.slice(0, 8));
     setState(function (st) { return Object.assign({}, st, { purchases: np2 }); });
     setEditPur(null);
     }); /* end checkPeriodClose */
   };
 
-  var saveNewProduct = function () {
-    if (!newProd) return;
-    var nameStr = String(newProd.name == null ? "" : newProd.name).trim();
-    if (!nameStr || !newProd.price) return;
-    var nameCheck = checkProductName(nameStr, state.products, null);
-    if (nameCheck && nameCheck.type === "exact") {
-      showAlert("A product named \"" + nameCheck.match + "\" already exists.\nPlease use a different name.");
-      return;
-    }
-    if (newProd.barcode && state.products.find(function (p) { return p.barcode === newProd.barcode; })) {
-      showAlert("A product with barcode \"" + newProd.barcode + "\" already exists.");
-      return;
-    }
-    var performPurNewSave = function () {
-      /* Force stock=0: purchase qty will add stock when saved — avoids double-counting */
-      var glassErr = validateGlassProductForm(newProd, shopSettings);
-      if (glassErr) { showAlert(glassErr); return; }
-      var unitErr = validateExtraUnits(newProd.unit, newProd.extraUnits || []);
-      if (unitErr) { showAlert(unitErr); return; }
-      var unitFields = buildUnitsPersistFields({
-        unit: newProd.unit,
-        cost: newProd.cost,
-        price: newProd.price,
-        extraUnits: newProd.extraUnits || [],
-      });
-      var prod = applyGlassProductFields(Object.assign(
-        {
-          id: uid(),
-          productId: nextProductId(state.products),
-          name: nameStr,
-          barcode: newProd.barcode || genBarcode(),
-          category: newProd.category || "General",
-          description: newProd.description || "",
-          type: (function () { var pt = String(newProd.type || "stock").toLowerCase(); return (pt === "service" || pt === "raw_material") ? pt : "stock"; })(),
-          cost: parseFloat(newProd.cost) || 0,
-          price: parseFloat(newProd.price) || 0,
-          stock: 0,
-          damaged: 0,
-          require_comment: false,
-          comment_label: String(newProd.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
-        },
-        unitFields
-      ), newProd, shopSettings);
-      if (!tcTrialGuard(state.products, 'products')) return;
-      var np = state.products.concat([prod]);
-      S.set("tc3_products", np);
-      setState(function (st) { return Object.assign({}, st, { products: np }); });
-      setNewProd(null);
-      setNewProdKey(function (k) { return k + 1; });
-      /* Auto-fill the purchase row with saved product details */
-      setPs(""); setPc(String(prod.cost)); setPSell(String(prod.price));
-      /* Small delay then set name so product appears in search */
-      setTimeout(function () { setPs(prod.name); }, 100);
-    };
-    var maybeGuardThenPurSave = function () {
-      var pt = String(newProd.type || "stock").toLowerCase();
-      var isRm = pt === "raw_material";
-      if (
-        isRm &&
-        isRawMaterialGuardBaseUnit(newProd.unit) &&
-        rawMaterialEnteredLooksLikePackTotal(newProd.cost, newProd.price, newProd.unit)
-      ) {
-        showConfirm(rawMaterialPackPricingConfirmMessage(newProd.cost, newProd.price, newProd.unit), performPurNewSave);
-        return;
-      }
-      performPurNewSave();
-    };
-    if (nameCheck && (nameCheck.type === "likely_same" || nameCheck.type === "reordered")) {
-      var dupNamesPur = (nameCheck.matches || []).map(function (m) { return "\"" + m.name + "\""; }).join(", ");
-      showConfirm("This looks like a product you already have:\n" + dupNamesPur + "\n\nCreate \"" + nameStr + "\" as a new product anyway?", maybeGuardThenPurSave);
-    } else {
-      maybeGuardThenPurSave();
-    }
+  var saveNewProduct = function (form) {
+    if (!form) return;
+    var nameStr = String(form.name == null ? "" : form.name).trim();
+    if (!nameStr || !form.price) return;
+    /* Force stock=0: purchase qty will add stock when saved — avoids double-counting */
+    var unitFields = buildUnitsPersistFields({
+      unit: form.unit,
+      cost: form.cost,
+      price: form.price,
+      extraUnits: form.extraUnits || [],
+    });
+    var prod = applyGlassProductFields(Object.assign(
+      {
+        id: uid(),
+        productId: nextProductId(state.products),
+        name: nameStr,
+        barcode: form.barcode || genBarcode(),
+        category: form.category || "General",
+        description: form.description || "",
+        type: (function () { var pt = String(form.type || "stock").toLowerCase(); return (pt === "service" || pt === "raw_material") ? pt : "stock"; })(),
+        cost: parseFloat(form.cost) || 0,
+        price: parseFloat(form.price) || 0,
+        stock: 0,
+        damaged: 0,
+        require_comment: false,
+        comment_label: String(form.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
+        weightGrams: form.weightGrams,
+        makingCharge: form.makingCharge,
+        expiryDate: form.expiryDate,
+        batchNo: form.batchNo,
+      },
+      unitFields
+    ), form, shopSettings);
+    if (!tcTrialGuard(state.products, "products")) return;
+    var np = state.products.concat([prod]);
+    S.set("tc3_products", np);
+    setState(function (st) { return Object.assign({}, st, { products: np }); });
+    setNewProd(null);
+    setNewProdKey(function (k) { return k + 1; });
+    /* Auto-fill the purchase row with saved product details */
+    setPs(""); setPc(String(prod.cost)); setPSell(String(prod.price));
+    setTimeout(function () { setPs(prod.name); }, 100);
   };
 
-  var totalPaid = activePurchases(state.purchases).reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);
-  var totalBal = activePurchases(state.purchases).reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
+  var purInDateRange = function (p, from, to) {
+    var d = String(p.date || "");
+    if (from && d && d < from) return false;
+    if (to && d && d > to) return false;
+    return true;
+  };
+  var monthStart = (function () {
+    var n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), 1).toISOString().slice(0, 10);
+  })();
+  var monthEnd = (function () {
+    var n = new Date();
+    return new Date(n.getFullYear(), n.getMonth() + 1, 0).toISOString().slice(0, 10);
+  })();
+  var lastMonthStart = (function () {
+    var n = new Date();
+    return new Date(n.getFullYear(), n.getMonth() - 1, 1).toISOString().slice(0, 10);
+  })();
+  var lastMonthEnd = (function () {
+    var n = new Date();
+    return new Date(n.getFullYear(), n.getMonth(), 0).toISOString().slice(0, 10);
+  })();
+  var activePurList = activePurchases(state.purchases);
+  var kpiList = activePurList.filter(function (p) { return purInDateRange(p, monthStart, monthEnd); });
+  var kpiPaid = kpiList.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);
+  var kpiBal = kpiList.reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
+  var pctTrend = function (curr, prev) {
+    if (!prev) return curr ? 100 : 0;
+    return Math.round(((curr - prev) / prev) * 1000) / 10;
+  };
+  var thisMonthOrders = activePurList.filter(function (p) { return purInDateRange(p, monthStart, monthEnd); }).length;
+  var lastMonthOrders = activePurList.filter(function (p) { return purInDateRange(p, lastMonthStart, lastMonthEnd); }).length;
+  var thisMonthPaid = activePurList.filter(function (p) { return purInDateRange(p, monthStart, monthEnd); }).reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);
+  var lastMonthPaid = activePurList.filter(function (p) { return purInDateRange(p, lastMonthStart, lastMonthEnd); }).reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);
+  var thisMonthBal = activePurList.filter(function (p) { return purInDateRange(p, monthStart, monthEnd); }).reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
+  var lastMonthBal = activePurList.filter(function (p) { return purInDateRange(p, lastMonthStart, lastMonthEnd); }).reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
+  var ordersTrend = pctTrend(thisMonthOrders, lastMonthOrders);
+  var paidTrend = pctTrend(thisMonthPaid, lastMonthPaid);
+  var balTrend = pctTrend(thisMonthBal, lastMonthBal);
+  var applySidebarFilters = function () {
+    setFilterStatus(sideStatus || "Active");
+    setFilterSupplier(sideSupplier || "");
+    setFilterPayStatus(sidePayStatus || "");
+    if (sideDatePreset === "month") {
+      setDateFrom(monthStart);
+      setDateTo(monthEnd);
+    } else if (sideDatePreset === "last_month") {
+      setDateFrom(lastMonthStart);
+      setDateTo(lastMonthEnd);
+    } else {
+      setDateFrom("");
+      setDateTo("");
+    }
+  };
+  var clearSidebarFilters = function () {
+    setSideDatePreset("all");
+    setSideSupplier("");
+    setSideStatus("Active");
+    setSidePayStatus("");
+    setFilterStatus("Active");
+    setFilterSupplier("");
+    setFilterPayStatus("");
+    setDateFrom("");
+    setDateTo("");
+    setSearch("");
+  };
   var filtered = sortNewestFirst(state.purchases).filter(function (p) {
     var q = search.toLowerCase();
     var mQ = !q || String(p.supplier == null ? "" : p.supplier).toLowerCase().includes(q) || (p.invoiceNo || "").toLowerCase().includes(q);
@@ -1306,336 +2184,796 @@ var Purchases = React.memo(function (props) {
       if (voided) return false;
       if (p.status !== filterStatus) return false;
     }
+    if (filterSupplier && p.supplier !== filterSupplier) return false;
+    if (filterPayStatus && p.status !== filterPayStatus) return false;
+    if (!purInDateRange(p, dateFrom, dateTo)) return false;
     return mQ;
   });
 
   var purPager = usePager(filtered, LIST_PAGE_SIZE);
+  var unpaidInView = filtered.filter(function (p) { return !isVoidedTxn(p) && p.status === "Unpaid"; }).length;
+  var kpiTotal = kpiList.reduce(function (a, p) { return a + (p.total || 0); }, 0);
+  var trendSub = function (t) { return (t >= 0 ? "▲ " : "▼ ") + Math.abs(t) + "% vs last month"; };
+  var purchaseListKpis = [
+    { label: "This month", value: String(kpiList.length), sub: trendSub(ordersTrend), tone: "indigo", icon: "🛒" },
+    { label: "Spend", value: getCurrencySymbol() + " " + fmtNum(kpiTotal), sub: "Purchase value", tone: "blue", icon: "💰" },
+    { label: "Paid", value: getCurrencySymbol() + " " + fmtNum(kpiPaid), sub: trendSub(paidTrend), tone: "green", icon: "✅" },
+    { label: "Outstanding", value: getCurrencySymbol() + " " + fmtNum(kpiBal), sub: trendSub(balTrend), tone: kpiBal > 0 ? "orange" : "teal", icon: kpiBal > 0 ? "⏳" : "✓" },
+  ];
   /* CATS is getCats() — see global */;
 
-  return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
-        <StatCard money={false} label="Total Purchases" value={state.purchases.length} accent={C.blue} icon="🛒" sub="orders" />
-        <StatCard label="Total Paid" value={totalPaid} accent={C.green} icon="OK" />
-        <StatCard label="Outstanding" value={totalBal} accent={C.red} icon="!" />
-      </div>
-      <Card>
-        <CardTitle sub={filtered.length.toLocaleString() + " records"} action={<Btn sm col="cyan" onClick={function () { setShow(true); setF(BLANK); }}>+ New Purchase</Btn>}>Purchases</CardTitle>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <div style={{ flex: 2 }}><Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search supplier or invoice #..." /></div>
-          <div style={{ flex: 1 }}>
-            <Sel value={filterStatus} onChange={function (e) { setFilterStatus(e.target.value); }}>
-              <option>Active</option><option>Voided</option><option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
-            </Sel>
-          </div>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed", minWidth: 960 }}>
-            <thead><tr style={{ background: "#f8fafc" }}>
-              <TH style={{ width: "8%" }}>Date</TH>
-              <TH style={{ width: "14%" }}>Supplier</TH>
-              <TH style={{ width: "14%" }}>Invoice #</TH>
-              <TH center style={{ width: "5%" }}>Items</TH>
-              <TH right style={{ width: "10%" }}>Total</TH>
-              <TH right style={{ width: "10%" }}>Paid</TH>
-              <TH right style={{ width: "10%" }}>Balance</TH>
-              <TH style={{ width: "11%" }}>Status</TH>
-              <TH right style={{ width: "18%" }}>Actions</TH>
-            </tr></thead>
-            <tbody>
-              {filtered.length === 0 && <tr><td colSpan={9} style={{ padding: 20, textAlign: "center", color: C.muted }}>No purchases yet</td></tr>}
-              {purPager.slice.map(function (p, i) {
-                var purRet = purchaseReturnUiStatus(p, state.purchaseReturns);
-                var statusLabel = displayStatusForPurchase(p, state.purchaseReturns);
-                var rowBg = isVoidedTxn(p) ? "#fff5f5" : purRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
-                return (
-                  <tr key={p.id} className="table-row-hover" style={{ background: rowBg, borderBottom: "1px solid " + C.borderLight }} title={purRet.hasReturns ? "This invoice has return activity" : undefined}>
-                    <TD>{fmtDate(p.date)}</TD>
-                    <TD bold style={{ maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{p.supplier}</TD>
-                    <td style={{ padding: "9px 12px", maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.invoiceNo || p.id.slice(0, 8)}><span style={{ fontFamily: "monospace", fontSize: 12, color: C.cyan }}>{p.invoiceNo || p.id.slice(0, 8)}</span></td>
-                    <TD center>{(p.items || []).length}</TD>
-                    <TD bold color={C.blue} right>{getCurrencySymbol()} {fmtNum(p.total)}</TD>
-                    <TD color={C.green} right>{getCurrencySymbol()} {fmtNum(p.paidAmount || 0)}</TD>
-                    <TD color={Math.max(0, (p.total || 0) - (p.paidAmount || 0)) > 0 ? C.red : C.muted} right>{getCurrencySymbol()} {fmtNum(Math.max(0, (p.total || 0) - (p.paidAmount || 0)))}</TD>
-                    <td style={{ padding: "9px 12px", overflow: "hidden", maxWidth: 0 }}>
-                      <Badge status={statusLabel} />
-                    </td>
-                    <td style={actBtnCellStyle}>
-                      <ActBtnGroup>
-                        <ActBtn tone="cyan" title="View purchase" onClick={function () { setViewPur(p); }}>🧾</ActBtn>
-                        {!isVoidedTxn(p) ? <ActBtn tone="blue" title="Edit purchase" onClick={function () { setEditPur(Object.assign({}, p)); }}>✎</ActBtn> : null}
-                        {!isVoidedTxn(p) ? <ActBtn tone="orange" title="Use Purchase Return to reverse stock" onClick={goPurchaseReturn}>↩</ActBtn> : null}
-                        {!isVoidedTxn(p) && canDeleteInvoices ? <ActBtn tone="red" title="Void mistaken purchase" onClick={function () { promptVoidPurchase(p); }}>✕</ActBtn> : null}
-                      </ActBtnGroup>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <Pager pager={purPager} />
-      </Card>
 
-      {/* New Purchase Modal */}
-      {show && (
-        <Modal title="New Purchase" onClose={function () { setShow(false); setF(BLANK); }} wide>
-          {/* ── Row 1: Supplier / Invoice / Date ── */}
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr", gap: 14, marginBottom: 18 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 5 }}>Supplier *</div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <select value={f.supplier} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { supplier: e.target.value }); }); }} style={{ flex: 1, border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none", fontFamily: "inherit" }}>
-                  <option value="">Select supplier...</option>
-                  {state.suppliers.map(function (s) { return <option key={s.id}>{s.name}</option>; })}
-                </select>
-                <button onClick={function () { setShowNewSupp(true); setNewSuppF({ name: "", phone: "", email: "", address: "", note: "" }); }} style={{ flexShrink: 0, padding: "9px 14px", background: "linear-gradient(135deg," + C.green + ",#0d9066)", color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>+ New Supplier</button>
-              </div>
-            </div>
-            <Input label="Purchase Invoice #" value={f.invoiceNo} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }} />
-            <Input label="Date" type="date" value={f.date} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} applyPeriodLockMin={!!props.periodLockTransactionMinDate} periodLockTransactionMinDate={props.periodLockTransactionMinDate} />
-          </div>
-
-          {/* ── Row 2: Two columns — Product Search LEFT, Payment RIGHT ── */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 18, marginBottom: 18 }}>
-
-            {/* LEFT: Add Products */}
-            <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                  + New Product
-                </button>
-              </div>
-
-              {/* ── Product lines + add row (compact table) ── */}
-              <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "hidden" }}>
-                <table style={purLineTableStyle}>
-                  {renderPurLineColgroup()}
-                  <thead>
-                    <tr style={{ background: "#f1f5f9" }}>
-                      {["Product", "Qty", "Unit", "Cost", "Sell", "Total", ""].map(function (h, hi) {
-                        return (
-                          <th key={hi} style={{ textAlign: hi >= 3 && hi <= 5 ? "right" : "left", padding: "5px 6px", fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "1px solid " + C.borderLight }}>{h}</th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(f.items || []).map(function (it, idx) {
-                      var lineU = it.inputUnit || it.unit || "Pcs";
-                      var rowProd = state.products.find(function (p) { return p.id === it.id; });
-                      var lineTot = purchaseLineStockTotal(it);
-                      var costField = purchaseLineCostFieldShown(it, rowProd);
-                      return (
-                        <tr key={it.id || idx} style={{ background: idx % 2 === 0 ? "#fff" : "#fafbff", borderBottom: "1px solid " + C.borderLight }}>
-                          <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
-                          <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
-                            <input type="number" value={it.qty} min="0" step="any"
-                              data-purmode="new"
-                              data-purrow={idx}
-                              data-purcol={0}
-                              onChange={function (e) {
-                                var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
-                                setF(function (x) {
-                                  return Object.assign({}, x, {
-                                    items: (x.items || []).map(function (r, i) {
-                                      if (i !== idx) return r;
-                                      var pr = state.products.find(function (p) { return p.id === r.id; });
-                                      var iu = r.inputUnit || r.unit || (pr && pr.unit) || "Pcs";
-                                      var factor = pr ? toProductBaseQty(1, iu, pr) : 1;
-                                      var newInputQty = factor > 0 ? Math.round((v / factor) * 1000000) / 1000000 : r.inputQty;
-                                      var ucb = Number(r.cost) || 0;
-                                      var lsv = Math.round(v * ucb * 100) / 100;
-                                      return Object.assign({}, r, { qty: v, inputQty: newInputQty != null ? newInputQty : r.inputQty, lineStockValue: lsv });
-                                    }),
-                                  });
-                                });
-                              }}
-                              onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 0); }}
-                              onFocus={function (e) { e.target.select(); }}
-                              style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
-                          </td>
-                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }} title="Storage base unit qty">{lineU}</td>
-                          <td style={{ padding: "4px 6px" }}>
-                            <input type="number" value={costField}
-                              data-purmode="new"
-                              data-purrow={idx}
-                              data-purcol={1}
-                              onChange={function (e) {
-                                var raw = parseFloat(e.target.value) || 0;
-                                setF(function (x) {
-                                  return Object.assign({}, x, {
-                                    items: (x.items || []).map(function (r, i) {
-                                      if (i !== idx) return r;
-                                      var pr = state.products.find(function (p) { return p.id === r.id; });
-                                      if (!pr) return Object.assign({}, r, { cost: raw, lineStockValue: Math.round((Number(r.qty) || 0) * raw * 100) / 100 });
-                                      var iu = r.inputUnit || r.unit || pr.unit || "Pcs";
-                                      var cm = r.costInputMode || defaultCostInputMode(pr, iu);
-                                      var qb = Number(r.qty) || 0;
-                                      var ucb;
-                                      var lsv;
-                                      if (cm === COST_INPUT_PER_BASE) {
-                                        ucb = raw;
-                                        lsv = Math.round(qb * ucb * 100) / 100;
-                                      } else {
-                                        ucb = unitCostBaseFromInputCost(raw, iu, pr, toProductBaseQty);
-                                        lsv = Math.round(qb * ucb * 100) / 100;
-                                      }
-                                      return Object.assign({}, r, { cost: ucb, lineStockValue: lsv, costInputMode: cm });
-                                    }),
-                                  });
-                                });
-                              }}
-                              onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 1); }}
-                              onFocus={function (e) { e.target.select(); }}
-                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
-                          </td>
-                          <td style={{ padding: "4px 6px" }}>
-                            <input type="number" value={it.sellPrice}
-                              data-purmode="new"
-                              data-purrow={idx}
-                              data-purcol={2}
-                              onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
-                              onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 2); }}
-                              onFocus={function (e) { e.target.select(); }}
-                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
-                          </td>
-                          <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(lineTot)}</td>
-                          <td style={{ padding: "4px 4px", width: 30 }}>
-                            <CloseIconButton size={26} borderRadius={5} tone="danger" onClick={function () { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).filter(function (_, i) { return i !== idx; }) }); }); }} />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  {renderPurAddTfoot("new")}
-                </table>
-              </div>
-              {ps.trim().length > 0 && fp.length === 0 && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-                  <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
-                </div>
-              )}
-            </div>
-
-            {/* RIGHT: Payment Panel */}
-            <div style={{ background: "#f0f9ff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid #bae6fd", display: "flex", flexDirection: "column", gap: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.07em" }}>Payment</div>
-
-              {/* Radio-style payment options */}
-              {[["paid", "Fully Paid", C.green, "#dcfce7", "#86efac"], ["partial", "Partially Paid", "#d97706", "#fef3c7", "#fcd34d"], ["unpaid", "Not Paid", C.red, "#fee2e2", "#fca5a5"]].map(function (opt) {
-                var v = opt[0]; var lbl = opt[1]; var clr = opt[2]; var bg = opt[3]; var bdr = opt[4];
-                var active = f.payMode === v;
-                return (
-                  <div key={v} onClick={function () { setF(function (x) { return Object.assign({}, x, { payMode: v, paidAmount: "" }); }); }}
-                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 9, border: "2px solid " + (active ? bdr : C.border), background: active ? bg : "#fff", cursor: "pointer", transition: "all .15s" }}>
-                    <div style={{ width: 18, height: 18, borderRadius: "50%", border: "2px solid " + (active ? clr : C.border), background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      {active && <div style={{ width: 9, height: 9, borderRadius: "50%", background: clr }}></div>}
+  var entryPage = viewMode !== "entry" ? null : (
+      <div className="erp-pos-shell erp-pur-entry-shell">
+          <form
+            className="erp-pos erp-pos-modern erp-pur-entry"
+            noValidate
+            onSubmit={function (e) { e.preventDefault(); }}
+          >
+            <div className="erp-pos-left">
+              <div className="erp-pos-main-card">
+                <Card pad={4}>
+                  <div className="erp-sale-panel erp-sale-panel-entry" style={{ position: "relative" }}>
+                    <div className="erp-sale-box-title erp-sale-entry-title-bar">
+                      <button
+                        type="button"
+                        className="erp-pur-entry-back"
+                        onClick={function () { requestLeavePurchaseEntry("purchases"); }}
+                      >
+                        ← Back
+                      </button>
+                      <span className="erp-pos-header-doc erp-pos-header-doc-in-title">
+                        <span className="erp-pos-header-doc-label">New Purchase</span>
+                        <span className="erp-pos-header-doc-sep" aria-hidden="true">·</span>
+                        <span className="erp-pos-header-doc-no">{f.invoiceNo}</span>
+                        {activeHeldPurId ? <span className="erp-pos-edit-badge">HELD</span> : null}
+                        <span className="erp-pos-header-doc-sep" aria-hidden="true">·</span>
+                        <span className="erp-pos-header-doc-date-wrap">
+                          <input
+                            ref={purDateRef}
+                            type="date"
+                            className="erp-pos-header-doc-date-input"
+                            value={f.date}
+                            onChange={function (e) { setF(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }}
+                            onClick={openPurDatePicker}
+                            aria-label="Purchase date"
+                          />
+                          <span className="erp-pos-header-doc-date-arrow" aria-hidden="true" onClick={openPurDatePicker}>
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                              <path d="M3 4.5L6 7.5L9 4.5" stroke="#2a5298" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </span>
+                        </span>
+                      </span>
                     </div>
-                    <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? clr : C.textMd }}>{lbl}</span>
+
+                    <div className="erp-sale-entry-body">
+                      <div className="erp-sale-cust-top erp-sale-cust-inline erp-pur-entry-supplier">
+                        <div className="erp-sale-field erp-sale-field-name" style={{ flex: 1, minWidth: 0 }}>
+                          <label className="erp-pur-entry-field-lbl">Supplier *</label>
+                          {renderSupplierPicker()}
+                        </div>
+                        <div className="erp-sale-field erp-pur-entry-inv-field">
+                          <label className="erp-pur-entry-field-lbl">Invoice #</label>
+                          <input
+                            type="text"
+                            className="erp-sale-cust-input"
+                            id="pur-invoice-no"
+                            value={f.invoiceNo}
+                            onChange={function (e) { setF(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }}
+                            onKeyDown={function (e) {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                focusPurSearch("new");
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      <div className="erp-sale-product-bar erp-pur-entry-product-bar">
+                        <div className="erp-pur-entry-product-main">
+                          {renderPurProductToolbar("new")}
+                        </div>
+                        <div className="erp-sale-product-actions erp-pur-entry-product-actions">
+                          <button
+                            type="button"
+                            className="erp-sale-outline-btn erp-pur-entry-new-prod"
+                            onClick={function () { setNewProdKey(function (k) { return k + 1; }); setNewProd(blankNewProd()); }}
+                            title="Add New Product (F12)"
+                          >
+                            + New Product <kbd>F12</kbd>
+                          </button>
+                          <button
+                            type="button"
+                            className="erp-sale-outline-btn danger"
+                            disabled={!(f.items || []).length && !ps}
+                            onClick={function () {
+                              setPs(""); setPq(1); setPc(""); setPSell(""); setPPickedProduct(null); setShowPurDrop(false);
+                              if ((f.items || []).length) {
+                                showConfirm("Clear all products from this purchase?", function () {
+                                  setF(function (x) { return Object.assign({}, x, { items: [] }); });
+                                });
+                              }
+                            }}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                );
-              })}
 
-              {/* Partial amount input */}
-              {f.payMode === "partial" && (
-                <div>
-                  <Input label="Amount Paid (Rs)" type="number" value={f.paidAmount} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { paidAmount: e.target.value }); }); }} placeholder="0" />
-                </div>
-              )}
+                  <div className={"erp-pos-cart-area" + (!(f.items || []).length ? " is-empty" : "")}>
+                    <div className="erp-sale-items-hdr">
+                      <span className="erp-sale-items-hdr-title">Products {(f.items || []).length ? ("(" + f.items.length + ")") : ""}</span>
+                    </div>
+                    <div className="erp-pur-mock-table-wrap erp-pur-entry-cart">
+                      <table className="erp-pur-mock-table erp-sale-excel-table erp-pur-entry-grid" style={purLineTableStyle}>
+                        {renderPurLineColgroup()}
+                        <thead>
+                          <tr>
+                            {["#", "PRODUCT", "QTY", "UNIT", "COST", "SELL", "DISCOUNT", "TOTAL", "ACTION"].map(function (h, hi) {
+                              var right = hi >= 2 && hi <= 7;
+                              return <th key={h} style={{ textAlign: right ? "right" : (hi === 8 ? "center" : "left") }}>{h}</th>;
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(f.items || []).length === 0 ? null : (f.items || []).map(function (it, idx) {
+                            var lineU = it.inputUnit || it.unit || "Pcs";
+                            var rowProd = state.products.find(function (p) { return p.id === it.id; });
+                            var lineTot = purchaseLineStockTotal(it);
+                            var costField = purchaseLineCostFieldShown(it, rowProd);
+                            return (
+                              <tr key={it.id || idx}>
+                                <td className="num">{idx + 1}</td>
+                                <td className="prod">{it.name}</td>
+                                <td>
+                                  <input type="number" value={it.qty} min="0" step="any"
+                                    data-purmode="new" data-purrow={idx} data-purcol={0}
+                                    onChange={function (e) {
+                                      var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
+                                      setF(function (x) {
+                                        return Object.assign({}, x, {
+                                          items: (x.items || []).map(function (r, i) {
+                                            if (i !== idx) return r;
+                                            var pr = state.products.find(function (p) { return p.id === r.id; });
+                                            var iu = r.inputUnit || r.unit || (pr && pr.unit) || "Pcs";
+                                            var factor = pr ? toProductBaseQty(1, iu, pr) : 1;
+                                            var newInputQty = factor > 0 ? Math.round((v / factor) * 1000000) / 1000000 : r.inputQty;
+                                            var ucb = Number(r.cost) || 0;
+                                            var lsv = Math.round(v * ucb * 100) / 100;
+                                            return Object.assign({}, r, { qty: v, inputQty: newInputQty != null ? newInputQty : r.inputQty, lineStockValue: lsv });
+                                          }),
+                                        });
+                                      });
+                                    }}
+                                    onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 0); }}
+                                    onFocus={function (e) { e.target.select(); }}
+                                    className="erp-pur-line-input" />
+                                </td>
+                                <td className="unit">{lineU}</td>
+                                <td>
+                                  <input type="number" value={costField}
+                                    data-purmode="new" data-purrow={idx} data-purcol={1}
+                                    onChange={function (e) {
+                                      var raw = parseFloat(e.target.value) || 0;
+                                      setF(function (x) {
+                                        return Object.assign({}, x, {
+                                          items: (x.items || []).map(function (r, i) {
+                                            if (i !== idx) return r;
+                                            var pr = state.products.find(function (p) { return p.id === r.id; });
+                                            if (!pr) return Object.assign({}, r, { cost: raw, lineStockValue: Math.round((Number(r.qty) || 0) * raw * 100) / 100 });
+                                            var iu = r.inputUnit || r.unit || pr.unit || "Pcs";
+                                            var cm = r.costInputMode || defaultCostInputMode(pr, iu);
+                                            var qb = Number(r.qty) || 0;
+                                            var ucb; var lsv;
+                                            if (cm === COST_INPUT_PER_BASE) { ucb = raw; lsv = Math.round(qb * ucb * 100) / 100; }
+                                            else { ucb = unitCostBaseFromInputCost(raw, iu, pr, toProductBaseQty); lsv = Math.round(qb * ucb * 100) / 100; }
+                                            return Object.assign({}, r, { cost: ucb, lineStockValue: lsv, costInputMode: cm });
+                                          }),
+                                        });
+                                      });
+                                    }}
+                                    onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 1); }}
+                                    onFocus={function (e) { e.target.select(); }}
+                                    className="erp-pur-line-input" />
+                                </td>
+                                <td>
+                                  <input type="number" value={it.sellPrice}
+                                    data-purmode="new" data-purrow={idx} data-purcol={2}
+                                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                                    onKeyDown={function (e) { handlePurLineFieldKey(e, "new", idx, 2); }}
+                                    onFocus={function (e) { e.target.select(); }}
+                                    className="erp-pur-line-input" />
+                                </td>
+                                <td className="disc">—</td>
+                                <td className="tot">{getCurrencySymbol()} {fmtNum(lineTot)}</td>
+                                <td className="act">
+                                  <CloseIconButton size={26} borderRadius={5} tone="danger" onClick={function () { setF(function (x) { return Object.assign({}, x, { items: (x.items || []).filter(function (_, i) { return i !== idx; }) }); }); }} />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                      {!(f.items || []).length ? (
+                        <div className="erp-pur-mock-empty erp-pos-empty-cart">
+                          <div className="erp-sale-empty-ico" aria-hidden="true">🛒</div>
+                          <div className="erp-pos-empty-title">No items added</div>
+                          <div className="erp-pos-empty-sub">Search or scan products above to build the purchase</div>
+                        </div>
+                      ) : null}
+                    </div>
 
-              {/* Single Pay button — opens SplitPaymentModal */}
-              {f.payMode !== "unpaid" && (
-                <div>
-                  {(f.splitRows && f.splitRows.length > 0) ? (
+                    <div className="erp-pur-mock-notes-row erp-pur-entry-notes">
+                      <div className="erp-pur-mock-card">
+                        <div className="erp-pur-mock-card-head"><span>Notes</span></div>
+                        <textarea
+                          placeholder="Enter notes about this purchase..."
+                          value={f.note || ""}
+                          onChange={function (e) { setF(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }}
+                          rows={2}
+                        />
+                      </div>
+                      <div className="erp-pur-mock-card">
+                        <div className="erp-pur-mock-card-head"><span>Attachments</span></div>
+                        <label className="erp-pur-mock-attach">
+                          <input
+                            type="file"
+                            multiple
+                            accept=".jpg,.jpeg,.png,.pdf,.doc,.docx"
+                            onChange={function (e) {
+                              var files = Array.prototype.slice.call(e.target.files || []);
+                              var next = files.map(function (file) { return { name: file.name, size: file.size }; });
+                              setF(function (x) { return Object.assign({}, x, { attachments: (x.attachments || []).concat(next) }); });
+                              e.target.value = "";
+                            }}
+                          />
+                          <div className="erp-pur-mock-attach-inner">
+                            <div className="erp-pur-mock-attach-text">
+                              <strong>Click to attach</strong>
+                              <span>JPG, PNG, PDF, DOC</span>
+                            </div>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+            </div>
+
+            <div className="erp-pos-right">
+              <div className="erp-pos-checkout-panel">
+                <div className="erp-sale-checkout">
+                  <div className="erp-sale-checkout-hdr">Checkout</div>
+                  <div className="erp-sale-checkout-body">
+                    <div className="erp-sale-disc-row">
+                      <div className="erp-sale-field">
+                        <label>Discount %</label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={purDiscPctDisplay}
+                          onChange={function (e) { applyPurDiscountPercent(e.target.value); }}
+                          placeholder="0"
+                        />
+                      </div>
+                      <div className="erp-sale-field">
+                        <label>Discount ({getCurrencySymbol()})</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={purDiscAmtDisplay}
+                          onChange={function (e) { applyPurDiscountAmount(e.target.value); }}
+                          placeholder="0"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="erp-sale-checkout-totals erp-pur-entry-totals">
+                      <div className="erp-pos-total-row"><span>Sub Total</span><span>{getCurrencySymbol()} {fmtNum(formTotal)}</span></div>
+                      {formDiscAmt > 0 ? (
+                        <div className="erp-pos-total-row" style={{ color: "#e03151" }}>
+                          <span>Discount</span>
+                          <span>- {getCurrencySymbol()} {fmtNum(formDiscAmt)}</span>
+                        </div>
+                      ) : null}
+                      {state.settings && state.settings.taxEnabled ? (
+                        <div className="erp-pos-total-row erp-pur-entry-tax-row">
+                          <span>Tax</span>
+                          <span className="erp-pur-entry-tax-ctrl">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={f.purchaseTaxAmount || ""}
+                              onChange={function (e) { setF(function (x) { return Object.assign({}, x, { purchaseTaxAmount: e.target.value }); }); }}
+                              placeholder="0"
+                              aria-label="Tax amount"
+                            />
+                            <em>{getCurrencySymbol()} {fmtNum(purTaxInput)}</em>
+                          </span>
+                        </div>
+                      ) : null}
+                      <div className="erp-pos-total-row grand"><span>Grand Total</span><span>{getCurrencySymbol()} {fmtNum(invoiceTotal)}</span></div>
+                    </div>
+
+                    <div className="erp-pos-pay-meta">
+                      <div className="erp-pos-field-label">Payment mode</div>
+                      <div className={"erp-pos-pay-status " + (formStatus === "Paid" ? "paid" : formStatus === "Partial" ? "partial" : "unpaid")}>
+                        {formStatus === "Paid" ? "Fully Paid" : formStatus === "Partial" ? "Partial" : "Unpaid"}
+                      </div>
+                    </div>
+
                     <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#0369a1", textTransform: "uppercase", marginBottom: 6 }}>Payment Method</div>
-                      <div style={{ background: "#f0f9f4", borderRadius: 9, padding: "10px 12px", border: "1px solid #9ee8ce", marginBottom: 6 }}>
+                      <div className="erp-pos-field-label" style={{ marginBottom: 4 }}>Pay via</div>
+                      <div className="erp-sale-pay-methods">
+                        {[["Cash", "Cash"], ["Card", "Card"], ["Cheque", "Cheque"], ["Bank", "Bank Transfer"]].map(function (row) {
+                          var method = row[0];
+                          var label = row[1];
+                          var active = f.payMode !== "unpaid" && (f.cashMethod || "Cash") === method && !(f.splitRows && f.splitRows.length > 0);
+                          return (
+                            <button
+                              key={method}
+                              type="button"
+                              className={"erp-sale-pay-method" + (active ? " active" : "")}
+                              onClick={function () { selectPurPayMethod(method); }}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div className="erp-sale-split-wrap">
+                        <button
+                          type="button"
+                          className="erp-sale-split-btn"
+                          disabled={!(f.items || []).length}
+                          title={(f.splitRows && f.splitRows.length > 0) ? "Edit Split Payment (F4)" : "Split Payment (F4)"}
+                          onClick={function () {
+                            if (!(f.items || []).length) return;
+                            setPurSplitModal(true);
+                            setF(function (x) {
+                              if (x.payMode === "unpaid") return Object.assign({}, x, { payMode: "partial" });
+                              return x;
+                            });
+                          }}
+                        >
+                          <span>{(f.splitRows && f.splitRows.length > 0) ? "Edit Split" : "Split Payment"}</span>
+                          <kbd>F4</kbd>
+                        </button>
+                      </div>
+                    </div>
+
+                    {(f.splitRows && f.splitRows.length > 0) ? (
+                      <div className="erp-pos-split-panel" onClick={function () { setPurSplitModal(true); }}>
                         {f.splitRows.map(function (r, i) {
                           return (
-                            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
-                              <span style={{ color: C.textMd }}>{r.method === "Cheque" ? "🏷 " : r.method === "Bank" ? "🏦 " : "💵 "}{r.method}{r.method === "Cheque" && r.chequeNo ? " #" + r.chequeNo : ""}</span>
-                              <strong style={{ color: r.method === "Cheque" ? "#d97706" : C.green }}>{getCurrencySymbol()} {fmtNum(parseFloat(r.amount) || 0)}{r.method === "Cheque" ? " (pending)" : ""}</strong>
+                            <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                              <span style={{ color: "#475569" }}>{r.method}{r.method === "Cheque" && r.chequeNo ? " #" + r.chequeNo : ""}</span>
+                              <strong style={{ color: r.method === "Cheque" ? "#d97706" : "#059669" }}>{getCurrencySymbol()} {fmtNum(parseFloat(r.amount) || 0)}</strong>
                             </div>
                           );
                         })}
                       </div>
-                      <button onClick={function () { setPurSplitModal(true); }} style={{ width: "100%", padding: "8px", borderRadius: 8, border: "1.5px dashed #0369a1", background: "#e0f2fe", color: "#0369a1", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✏️ Edit Payment</button>
-                    </div>
-                  ) : (
-                    <button onClick={function () { setPurSplitModal(true); }}
-                      style={{ width: "100%", padding: "11px", borderRadius: 9, border: "2px solid #0369a1", background: "#0369a1", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                      💰 Set Payment Method
-                    </button>
-                  )}
-                </div>
-              )}
+                    ) : null}
 
-              {/* Summary box */}
-              <div style={{ borderTop: "1.5px solid #bae6fd", paddingTop: 12, display: "flex", flexDirection: "column", gap: 7, marginTop: "auto" }}>
-                {state.settings && state.settings.taxEnabled && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.muted }}>Input VAT (optional — for GL VAT Receivable)</div>
-                    <Input label="" type="number" min="0" step="0.01" value={f.purchaseTaxAmount || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { purchaseTaxAmount: e.target.value }); }); }} placeholder="0.00" />
+                    <div className="erp-sale-paid-grid">
+                      <div className="erp-sale-field">
+                        <label>Paid Amount</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={f.splitRows && f.splitRows.length > 0 ? formPaid : (f.payMode === "paid" ? invoiceTotal : f.paidAmount)}
+                          disabled={!!(f.splitRows && f.splitRows.length > 0)}
+                          onChange={function (e) {
+                            setF(function (x) {
+                              return Object.assign({}, x, { payMode: "partial", paidAmount: e.target.value });
+                            });
+                          }}
+                          onFocus={function () {
+                            if (f.payMode === "paid") {
+                              setF(function (x) {
+                                return Object.assign({}, x, { payMode: "partial", paidAmount: String(invoiceTotal) });
+                              });
+                            }
+                          }}
+                        />
+                      </div>
+                      <div className="erp-sale-field">
+                        <label>Balance</label>
+                        <input type="text" value={getCurrencySymbol() + " " + fmtNum(Math.max(0, formBal))} disabled />
+                      </div>
+                    </div>
+
+                    <div className="erp-sale-action-stack">
+                      <button type="button" className="erp-sale-action-btn print" disabled={!f.supplier || !f.items.length} onClick={function () { doSavePurchase(true); }} title="Save + Print Barcodes (F8)">
+                        <span>Save + Print Barcodes</span><kbd>F8</kbd>
+                      </button>
+                      <button type="button" className="erp-sale-action-btn save" disabled={!f.supplier || !f.items.length} onClick={function () { doSavePurchase(false); }} title="Save Only (F7)">
+                        <span>Save Only</span><kbd>F7</kbd>
+                      </button>
+                      <button type="button" className="erp-sale-action-btn hold" disabled={!f.items.length} onClick={function () { holdCurrentPurchase(); }} title="Hold Purchase (F9)">
+                        <span>Hold</span><kbd>F9</kbd>
+                      </button>
+                      <button type="button" className="erp-sale-action-btn preview" onClick={function () { requestLeavePurchaseEntry("purchases"); }} title="Cancel (Esc)">
+                        <span>Cancel</span><kbd>Esc</kbd>
+                      </button>
+                    </div>
                   </div>
-                )}
-                {purTaxInput > 0.005 ? (
-                  <React.Fragment>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                      <span>Lines (stock value)</span>
-                      <strong style={{ color: C.text }}>{getCurrencySymbol()} {fmtNum(formTotal)}</strong>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                      <span>Input VAT</span>
-                      <strong style={{ color: C.text }}>{getCurrencySymbol()} {fmtNum(purTaxInput)}</strong>
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                      <span>Invoice total</span>
-                      <strong style={{ color: C.text }}>{getCurrencySymbol()} {fmtNum(invoiceTotal)}</strong>
-                    </div>
-                  </React.Fragment>
-                ) : (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                    <span>Total</span>
-                    <strong style={{ color: C.text }}>{getCurrencySymbol()} {fmtNum(formTotal)}</strong>
-                  </div>
-                )}
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                  <span>Paid</span>
-                  <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(formPaid)}</strong>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, borderTop: "1px dashed #bae6fd", paddingTop: 7 }}>
-                  <span style={{ fontWeight: 700, color: C.text }}>Balance</span>
-                  <strong style={{ color: formBal > 0 ? C.red : C.green, fontSize: 15 }}>{getCurrencySymbol()} {fmtNum(formBal)}</strong>
-                </div>
-                <div style={{ display: "flex", justifyContent: "flex-end" }}><Badge status={formStatus} /></div>
+
+                {heldPurchases.length > 0 ? (
+                  <button
+                    type="button"
+                    className="erp-sale-hold-trigger erp-pur-entry-hold-trigger"
+                    onClick={function () { setShowHoldModal(true); }}
+                    title="View all on-hold purchases"
+                  >
+                    <span className="erp-sale-hold-trigger-ico" aria-hidden="true">⏸</span>
+                    <span className="erp-sale-hold-trigger-text">
+                      <span className="erp-sale-hold-trigger-label">On Hold</span>
+                      <span className="erp-sale-hold-trigger-sub">{heldPurchases.length} saved — click to view</span>
+                    </span>
+                    <span className="erp-pos-held-count" aria-label={heldPurchases.length + " on hold"}>{heldPurchases.length}</span>
+                  </button>
+                ) : null}
               </div>
             </div>
+          </form>
+        </div>
+  );
+
+  var holdListModal = showHoldModal ? (
+    <Modal
+      className="erp-hold-list-modal"
+      title={"On Hold (" + heldPurchases.length + ")"}
+      medium
+      closeRound
+      onClose={function () { setShowHoldModal(false); }}
+    >
+      <p className="erp-hold-list-modal-hint">These purchases are saved on hold. Continue to load one into the form, or delete to remove it.</p>
+      <div className="erp-hold-list-modal-body">
+        {heldPurchases.length === 0 ? (
+          <div className="erp-hold-list-empty">No held purchases.</div>
+        ) : heldPurchases.map(function (h) {
+          var hTime = h.heldAt ? new Date(h.heldAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+          var hDate = h.heldAt ? new Date(h.heldAt).toLocaleDateString() : "";
+          var itemCount = ((h.form && h.form.items) || []).length;
+          var itemTotal = sumPurchaseLinesStockTotal((h.form && h.form.items) || []);
+          return (
+            <div key={h.id} className="erp-pos-held-row erp-hold-list-row">
+              <div className="erp-sale-hold-info">
+                <div className="erp-sale-hold-name-row">
+                  <span className="erp-sale-hold-name">{h.label || (h.form && h.form.supplier) || "Purchase"}</span>
+                  <span className="erp-pos-held-pill pur">Purchase</span>
+                  {activeHeldPurId === h.id ? <span className="erp-pos-held-pill active">Active</span> : null}
+                </div>
+                <div className="erp-sale-hold-meta">
+                  {itemCount} item{itemCount !== 1 ? "s" : ""} · {getCurrencySymbol()} {fmtNum(itemTotal)} · {hDate} {hTime}
+                </div>
+              </div>
+              <div className="erp-sale-hold-actions">
+                <button
+                  type="button"
+                  className="erp-sale-hold-btn continue"
+                  onClick={function () {
+                    var go = function () {
+                      loadHeldPurchase(h);
+                      setShowHoldModal(false);
+                    };
+                    if ((f.items || []).length) {
+                      showConfirm("Loading this held purchase will replace your current form. Continue?", go);
+                    } else {
+                      go();
+                    }
+                  }}
+                >
+                  Continue
+                </button>
+                <button
+                  type="button"
+                  className="erp-sale-hold-btn delete"
+                  title="Delete"
+                  onClick={function () {
+                    showConfirm("Delete this held purchase?", function () {
+                      var remaining = heldPurchases.length - 1;
+                      deleteHeldPurchase(h.id);
+                      if (remaining <= 0) setShowHoldModal(false);
+                    });
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="erp-hold-list-modal-footer">
+        <Btn col="gray" onClick={function () { setShowHoldModal(false); }}>Close</Btn>
+      </div>
+    </Modal>
+  ) : null;
+
+  var purToneAccent = function (tone) {
+    if (tone === "green") return C.green;
+    if (tone === "red") return C.red;
+    if (tone === "orange") return C.orange;
+    if (tone === "purple" || tone === "indigo") return C.purple;
+    if (tone === "cyan" || tone === "teal") return C.cyan;
+    return C.blue;
+  };
+
+  var PurKpiStrip = function (stripProps) {
+    var items = stripProps.items || [];
+    return (
+      <div className={"erp-pur-stat-row" + (stripProps.compact ? " is-compact" : "")}>
+        {items.map(function (k) {
+          var accent = purToneAccent(k.tone);
+          return (
+            <StatCard
+              key={k.label}
+              money={false}
+              label={k.label}
+              value={k.value}
+              accent={accent}
+              valueColor={accent}
+              icon={k.icon}
+              sub={k.sub}
+            />
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <React.Fragment>
+    {entryPage}
+    {holdListModal}
+    {viewMode === "list" ? (
+    <div className="erp-page erp-pur-modern">
+      <div className="erp-pur-chrome">
+        <div className="erp-pur-topbar-pro">
+          <div className="erp-pur-topbar-brand">
+            <h2 className="erp-pur-header-title">Purchases</h2>
+            <p className="erp-pur-header-sub">Supplier orders, payables &amp; stock intake</p>
           </div>
+          <div className="erp-pur-health" aria-label="Purchase summary">
+            <span className="erp-pur-health-pill is-ok">{activePurList.length.toLocaleString()} active</span>
+            <span className="erp-pur-health-pill">{filtered.length.toLocaleString()} in view</span>
+            {unpaidInView > 0 ? <span className="erp-pur-health-pill is-warn">{unpaidInView.toLocaleString()} unpaid</span> : null}
+          </div>
+          <button type="button" className="erp-pur-btn-primary erp-pur-btn-add" onClick={openNewPurchase} title="New Purchase (F11)">+ New Purchase <kbd>F11</kbd></button>
+        </div>
+        <PurKpiStrip items={purchaseListKpis} />
+      </div>
 
-          {f.items.length === 0 && (
-            <div style={{ textAlign: "center", padding: "22px 0", color: C.muted, fontSize: 13, marginBottom: 16, background: "#f8faff", borderRadius: 10, border: "1.5px dashed " + C.border }}>
-              No products added yet — search and add products above
+      <div className="erp-pur-body">
+        <div className="erp-pur-main">
+          <div className="erp-pur-panel erp-pur-datatab-pro">
+            <div className="erp-pur-panel-head erp-pur-panel-head-gradient">
+              <div className="erp-pur-panel-head-left">
+                <span className="erp-pur-panel-icon" aria-hidden="true">📋</span>
+                <div className="erp-pur-panel-head-text">
+                  <span className="erp-pur-panel-title">Purchase register</span>
+                  <span className="erp-pur-panel-count">{filtered.length.toLocaleString()} records</span>
+                </div>
+              </div>
+              <div className="erp-pur-panel-head-right">
+                <span className="erp-pur-status-legend" aria-label="Status icon meanings">
+                  <span className="erp-pur-legend-item"><span className="erp-pur-status-ico paid" aria-hidden="true">✓</span> Paid</span>
+                  <span className="erp-pur-legend-item"><span className="erp-pur-status-ico partial" aria-hidden="true">◐</span> Partial</span>
+                  <span className="erp-pur-legend-item"><span className="erp-pur-status-ico unpaid" aria-hidden="true">✕</span> Unpaid</span>
+                  <span className="erp-pur-legend-item"><span className="erp-pur-status-ico return" aria-hidden="true">↩</span> Part. Return</span>
+                </span>
+              </div>
             </div>
-          )}
+            <div className="erp-pur-toolbar erp-pur-toolbar-pro">
+              <div className="erp-pur-search-wrap erp-pur-search-wrap-pro">
+                <input className="erp-pur-field-ctrl" value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search supplier or invoice #..." aria-label="Search purchases" />
+              </div>
+              <select className="erp-pur-field-ctrl erp-pur-toolbar-status" value={filterStatus} onChange={function (e) { setFilterStatus(e.target.value); }}>
+                <option>Active</option><option>Voided</option><option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
+              </select>
+              <div className="erp-pur-date-range">
+                <input type="date" className="erp-pur-field-ctrl" value={dateFrom} onChange={function (e) { setDateFrom(e.target.value); }} aria-label="From date" />
+                <span className="erp-pur-date-sep">–</span>
+                <input type="date" className="erp-pur-field-ctrl" value={dateTo} onChange={function (e) { setDateTo(e.target.value); }} aria-label="To date" />
+              </div>
+              <button type="button" className="erp-pur-date-refresh erp-pur-icon-btn" title="Clear date range" onClick={function () { setDateFrom(""); setDateTo(""); }}>↻</button>
+            </div>
+            <div className="erp-pur-table-wrap">
+              <table className="erp-pur-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: "9%" }}>Date</th>
+                    <th style={{ width: "16%" }}>Supplier</th>
+                    <th style={{ width: "15%" }}>Invoice #</th>
+                    <th className="ctr" style={{ width: "6%" }}>Items</th>
+                    <th className="num" style={{ width: "11%" }}>Total</th>
+                    <th className="num" style={{ width: "11%" }}>Paid</th>
+                    <th className="num" style={{ width: "11%" }}>Balance</th>
+                    <th className="ctr" style={{ width: "8%" }}>Status</th>
+                    <th className="num" style={{ width: "13%" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.length === 0 ? (
+                    <tr><td colSpan={9} className="erp-pur-empty-row">No purchases yet</td></tr>
+                  ) : null}
+                  {purPager.slice.map(function (p) {
+                    var purRet = purchaseReturnUiStatus(p, state.purchaseReturns);
+                    var statusLabel = displayStatusForPurchase(p, state.purchaseReturns);
+                    var statusMeta = purchaseStatusMeta(statusLabel);
+                    var bal = Math.max(0, (p.total || 0) - (p.paidAmount || 0));
+                    var rowClass = isVoidedTxn(p) ? "row-void" : (purRet.hasReturns ? "row-return" : "");
+                    return (
+                      <tr key={p.id} className={rowClass} title={purRet.hasReturns ? "This invoice has return activity" : undefined}>
+                        <td>{fmtDate(p.date)}</td>
+                        <td className="erp-pur-supplier">{p.supplier}</td>
+                        <td>
+                          <button type="button" className="erp-pur-inv erp-pur-inv-link" title={p.invoiceNo || p.id.slice(0, 8)} onClick={function () { setViewPur(p); }}>
+                            {p.invoiceNo || p.id.slice(0, 8)}
+                          </button>
+                        </td>
+                        <td className="ctr">{(p.items || []).length}</td>
+                        <td className="num erp-pur-amt-bold">{getCurrencySymbol()} {fmtNum(p.total)}</td>
+                        <td className={"num " + ((p.paidAmount || 0) > 0 ? "erp-pur-amt-paid" : "erp-pur-amt-zero")}>{getCurrencySymbol()} {fmtNum(p.paidAmount || 0)}</td>
+                        <td className={"num " + (bal > 0 ? "erp-pur-amt-due" : "erp-pur-amt-zero")}>{getCurrencySymbol()} {fmtNum(bal)}</td>
+                        <td className="ctr erp-pur-status-cell">
+                          <span className={"erp-pur-status-ico " + statusMeta.tone} title={statusMeta.label} aria-label={statusMeta.label}>{statusMeta.icon}</span>
+                        </td>
+                        <td className="num">
+                          <div className="erp-pur-actions">
+                            <ActBtnGroup gap={4}>
+                              <ActBtn tone="cyan" title="View purchase" onClick={function () { setViewPur(p); }} />
+                              {!isVoidedTxn(p) ? (function () {
+                                var foreignLock = foreignEditLockFor(p.id);
+                                void lockTick;
+                                return (
+                                  <ActBtn
+                                    tone="blue"
+                                    title={foreignLock ? formatInvoiceEditLockMessage(foreignLock) : (editLockBusy ? "Checking lock…" : "Edit purchase")}
+                                    disabled={!!foreignLock || editLockBusy}
+                                    onClick={function () { tryOpenPurchaseEdit(p); }}
+                                  />
+                                );
+                              })() : null}
+                              {!isVoidedTxn(p) ? <ActBtn tone="orange" icon="return" title="Use Purchase Return to reverse stock" onClick={goPurchaseReturn} /> : null}
+                              {!isVoidedTxn(p) && canDeleteInvoices ? <ActBtn tone="red" title="Void mistaken purchase" onClick={function () { promptVoidPurchase(p); }} /> : null}
+                            </ActBtnGroup>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {purPager.totalPages > 1 ? (
+              <div className="erp-pur-pager">
+                <div className="erp-pur-pager-info">
+                  Showing {purPager.start.toLocaleString()}-{purPager.end.toLocaleString()} of {purPager.total.toLocaleString()} records
+                </div>
+                <div className="erp-pur-pager-btns">
+                  <button type="button" className="erp-pur-pager-btn" onClick={function () { purPager.setPage(Math.max(1, purPager.page - 1)); }} disabled={purPager.page === 1}>{"< Prev"}</button>
+                  {(function () {
+                    var total = purPager.totalPages;
+                    var cur = purPager.page;
+                    var pages = [];
+                    if (total <= 7) {
+                      for (var i = 1; i <= total; i++) pages.push(i);
+                    } else {
+                      pages.push(1);
+                      if (cur > 3) pages.push("…");
+                      for (var p = Math.max(2, cur - 1); p <= Math.min(total - 1, cur + 1); p++) {
+                        if (pages.indexOf(p) === -1) pages.push(p);
+                      }
+                      if (cur < total - 2) pages.push("…");
+                      pages.push(total);
+                    }
+                    return pages.map(function (pg, idx) {
+                      if (pg === "…") return <span key={"gap-" + idx} className="erp-pur-pager-gap">…</span>;
+                      return (
+                        <button key={pg} type="button" className={"erp-pur-pager-btn" + (pg === cur ? " active" : "")} onClick={function () { purPager.setPage(pg); }}>{pg}</button>
+                      );
+                    });
+                  })()}
+                  <button type="button" className="erp-pur-pager-btn" onClick={function () { purPager.setPage(Math.min(purPager.totalPages, purPager.page + 1)); }} disabled={purPager.page === purPager.totalPages}>{"Next >"}</button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
 
-          {/* ── Footer Actions ── */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 14, borderTop: "1.5px solid " + C.border }}>
-            <div style={{ fontSize: 13, color: C.muted }}>
-              {f.items.length > 0 ? f.items.length + " product(s) · " + fmtSumQty(f.items.reduce(function (a, it) { return a + it.qty; }, 0)) + " units" : "Add products to continue"}
+        <aside className="erp-pur-sidebar">
+          <div className="erp-pur-side-card erp-pur-side-filters erp-pur-side-card--filters">
+            <div className="erp-pur-side-title"><span className="erp-pur-side-title-ico" aria-hidden="true">🔍</span> Filters</div>
+            <div className="erp-pur-side-field">
+              <label>Date Range</label>
+              <select className="erp-pur-field-ctrl" value={sideDatePreset} onChange={function (e) { setSideDatePreset(e.target.value); }}>
+                <option value="all">All Time</option>
+                <option value="month">This Month</option>
+                <option value="last_month">Last Month</option>
+              </select>
             </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <Btn col="gray" onClick={function () { setShow(false); setF(BLANK); }}>Cancel</Btn>
-              <Btn col="blue" onClick={function () { doSavePurchase(false); }} disabled={!f.supplier || !f.items.length}>Save Purchase</Btn>
-              <Btn col="cyan" onClick={function () { doSavePurchase(true); }} disabled={!f.supplier || !f.items.length}>Save + Print Barcodes</Btn>
+            <div className="erp-pur-side-field">
+              <label>Supplier</label>
+              <select className="erp-pur-field-ctrl" value={sideSupplier} onChange={function (e) { setSideSupplier(e.target.value); }}>
+                <option value="">All Suppliers</option>
+                {state.suppliers.map(function (s) { return <option key={s.id} value={s.name}>{s.name}</option>; })}
+              </select>
+            </div>
+            <div className="erp-pur-side-field">
+              <label>Status</label>
+              <select className="erp-pur-field-ctrl" value={sideStatus} onChange={function (e) { setSideStatus(e.target.value); }}>
+                <option>Active</option><option>Voided</option><option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
+              </select>
+            </div>
+            <div className="erp-pur-side-field">
+              <label>Payment Status</label>
+              <select className="erp-pur-field-ctrl" value={sidePayStatus} onChange={function (e) { setSidePayStatus(e.target.value); }}>
+                <option value="">All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
+              </select>
+            </div>
+            <button type="button" className="erp-pur-btn-apply" onClick={applySidebarFilters}>Apply Filters</button>
+            <button type="button" className="erp-pur-btn-clear" onClick={clearSidebarFilters}>Clear</button>
+          </div>
+          <div className="erp-pur-side-card erp-pur-side-quick erp-pur-side-card--quick">
+            <div className="erp-pur-side-title">
+              <span className="erp-pur-side-title-ico" aria-hidden="true">⚡</span>
+              <span className="erp-pur-side-title-main">Quick Actions</span>
+            </div>
+            <div className="erp-pur-quick-list">
+              <button type="button" className="erp-pur-quick erp-pur-quick--primary" onClick={openNewPurchase} title="New Purchase (F11)">
+                <span className="erp-pur-quick-ico" aria-hidden="true">＋</span>
+                <span className="erp-pur-quick-label">New Purchase</span>
+                <kbd className="erp-pur-quick-kbd">F11</kbd>
+              </button>
+              <button
+                type="button"
+                className="erp-pur-quick erp-pur-quick--product"
+                onClick={function () { setNewProdKey(function (k) { return k + 1; }); setNewProd(blankNewProd()); }}
+                title="Add New Product (F12)"
+              >
+                <span className="erp-pur-quick-ico" aria-hidden="true">📦</span>
+                <span className="erp-pur-quick-label">New Product</span>
+                <kbd className="erp-pur-quick-kbd">F12</kbd>
+              </button>
+              <button type="button" className="erp-pur-quick erp-pur-quick--return" onClick={goPurchaseReturn} title="Purchase Return">
+                <span className="erp-pur-quick-ico" aria-hidden="true">↩</span>
+                <span className="erp-pur-quick-label">Purchase Return</span>
+                <span className="erp-pur-quick-kbd erp-pur-quick-kbd--spacer" aria-hidden="true" />
+              </button>
+              <button type="button" className="erp-pur-quick erp-pur-quick--report" onClick={function () { if (typeof setActive === "function") setActive("reports"); }} title="View Purchase Report">
+                <span className="erp-pur-quick-ico" aria-hidden="true">📊</span>
+                <span className="erp-pur-quick-label">Purchase Report</span>
+                <span className="erp-pur-quick-kbd erp-pur-quick-kbd--spacer" aria-hidden="true" />
+              </button>
+              <button type="button" className="erp-pur-quick erp-pur-quick--supplier" onClick={function () { if (typeof setActive === "function") setActive("suppliers"); }} title="Supplier Statement">
+                <span className="erp-pur-quick-ico" aria-hidden="true">👤</span>
+                <span className="erp-pur-quick-label">Supplier Statement</span>
+                <span className="erp-pur-quick-kbd erp-pur-quick-kbd--spacer" aria-hidden="true" />
+              </button>
             </div>
           </div>
-        </Modal>
-      )}
+        </aside>
+      </div>
+    </div>
+    ) : null}
 
-      {viewPur && (function () {
+      {/* New Purchase uses shared full-page route purchase-entry */}
+
+      {viewMode === "list" && viewPur && (function () {
         var viewPurRet = purchaseReturnUiStatus(viewPur, state.purchaseReturns);
         var viewPurStatus = displayStatusForPurchase(viewPur, state.purchaseReturns);
         return (
@@ -1699,244 +3037,258 @@ var Purchases = React.memo(function (props) {
         );
       })()}
 
-      {editPur && (
-        <Modal title={"Update Purchase — " + (editPur.invoiceNo || editPur.id.slice(0, 8))} onClose={function () { setEditPur(null); }} wide>
-          {/* ── Row 1: Supplier / Invoice / Date ── */}
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr", gap: 14, marginBottom: 18 }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 5 }}>Supplier *</div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <select value={editPur.supplier || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { supplier: e.target.value }); }); }} style={{ flex: 1, border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none", fontFamily: "inherit" }}>
-                  <option value="">Select supplier...</option>
-                  {state.suppliers.map(function (s) { return <option key={s.id}>{s.name}</option>; })}
-                </select>
-                <button onClick={function () { setShowNewSupp(true); setNewSuppF({ name: "", phone: "", email: "", address: "", note: "" }); }} style={{ flexShrink: 0, padding: "9px 14px", background: "linear-gradient(135deg," + C.green + ",#0d9066)", color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>+ New Supplier</button>
-              </div>
-            </div>
-            <Input label="Purchase Invoice #" value={editPur.invoiceNo || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }} />
-            <Input label="Date" type="date" value={editPur.date || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} applyPeriodLockMin={!!props.periodLockTransactionMinDate} periodLockTransactionMinDate={props.periodLockTransactionMinDate} />
-          </div>
+      {viewMode === "list" && editPur && (
+        <Modal
+          title={"Update Purchase — " + (editPur.invoiceNo || editPur.id.slice(0, 8))}
+          subtitle="Edit purchase invoice details"
+          headerIcon={PUR_CART_ICON}
+          headerBg="#3949AB"
+          closeRound
+          onClose={function () { setEditPur(null); }}
+          wide
+          className="erp-pur-form-modal erp-pur-mock"
+          bodyStyle={{ padding: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}
+        >
+          <div className="erp-pur-mock-scroll">
+            <div className="erp-pur-mock-layout">
+              <div className="erp-pur-mock-main">
+                <div className="erp-pur-mock-top">
+                  <div className="erp-pur-mock-field erp-pur-mock-supplier">
+                    <label>Supplier <span className="req">*</span></label>
+                    {renderSupplierPicker()}
+                  </div>
+                  <div className="erp-pur-mock-field">
+                    <label>Purchase Invoice #</label>
+                    <input type="text" value={editPur.invoiceNo || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }} />
+                  </div>
+                  <div className="erp-pur-mock-field">
+                    <label>Date <span className="req">*</span></label>
+                    <Input label="" compact type="date" value={editPur.date || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} applyPeriodLockMin={!!props.periodLockTransactionMinDate} periodLockTransactionMinDate={props.periodLockTransactionMinDate} />
+                  </div>
+                </div>
 
-          {/* ── Row 2: Product Search LEFT, Payment RIGHT ── */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 18, marginBottom: 18 }}>
-
-            {/* LEFT: Add Products */}
-            <div style={{ background: "#f8faff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid " + C.border }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Products</div>
-                <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ display: "flex", alignItems: "center", gap: 5, background: "linear-gradient(135deg,#0077e6,#2255d4)", color: "#fff", border: "none", borderRadius: 7, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                  + New Product
-                </button>
-              </div>
-
-              {/* ── Product lines + add row (Edit — same layout as new purchase) ── */}
-              <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "hidden" }}>
-                <table style={purLineTableStyle}>
-                  {renderPurLineColgroup()}
-                  <thead>
-                    <tr style={{ background: "#f1f5f9" }}>
-                      {["Product", "Qty", "Unit", "Cost", "Sell", "Total", ""].map(function (h, hi) {
-                        return (
-                          <th key={hi} style={{ textAlign: hi >= 3 && hi <= 5 ? "right" : "left", padding: "5px 6px", fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "1px solid " + C.borderLight }}>{h}</th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(editPur.items || []).map(function (it, idx) {
-                      var lineTotEd = purchaseLineStockTotal(it);
-                      var lineUEd = it.inputUnit || it.unit || "Pcs";
-                      var rowProdEd = state.products.find(function (p) { return p.id === it.id; });
-                      var costFieldEd = purchaseLineCostFieldShown(it, rowProdEd);
-                      return (
-                        <tr key={it.id || idx} style={{ background: idx % 2 === 0 ? "#fff" : "#fafbff", borderBottom: "1px solid " + C.borderLight }}>
-                          <td style={{ padding: "4px 6px", fontWeight: 600, color: C.text, maxWidth: 200 }}>{it.name}</td>
-                          <td style={{ padding: "4px 6px", textAlign: "right", width: 72 }}>
-                            <input type="number" value={it.qty} min="0" step="any"
-                              data-purmode="edit"
-                              data-purrow={idx}
-                              data-purcol={0}
-                              onChange={function (e) {
-                                var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
-                                setEditPur(function (x) {
-                                  return Object.assign({}, x, {
-                                    items: x.items.map(function (r, i) {
-                                      if (i !== idx) return r;
-                                      var pr = state.products.find(function (p) { return p.id === r.id; });
-                                      var iu = r.inputUnit || r.unit || (pr && pr.unit) || "Pcs";
-                                      var factor = pr ? toProductBaseQty(1, iu, pr) : 1;
-                                      var newInputQty = factor > 0 ? Math.round((v / factor) * 1000000) / 1000000 : r.inputQty;
-                                      var ucb = Number(r.cost) || 0;
-                                      var lsv = Math.round(v * ucb * 100) / 100;
-                                      return Object.assign({}, r, { qty: v, inputQty: newInputQty != null ? newInputQty : r.inputQty, lineStockValue: lsv });
-                                    }),
-                                  });
-                                });
-                              }}
-                              onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 0); }}
-                              onFocus={function (e) { e.target.select(); }}
-                              style={{ width: "100%", border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
-                          </td>
-                          <td style={{ padding: "4px 6px", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap" }} title="Purchase unit">{lineUEd}</td>
-                          <td style={{ padding: "4px 6px" }}>
-                            <input type="number" value={costFieldEd}
-                              data-purmode="edit"
-                              data-purrow={idx}
-                              data-purcol={1}
-                              onChange={function (e) {
-                                var raw = parseFloat(e.target.value) || 0;
-                                setEditPur(function (x) {
-                                  return Object.assign({}, x, {
-                                    items: x.items.map(function (r, i) {
-                                      if (i !== idx) return r;
-                                      var pr = state.products.find(function (p) { return p.id === r.id; });
-                                      if (!pr) return Object.assign({}, r, { cost: raw, lineStockValue: Math.round((Number(r.qty) || 0) * raw * 100) / 100 });
-                                      var iu = r.inputUnit || r.unit || pr.unit || "Pcs";
-                                      var cm = r.costInputMode || defaultCostInputMode(pr, iu);
-                                      var qb = Number(r.qty) || 0;
-                                      var ucb;
-                                      var lsv;
-                                      if (cm === COST_INPUT_PER_BASE) {
-                                        ucb = raw;
-                                        lsv = Math.round(qb * ucb * 100) / 100;
-                                      } else {
-                                        ucb = unitCostBaseFromInputCost(raw, iu, pr, toProductBaseQty);
-                                        lsv = Math.round(qb * ucb * 100) / 100;
-                                      }
-                                      return Object.assign({}, r, { cost: ucb, lineStockValue: lsv, costInputMode: cm });
-                                    }),
-                                  });
-                                });
-                              }}
-                              onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 1); }}
-                              onFocus={function (e) { e.target.select(); }}
-                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
-                          </td>
-                          <td style={{ padding: "4px 6px" }}>
-                            <input type="number" value={it.sellPrice}
-                              data-purmode="edit"
-                              data-purrow={idx}
-                              data-purcol={2}
-                              onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
-                              onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 2); }}
-                              onFocus={function (e) { e.target.select(); }}
-                              style={{ width: "100%", minWidth: 72, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 5px", fontSize: 12, textAlign: "right", fontFamily: "inherit" }} />
-                          </td>
-                          <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(lineTotEd)}</td>
-                          <td style={{ padding: "4px 4px", width: 30 }}>
-                            <CloseIconButton size={26} borderRadius={5} tone="danger" onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.filter(function (_, i) { return i !== idx; }) }); }); }} />
-                          </td>
+                <div className="erp-pur-mock-products">
+                  <div className="erp-pur-mock-sec-head">
+                    <div>
+                      <div className="erp-pur-mock-sec-title">Products</div>
+                      <div className="erp-pur-mock-sec-sub">Add products to this purchase</div>
+                    </div>
+                    <button type="button" className="erp-pur-mock-btn-outline" onClick={function () { setNewProdKey(function (k) { return k + 1; }); setNewProd(blankNewProd()); }} title="Add New Product (F12)">+ New Product <kbd>F12</kbd></button>
+                  </div>
+                  {renderPurProductToolbar("edit")}
+                  <div className="erp-pur-mock-table-wrap">
+                    <table className="erp-pur-mock-table" style={purLineTableStyle}>
+                      {renderPurLineColgroup()}
+                      <thead>
+                        <tr>
+                          {["#", "PRODUCT", "QTY", "UNIT", "COST", "SELL", "DISCOUNT", "TOTAL", "ACTION"].map(function (h, hi) {
+                            var right = hi >= 2 && hi <= 7;
+                            return <th key={h} style={{ textAlign: right ? "right" : (hi === 8 ? "center" : "left") }}>{h}</th>;
+                          })}
                         </tr>
+                      </thead>
+                      <tbody>
+                        {(editPur.items || []).length === 0 ? (
+                          <tr className="erp-pur-mock-empty-row">
+                            <td colSpan={9}>
+                              <div className="erp-pur-mock-empty erp-pos-empty-cart">
+                                <div className="erp-sale-empty-ico" aria-hidden="true">🛒</div>
+                                <div className="erp-pos-empty-title">No items added</div>
+                                <div className="erp-pos-empty-sub">Search or scan products above to build the purchase</div>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : (editPur.items || []).map(function (it, idx) {
+                          var lineTotEd = purchaseLineStockTotal(it);
+                          var lineUEd = it.inputUnit || it.unit || "Pcs";
+                          var rowProdEd = state.products.find(function (p) { return p.id === it.id; });
+                          var costFieldEd = purchaseLineCostFieldShown(it, rowProdEd);
+                          return (
+                            <tr key={it.id || idx}>
+                              <td className="num">{idx + 1}</td>
+                              <td className="prod">{it.name}</td>
+                              <td>
+                                <input type="number" value={it.qty} min="0" step="any"
+                                  data-purmode="edit" data-purrow={idx} data-purcol={0}
+                                  onChange={function (e) {
+                                    var v = parseFloat(e.target.value); if (isNaN(v)) v = 0;
+                                    setEditPur(function (x) {
+                                      return Object.assign({}, x, {
+                                        items: x.items.map(function (r, i) {
+                                          if (i !== idx) return r;
+                                          var pr = state.products.find(function (p) { return p.id === r.id; });
+                                          var iu = r.inputUnit || r.unit || (pr && pr.unit) || "Pcs";
+                                          var factor = pr ? toProductBaseQty(1, iu, pr) : 1;
+                                          var newInputQty = factor > 0 ? Math.round((v / factor) * 1000000) / 1000000 : r.inputQty;
+                                          var ucb = Number(r.cost) || 0;
+                                          var lsv = Math.round(v * ucb * 100) / 100;
+                                          return Object.assign({}, r, { qty: v, inputQty: newInputQty != null ? newInputQty : r.inputQty, lineStockValue: lsv });
+                                        }),
+                                      });
+                                    });
+                                  }}
+                                  onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 0); }}
+                                  onFocus={function (e) { e.target.select(); }}
+                                  className="erp-pur-line-input" />
+                              </td>
+                              <td className="unit">{lineUEd}</td>
+                              <td>
+                                <input type="number" value={costFieldEd}
+                                  data-purmode="edit" data-purrow={idx} data-purcol={1}
+                                  onChange={function (e) {
+                                    var raw = parseFloat(e.target.value) || 0;
+                                    setEditPur(function (x) {
+                                      return Object.assign({}, x, {
+                                        items: x.items.map(function (r, i) {
+                                          if (i !== idx) return r;
+                                          var pr = state.products.find(function (p) { return p.id === r.id; });
+                                          if (!pr) return Object.assign({}, r, { cost: raw, lineStockValue: Math.round((Number(r.qty) || 0) * raw * 100) / 100 });
+                                          var iu = r.inputUnit || r.unit || pr.unit || "Pcs";
+                                          var cm = r.costInputMode || defaultCostInputMode(pr, iu);
+                                          var qb = Number(r.qty) || 0;
+                                          var ucb; var lsv;
+                                          if (cm === COST_INPUT_PER_BASE) { ucb = raw; lsv = Math.round(qb * ucb * 100) / 100; }
+                                          else { ucb = unitCostBaseFromInputCost(raw, iu, pr, toProductBaseQty); lsv = Math.round(qb * ucb * 100) / 100; }
+                                          return Object.assign({}, r, { cost: ucb, lineStockValue: lsv, costInputMode: cm });
+                                        }),
+                                      });
+                                    });
+                                  }}
+                                  onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 1); }}
+                                  onFocus={function (e) { e.target.select(); }}
+                                  className="erp-pur-line-input" />
+                              </td>
+                              <td>
+                                <input type="number" value={it.sellPrice}
+                                  data-purmode="edit" data-purrow={idx} data-purcol={2}
+                                  onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.map(function (r, i) { return i === idx ? Object.assign({}, r, { sellPrice: parseFloat(e.target.value) || 0 }) : r; }) }); }); }}
+                                  onKeyDown={function (e) { handlePurLineFieldKey(e, "edit", idx, 2); }}
+                                  onFocus={function (e) { e.target.select(); }}
+                                  className="erp-pur-line-input" />
+                              </td>
+                              <td className="disc">—</td>
+                              <td className="tot">{getCurrencySymbol()} {fmtNum(lineTotEd)}</td>
+                              <td className="act">
+                                <CloseIconButton size={26} borderRadius={5} tone="danger" onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { items: x.items.filter(function (_, i) { return i !== idx; }) }); }); }} />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="erp-pur-mock-notes-row">
+                  <div className="erp-pur-mock-card">
+                    <div className="erp-pur-mock-card-head"><span className="ico" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span>Notes</span></div>
+                    <textarea placeholder="Enter notes about this purchase..." value={editPur.note || ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} rows={4} />
+                  </div>
+                  <div className="erp-pur-mock-card">
+                    <div className="erp-pur-mock-card-head"><span className="ico" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span><span>Attachments</span></div>
+                    <label className="erp-pur-mock-attach">
+                      <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.doc,.docx" onChange={function (e) {
+                        var files = Array.prototype.slice.call(e.target.files || []);
+                        var next = files.map(function (file) { return { name: file.name, size: file.size }; });
+                        setEditPur(function (x) { return Object.assign({}, x, { attachments: (x.attachments || []).concat(next) }); });
+                        e.target.value = "";
+                      }} />
+                      <div className="erp-pur-mock-attach-inner">
+                        <div className="erp-pur-mock-attach-text">
+                          <strong>Drag & drop files here or click to browse</strong>
+                          <span>JPG, PNG, PDF or DOC (Max 5MB)</span>
+                        </div>
+                        <span className="erp-pur-mock-attach-up" aria-hidden="true">⬆</span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <aside className="erp-pur-mock-side">
+                <div className="erp-pur-mock-pay-card">
+                  <div className="erp-pur-mock-sec-title">Payment</div>
+                  <div className="erp-pur-mock-sec-sub">Select payment status for this purchase</div>
+                  <div className="erp-pur-mock-pay-opts">
+                    {[["paid", "Fully Paid", "paid"], ["partial", "Partially Paid", "partial"], ["unpaid", "Not Paid", "unpaid"]].map(function (opt) {
+                      var v = opt[0]; var lbl = opt[1]; var tone = opt[2];
+                      var active = editPur.payMode === v;
+                      return (
+                        <button key={v} type="button" className={"erp-pur-mock-pay-opt tone-" + tone + (active ? " is-active" : "")}
+                          onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { payMode: v, paidAmount: "" }); }); }}>
+                          <span className="radio" /><span>{lbl}</span>
+                        </button>
                       );
                     })}
-                  </tbody>
-                  {renderPurAddTfoot("edit")}
-                </table>
-              </div>
-              {ps.trim().length > 0 && fp.length === 0 && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-                  <span style={{ fontSize: 12, color: C.muted }}>"{ps}" not found.</span>
-                  <button onClick={function () { setNewProdKey(function(k){return k+1;}); setNewProd(blankNewProd());; }} style={{ background: C.accentSoft, color: C.accent, border: "none", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>+ Create as new product</button>
-                </div>
-              )}
-            </div>
-
-            {/* RIGHT: Payment Panel */}
-            <div style={{ background: "#f0f9ff", borderRadius: 12, padding: "16px 18px", border: "1.5px solid #bae6fd", display: "flex", flexDirection: "column", gap: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.07em" }}>Payment</div>
-              {[["paid", "Fully Paid", C.green, "#dcfce7", "#86efac"], ["partial", "Partially Paid", "#d97706", "#fef3c7", "#fcd34d"], ["unpaid", "Not Paid", C.red, "#fee2e2", "#fca5a5"]].map(function (opt) {
-                var v = opt[0]; var lbl = opt[1]; var clr = opt[2]; var bg = opt[3]; var bdr = opt[4];
-                var active = editPur.payMode === v;
-                return (
-                  <div key={v} onClick={function () { setEditPur(function (x) { return Object.assign({}, x, { payMode: v, paidAmount: "" }); }); }}
-                    style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 9, border: "2px solid " + (active ? bdr : C.border), background: active ? bg : "#fff", cursor: "pointer", transition: "all .15s" }}>
-                    <div style={{ width: 18, height: 18, borderRadius: "50%", border: "2px solid " + (active ? clr : C.border), background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      {active && <div style={{ width: 9, height: 9, borderRadius: "50%", background: clr }}></div>}
+                  </div>
+                  {editPur.payMode === "partial" ? (
+                    <div className="erp-pur-mock-partial">
+                      <Input label="Amount Paid" type="number" value={editPur.paidAmount || ""} onChange={function (e) {
+                        var newPaid = parseFloat(e.target.value) || 0;
+                        setEditPur(function (x) {
+                          var orig = (state.purchases || []).find(function (p) { return p.id === x.id; });
+                          var origPaid = orig ? (orig.paidAmount || 0) : 0;
+                          var diff = Math.round((newPaid - origPaid) * 100) / 100;
+                          var existingPh = (orig ? (orig.paymentHistory || []) : (x.paymentHistory || [])).slice();
+                          if (diff !== 0) {
+                            var pCash = 0; var pBank = 0;
+                            existingPh.forEach(function (ph) {
+                              if (!ph.cashMethod || ph.cashMethod === "Cheque" || (ph.amount || 0) === 0) return;
+                              if (ph.cashMethod === "Bank") pBank += ph.amount; else pCash += ph.amount;
+                            });
+                            var pTotal = pCash + pBank;
+                            if (pTotal <= 0 || pBank <= 0) {
+                              existingPh = existingPh.concat([{ id: uid(), date: today(), amount: diff, cashMethod: pBank > 0 ? "Bank" : "Cash", note: "Manual adjustment (edit)" }]);
+                            } else if (pCash <= 0) {
+                              existingPh = existingPh.concat([{ id: uid(), date: today(), amount: diff, cashMethod: "Bank", note: "Manual adjustment (edit)" }]);
+                            } else {
+                              var pcCorr = Math.round(diff * (pCash / pTotal) * 100) / 100;
+                              var pbCorr = Math.round((diff - pcCorr) * 100) / 100;
+                              if (pcCorr !== 0) existingPh = existingPh.concat([{ id: uid(), date: today(), amount: pcCorr, cashMethod: "Cash", note: "Manual adjustment (edit)" }]);
+                              if (pbCorr !== 0) existingPh = existingPh.concat([{ id: uid(), date: today(), amount: pbCorr, cashMethod: "Bank", note: "Manual adjustment (edit)" }]);
+                            }
+                          }
+                          return Object.assign({}, x, { paidAmount: newPaid, paymentHistory: existingPh });
+                        });
+                      }} placeholder="0.00" />
                     </div>
-                    <span style={{ fontWeight: 700, fontSize: 13, color: active ? clr : C.text }}>{lbl}</span>
-                  </div>
-                );
-              })}
-              {state.settings && state.settings.taxEnabled && (
-                <Input label="Input VAT (optional)" type="number" min="0" step="0.01" value={editPur.totalTax != null && editPur.totalTax !== "" ? editPur.totalTax : ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { totalTax: e.target.value }); }); }} placeholder="0" />
-              )}
-              {editPur.payMode === "partial" && (
-                <Input label="Amount Paid" type="number" value={editPur.paidAmount || ""} onChange={function (e) {
-                  var newPaid = parseFloat(e.target.value) || 0;
-                  setEditPur(function (x) {
-                    var orig = (typeof state !== "undefined" ? state : {purchases: []}).purchases
-                      ? (state.purchases || []).find(function (p) { return p.id === x.id; })
-                      : null;
-                    var origPaid = orig ? (orig.paidAmount || 0) : 0;
-                    var diff = Math.round((newPaid - origPaid) * 100) / 100;
-                    var existingPh = (orig ? (orig.paymentHistory || []) : (x.paymentHistory || [])).slice();
-                    if (diff !== 0) {
-                      /* Distribute adjustment proportionally across Cash and Bank */
-                      var pCash = 0; var pBank = 0;
-                      existingPh.forEach(function (e) {
-                        if (!e.cashMethod || e.cashMethod === "Cheque" || (e.amount || 0) === 0) return;
-                        if (e.cashMethod === "Bank") pBank += e.amount; else pCash += e.amount;
-                      });
-                      var pTotal = pCash + pBank;
-                      if (pTotal <= 0 || pBank <= 0) {
-                        existingPh = existingPh.concat([{ id: uid(), date: today(), amount: diff, cashMethod: pBank > 0 ? "Bank" : "Cash", note: "Manual adjustment (edit)" }]);
-                      } else if (pCash <= 0) {
-                        existingPh = existingPh.concat([{ id: uid(), date: today(), amount: diff, cashMethod: "Bank", note: "Manual adjustment (edit)" }]);
-                      } else {
-                        var pcCorr = Math.round(diff * (pCash / pTotal) * 100) / 100;
-                        var pbCorr = Math.round((diff - pcCorr) * 100) / 100;
-                        if (pcCorr !== 0) existingPh = existingPh.concat([{ id: uid(), date: today(), amount: pcCorr, cashMethod: "Cash", note: "Manual adjustment (edit)" }]);
-                        if (pbCorr !== 0) existingPh = existingPh.concat([{ id: uid(), date: today(), amount: pbCorr, cashMethod: "Bank", note: "Manual adjustment (edit)" }]);
-                      }
-                    }
-                    return Object.assign({}, x, { paidAmount: newPaid, paymentHistory: existingPh });
-                  });
-                }} placeholder="0.00" />
-              )}
-              <div style={{ borderTop: "1.5px solid #bae6fd", paddingTop: 12, display: "flex", flexDirection: "column", gap: 7, marginTop: "auto" }}>
-                {editTaxAmt > 0.005 && (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                    <span>Lines (stock)</span>
-                    <strong style={{ color: C.text }}>{getCurrencySymbol()} {fmtNum(editLineTotal)}</strong>
-                  </div>
-                )}
-                {editTaxAmt > 0.005 && (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                    <span>Input VAT</span>
-                    <strong style={{ color: C.text }}>{getCurrencySymbol()} {fmtNum(editTaxAmt)}</strong>
-                  </div>
-                )}
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                  <span>{editTaxAmt > 0.005 ? "Invoice total" : "Total"}</span>
-                  <strong style={{ color: C.text }}>{getCurrencySymbol()} {fmtNum(editTotal)}</strong>
+                  ) : null}
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}>
-                  <span>Paid</span>
-                  <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(editPaid)}</strong>
+
+                <div className="erp-pur-mock-sum-card">
+                  <div className="erp-pur-mock-sec-title">Summary</div>
+                  <div className="erp-pur-mock-sum-row"><span>Total Amount</span><strong>{getCurrencySymbol()} {fmtNum(editLineTotal)}</strong></div>
+                  <div className="erp-pur-mock-sum-row disc">
+                    <span>Discount</span>
+                    <div className="erp-pur-mock-disc-ctrl">
+                      <input type="number" min="0" step="0.01" value={editPur.invDiscount != null ? editPur.invDiscount : "0.00"} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { invDiscount: e.target.value }); }); }} />
+                      <select value={editPur.invDiscountType || "%"} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { invDiscountType: e.target.value }); }); }}>
+                        <option value="%">%</option>
+                        <option value="Rs">Rs</option>
+                      </select>
+                      <em>- {getCurrencySymbol()} {fmtNum(editDiscAmt)}</em>
+                    </div>
+                  </div>
+                  <div className="erp-pur-mock-sum-row tax">
+                    <span>Tax</span>
+                    <div className="erp-pur-mock-tax-ctrl">
+                      {state.settings && state.settings.taxEnabled ? (
+                        <input type="number" min="0" step="0.01" value={editPur.totalTax != null && editPur.totalTax !== "" ? editPur.totalTax : ""} onChange={function (e) { setEditPur(function (x) { return Object.assign({}, x, { totalTax: e.target.value }); }); }} placeholder="0.00" />
+                      ) : null}
+                      <strong>{getCurrencySymbol()} {fmtNum(editTaxAmt)}</strong>
+                    </div>
+                  </div>
+                  <div className="erp-pur-mock-sum-row net"><span>Net Total</span><strong>{getCurrencySymbol()} {fmtNum(editTotal)}</strong></div>
+                  <div className="erp-pur-mock-sum-row paid"><span>Paid Amount</span><strong className="green">{getCurrencySymbol()} {fmtNum(editPaid)}</strong></div>
+                  <div className="erp-pur-mock-balance"><span>Balance Due</span><strong>{getCurrencySymbol()} {fmtNum(editBal)}</strong></div>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, borderTop: "1px dashed #bae6fd", paddingTop: 7 }}>
-                  <span style={{ fontWeight: 700, color: C.text }}>Balance</span>
-                  <strong style={{ color: editBal > 0 ? C.red : C.green, fontSize: 15 }}>{getCurrencySymbol()} {fmtNum(editBal)}</strong>
-                </div>
-                <div style={{ display: "flex", justifyContent: "flex-end" }}><Badge status={editStatus} /></div>
-              </div>
+              </aside>
             </div>
           </div>
-
-          {(editPur.items || []).length === 0 && (
-            <div style={{ textAlign: "center", padding: "22px 0", color: C.muted, fontSize: 13, marginBottom: 16, background: "#f8faff", borderRadius: 10, border: "1.5px dashed " + C.border }}>
-              No products added yet — search and add products above
-            </div>
-          )}
-
-          {/* ── Footer Actions ── */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 14, borderTop: "1.5px solid " + C.border }}>
-            <div style={{ fontSize: 13, color: C.muted }}>
-              {(editPur.items || []).length > 0 ? (editPur.items || []).length + " product(s) · " + fmtSumQty((editPur.items || []).reduce(function (a, it) { return a + it.qty; }, 0)) + " units" : "Add products to continue"}
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <Btn col="gray" onClick={function () { setEditPur(null); }}>Cancel</Btn>
-              <Btn col="blue" onClick={saveEditPur} disabled={!editPur.supplier || !(editPur.items || []).length}>Update Purchase</Btn>
+          <div className="erp-pur-mock-footer">
+            <button type="button" className="erp-pur-mock-btn-cancel" onClick={function () { setEditPur(null); }}>Cancel</button>
+            <div className="erp-pur-mock-footer-right">
+              <button type="button" className="erp-pur-mock-btn-save" disabled={!editPur.supplier || !(editPur.items || []).length} onClick={saveEditPur}>Update Purchase</button>
             </div>
           </div>
         </Modal>
@@ -1945,7 +3297,7 @@ var Purchases = React.memo(function (props) {
       {/* New Purchase split payment modal */}
       {purSplitModal && (
         <SplitPaymentModal
-          title={"Set Payment — " + (f.invoiceNo || "New Purchase")}
+          title={"Split Payment — " + (f.invoiceNo || "New Purchase")}
           invoiceTotal={invoiceTotal}
           alreadyPaid={0}
           isSale={false}
@@ -1954,7 +3306,13 @@ var Purchases = React.memo(function (props) {
               var totalNonCheque = splits.reduce(function (a, r) { return r.method !== "Cheque" ? a + (parseFloat(r.amount) || 0) : a; }, 0);
               var totalAll = splits.reduce(function (a, r) { return a + (parseFloat(r.amount) || 0); }, 0);
               var newPayMode = totalAll >= invoiceTotal ? "paid" : totalNonCheque > 0 || totalAll > 0 ? "partial" : "unpaid";
-              return Object.assign({}, x, { splitRows: splits, payMode: newPayMode, paidAmount: String(totalNonCheque) });
+              var primaryMethod = (splits[0] && splits[0].method) || x.cashMethod || "Cash";
+              return Object.assign({}, x, {
+                splitRows: splits,
+                payMode: newPayMode,
+                paidAmount: String(totalNonCheque),
+                cashMethod: primaryMethod,
+              });
             });
             setPurSplitModal(false);
           }}
@@ -2021,225 +3379,44 @@ var Purchases = React.memo(function (props) {
       )}
 
       {newProd && (
-        <Modal key={"newprod-" + newProdKey} title={"Add New Product — ID: " + nextProductId(state.products)} onClose={function () { setNewProd(null); }} wide>
-          <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>Product will be added to inventory. Stock will be updated when the purchase is saved.</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input
-              id="newprod-name"
-              label="Product Name *"
-              value={newProd.name}
-              onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }}
-              onFocus={newNameHint.onNameFocus}
-              onBlur={newNameHint.onNameBlur}
-              onKeyDown={function (e) {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  focusById("newprod-barcode");
-                }
-              }}
-            />
-            <ProductNameDuplicateHint name={newProd.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
-            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
-                <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{nextProductId(state.products)}</div>
-              </div>
-              <Input
-                id="newprod-barcode"
-                label="Barcode"
-                value={newProd.barcode || ""}
-                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }}
-                onKeyDown={function (e) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    focusById("newprod-main-category");
-                  }
-                }}
-              />
-            </div>
-            <CategorySelect
-              Sel={Sel}
-              value={newProd.category || "General"}
-              settings={shopSettings}
-              onChange={function (e) { onProductCategoryChange(setNewProd, e.target.value); }}
-              focusSubAfterGroupChange={false}
-              mainSelectProps={{
-                id: "newprod-main-category",
-                onFocus: function () { markSelectEnterStage("main", false); },
-                onBlur: function () { markSelectEnterStage("main", false); },
-                onKeyDown: function (e) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSelectEnter("main", "newprod-main-category", function () {
-                      focusById("newprod-sub-category");
-                    });
-                  }
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("main", true);
-                },
-                onKeyUp: function (e) {
-                  /* Fallback for native <select> popup: some Enter commits don't fire our second keydown. */
-                  if (e.key === "Enter" && newProdSelectEnterState.current.main) {
-                    markSelectEnterStage("main", false);
-                    focusById("newprod-sub-category");
-                  }
-                }
-              }}
-              subSelectProps={{
-                id: "newprod-sub-category",
-                onFocus: function () { markSelectEnterStage("sub", false); },
-                onBlur: function () { markSelectEnterStage("sub", false); },
-                onKeyDown: function (e) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSelectEnter("sub", "newprod-sub-category", function () {
-                      focusById("newprod-cost");
-                    });
-                  }
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("sub", true);
-                },
-                onKeyUp: function (e) {
-                  if (e.key === "Enter" && newProdSelectEnterState.current.sub) {
-                    markSelectEnterStage("sub", false);
-                    focusById("newprod-cost");
-                  }
-                }
-              }}
-            />
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-              <Input
-                id="newprod-cost"
-                label={glassCostPriceLabels(newProd, shopSettings).cost}
-                type="number"
-                value={newProd.cost || ""}
-                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }}
-                onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("newprod-sell"); } }}
-              />
-              <Input
-                id="newprod-sell"
-                label={glassCostPriceLabels(newProd, shopSettings).sell}
-                type="number"
-                value={newProd.price || ""}
-                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }}
-                onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("newprod-type"); } }}
-              />
-              <Sel
-                id="newprod-type"
-                label="Product Type"
-                value={newProd.type || "stock"}
-                onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}
-                onFocus={function () { markSelectEnterStage("type", false); }}
-                onBlur={function () { markSelectEnterStage("type", false); }}
-                onKeyDown={function (e) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSelectEnter("type", "newprod-type", function () { focusById("newprod-unit"); });
-                  }
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("type", true);
-                }}
-              >
-                <option value="stock">Stock</option>
-                <option value="service">Service</option>
-                <option value="raw_material">Raw Material</option>
-              </Sel>
-              <Sel
-                id="newprod-unit"
-                label="Base Unit"
-                value={newProd.unit || getDefaultProductUnit(shopSettings, newProd.category)}
-                onChange={function (e) {
-                var nextUnit = e.target.value;
-                setNewProd(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
-                }}
-                onFocus={function () { markSelectEnterStage("unit", false); }}
-                onBlur={function () { markSelectEnterStage("unit", false); }}
-                onKeyDown={function (e) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSelectEnter("unit", "newprod-unit", function () {
-                      var saveBtn = document.querySelector("button[id='newprod-save-btn']");
-                      if (saveBtn && typeof saveBtn.focus === "function") saveBtn.focus();
-                    });
-                  }
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("unit", true);
-                }}
-              >{getUnitsForSubCategory(newProd.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}</Sel>
-            </div>
-            {isGlassStockProductForm(newProd, shopSettings) && (
-              <GlassSheetInfo form={newProd} setForm={setNewProd} C={C} Input={Input} Sel={Sel} />
-            )}
-            {!isGlassStockProductForm(newProd, shopSettings) && newProd.category && (
-              <div style={{ fontSize: 11, color: C.muted }}>
-                Units for this category: {getUnitsForSubCategory(newProd.category, shopSettings).join(", ")}
-              </div>
-            )}
-            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
-              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{newProd.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>
-              {(newProd.extraUnits || []).map(function (row, idx) {
-                return (
-                  <div key={idx} style={{ display: "grid", gridTemplateColumns: "minmax(80px,1fr) 88px minmax(72px,1fr) minmax(72px,1fr) 34px", gap: 8, marginBottom: 8, alignItems: "end" }}>
-                    <Input label="Unit name" value={row.name || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { name: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="Strip / Box" />
-                    <Input label="Factor" type="number" value={row.factor || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { factor: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="e.g. 12" />
-                    <Input label="Sell (opt.)" type="number" value={row.sellPrice || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { sellPrice: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
-                    <Input label="Cost (opt.)" type="number" value={row.cost || ""} onChange={function (e) { var v = e.target.value; setNewProd(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { cost: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
-                    <button type="button" onClick={function () { setNewProd(function (x) { var next = (x.extraUnits || []).filter(function (_, j) { return j !== idx; }); return Object.assign({}, x, { extraUnits: next }); }); }} style={{ height: 36, borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", cursor: "pointer", fontSize: 14, color: C.red }} title="Remove">✕</button>
-                  </div>
-                );
-              })}
-              <button type="button" onClick={function () { setNewProd(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
-            </div>
-            {String(newProd.type || "").toLowerCase() === "raw_material" ? (
-              <div style={{ fontSize: 12, color: "#92400e", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 12px", lineHeight: 1.5 }}>
-                {RAW_MATERIAL_PRICE_COST_HINT}
-              </div>
-            ) : null}
-            {newProd.cost && newProd.price && (
-              <div style={{ background: C.accentSoft, borderRadius: 8, padding: "10px 14px", fontSize: 13, display: "flex", gap: 16 }}>
-                <span>Profit/unit: <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum((parseFloat(newProd.price) || 0) - (parseFloat(newProd.cost) || 0))}</strong></span>
-                <span>Margin: <strong style={{ color: C.accent }}>{(parseFloat(newProd.price) || 0) > 0 ? Math.round(((parseFloat(newProd.price) || 0) - (parseFloat(newProd.cost) || 0)) / (parseFloat(newProd.price) || 1) * 100) : 0}%</strong></span>
-              </div>
-            )}
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
-              <textarea value={newProd.description || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
-            </div>
-            {getBusinessProfile().name === "Jewelry & Watches" && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input label="Weight (grams)" type="number" value={newProd.weightGrams || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { weightGrams: e.target.value }); }); }} placeholder="e.g. 5.25" />
-                <Input label="Making Charge" type="number" value={newProd.makingCharge || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { makingCharge: e.target.value }); }); }} placeholder="e.g. 500" />
-              </div>
-            )}
-            {getBusinessProfile().modules.expiry && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input label="Expiry Date" type="date" value={newProd.expiryDate || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { expiryDate: e.target.value }); }); }} />
-                <Input label="Batch / Lot Number (optional)" value={newProd.batchNo || ""} onChange={function (e) { setNewProd(function (x) { return Object.assign({}, x, { batchNo: e.target.value }); }); }} placeholder="e.g. BATCH-2025-001" />
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <Btn id="newprod-save-btn" col="cyan" onClick={saveNewProduct} disabled={!newProd.name || !newProd.price || newProductNameExactDup}>Save Product</Btn>
-              <Btn col="gray" onClick={function () { setNewProd(null); }}>Cancel</Btn>
-            </div>
-          </div>
-        </Modal>
+        <AddNewProductModal
+          mode="purchase"
+          remountKey={newProdKey}
+          initial={newProd}
+          productIdLabel={nextProductId(state.products)}
+          shopSettings={shopSettings}
+          products={state.products}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          genBarcode={genBarcode}
+          getBusinessProfile={getBusinessProfile}
+          getCurrencySymbol={getCurrencySymbol}
+          fmtNum={fmtNum}
+          showAlert={showAlert}
+          showConfirm={showConfirm}
+          checkProductName={checkProductName}
+          onClose={function () { setNewProd(null); }}
+          onSubmit={function (form) { saveNewProduct(form); }}
+        />
       )}
-      {showNewSupp && (
-        <Modal title="Add New Supplier" onClose={function () { setShowNewSupp(false); }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ background: "#e8f5e9", border: "1px solid #a5d6a7", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#2e7d32" }}>
-              This supplier will be saved and automatically selected in the current purchase.
-            </div>
-            <Input label="Name *" value={newSuppF.name} onChange={function (e) { setNewSuppF(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label="Phone" value={newSuppF.phone} onChange={function (e) { setNewSuppF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); }} />
-              <Input label="Email" value={newSuppF.email} onChange={function (e) { setNewSuppF(function (x) { return Object.assign({}, x, { email: e.target.value }); }); }} />
-            </div>
-            <Input label="Address" value={newSuppF.address} onChange={function (e) { setNewSuppF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }} />
-            <Input label="Note (optional)" value={newSuppF.note} onChange={function (e) { setNewSuppF(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} />
-            <div style={{ display: "flex", gap: 8 }}>
-              <Btn col="green" onClick={saveNewSupplier} disabled={!newSuppF.name}>Save Supplier</Btn>
-              <Btn col="gray" onClick={function () { setShowNewSupp(false); }}>Cancel</Btn>
-            </div>
-          </div>
-        </Modal>
+      {showAddParty && (
+        <AddPartyModal
+          open={showAddParty}
+          onClose={function () { setShowAddParty(false); }}
+          onCreate={handleCreatePurchaseSupplier}
+          onSaved={handlePurchaseSupplierSaved}
+          suppliers={state.suppliers}
+          context="purchase"
+          partyKind="supplier"
+          initialValues={addPartyInitial}
+          hint="This supplier will be saved and automatically selected in the current purchase."
+          Modal={Modal}
+          Input={Input}
+          Btn={Btn}
+        />
       )}
       {voidPurTarget && (
         <Modal title={"Void Purchase — " + (voidPurTarget.invoiceNo || voidPurTarget.id.slice(0, 8))} onClose={function () { setVoidPurTarget(null); setVoidReason(""); }}>
@@ -2256,7 +3433,7 @@ var Purchases = React.memo(function (props) {
           </div>
         </Modal>
       )}
-    </div>
+    </React.Fragment>
   );
 });
 

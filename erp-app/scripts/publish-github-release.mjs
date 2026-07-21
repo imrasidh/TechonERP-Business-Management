@@ -60,6 +60,20 @@ function run(cmd, args, opts) {
   return r;
 }
 
+/** Prefer no PowerShell — `#` in gh asset rename syntax is treated as a comment. */
+function runGh(args) {
+  const r = spawnSync("gh", args, {
+    cwd: appRoot,
+    stdio: "inherit",
+    shell: false,
+    env: process.env,
+  });
+  if (r.status !== 0) {
+    throw new Error("gh " + args.join(" ") + " failed (" + r.status + ")");
+  }
+  return r;
+}
+
 function runCapture(cmd, args) {
   const r = spawnSync(cmd, args, { cwd: appRoot, encoding: "utf8", shell: true });
   if (r.status !== 0) {
@@ -130,7 +144,7 @@ function applyVersionBump(args) {
 
 function findSetupExe(version) {
   const candidates = [
-    join(RELEASE_DIR, "Techon-ERP Setup " + version + ".exe"),
+    join(RELEASE_DIR, "Techon-ERP-Setup-" + version + ".exe"),
     join(RELEASE_DIR, "Techon-ERP Setup " + version + ".exe"),
   ];
   for (const p of candidates) {
@@ -146,6 +160,70 @@ function findSetupExe(version) {
     if (listing) return listing;
   } catch (_) {}
   return null;
+}
+
+function collectUpdaterAssets(version) {
+  const setupExe = findSetupExe(version);
+  const assets = [];
+  if (setupExe) {
+    assets.push(setupExe);
+    const blockmap = setupExe + ".blockmap";
+    if (existsSync(blockmap)) assets.push(blockmap);
+  }
+  const latestYml = join(RELEASE_DIR, "latest.yml");
+  if (existsSync(latestYml)) assets.push(latestYml);
+  return { setupExe: setupExe, assets: assets };
+}
+
+function sleepSeconds(seconds) {
+  spawnSync("powershell", ["-NoProfile", "-Command", "Start-Sleep -Seconds " + seconds], {
+    cwd: appRoot,
+    shell: true,
+  });
+}
+
+function copyWithRetry(src, dest, tries) {
+  var lastErr = null;
+  for (var i = 0; i < tries; i++) {
+    try {
+      copyFileSync(src, dest);
+      return;
+    } catch (e) {
+      lastErr = e;
+      console.warn("Copy locked, retry " + (i + 1) + "/" + tries + "…");
+      sleepSeconds(2);
+    }
+  }
+  throw lastErr || new Error("Could not copy " + src);
+}
+
+function zipWithRetry(sourcePath, zipPath, tries) {
+  var lastErr = null;
+  for (var i = 0; i < tries; i++) {
+    try {
+      if (existsSync(zipPath)) {
+        try {
+          unlinkSync(zipPath);
+        } catch (_e) {}
+      }
+      run("powershell", [
+        "-NoProfile",
+        "-Command",
+        "Compress-Archive -LiteralPath '" +
+          sourcePath.replace(/'/g, "''") +
+          "' -DestinationPath '" +
+          zipPath.replace(/'/g, "''") +
+          "' -Force",
+      ]);
+      if (existsSync(zipPath)) return;
+      throw new Error("Zip was not created: " + zipPath);
+    } catch (e) {
+      lastErr = e;
+      console.warn("Zip failed (file in use?), retry " + (i + 1) + "/" + tries + "…");
+      sleepSeconds(3);
+    }
+  }
+  throw lastErr || new Error("Could not create zip from " + sourcePath);
 }
 
 function ensureZip(version) {
@@ -174,13 +252,17 @@ function ensureZip(version) {
     );
   }
 
+  /* Copy first so Compress-Archive does not lock/race antivirus on the builder output. */
+  const stagingDir = join(RELEASE_DIR, "_zip_stage");
+  mkdirSync(stagingDir, { recursive: true });
+  const stagingExe = join(stagingDir, "TechonERP-Setup-" + version + ".exe");
   console.log("Creating zip from:", setupExe);
-  if (existsSync(versionZip)) unlinkSync(versionZip);
-  run("powershell", [
-    "-NoProfile",
-    "-Command",
-    "Compress-Archive -LiteralPath '" + setupExe.replace(/'/g, "''") + "' -DestinationPath '" + versionZip.replace(/'/g, "''") + "' -Force",
-  ]);
+  console.log("Staging copy…");
+  copyWithRetry(setupExe, stagingExe, 8);
+  zipWithRetry(stagingExe, versionZip, 6);
+  try {
+    unlinkSync(stagingExe);
+  } catch (_e) {}
   copyFileSync(versionZip, latestNamed);
   return { versionZip, latestZip: latestNamed };
 }
@@ -268,37 +350,42 @@ function main() {
     console.log("\n1) Skipping build (--skip-build)");
   }
 
-  console.log("\n2) Preparing zip…");
+  console.log("\n2) Preparing zip (website fresh download)…");
   const zips = ensureZip(version);
+  const updater = collectUpdaterAssets(version);
+  if (!updater.setupExe) {
+    console.warn("Warning: NSIS setup .exe not found — in-app auto-update will not work for this release.");
+  } else if (!existsSync(join(RELEASE_DIR, "latest.yml"))) {
+    console.warn("Warning: latest.yml missing — run a full electron-builder dist so auto-updater can find the release.");
+  }
+
+  /* Paths must already have the public asset names — avoid `#rename` (breaks under PowerShell). */
+  const uploadArgs = [zips.versionZip, zips.latestZip].concat(updater.assets);
+
+  const notesFile = join(RELEASE_DIR, "_release-notes.txt");
+  writeFileSync(notesFile, args.notes + "\n", "utf8");
 
   console.log("\n3) Creating / updating GitHub release " + tag + "…");
   if (releaseExists(tag)) {
     console.log("Release " + tag + " already exists — uploading/replacing assets…");
-    // delete existing assets with same names then upload
-    run("gh", [
-      "release",
-      "upload",
-      tag,
-      zips.versionZip + "#TechonERP-" + version + ".zip",
-      zips.latestZip + "#TechonERP-latest.zip",
-      "--repo",
-      RELEASE_OWNER + "/" + RELEASE_REPO,
-      "--clobber",
-    ]);
+    runGh(
+      ["release", "upload", tag]
+        .concat(uploadArgs)
+        .concat(["--repo", RELEASE_OWNER + "/" + RELEASE_REPO, "--clobber"])
+    );
   } else {
-    run("gh", [
-      "release",
-      "create",
-      tag,
-      zips.versionZip + "#TechonERP-" + version + ".zip",
-      zips.latestZip + "#TechonERP-latest.zip",
-      "--repo",
-      RELEASE_OWNER + "/" + RELEASE_REPO,
-      "--title",
-      "TechonERP " + version,
-      "--notes",
-      args.notes,
-    ]);
+    runGh(
+      ["release", "create", tag]
+        .concat(uploadArgs)
+        .concat([
+          "--repo",
+          RELEASE_OWNER + "/" + RELEASE_REPO,
+          "--title",
+          "TechonERP " + version,
+          "--notes-file",
+          notesFile,
+        ])
+    );
   }
 
   console.log("\n4) Updating version.json on GitHub…");
@@ -306,7 +393,8 @@ function main() {
 
   console.log("\nDone.");
   console.log("  Release:  https://github.com/" + RELEASE_OWNER + "/" + RELEASE_REPO + "/releases/tag/" + tag);
-  console.log("  Download: " + meta.url);
+  console.log("  Website:  " + meta.url);
+  console.log("  In-app:   latest.yml + setup .exe on the same GitHub release");
   console.log(
     "  Manifest: https://raw.githubusercontent.com/" +
       RELEASE_OWNER +

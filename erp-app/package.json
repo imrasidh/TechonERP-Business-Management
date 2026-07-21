@@ -1,14 +1,14 @@
 {
   "name": "techon-erp",
   "private": true,
-  "version": "2.0.2",
+  "version": "2.0.3",
   "main": "main.cjs",
   "scripts": {
     "dev": "vite",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_VITE=1 electron .\"",
     "electron": "electron .",
     "build": "cross-env NODE_OPTIONS=--max-old-space-size=8192 vite build",
-    "dist": "node scripts/prepare-license-secret.mjs && electron-builder && node scripts/cleanup-license-secret.mjs",
+    "dist": "node scripts/prepare-license-secret.mjs && electron-builder --publish never && node scripts/cleanup-license-secret.mjs",
     "release": "node scripts/publish-github-release.mjs",
     "release:publish": "node scripts/publish-github-release.mjs --skip-build",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "dotenv": "^16.6.1",
+    "electron-updater": "^6.8.9",
     "node-fetch": "^3.3.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -62,6 +63,7 @@
     "files": [
       "dist/**/*",
       "main.cjs",
+      "updater.cjs",
       "preload.js",
       "lan-ws-sync.cjs",
       "lan-auth.cjs",
@@ -88,8 +90,16 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "icons/techonERP.ico"
+      "icon": "icons/techonERP.ico",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "imrasidh",
+        "repo": "TechonERP-releases"
+      }
+    ],
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

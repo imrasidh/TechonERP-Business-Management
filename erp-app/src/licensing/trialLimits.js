@@ -11,6 +11,7 @@ export var TRIAL_COUNT_MODULES = [
   { key: "customers", label: "Customers", storageKey: "tc3_customers" },
   { key: "purchases", label: "Purchases", storageKey: "tc3_purchases" },
   { key: "suppliers", label: "Suppliers", storageKey: "tc3_suppliers" },
+  { key: "others", label: "Others", storageKey: "tc3_others" },
   { key: "expenses", label: "Expenses", storageKey: "tc3_expenses" },
   { key: "quotations", label: "Quotations", storageKey: "tc3_quotations" },
   { key: "repairs", label: "Repairs", storageKey: "tc3_repairs" },
@@ -20,6 +21,8 @@ export var TRIAL_COUNT_MODULES = [
   { key: "assets", label: "Assets", storageKey: "tc3_assets" },
   { key: "manualReceivables", label: "Manual receivables", storageKey: "tc3_manualReceivables" },
   { key: "manualPayables", label: "Manual payables", storageKey: "tc3_manualPayables" },
+  { key: "codRecords", label: "COD records", storageKey: "tc3_codRecords" },
+  { key: "codWithdrawals", label: "COD withdrawals", storageKey: "tc3_codWithdrawals" },
 ];
 
 var _STORAGE_TO_MODULE = {};
@@ -38,6 +41,7 @@ export var READONLY_ALLOWED_STORAGE_KEYS = {
   tc3_gl_audit: true,
   tc3_auditLog: true,
   tc3_financial_mutation_log: true,
+  tc3_invoice_edit_locks: true,
 };
 
 export function countArrayLength(v) {

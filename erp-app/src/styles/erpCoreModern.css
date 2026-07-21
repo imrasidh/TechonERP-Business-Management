@@ -1,0 +1,2293 @@
+/* TechonERP ? Core modern style (Dashboard design system for all module pages)
+   Does NOT touch menu bar, toolbar, or status bar. */
+
+.erp-core-scope {
+  --erp-core-bg: #f4f5f7;
+  --erp-core-surface: #ffffff;
+  --erp-core-border: #e2e8f0;
+  --erp-core-border-strong: #cbd5e1;
+  --erp-core-text: #0f172a;
+  --erp-core-muted: #64748b;
+  --erp-core-caption: #94a3b8;
+  --erp-core-navy: #1e3a5f;
+  --erp-core-blue: #2563eb;
+  --erp-core-input-border: #b8d0ea;
+  --erp-core-input-border-focus: #3b82f6;
+  --erp-core-input-ring: rgba(59, 130, 246, 0.14);
+  --erp-core-table-line: #dce4ef;
+  --erp-core-table-line-header: #c5d4e8;
+  --erp-core-radius: 12px;
+  --erp-core-radius-sm: 8px;
+  --erp-core-radius-pill: 999px;
+  --erp-core-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --erp-core-shadow-hover: 0 4px 14px rgba(15, 23, 42, 0.06);
+  --erp-core-gap: 12px;
+}
+
+/* Workspace */
+.erp-app-root .erp-core-scope.erp-page-content {
+  background: var(--erp-core-bg) !important;
+  background-image: none !important;
+  padding: 10px 12px 12px !important;
+}
+
+.erp-app-root .erp-core-scope.erp-page-content.pos-page {
+  padding: 5px !important;
+}
+
+/* Classic module pages ? skip pages that already ship their own modern shell */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--erp-core-gap);
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+  font-size: 13px;
+  color: var(--erp-core-text);
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
+}
+
+/* ?? Cards / panels ??????????????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-card {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+  overflow: hidden;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: transparent !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  padding: 12px 14px 8px !important;
+  border-bottom: none !important;
+  min-height: 0 !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-card-title-text {
+  font-size: 14px !important;
+  font-weight: 800 !important;
+  color: var(--erp-core-navy) !important;
+  line-height: 1.25 !important;
+  text-transform: none !important;
+  letter-spacing: -0.01em !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-card-title-sub {
+  font-size: 11px !important;
+  color: var(--erp-core-caption) !important;
+  font-weight: 500 !important;
+  opacity: 1 !important;
+  margin-top: 2px !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-card-body,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-card-padded {
+  padding: 10px 14px 14px !important;
+}
+
+/* ?? Module toolbar / tabs ??????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-module-toolbar {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 0 2px !important;
+  gap: 8px !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-tab-strip {
+  display: inline-flex !important;
+  background: #eef1f5 !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  padding: 3px !important;
+  gap: 2px !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-tab-btn {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: var(--erp-core-muted) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  padding: 5px 12px !important;
+  min-height: 26px !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-tab-btn:hover:not(.active) {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  color: var(--erp-core-navy) !important;
+  border: none !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-tab-btn.active {
+  background: var(--erp-core-navy) !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16) !important;
+  font-weight: 700 !important;
+}
+
+/* ?? KPI / stat strip ???????????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-kpi-strip {
+  gap: var(--erp-core-gap) !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-kpi-strip-unified {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+  overflow: hidden;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-stat-card {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+  padding: 14px !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-kpi-strip-unified .erp-stat-card {
+  border: none !important;
+  border-right: 1px solid var(--erp-core-border) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-stat-card-label {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  color: var(--erp-core-muted) !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-stat-card-value {
+  font-size: 18px !important;
+  font-weight: 800 !important;
+  color: var(--erp-core-text) !important;
+  letter-spacing: -0.02em !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-stat-card-sub {
+  font-size: 11px !important;
+  color: var(--erp-core-caption) !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-stat-card-accent {
+  width: 4px !important;
+  border-radius: var(--erp-core-radius-pill) !important;
+}
+
+/* ?? Tables ??????????????????????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) table {
+  border-collapse: collapse !important;
+  border: 1px solid var(--erp-core-table-line-header) !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) table th {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border: 1px solid var(--erp-core-table-line-header) !important;
+  color: var(--erp-core-muted) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  padding: 8px 10px !important;
+  white-space: nowrap;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) table td {
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  border: 1px solid var(--erp-core-table-line) !important;
+  color: #334155 !important;
+  padding: 8px 10px !important;
+  font-size: 12px !important;
+  vertical-align: middle !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) table tbody tr:nth-child(even) td {
+  background: #fafcff !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) table tbody tr:hover td,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .table-row-hover:hover td {
+  background: #f1f5f9 !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) table tbody tr:last-child td {
+  border-bottom: 1px solid var(--erp-core-table-line) !important;
+}
+
+/* ?? Form fields ??????????????????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-field label {
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  color: var(--erp-core-muted) !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-input,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-select,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) select,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) textarea {
+  border: 1px solid var(--erp-core-input-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  font-size: 12px !important;
+  padding: 7px 10px !important;
+  box-shadow: none !important;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-input:focus,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-select:focus,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) input:focus,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) select:focus,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) textarea:focus {
+  border-color: var(--erp-core-input-border-focus) !important;
+  box-shadow: 0 0 0 2px var(--erp-core-input-ring) !important;
+  outline: none !important;
+}
+
+/* ?? Buttons (kill green glass ? dashboard navy/white) ??????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-cyan,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-gray {
+  border: 1px solid var(--erp-core-border-strong) !important;
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  padding: 6px 14px !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green {
+  background: var(--erp-core-navy) !important;
+  background-image: none !important;
+  border-color: var(--erp-core-navy) !important;
+  color: #ffffff !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn:hover:not(:disabled),
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-gray:hover:not(:disabled) {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border-color: var(--erp-core-border-strong) !important;
+  color: var(--erp-core-navy) !important;
+  box-shadow: none !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue:hover:not(:disabled),
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green:hover:not(:disabled) {
+  background: #16304f !important;
+  background-image: none !important;
+  border-color: #16304f !important;
+  color: #ffffff !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red {
+  background: #fef2f2 !important;
+  border-color: #fecaca !important;
+  color: #b91c1c !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red:hover:not(:disabled) {
+  background: #fee2e2 !important;
+  border-color: #fca5a5 !important;
+  color: #991b1b !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange {
+  background: #fff7ed !important;
+  border-color: #fed7aa !important;
+  color: #c2410c !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange:hover:not(:disabled) {
+  background: #ffedd5 !important;
+  border-color: #fdba74 !important;
+  color: #9a3412 !important;
+}
+
+/* Unstyled page buttons */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-pin-key):not(.erp-dialog-btn):not(.erp-act-btn):not(.erp-acc-tab) {
+  border: 1px solid var(--erp-core-border-strong) !important;
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 5px 12px !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-acc-tab):hover:not(:disabled) {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border-color: var(--erp-core-border-strong) !important;
+  color: var(--erp-core-navy) !important;
+}
+
+/* ?? Badges ??????????????????????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  padding: 2px 8px !important;
+  border-radius: var(--erp-core-radius-pill) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  border: none !important;
+  white-space: nowrap;
+}
+
+/* ?? Pager ???????????????????????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager {
+  border-top: 1px solid var(--erp-core-border) !important;
+  margin-top: 8px !important;
+  padding: 8px 0 4px !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager-info {
+  color: var(--erp-core-muted) !important;
+  font-weight: 600 !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager-btn {
+  min-width: 28px !important;
+  height: 28px !important;
+  border: 1px solid var(--erp-core-border) !important;
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  color: var(--erp-core-muted) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager-btn.active {
+  background: var(--erp-core-navy) !important;
+  background-image: none !important;
+  border-color: var(--erp-core-navy) !important;
+  color: #ffffff !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager-btn:hover:not(:disabled):not(.active) {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border-color: var(--erp-core-border-strong) !important;
+  color: var(--erp-core-navy) !important;
+}
+
+/* ?? Info / alert boxes ??????????????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-alert,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-settings-info {
+  border-radius: 10px !important;
+  border: 1px solid var(--erp-core-border) !important;
+  background: var(--erp-core-surface) !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-settings-info-warn,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-alert-warn {
+  background: #fffbeb !important;
+  border-color: #fcd34d !important;
+  color: #92400e !important;
+}
+
+/* ?? Folder tabs (reports etc.) ??????????????????????????????? */
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-folder-tabs {
+  background: #eef1f5 !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  padding: 3px !important;
+  gap: 2px !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-folder-tab {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: var(--erp-core-muted) !important;
+  border-radius: 6px !important;
+  font-weight: 700 !important;
+  padding: 5px 12px !important;
+  box-shadow: none !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-folder-tab.active {
+  background: var(--erp-core-navy) !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16) !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-folder-tab:hover:not(.active) {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  color: var(--erp-core-navy) !important;
+  border: none !important;
+}
+
+/* ?? Beat Phase7 green-glass hover on module pages ???????????? */
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-cyan:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-gray:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-tab-btn:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-folder-tab:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager-btn:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) button:hover:not(:disabled):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn) {
+  background-image: none !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-tab-btn.active,
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-folder-tab.active,
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager-btn.active {
+  background-image: none !important;
+}
+
+/* ?? Scrollbars ? match Dashboard (GCSS blue gradient) ??????? */
+.erp-app-root,
+.erp-app-root .erp-page-content,
+.erp-app-root .erp-core-scope.erp-page-content,
+.erp-app-root .erp-sidebar-scroll,
+.erp-app-root .erp-sidebar-nav,
+.erp-app-root .erp-pur-table-wrap,
+.erp-app-root .erp-pur-sidebar,
+.erp-app-root .erp-inv-modern,
+.erp-app-root .erp-si-table-wrap,
+.erp-app-root .erp-card-body,
+.erp-app-root .erp-modal-body,
+.erp-app-root .erp-pos-modern,
+.erp-app-root .erp-pos-modern .erp-sale-cart-scroll,
+.erp-app-root .erp-pos-modern .erp-sale-footer-stack,
+.erp-app-root .erp-pos-modern .erp-pos-right,
+.erp-app-root .erp-pos-modern .erp-pos-dropdown,
+.erp-app-root .erp-pos-modern .erp-sale-recent-drop,
+.erp-core-scope .erp-page .erp-card-body {
+  scrollbar-width: thin;
+  scrollbar-color: #7499e8 #f0f4ff;
+}
+
+.erp-app-root::-webkit-scrollbar,
+.erp-app-root *::-webkit-scrollbar,
+.erp-core-scope .erp-page .erp-card-body::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.erp-app-root::-webkit-scrollbar-track,
+.erp-app-root *::-webkit-scrollbar-track,
+.erp-core-scope .erp-page .erp-card-body::-webkit-scrollbar-track {
+  background: #f0f4ff;
+  border-radius: 4px;
+}
+
+.erp-app-root::-webkit-scrollbar-thumb,
+.erp-app-root *::-webkit-scrollbar-thumb,
+.erp-core-scope .erp-page .erp-card-body::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #a8bcf0, #7499e8);
+  border-radius: 4px;
+}
+
+.erp-app-root::-webkit-scrollbar-thumb:hover,
+.erp-app-root *::-webkit-scrollbar-thumb:hover,
+.erp-core-scope .erp-page .erp-card-body::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #2979ff, #2255d4);
+}
+
+.erp-app-root::-webkit-scrollbar-corner,
+.erp-app-root *::-webkit-scrollbar-corner {
+  background: #f0f4ff;
+}
+
+/* Table action buttons — styled globally in erpModules.css (.erp-act-btn) */
+
+/* ?? Reports / scoped panels ??????????????????????????????????? */
+.erp-core-scope .erp-page.erp-reports-scope .erp-rpt-verdict,
+.erp-core-scope .erp-page.erp-reports-scope .erp-rpt-panel,
+.erp-core-scope .erp-page.erp-settings-scope .erp-settings-panel,
+.erp-core-scope .erp-page.erp-accounts-scope .erp-ob-summary-grid > div,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-empty-state {
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  background: var(--erp-core-surface) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+}
+
+.erp-core-scope .erp-page.erp-reports-scope .erp-rpt-verdict-label {
+  color: var(--erp-core-muted) !important;
+  font-weight: 600 !important;
+}
+
+.erp-core-scope .erp-page.erp-reports-scope .erp-rpt-verdict-title {
+  font-weight: 800 !important;
+  letter-spacing: -0.02em !important;
+}
+
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-empty-state {
+  color: var(--erp-core-caption) !important;
+  font-size: 12px !important;
+}
+
+/* Settings segmented controls */
+.erp-core-scope .erp-page.erp-settings-scope .erp-settings-seg {
+  background: #eef1f5 !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  padding: 3px !important;
+}
+
+.erp-core-scope .erp-page.erp-settings-scope .erp-settings-seg-btn {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: var(--erp-core-muted) !important;
+  border-radius: 6px !important;
+  font-weight: 700 !important;
+  box-shadow: none !important;
+}
+
+.erp-core-scope .erp-page.erp-settings-scope .erp-settings-seg-btn.active {
+  background: var(--erp-core-navy) !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16) !important;
+}
+
+.erp-core-scope .erp-page.erp-settings-scope .erp-settings-seg-btn:hover:not(.active) {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  color: var(--erp-core-navy) !important;
+  border: none !important;
+}
+
+/* ??????????????????????????????????????????????????????????????
+   WORKSPACE-WIDE ? all buttons/controls inside erp-core-scope
+   (beats erpModules green glass + Phase7 leftovers)
+   ?????????????????????????????????????????????????????????????? */
+
+/* Primary button family */
+.erp-app-root .erp-core-scope .erp-btn,
+.erp-app-root .erp-core-scope .erp-btn-blue,
+.erp-app-root .erp-core-scope .erp-btn-cyan,
+.erp-app-root .erp-core-scope .erp-btn-green,
+.erp-app-root .erp-core-scope .erp-btn-orange,
+.erp-app-root .erp-core-scope .erp-btn-red,
+.erp-app-root .erp-core-scope .erp-btn-gray {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 6px !important;
+  border: 1px solid var(--erp-core-border-strong) !important;
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  font-family: inherit !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  padding: 6px 14px !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-sm {
+  font-size: 11px !important;
+  padding: 5px 12px !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-blue,
+.erp-app-root .erp-core-scope .erp-btn-green {
+  background: var(--erp-core-navy) !important;
+  background-image: none !important;
+  border-color: var(--erp-core-navy) !important;
+  color: #ffffff !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-cyan {
+  background: #eff6ff !important;
+  border-color: #bfdbfe !important;
+  color: #1d4ed8 !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-orange {
+  background: #fff7ed !important;
+  border-color: #fed7aa !important;
+  color: #c2410c !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-red {
+  background: #fef2f2 !important;
+  border-color: #fecaca !important;
+  color: #b91c1c !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-gray {
+  background: #f8fafc !important;
+  border-color: var(--erp-core-border) !important;
+  color: #475569 !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-btn-gray:hover:not(:disabled) {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  border-color: var(--erp-core-border-strong) !important;
+  color: var(--erp-core-navy) !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-blue:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-btn-green:hover:not(:disabled) {
+  background: #16304f !important;
+  background-image: none !important;
+  border-color: #16304f !important;
+  color: #ffffff !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-cyan:hover:not(:disabled) {
+  background: #dbeafe !important;
+  border-color: #93c5fd !important;
+  color: #1e40af !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-orange:hover:not(:disabled) {
+  background: #ffedd5 !important;
+  border-color: #fdba74 !important;
+  color: #9a3412 !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn-red:hover:not(:disabled) {
+  background: #fee2e2 !important;
+  border-color: #fca5a5 !important;
+  color: #991b1b !important;
+}
+
+.erp-app-root .erp-core-scope .erp-btn:disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+}
+
+/* Tabs, pager, folder tabs ? workspace default */
+.erp-app-root .erp-core-scope .erp-tab-btn,
+.erp-app-root .erp-core-scope .erp-folder-tab,
+.erp-app-root .erp-core-scope .erp-pager-btn,
+.erp-app-root .erp-core-scope .erp-settings-seg-btn {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: var(--erp-core-muted) !important;
+  font-weight: 700 !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-core-scope .erp-tab-btn:hover:not(.active),
+.erp-app-root .erp-core-scope .erp-folder-tab:hover:not(.active),
+.erp-app-root .erp-core-scope .erp-pager-btn:hover:not(:disabled):not(.active),
+.erp-app-root .erp-core-scope .erp-settings-seg-btn:hover:not(.active) {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  color: var(--erp-core-navy) !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-core-scope .erp-tab-btn.active,
+.erp-app-root .erp-core-scope .erp-folder-tab.active,
+.erp-app-root .erp-core-scope .erp-pager-btn.active,
+.erp-app-root .erp-core-scope .erp-settings-seg-btn.active {
+  background: var(--erp-core-navy) !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16) !important;
+}
+
+/* Table action buttons — styled globally in erpModules.css */
+
+/* Generic unclassed buttons in workspace */
+.erp-app-root .erp-core-scope button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-md-refresh):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-cust-toggle):not(.erp-sale-split-btn):not(.erp-sale-picker-btn):not(.erp-sale-hold-btn):not(.erp-sale-hold-trigger):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-pos-chip-btn):not(.erp-pos-cart-remove-btn):not(.erp-pos-cart-dup-btn):not(.erp-btn-hold):not(.erp-dialog-btn):not(.erp-pur-btn-primary):not(.erp-pur-btn-apply):not(.erp-pur-btn-clear):not(.erp-pur-act):not(.erp-pur-quick):not(.erp-pur-inv):not(.erp-pur-icon-btn):not(.erp-pur-pager-btn):not(.erp-pur-date-refresh):not(.erp-pur-search-clear):not([class*="erp-inv-"]):not([class*="erp-pur-"]):not(.erp-settings-seg-btn):not(.erp-settings-tax-help-btn):not(.erp-settings-add-tax-btn):not(.erp-settings-table-del-btn):not(.erp-settings-dismiss-btn):not(.erp-network-copy-btn):not(.erp-network-remove-btn):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-si-"]):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(:is(.erp-si-fv *)) {
+  border: 1px solid var(--erp-core-border-strong) !important;
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  padding: 5px 12px !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-core-scope button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-split-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-hold-trigger):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-dialog-btn):not([class*="erp-inv-"]):not([class*="erp-pur-"]):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-si-"]):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(:is(.erp-si-fv *)):hover:not(:disabled) {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border-color: var(--erp-core-border-strong) !important;
+  color: var(--erp-core-navy) !important;
+}
+
+/* ?? Modals ??????????????????????????????????????????????????? */
+.erp-app-root .erp-core-scope .erp-modal-shell {
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18) !important;
+  overflow: hidden !important;
+}
+
+.erp-app-root .erp-core-scope .erp-modal-body {
+  padding: 14px 16px !important;
+  font-size: 13px !important;
+  color: #334155 !important;
+}
+
+.erp-app-root .erp-core-scope .erp-modal-body .erp-input,
+.erp-app-root .erp-core-scope .erp-modal-body .erp-select,
+.erp-app-root .erp-core-scope .erp-modal-body input:not([type="checkbox"]):not([type="radio"]),
+.erp-app-root .erp-core-scope .erp-modal-body select,
+.erp-app-root .erp-core-scope .erp-modal-body textarea {
+  border: 1px solid var(--erp-core-input-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  background: var(--erp-core-surface) !important;
+  color: var(--erp-core-text) !important;
+  font-size: 12px !important;
+  padding: 7px 10px !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-core-scope .erp-modal-body table th {
+  background: #f8fafc !important;
+  border: 1px solid var(--erp-core-table-line-header) !important;
+  color: var(--erp-core-muted) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  padding: 8px 10px !important;
+}
+
+.erp-app-root .erp-core-scope .erp-modal-body table td {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-table-line) !important;
+  padding: 8px 10px !important;
+  color: #334155 !important;
+}
+
+/* ?? Tables & lists ??????????????????????????????????????????? */
+.erp-app-root .erp-core-scope .erp-table-wrap {
+  border: 1px solid var(--erp-core-table-line-header) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  overflow: auto !important;
+  background: var(--erp-core-surface) !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page table,
+.erp-app-root .erp-core-scope .erp-modal-body table,
+.erp-app-root .erp-core-scope .erp-table-wrap table {
+  border-collapse: collapse !important;
+  border: 1px solid var(--erp-core-table-line-header) !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page table th,
+.erp-app-root .erp-core-scope .erp-modal-body table th,
+.erp-app-root .erp-core-scope .erp-table-wrap table th {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border: 1px solid var(--erp-core-table-line-header) !important;
+  color: var(--erp-core-muted) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  padding: 8px 10px !important;
+  white-space: nowrap;
+}
+
+.erp-app-root .erp-core-scope .erp-page table td,
+.erp-app-root .erp-core-scope .erp-modal-body table td,
+.erp-app-root .erp-core-scope .erp-table-wrap table td {
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  border: 1px solid var(--erp-core-table-line) !important;
+  color: #334155 !important;
+  padding: 8px 10px !important;
+  font-size: 12px !important;
+  vertical-align: middle !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page table tbody tr:nth-child(even) td,
+.erp-app-root .erp-core-scope .erp-modal-body table tbody tr:nth-child(even) td,
+.erp-app-root .erp-core-scope .erp-table-wrap table tbody tr:nth-child(even) td {
+  background: #fafcff !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page table tbody tr:hover td,
+.erp-app-root .erp-core-scope .erp-modal-body table tbody tr:hover td,
+.erp-app-root .erp-core-scope .erp-table-wrap table tbody tr:hover td,
+.erp-app-root .erp-core-scope .table-row-hover:hover td {
+  background: #f1f5f9 !important;
+}
+
+/* ?? Cards (all pages in workspace) ??????????????????????????? */
+.erp-app-root .erp-core-scope .erp-page .erp-card {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+  overflow: hidden !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page .erp-card-title {
+  background: transparent !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  border-bottom: none !important;
+  padding: 12px 14px 8px !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page .erp-card-title-text {
+  font-size: 14px !important;
+  font-weight: 800 !important;
+  color: var(--erp-core-navy) !important;
+  letter-spacing: -0.01em !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page .erp-card-body,
+.erp-app-root .erp-core-scope .erp-page .erp-card-padded {
+  padding: 10px 14px 14px !important;
+}
+
+/* ?? Inputs workspace-wide ???????????????????????????????????? */
+.erp-app-root .erp-core-scope .erp-input,
+.erp-app-root .erp-core-scope .erp-select,
+.erp-app-root .erp-core-scope .erp-page input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):not(.erp-pur-kpi-period),
+.erp-app-root .erp-core-scope .erp-page select:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):not(.erp-pur-kpi-period),
+.erp-app-root .erp-core-scope .erp-page textarea,
+.erp-app-root .erp-core-scope .erp-modal-body .erp-input,
+.erp-app-root .erp-core-scope .erp-modal-body .erp-select,
+.erp-app-root .erp-core-scope .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field),
+.erp-app-root .erp-core-scope .erp-modal-body select:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field),
+.erp-app-root .erp-core-scope .erp-modal-body textarea {
+  border: 1px solid var(--erp-core-input-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  background: var(--erp-core-surface) !important;
+  background-image: none !important;
+  color: var(--erp-core-text) !important;
+  font-size: 12px !important;
+  padding: 7px 10px !important;
+  box-shadow: none !important;
+  outline: none !important;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease !important;
+}
+
+.erp-app-root .erp-core-scope .erp-input:focus,
+.erp-app-root .erp-core-scope .erp-select:focus,
+.erp-app-root .erp-core-scope .erp-page input:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):not(.erp-pur-kpi-period):focus,
+.erp-app-root .erp-core-scope .erp-page select:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):not(.erp-pur-kpi-period):focus,
+.erp-app-root .erp-core-scope .erp-page textarea:focus,
+.erp-app-root .erp-core-scope .erp-modal-body .erp-input:focus,
+.erp-app-root .erp-core-scope .erp-modal-body .erp-select:focus,
+.erp-app-root .erp-core-scope .erp-modal-body input:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):focus,
+.erp-app-root .erp-core-scope .erp-modal-body select:not(.erp-pur-field-ctrl):not(.erp-inv-field-ctrl):not(.erp-si-field):focus,
+.erp-app-root .erp-core-scope .erp-modal-body textarea:focus {
+  border-color: var(--erp-core-input-border-focus) !important;
+  box-shadow: 0 0 0 2px var(--erp-core-input-ring) !important;
+}
+
+/* Classic cream label chips ? modern */
+.erp-app-root .erp-core-scope label.active,
+.erp-app-root .erp-core-scope .erp-page-content label.active {
+  background: #eff6ff !important;
+  border-color: #93c5fd !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  color: var(--erp-core-navy) !important;
+}
+
+.erp-app-root .erp-core-scope .erp-page-content label[style*="borderRadius"],
+.erp-app-root .erp-core-scope .erp-page-content label[style*="border-radius"] {
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  background: var(--erp-core-surface) !important;
+  padding: 8px 10px !important;
+}
+
+/* Badges ? pill style */
+.erp-app-root .erp-core-scope .erp-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  padding: 2px 8px !important;
+  border-radius: var(--erp-core-radius-pill) !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  border: none !important;
+}
+
+/* Banners in main (not menu/toolbar) */
+.erp-app-root .erp-main .erp-banner {
+  border-radius: var(--erp-core-radius-sm) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  margin: 0 0 8px !important;
+}
+
+.erp-app-root .erp-main .erp-banner-warn {
+  background: #fffbeb !important;
+  border-color: #fcd34d !important;
+  color: #92400e !important;
+}
+
+.erp-app-root .erp-main .erp-banner-lock {
+  background: #fef2f2 !important;
+  border-color: #fecaca !important;
+  color: #991b1b !important;
+}
+
+.erp-app-root .erp-main .erp-banner-readonly {
+  background: #eff6ff !important;
+  border-color: #bfdbfe !important;
+  color: #1e40af !important;
+}
+
+/* Stat cards workspace-wide */
+.erp-app-root .erp-core-scope .erp-stat-card {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+}
+
+.erp-app-root .erp-core-scope .erp-stat-card-label {
+  color: var(--erp-core-muted) !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+}
+
+.erp-app-root .erp-core-scope .erp-stat-card-value {
+  color: var(--erp-core-text) !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* Tab strip container */
+.erp-app-root .erp-core-scope .erp-tab-strip {
+  display: inline-flex !important;
+  background: #eef1f5 !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  padding: 3px !important;
+  gap: 2px !important;
+}
+
+.erp-app-root .erp-core-scope .erp-module-toolbar {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 0 4px !important;
+}
+
+/* Repairs / reports bordered panels */
+.erp-app-root .erp-core-scope [class*="erp-rpt-"],
+.erp-app-root .erp-core-scope .erp-repairs-scope .erp-card,
+.erp-app-root .erp-core-scope .erp-barcodes-scope .erp-card,
+.erp-app-root .erp-core-scope .erp-accounts-scope .erp-card {
+  border-color: var(--erp-core-border) !important;
+}
+
+.erp-app-root .erp-core-scope .erp-rpt-verdict {
+  border-radius: var(--erp-core-radius) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+}
+
+/* Empty state */
+.erp-app-root .erp-core-scope .erp-empty-state {
+  color: var(--erp-core-caption) !important;
+  font-size: 12px !important;
+  padding: 24px 16px !important;
+  text-align: center !important;
+}
+
+/* Pager strip */
+.erp-app-root .erp-core-scope .erp-pager {
+  border-top: 1px solid var(--erp-core-border) !important;
+  margin-top: 8px !important;
+  padding-top: 8px !important;
+  color: var(--erp-core-muted) !important;
+}
+
+/* ??????????????????????????????????????????????????????????????
+   GLOBAL CLEANUP ? Kill ALL remaining classic cream/old borders
+   inside workspace (erp-core-scope). Beats Phase 4/5/6/7.
+   ?????????????????????????????????????????????????????????????? */
+
+/* All bordered containers ? modern soft blue */
+.erp-app-root .erp-core-scope *[style*="border"],
+.erp-app-root .erp-core-scope [class*="erp-"] {
+  border-color: var(--erp-core-border) !important;
+}
+
+/* Specific patterns that Phase4-7 use ? override with modern */
+.erp-app-root .erp-core-scope .erp-settings-scope *,
+.erp-app-root .erp-core-scope .erp-reports-scope *,
+.erp-app-root .erp-core-scope .erp-repairs-scope *,
+.erp-app-root .erp-core-scope .erp-accounts-scope *,
+.erp-app-root .erp-core-scope .erp-barcodes-scope * {
+  border-color: var(--erp-core-border) !important;
+}
+
+/* Kill ALL cream backgrounds in workspace */
+.erp-app-root .erp-core-scope .erp-page [class*="erp-"][style*="background"] {
+  background-image: none !important;
+}
+
+/* Phase-scoped panels, strips, headers ? modern surface + border */
+.erp-app-root .erp-core-scope .erp-settings-scope .erp-card,
+.erp-app-root .erp-core-scope .erp-reports-scope .erp-card,
+.erp-app-root .erp-core-scope .erp-repairs-scope .erp-card,
+.erp-app-root .erp-core-scope .erp-accounts-scope .erp-card,
+.erp-app-root .erp-core-scope .erp-barcodes-scope .erp-card {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: var(--erp-core-shadow) !important;
+}
+
+/* Phase7 system dialog shell ? modern */
+.erp-system-dialog-shell {
+  border: 1px solid var(--erp-core-border, #e2e8f0) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18) !important;
+}
+
+/* Settings-specific panels/sections with old borders */
+.erp-app-root .erp-core-scope .erp-settings-scope .erp-settings-section,
+.erp-app-root .erp-core-scope .erp-settings-scope .erp-settings-panel,
+.erp-app-root .erp-core-scope .erp-settings-scope .erp-settings-group {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+}
+
+/* Reports scope overrides */
+.erp-app-root .erp-core-scope .erp-reports-scope .erp-rpt-panel,
+.erp-app-root .erp-core-scope .erp-reports-scope .erp-rpt-section {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+}
+
+/* Repairs panels */
+.erp-app-root .erp-core-scope .erp-repairs-scope .erp-repair-panel,
+.erp-app-root .erp-core-scope .erp-repairs-scope .erp-repair-card {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+}
+
+/* Kill cream tab/segment strip backgrounds everywhere in workspace */
+.erp-app-root .erp-core-scope .erp-pos-seg-group:not(.erp-pos-mode-tabs),
+.erp-app-root .erp-core-scope .erp-settings-seg,
+.erp-app-root .erp-core-scope .erp-tab-strip,
+.erp-app-root .erp-core-scope .erp-folder-tabs {
+  background: #eef1f5 !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+}
+
+/* Phase7 modal shell/overlay ? modern rounded */
+.erp-app-root .erp-core-scope .erp-modal-shell {
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius) !important;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18) !important;
+}
+
+/* Accounts scope */
+.erp-app-root .erp-core-scope .erp-accounts-scope .erp-ob-step,
+.erp-app-root .erp-core-scope .erp-accounts-scope .erp-ob-panel {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+}
+
+/* Phase6 network/settings specific panels */
+.erp-app-root .erp-core-scope .erp-network-panel,
+.erp-app-root .erp-core-scope .erp-network-card,
+.erp-app-root .erp-core-scope .erp-backup-panel,
+.erp-app-root .erp-core-scope .erp-license-panel {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+}
+
+/* Filter rows and panels */
+.erp-app-root .erp-core-scope .erp-filter-panel,
+.erp-app-root .erp-core-scope .erp-filter-row {
+  background: var(--erp-core-surface) !important;
+  border: 1px solid var(--erp-core-input-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+}
+
+/* Table wraps ? only one border (wrapper has it, table inside doesn't) */
+.erp-app-root .erp-core-scope .erp-table-wrap table {
+  border: none !important;
+}
+
+/* Remove double borders on table-wrap + table */
+.erp-app-root .erp-core-scope .erp-table-wrap {
+  border: 1px solid var(--erp-core-table-line-header) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  overflow: hidden !important;
+}
+
+/* All dashed borders in workspace ? solid light */
+.erp-app-root .erp-core-scope *[style*="dashed"] {
+  border-style: solid !important;
+  border-color: var(--erp-core-border) !important;
+}
+
+/* Fix inline gradient backgrounds from React components */
+.erp-app-root .erp-core-scope div[style*="linear-gradient"]:not(.erp-modal-header):not(.erp-modal-overlay *) {
+  background-image: none !important;
+  background: var(--erp-core-surface) !important;
+}
+
+/* Phase7 Settings/Accounts tab list ? modern */
+.erp-app-root .erp-core-scope .erp-settings-scope .erp-tab-strip,
+.erp-app-root .erp-core-scope .erp-accounts-scope .erp-tab-strip {
+  background: #eef1f5 !important;
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  padding: 3px !important;
+}
+
+/* Badge pill everywhere */
+.erp-app-root .erp-core-scope .erp-badge {
+  border-radius: var(--erp-core-radius-pill) !important;
+  border: none !important;
+  font-weight: 700 !important;
+}
+
+/* All Phase 4/5/6 inline fieldsets / panels within workspace */
+.erp-app-root .erp-core-scope fieldset,
+.erp-app-root .erp-core-scope .erp-page fieldset {
+  border: 1px solid var(--erp-core-border) !important;
+  border-radius: var(--erp-core-radius-sm) !important;
+  background: var(--erp-core-surface) !important;
+  padding: 12px !important;
+}
+
+.erp-app-root .erp-core-scope fieldset legend {
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  color: var(--erp-core-navy) !important;
+  padding: 0 6px !important;
+}
+
+/* Ensure every row in records is easily distinguishable */
+.erp-app-root .erp-core-scope table tbody tr {
+  transition: background 0.08s ease !important;
+}
+
+/* Fix text colors inside cards that used white text on blue gradient headers */
+.erp-app-root .erp-core-scope .erp-card-title * {
+  color: inherit !important;
+}
+
+/* ERP1 Sales / Quotation toggle ? beat Phase7 flatten + legacy seg styles */
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline .erp-pos-mode-tabs,
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline .erp-pos-mode-tabs {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 5px !important;
+  border: 1.5px solid #e1e8f5 !important;
+  border-radius: 12px !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: 0 2px 8px rgba(13, 27, 62, 0.08) !important;
+  align-self: flex-start !important;
+}
+
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline button.erp-pos-mode-tab,
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline button.erp-pos-mode-tab {
+  background: transparent !important;
+  background-image: none !important;
+  color: #3d5280 !important;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 8px 20px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  box-shadow: none !important;
+  min-height: auto !important;
+  min-width: auto !important;
+  height: auto !important;
+  line-height: 1.2 !important;
+  transition: all 0.15s ease !important;
+}
+
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline button.erp-pos-mode-tab.active,
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline button.erp-pos-mode-tab.active {
+  background: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  background-image: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(41, 121, 255, 0.28) !important;
+}
+
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline button.erp-pos-mode-tab:hover:not(.active),
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline button.erp-pos-mode-tab:hover:not(.active) {
+  background: transparent !important;
+  background-image: none !important;
+  color: #3d5280 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline button.erp-pos-mode-tab:focus,
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline button.erp-pos-mode-tab:focus-visible,
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline button.erp-pos-mode-tab:focus,
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline button.erp-pos-mode-tab:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline button.erp-pos-mode-tab.active:focus,
+.erp-app-root .erp-core-scope .erp-pos-toolbar-inline button.erp-pos-mode-tab.active:focus-visible,
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline button.erp-pos-mode-tab.active:focus,
+.erp-app-root .erp-page-content .erp-pos-toolbar-inline button.erp-pos-mode-tab.active:focus-visible {
+  box-shadow: 0 2px 8px rgba(41, 121, 255, 0.28) !important;
+}
+
+/* ?? Sales page polish: alignment + ERP1/dashboard colours ??? */
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 8px !important;
+  margin-bottom: 5px !important;
+  flex-wrap: wrap !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top .erp-pos-mode-tabs,
+.erp-app-root .erp-core-scope .erp-sale-panel-top .erp-pos-mode-tabs {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  padding: 5px !important;
+  border: 1.5px solid #e1e8f5 !important;
+  border-radius: 12px !important;
+  background: #ffffff !important;
+  background-image: none !important;
+  box-shadow: 0 2px 8px rgba(13, 27, 62, 0.08) !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top button.erp-pos-mode-tab,
+.erp-app-root .erp-core-scope .erp-sale-panel-top button.erp-pos-mode-tab {
+  background: transparent !important;
+  background-image: none !important;
+  color: #3d5280 !important;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 8px 20px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  cursor: pointer !important;
+  box-shadow: none !important;
+  min-height: auto !important;
+  min-width: auto !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top button.erp-pos-mode-tab.active,
+.erp-app-root .erp-core-scope .erp-sale-panel-top button.erp-pos-mode-tab.active {
+  background: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  background-image: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(41, 121, 255, 0.28) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top button.erp-pos-mode-tab:hover:not(.active),
+.erp-app-root .erp-core-scope .erp-sale-panel-top button.erp-pos-mode-tab:hover:not(.active) {
+  background: transparent !important;
+  background-image: none !important;
+  color: #3d5280 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top .erp-pos-header-doc {
+  margin-left: auto !important;
+  justify-content: flex-end !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  color: #3d5280 !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  flex-wrap: wrap !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top .erp-pos-header-doc-label,
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top .erp-pos-header-doc-no {
+  color: #3d5280 !important;
+  font-weight: 600 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top .erp-pos-header-doc-no {
+  font-family: ui-monospace, Consolas, "Courier New", monospace !important;
+  font-size: 11.5px !important;
+  letter-spacing: 0.02em !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-sale-panel-top .erp-pos-header-doc-sep {
+  color: #8fa3c8 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-toolbar-inline {
+  padding: 2px 2px 10px !important;
+  margin: 0 !important;
+  gap: 16px !important;
+  align-items: center !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-shell {
+  flex: 1 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos.erp-pos-modern {
+  flex: 1 !important;
+  min-height: 0 !important;
+  gap: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-left {
+  padding: 0 !important;
+  gap: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-main-card > div {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  padding: 5px !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-main-card > .erp-card > .erp-card-body {
+  gap: 8px !important;
+  padding: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel.erp-sale-panel-entry {
+  margin: 0 !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area {
+  margin: 0 !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-right {
+  width: 276px !important;
+  flex: 0 0 276px !important;
+  padding: 5px 4px 5px 8px !important;
+  border-left-color: #e1e8f5 !important;
+  align-self: stretch !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-toolbar-inline .erp-pos-header-doc,
+.erp-app-root .erp-page-content.pos-page .erp-pos-toolbar-inline .erp-pos-header-doc-label,
+.erp-app-root .erp-page-content.pos-page .erp-pos-toolbar-inline .erp-pos-header-doc-no {
+  color: #3d5280 !important;
+  font-weight: 600 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-toolbar-inline .erp-pos-header-doc-sep {
+  color: #8fa3c8 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-edit-badge {
+  background: #fff3cd !important;
+  color: #856404 !important;
+  border: 1px solid #ffe082 !important;
+  border-radius: 5px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  padding: 1px 6px !important;
+}
+
+/* Panels ? white cards on light purple, ERP1 borders */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-checkout {
+  border: 1.5px solid #e1e8f5 !important;
+  border-radius: 12px !important;
+  background: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(13, 27, 62, 0.06) !important;
+  overflow: hidden !important;
+}
+
+/* Section headers ? ERP1 accent blue (match Sales tab) */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-box-title,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-items-hdr,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-checkout-hdr {
+  background: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  background-image: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  color: #ffffff !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Customer & Product heading ? compact Sales/Quotation + doc text */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 10px !important;
+  min-height: 30px !important;
+  padding: 4px 8px !important;
+  flex-wrap: nowrap !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-mode-tabs-compact,
+.erp-app-root .erp-core-scope .erp-sale-entry-title-bar .erp-pos-mode-tabs-compact {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 2px !important;
+  padding: 2px !important;
+  border: 1px solid rgba(255, 255, 255, 0.28) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar button.erp-pos-mode-tab,
+.erp-app-root .erp-core-scope .erp-sale-entry-title-bar button.erp-pos-mode-tab {
+  min-height: 22px !important;
+  height: 22px !important;
+  padding: 0 10px !important;
+  border-radius: 6px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: rgba(255, 255, 255, 0.88) !important;
+  box-shadow: none !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar button.erp-pos-mode-tab.active,
+.erp-app-root .erp-core-scope .erp-sale-entry-title-bar button.erp-pos-mode-tab.active {
+  background: #ffffff !important;
+  background-image: none !important;
+  color: #2255d4 !important;
+  box-shadow: 0 1px 3px rgba(13, 27, 62, 0.18) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar button.erp-pos-mode-tab:hover:not(.active),
+.erp-app-root .erp-core-scope .erp-sale-entry-title-bar button.erp-pos-mode-tab:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-in-title {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  margin-left: auto !important;
+  color: rgba(255, 255, 255, 0.95) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+  flex-shrink: 1 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-label,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-no,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-sep {
+  color: rgba(255, 255, 255, 0.95) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-no {
+  font-family: ui-monospace, Consolas, "Courier New", monospace !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.02em !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date {
+  font-family: ui-monospace, Consolas, "Courier New", monospace !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.02em !important;
+  color: rgba(255, 255, 255, 0.92) !important;
+  font-weight: 600 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date-wrap {
+  position: relative !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  flex-shrink: 0 !important;
+  width: 130px !important;
+  min-width: 130px !important;
+  isolation: isolate !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date-input {
+  width: 100% !important;
+  box-sizing: border-box !important;
+  border: 1px solid rgba(255, 255, 255, 0.72) !important;
+  border-radius: 6px !important;
+  background-color: #ffffff !important;
+  color: #1e3a6e !important;
+  font-family: ui-monospace, Consolas, "Courier New", monospace !important;
+  font-size: 10.5px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+  padding: 2px 24px 2px 6px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  position: relative !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date-input:focus {
+  outline: none !important;
+  border-color: #ffffff !important;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date-input::-webkit-calendar-picker-indicator {
+  opacity: 0 !important;
+  position: absolute !important;
+  right: 0 !important;
+  top: 0 !important;
+  width: 24px !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date-input::-webkit-datetime-edit,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date-input::-webkit-datetime-edit-fields-wrapper {
+  color: #1e3a6e !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-header-doc-date-arrow {
+  position: absolute !important;
+  right: 5px !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 16px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  pointer-events: none !important;
+  z-index: 5 !important;
+  line-height: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-entry-title-bar .erp-pos-edit-badge {
+  background: rgba(255, 255, 255, 0.2) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.35) !important;
+  border-radius: 4px !important;
+  font-size: 9px !important;
+  font-weight: 800 !important;
+  padding: 1px 5px !important;
+  letter-spacing: 0.04em !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-items-hdr {
+  border-bottom-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+/* Inputs ? ERP1 border + focus ring */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-field input,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-field select,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-field textarea,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-product-search {
+  border-color: #e1e8f5 !important;
+  border-radius: 8px !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-field input:focus,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-field select:focus,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-field textarea:focus,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-product-search:focus-within {
+  border-color: #2979ff !important;
+  box-shadow: 0 0 0 2px rgba(41, 121, 255, 0.14) !important;
+}
+
+/* Walk-in / Customer toggle — match input row; pill stays inside outline */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cust-mode {
+  border: 1px solid #7a9fd4 !important;
+  border-radius: 8px !important;
+  background: #f1f5f9 !important;
+  padding: 1px !important;
+  gap: 2px !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  align-items: stretch !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+}
+
+/* Checkout totals */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-checkout-totals {
+  border-color: #e1e8f5 !important;
+  border-radius: 8px !important;
+  background: #f8faff !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-checkout-totals .erp-pos-total-row.grand span:last-child {
+  color: #2255d4 !important;
+}
+
+/* Payment methods */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-pay-method {
+  border: 1.5px solid #e1e8f5 !important;
+  border-radius: 6px !important;
+  color: #3d5280 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-pay-method.active,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-pay-method.active:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  background-image: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  border-color: transparent !important;
+  color: #ffffff !important;
+}
+
+/* Action buttons ? keep roles, soften borders */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-action-btn {
+  border-radius: 8px !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-action-btn.save,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-action-btn.save:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  background-image: linear-gradient(135deg, #2979ff, #2255d4) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-mini-btn {
+  border: 1.5px solid #e1e8f5 !important;
+  border-radius: 6px !important;
+  color: #3d5280 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern button.erp-sale-mini-btn.danger {
+  border-color: #fca5a5 !important;
+  color: #e03151 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-checkout-body {
+  padding: 10px !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-action-stack {
+  gap: 6px !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-label {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  padding: 8px 10px !important;
+  margin: 0 !important;
+  border: 1px solid #e1e8f5 !important;
+  border-radius: 8px !important;
+  background: #f8faff !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-label.active {
+  background: #eff6ff !important;
+  border-color: #7a9fd4 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-label.is-disabled {
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-label input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  min-width: 16px !important;
+  min-height: 16px !important;
+  margin: 0 !important;
+  flex-shrink: 0 !important;
+  align-self: center !important;
+  accent-color: #2979ff !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-label.is-disabled input[type="checkbox"] {
+  cursor: not-allowed !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-text {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  gap: 2px !important;
+  min-width: 0 !important;
+  line-height: 1.25 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-title {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #334155 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-label.active .erp-pos-warranty-title {
+  color: #2255d4 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-warranty-hint {
+  font-size: 10px !important;
+  font-weight: 500 !important;
+  color: #94a3b8 !important;
+}
+
+/* ?? Sales page layout polish ?? */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-main-card > .erp-card > .erp-card-body:first-child {
+  padding-top: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area {
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline {
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-pos-cust-mode {
+  background: #f1f5f9 !important;
+  border: 1px solid #7a9fd4 !important;
+  padding: 1px !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-pos-cust-mode button.erp-sale-cust-toggle {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  align-self: stretch !important;
+  min-width: 68px !important;
+  padding: 0 10px !important;
+  border: none !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #64748b !important;
+  font-size: 11.5px !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  box-shadow: none !important;
+  box-sizing: border-box !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-pos-cust-mode button.erp-sale-cust-toggle:hover:not(.active) {
+  background: #e8eef5 !important;
+  background-image: none !important;
+  color: #334155 !important;
+  border: none !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-pos-cust-mode button.erp-sale-cust-toggle.active {
+  background: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  background-image: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 3px rgba(41, 121, 255, 0.28) !important;
+  border: none !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-pos-cust-mode button.erp-sale-cust-toggle.active:hover {
+  background: linear-gradient(135deg, #2255d4, #1a47c2) !important;
+  background-image: linear-gradient(135deg, #2255d4, #1a47c2) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-name {
+  position: relative !important;
+  z-index: 5 !important;
+  overflow: visible !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-name .erp-cust-picker.is-creating,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-name .erp-cust-picker:focus-within {
+  z-index: 40 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-cust-picker-compact .erp-cust-picker-create {
+  z-index: 80 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-cust-picker-compact .erp-cust-picker-drop {
+  z-index: 80 !important;
+}
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-name,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-phone,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-price,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-salesperson {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field > label {
+  display: none !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-field label,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-field label {
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-field input,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-field select,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-field input,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-field select,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-field textarea {
+  height: 32px !important;
+  min-height: 32px !important;
+  line-height: 1.25 !important;
+  text-align: left !important;
+  text-align-last: left !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-field textarea {
+  height: auto !important;
+  min-height: 32px !important;
+  padding-top: 7px !important;
+  padding-bottom: 7px !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-terms-row {
+  align-items: center !important;
+  gap: 8px !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer {
+  padding: 8px 10px !important;
+  gap: 6px !important;
+  background: #ffffff !important;
+  border-top: 1px solid #e1e8f5 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-summary-bar {
+  background: #eef2f7 !important;
+  border-color: #d5dde8 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer .erp-sale-terms-row {
+  border-top-color: #e1e8f5 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-checkout {
+  border-radius: 12px !important;
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Cust row ? Name / Phone match Price Level / Sales Person */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field input,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field select,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-cust-picker-compact .erp-cust-picker-input {
+  width: 100% !important;
+  box-sizing: border-box !important;
+  height: 32px !important;
+  min-height: 32px !important;
+  padding: 6px 10px !important;
+  border: 1px solid #7a9fd4 !important;
+  border-radius: 6px !important;
+  background-color: #ffffff !important;
+  color: #334155 !important;
+  font-size: 11.5px !important;
+  font-weight: 500 !important;
+  line-height: 1.25 !important;
+  text-align: left !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field select {
+  -webkit-appearance: none !important;
+  -moz-appearance: none !important;
+  appearance: none !important;
+  padding-right: 28px !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 9px center !important;
+  background-size: 12px 12px !important;
+  cursor: pointer !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field input::placeholder,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-cust-picker-compact .erp-cust-picker-input::placeholder,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field select.erp-sale-select-empty {
+  color: #94a3b8 !important;
+  font-weight: 500 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field input:disabled {
+  background-color: #ffffff !important;
+  color: #334155 !important;
+  opacity: 1 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field-phone input:disabled:placeholder-shown {
+  color: #94a3b8 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field input:focus,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-cust-picker-compact .erp-cust-picker-input:focus,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-panel-entry .erp-sale-cust-inline .erp-sale-field select:focus {
+  border-color: #1a4fa0 !important;
+  box-shadow: 0 0 0 2px rgba(26, 79, 160, 0.28) !important;
+}
+
+/* Cart section ? 8 item rows visible without scroll */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern {
+  --erp-cart-row-height: 30px;
+  --erp-cart-header-height: 28px;
+  --erp-cart-visible-rows: 8;
+  --erp-cart-scroll-height: calc(var(--erp-cart-header-height) + (var(--erp-cart-visible-rows) * var(--erp-cart-row-height)));
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area {
+  flex: 1 1 0 !important;
+  min-height: var(--erp-cart-scroll-height) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area:not(.is-empty) .erp-sale-cart-scroll {
+  flex: 1 1 0 !important;
+  min-height: var(--erp-cart-scroll-height) !important;
+  max-height: none !important;
+  height: auto !important;
+  overflow: auto !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-cart-footer {
+  margin-top: auto !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area.is-empty,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area:has(.erp-pos-empty-cart) {
+  flex: 1 1 0 !important;
+  min-height: var(--erp-cart-scroll-height) !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area.is-empty .erp-sale-cart-scroll,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-cart-area:has(.erp-pos-empty-cart) .erp-sale-cart-scroll {
+  flex: 1 1 0 !important;
+  min-height: calc(var(--erp-cart-scroll-height) - var(--erp-cart-header-height)) !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-pos-empty-cart {
+  flex: 1 1 auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 100% !important;
+  text-align: center !important;
+  min-height: calc(var(--erp-cart-scroll-height) - var(--erp-cart-header-height) - 20px) !important;
+}
+
+/* Cart column headers ? soft ash (matches form fields / panels) */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-excel-table .erp-sale-excel-th,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-table .erp-sale-excel-th,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-excel-th,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern table.erp-sale-excel-table th,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-excel-head .erp-sale-excel-th {
+  background: #eef2f7 !important;
+  background-image: none !important;
+  color: #475569 !important;
+  border: none !important;
+  border-bottom: 1px solid #d5dde8 !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.05em !important;
+  text-transform: uppercase !important;
+  padding: 7px 8px !important;
+  border-right: 1px solid #d5dde8 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-excel-table .erp-sale-excel-th:last-child,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-table .erp-sale-excel-th:last-child {
+  border-right: none !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-excel-table {
+  table-layout: fixed !important;
+  width: 100% !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-excel-table .erp-sale-excel-td {
+  border-right: 1px solid #e8edf5 !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-excel-table .erp-sale-excel-td:last-child {
+  border-right: none !important;
+}
+
+/* Add New Product modal — keep rounded inputs after global modal rules (portaled) */
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body .erp-input,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body .erp-select,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]),
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body select,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body textarea {
+  border-radius: 8px !important;
+  border-color: #94a3b8 !important;
+  min-height: 32px !important;
+  padding: 6px 10px !important;
+  background: #ffffff !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body .erp-input:focus,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body .erp-select:focus,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="button"]):not([type="submit"]):not([type="reset"]):focus,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body select:focus,
+.erp-modal-overlay .erp-modal-shell.erp-pur-newprod-modal .erp-modal-body textarea:focus {
+  border-color: #3b82f6 !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18) !important;
+}
+
+/* Force rounded controls inside Add New Product (beats Phase7 flatten) */
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-modal-body,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-pur-newprod-form,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-pur-newprod-banner,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-pur-newprod-idbox,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-pur-newprod-extra,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal button,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal input,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal select,
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal textarea {
+  border-radius: 8px !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal {
+  border-radius: 12px !important;
+  overflow: hidden !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-modal-header {
+  border-radius: 0 !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-pur-newprod-actions button {
+  border-radius: 8px !important;
+  min-height: 34px !important;
+  box-shadow: none !important;
+}
+
+.erp-modal-overlay .erp-modal-shell.erp-pur-form-modal.erp-pur-newprod-modal .erp-pur-newprod-extra-add {
+  border-radius: 8px !important;
+  border: 1.5px dashed #3949AB !important;
+  background: #eef2ff !important;
+  color: #3949AB !important;
+  font-weight: 700 !important;
+}
+
+/* ── Table action buttons (global — loads last, beats generic button resets) ── */
+.erp-app-root .erp-page-content button.erp-act-btn,
+.erp-app-root .erp-core-scope button.erp-act-btn,
+.erp-app-root .erp-core-scope .erp-page button.erp-act-btn,
+.erp-app-root .erp-pur-modern button.erp-act-btn,
+.erp-app-root .erp-inv-modern button.erp-act-btn {
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 24px !important;
+  min-height: 24px !important;
+  padding: 0 !important;
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-shrink: 0 !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  line-height: 1 !important;
+  box-shadow: none !important;
+  background-image: none !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--wide,
+.erp-app-root .erp-core-scope button.erp-act-btn--wide,
+.erp-app-root .erp-pur-modern button.erp-act-btn--wide,
+.erp-app-root .erp-inv-modern button.erp-act-btn--wide {
+  width: auto !important;
+  min-width: 42px !important;
+  padding: 0 8px !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--cyan,
+.erp-app-root .erp-core-scope button.erp-act-btn--cyan,
+.erp-app-root .erp-pur-modern button.erp-act-btn--cyan,
+.erp-app-root .erp-inv-modern button.erp-act-btn--cyan {
+  border: 1px solid #bae6fd !important;
+  background: #f0f9ff !important;
+  color: #0284c7 !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--green,
+.erp-app-root .erp-core-scope button.erp-act-btn--green,
+.erp-app-root .erp-pur-modern button.erp-act-btn--green,
+.erp-app-root .erp-inv-modern button.erp-act-btn--green {
+  border: 1px solid #bbf7d0 !important;
+  background: #f0fdf4 !important;
+  color: #16a34a !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--blue,
+.erp-app-root .erp-core-scope button.erp-act-btn--blue,
+.erp-app-root .erp-pur-modern button.erp-act-btn--blue,
+.erp-app-root .erp-inv-modern button.erp-act-btn--blue {
+  border: 1px solid #bfdbfe !important;
+  background: #eff6ff !important;
+  color: #2563eb !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--orange,
+.erp-app-root .erp-core-scope button.erp-act-btn--orange,
+.erp-app-root .erp-pur-modern button.erp-act-btn--orange,
+.erp-app-root .erp-inv-modern button.erp-act-btn--orange {
+  border: 1px solid #fed7aa !important;
+  background: #fff7ed !important;
+  color: #ea580c !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--red,
+.erp-app-root .erp-core-scope button.erp-act-btn--red,
+.erp-app-root .erp-pur-modern button.erp-act-btn--red,
+.erp-app-root .erp-inv-modern button.erp-act-btn--red {
+  border: 1px solid #fecaca !important;
+  background: #fef2f2 !important;
+  color: #dc2626 !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--purple,
+.erp-app-root .erp-core-scope button.erp-act-btn--purple {
+  border: 1px solid #ddd6fe !important;
+  background: #f5f3ff !important;
+  color: #7c3aed !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn--gray,
+.erp-app-root .erp-core-scope button.erp-act-btn--gray {
+  border: 1px solid #e2e8f0 !important;
+  background: #f8fafc !important;
+  color: #64748b !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn:hover:not(:disabled),
+.erp-app-root .erp-core-scope button.erp-act-btn:hover:not(:disabled),
+.erp-app-root .erp-pur-modern button.erp-act-btn:hover:not(:disabled),
+.erp-app-root .erp-inv-modern button.erp-act-btn:hover:not(:disabled) {
+  opacity: 0.85 !important;
+  background-image: none !important;
+}
+
+.erp-app-root .erp-page-content button.erp-act-btn:disabled,
+.erp-app-root .erp-core-scope button.erp-act-btn:disabled,
+.erp-app-root .erp-page-content button.erp-act-btn[style*="opacity"],
+.erp-app-root .erp-core-scope button.erp-act-btn[style*="opacity"] {
+  opacity: 0.35 !important;
+  cursor: not-allowed !important;
+}
+
+/* Remove Chromium/Electron yellow click focus ring app-wide */
+.erp-app-root,
+.erp-app-root * {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.erp-app-root *:focus:not(:focus-visible) {
+  outline: none !important;
+}
+
+.erp-app-root button:focus,
+.erp-app-root button:focus-visible,
+.erp-app-root [role="button"]:focus,
+.erp-app-root [role="button"]:focus-visible,
+.erp-app-root [role="tab"]:focus,
+.erp-app-root [role="tab"]:focus-visible,
+.erp-app-root summary:focus,
+.erp-app-root summary:focus-visible,
+.erp-app-root a:focus,
+.erp-app-root a:focus-visible,
+.erp-app-root select:focus,
+.erp-app-root select:focus-visible {
+  outline: none !important;
+}

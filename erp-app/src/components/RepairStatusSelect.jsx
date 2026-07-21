@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 var STATUS_DISPLAY = {
   Accepted: "Active",
@@ -13,93 +13,218 @@ var STATUS_STYLE = {
   "Third Party": { bg: "#f5f3ff", color: "#6d28d9", border: "#ddd6fe" },
   Ready: { bg: "#ecfdf5", color: "#047857", border: "#a7f3d0" },
   Delivered: { bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" },
-  Returned: { bg: "#f8fafc", color: "#64748b", border: "#e2e8f0" },
+  Returned: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
 };
+
+var ACTION_COLOR = {
+  Accepted: "#c2410c",
+  "Third Party": "#6d28d9",
+  Ready: "#047857",
+  Delivered: "#1d4ed8",
+  Returned: "#b91c1c",
+  __receive__: "#6d28d9",
+  __invoice__: "#0e7490",
+  __void__: "#b91c1c",
+};
+
+function styleForAction(value) {
+  var color = ACTION_COLOR[value] || (STATUS_STYLE[value] && STATUS_STYLE[value].color) || "#334155";
+  var pal = STATUS_STYLE[value] || STATUS_STYLE.Accepted;
+  return { bg: pal.bg || "#f8fafc", color: color, border: pal.border || "#e2e8f0", dot: color };
+}
 
 export function getRepairDeviceStatusOptions(currentStatus) {
   var st = currentStatus || "Accepted";
   if (st === "Accepted") {
     return [
-      { value: "Ready", label: "Mark as Ready" },
-      { value: "Third Party", label: "Send to 3rd Party" },
-      { value: "Returned", label: "Mark as Returned" },
+      { value: "Ready", label: "Ready" },
+      { value: "Third Party", label: "Send 3P" },
+      { value: "Returned", label: "Return" },
     ];
   }
   if (st === "Third Party") {
     return [
-      { value: "__receive__", label: "Received from 3rd Party" },
-      { value: "Accepted", label: "Back to Active" },
-      { value: "Returned", label: "Mark as Returned" },
+      { value: "__receive__", label: "Receive" },
+      { value: "Accepted", label: "Active" },
+      { value: "Returned", label: "Return" },
     ];
   }
   if (st === "Ready") {
     return [
-      { value: "Accepted", label: "Back to Active" },
-      { value: "Returned", label: "Mark as Returned" },
-      { value: "__invoice__", label: "Convert to Invoice" },
+      { value: "Accepted", label: "Active" },
+      { value: "Returned", label: "Return" },
+      { value: "__invoice__", label: "Invoice" },
     ];
   }
   if (st === "Returned") {
-    return [{ value: "Accepted", label: "Back to Active" }];
+    return [{ value: "Accepted", label: "Active" }];
   }
   if (st === "Delivered") {
-    return [{ value: "__void__", label: "Void Invoice" }];
+    return [{ value: "__void__", label: "Void" }];
   }
   return [];
 }
 
+export function getRepairEditStatusOptions(currentStatus) {
+  var st = currentStatus || "Accepted";
+  return ["Accepted", "Third Party", "Ready", "Returned"]
+    .filter(function (s) { return s !== st; })
+    .filter(function (s) {
+      if (st === "Delivered") return false;
+      if (s === "Third Party" && st !== "Accepted") return false;
+      return true;
+    })
+    .map(function (s) {
+      return { value: s, label: STATUS_DISPLAY[s] || s };
+    });
+}
+
 export function getRepairBulkStatusOptions() {
   return [
-    { value: "Third Party", label: "Send all to 3rd Party" },
-    { value: "Returned", label: "Mark all as returned" },
+    { value: "Third Party", label: "Send all 3P" },
+    { value: "Returned", label: "Return all" },
   ];
 }
 
 export function RepairStatusSelect(props) {
   var st = props.currentStatus || "Accepted";
   var pal = STATUS_STYLE[st] || STATUS_STYLE.Accepted;
-  var options = props.options || getRepairDeviceStatusOptions(st);
+  var options = (props.options || getRepairDeviceStatusOptions(st)).filter(function (opt) {
+    if (!opt || !opt.value) return false;
+    if (opt.value === st) return false;
+    var display = STATUS_DISPLAY[st] || st;
+    if (opt.label === display || opt.label === st) return false;
+    return true;
+  });
   var label = STATUS_DISPLAY[st] || st;
   var compact = !!props.compact;
-  var selectRef = React.useRef(null);
+  var [open, setOpen] = useState(false);
+  var [menuPos, setMenuPos] = useState(null);
+  var rootRef = useRef(null);
+  var btnRef = useRef(null);
 
-  var handleChange = function (e) {
-    var next = e.target.value;
-    if (!next || !props.onAction) return;
-    if (selectRef.current) selectRef.current.value = "";
-    props.onAction(next);
+  useEffect(function () {
+    if (!open) return;
+    var place = function () {
+      if (!btnRef.current) return;
+      var rect = btnRef.current.getBoundingClientRect();
+      var width = Math.max(compact ? 118 : 128, rect.width);
+      var left = rect.left;
+      if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+      var top = rect.bottom + 2;
+      var approxHeight = 4 + options.length * 28;
+      if (top + approxHeight > window.innerHeight - 8) {
+        top = Math.max(8, rect.top - approxHeight - 2);
+      }
+      setMenuPos({ top: top, left: left, width: width });
+    };
+    place();
+    var onDoc = function (e) {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    var onKey = function (e) {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return function () {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, compact, options.length]);
+
+  var pick = function (value) {
+    setOpen(false);
+    if (!value || !props.onAction) return;
+    props.onAction(value);
   };
 
   return (
-    <select
-      ref={selectRef}
-      defaultValue=""
-      title={"Current status: " + label + ". Choose a new status."}
-      onChange={handleChange}
-      style={{
-        height: compact ? 30 : 34,
-        minWidth: compact ? 132 : 150,
-        maxWidth: compact ? 168 : 200,
-        padding: compact ? "0 26px 0 10px" : "0 28px 0 12px",
-        borderRadius: 8,
-        border: "1px solid " + pal.border,
-        background: pal.bg + " url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 8px center",
-        backgroundSize: "12px",
-        color: pal.color,
-        fontSize: compact ? 11 : 12,
-        fontWeight: 700,
-        fontFamily: "inherit",
-        cursor: "pointer",
-        appearance: "none",
-        WebkitAppearance: "none",
-        outline: "none",
-        lineHeight: 1.2,
-      }}
-    >
-      <option value="" disabled style={{ color: pal.color, fontWeight: 700 }}>{label}</option>
-      {options.map(function (opt) {
-        return <option key={opt.value} value={opt.value}>{opt.label}</option>;
-      })}
-    </select>
+    <div ref={rootRef} style={{ position: "relative", display: "inline-block", minWidth: compact ? 96 : 108 }}>
+      <button
+        ref={btnRef}
+        type="button"
+        title={"Status: " + label}
+        onClick={function () { setOpen(function (v) { return !v; }); }}
+        style={{
+          height: compact ? 26 : 28,
+          minWidth: compact ? 96 : 108,
+          width: "100%",
+          padding: "0 18px 0 8px",
+          borderRadius: 6,
+          border: "1px solid " + pal.border,
+          background: pal.bg + " url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 6px center",
+          backgroundSize: "10px",
+          color: pal.color,
+          fontSize: compact ? 11 : 11.5,
+          fontWeight: 700,
+          fontFamily: "inherit",
+          cursor: "pointer",
+          outline: "none",
+          lineHeight: 1,
+          textAlign: "left",
+        }}
+      >
+        {label}
+      </button>
+      {open && menuPos ? (
+        <div
+          style={{
+            position: "fixed",
+            top: menuPos.top,
+            left: menuPos.left,
+            width: menuPos.width,
+            zIndex: 5000,
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 7,
+            boxShadow: "0 6px 16px rgba(15, 23, 42, 0.12)",
+            padding: 3,
+            display: "flex",
+            flexDirection: "column",
+            gap: 1,
+          }}
+        >
+          {options.length === 0 ? (
+            <div style={{ padding: "6px 8px", fontSize: 11, color: "#64748b" }}>No actions</div>
+          ) : (
+            options.map(function (opt) {
+              var color = ACTION_COLOR[opt.value] || "#334155";
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={function () { pick(opt.value); }}
+                  style={{
+                    width: "100%",
+                    textAlign: "left",
+                    border: "none",
+                    background: "transparent",
+                    color: color,
+                    borderRadius: 5,
+                    padding: "6px 8px",
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    fontFamily: "inherit",
+                    cursor: "pointer",
+                    lineHeight: 1.2,
+                  }}
+                  onMouseEnter={function (e) { e.currentTarget.style.background = "#f8fafc"; }}
+                  onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })
+          )}
+        </div>
+      ) : null}
+    </div>
   );
 }
+
+export { STATUS_DISPLAY, STATUS_STYLE, styleForAction };

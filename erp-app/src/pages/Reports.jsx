@@ -15,7 +15,7 @@ import {
 } from "../utils/ingredientUsageCost.js";
 import { deriveInventoryEconomics, isInventoryReconcileOk } from "../accounting/inventoryEngine.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
-import { activeSales, activePurchases } from "../utils/voidInvoice.js";
+import { activeSales, activePurchases, activeSalesReturns, activePurchaseReturns } from "../utils/voidInvoice.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 
 var Reports = React.memo(function (props) {
@@ -172,8 +172,10 @@ var Reports = React.memo(function (props) {
   var netRevenue = round2(liveSalesRpt.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0));
   var totalTaxOnInvoices = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
   /* Sales returns: r.amount = retail value reversed; cash refunds tracked separately in getCashBalances via r.refundAmount */
-  var totalSalesReturnAmt = round2((state.salesReturns || []).reduce(function (a, r) { return a + (r.amount || 0); }, 0));
-  var totalPurchaseReturnAmt = round2((state.purchaseReturns || []).reduce(function (a, r) { return a + (r.amount || 0); }, 0));
+  var liveSalesReturnsRpt = activeSalesReturns(state.sales, state.salesReturns);
+  var livePurchaseReturnsRpt = activePurchaseReturns(state.purchases, state.purchaseReturns);
+  var totalSalesReturnAmt = round2(liveSalesReturnsRpt.reduce(function (a, r) { return a + (r.amount || 0); }, 0));
+  var totalPurchaseReturnAmt = round2(livePurchaseReturnsRpt.reduce(function (a, r) { return a + (r.amount || 0); }, 0));
   var totalRevenue = round2(netRevenue + totalSalesReturnAmt); /* gross revenue before returns — for display */
   var totalProfit = round2(netRevenue - totalCOGS);
   var grossMarginPct = netRevenue > 0 ? Math.round((totalProfit / netRevenue) * 100) : 0;
@@ -207,19 +209,31 @@ var Reports = React.memo(function (props) {
   var glBS = typeof getBalanceSheetFromLedger === "function" ? getBalanceSheetFromLedger(null) : null;
   /* BUG4 FIX: netWorth now uses correct cash, cost-based stock, full receivable, fixed assets and payable */
   var netWorth = round2(cashInHand + stockValue + totalReceivable + totalAssetsSpent - totalPayable);
-  /* BUG5 FIX (Dashboard): filter out repairs already converted to POS invoices
+  /* BUG5 FIX (Dashboard): filter out repairs already converted to *active* POS invoices
      to match the same logic used in P&L and Full Report — prevents double-counting */
   var totalRepairRevenue = round2(state.repairs.reduce(function (a, r) {
     if (r.status !== "Delivered") return a;
-    var alreadyInvoiced = state.sales.some(function (s) { return s.fromRepairId === r.id; });
+    var alreadyInvoiced = liveSalesRpt.some(function (s) {
+      if (s.fromRepairId === r.id) return true;
+      return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
+    });
     return alreadyInvoiced ? a : a + (r.estimatedCost || r.cost || 0);
   }, 0));
-  var activeRepairs = state.repairs.filter(function (r) { return r.status === "Repairing" || r.status === "Pending"; }).length;
+  var activeRepairs = state.repairs.filter(function (r) {
+    var st = r.status || "Accepted";
+    if (st === "Accepted" || st === "Third Party" || st === "Ready" || st === "Repairing" || st === "Pending") return true;
+    var devices = Array.isArray(r.devices) ? r.devices : [];
+    if (!devices.length) return false;
+    return devices.some(function (d) {
+      var ds = (d && d.status) || "Accepted";
+      return ds === "Accepted" || ds === "Third Party" || ds === "Ready";
+    });
+  }).length;
 
   var daySales = liveSalesRpt.filter(function (s) { return s.date === reportDate; });
   var daySalesTotal = round2(daySales.reduce(function (a, s) { return a + s.total; }, 0));
-  var dayReturns = (state.salesReturns || []).filter(function (r) { return r.date === reportDate; });
-  var dayInvoicedCOGS = round2(getNetCOGSForRange(daySales, dayReturns));
+  var dayReturns = activeSalesReturns(state.sales, (state.salesReturns || []).filter(function (r) { return r.date === reportDate; }));
+  var dayInvoicedCOGS = round2(getNetCOGSForRange(daySales, dayReturns, liveSalesRpt));
   var dayIngredientCOGS = round2(sumRawMaterialKitchenCostInRange(state, reportDate, reportDate));
   var dayCOGS = round2(dayInvoicedCOGS + dayIngredientCOGS);
   var dayProfit = round2(daySalesTotal - dayCOGS);
@@ -231,7 +245,7 @@ var Reports = React.memo(function (props) {
 
   var monthSales = liveSalesRpt.filter(function (s) { return s.date.slice(0, 7) === reportMonth; });
   var monthSalesTotal = round2(monthSales.reduce(function (a, s) { return a + s.total; }, 0));
-  var monthReturns = (state.salesReturns || []).filter(function (r) { return r.date.slice(0, 7) === reportMonth; });
+  var monthReturns = activeSalesReturns(state.sales, (state.salesReturns || []).filter(function (r) { return r.date.slice(0, 7) === reportMonth; }));
   var monthLastStr = (function () {
     var parts = reportMonth.split("-");
     var y = parseInt(parts[0], 10);
@@ -240,7 +254,7 @@ var Reports = React.memo(function (props) {
     var last = new Date(y, m, 0).getDate();
     return reportMonth + "-" + String(last).padStart(2, "0");
   })();
-  var monthInvoicedCOGS = round2(getNetCOGSForRange(monthSales, monthReturns));
+  var monthInvoicedCOGS = round2(getNetCOGSForRange(monthSales, monthReturns, liveSalesRpt));
   var monthIngredientCOGS = round2(sumRawMaterialKitchenCostInRange(state, reportMonth + "-01", monthLastStr));
   var monthCOGS = round2(monthInvoicedCOGS + monthIngredientCOGS);
   var monthProfit = round2(monthSalesTotal - monthCOGS);
@@ -248,10 +262,13 @@ var Reports = React.memo(function (props) {
   var monthRepairRev = round2(state.repairs.filter(function (r) {
     if (r.status !== "Delivered") return false;
     if ((r.dateOut || r.date || "").slice(0, 7) !== reportMonth) return false;
-    return !state.sales.some(function (s) { return s.fromRepairId === r.id; });
+    return !liveSalesRpt.some(function (s) {
+      if (s.fromRepairId === r.id) return true;
+      return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
+    });
   }).reduce(function (a, r) { return a + (r.estimatedCost || r.cost || 0); }, 0));
   var monthNetProfit = round2(monthProfit + monthRepairRev - monthExpenses);
-  var monthPurchases = round2(state.purchases.filter(function (p) { return (p.date || "").slice(0, 7) === reportMonth; }).reduce(function (a, p) { return a + (p.total || 0); }, 0));
+  var monthPurchases = round2(livePurchasesRpt.filter(function (p) { return (p.date || "").slice(0, 7) === reportMonth; }).reduce(function (a, p) { return a + (p.total || 0); }, 0));
   var monthPaid = round2(monthSales.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
   var monthReceivable = round2(monthSales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0));
   var monthTaxCollected = round2(monthSales.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
@@ -657,40 +674,53 @@ var Reports = React.memo(function (props) {
     printReport("Customer Balance Report", html);
   };
 
-  var TABS = [["overview", "Overview"], ["pnl", "P&L Summary"], ["daily", "Daily"], ["monthly", "Monthly"], ["inventory", "Inventory"], ["invrecon", "Inventory Reconciliation"], ["rawconsumption", "Raw Consumption"], ["customers", "Customers"], ["expenses", "Expenses"], ["assets", "Assets"], ["balancesheet", "Balance Sheet"], ["integrity", "Integrity"], ["business", "Full Report"]];
-  if (getBusinessProfile().modules.repairs) { TABS.splice(7, 0, ["repairs", "🔧 Repairs"]); }
+  var TABS = [
+    ["overview", "Overview", "Overview"],
+    ["pnl", "P&L", "P&L Summary"],
+    ["daily", "Daily", "Daily Report"],
+    ["monthly", "Monthly", "Monthly Report"],
+    ["inventory", "Stock", "Inventory Report"],
+    ["invrecon", "Inv. Recon", "Inventory Reconciliation"],
+    ["rawconsumption", "Raw Mat.", "Raw Material Consumption"],
+    ["customers", "Customers", "Customer Report"],
+    ["expenses", "Expenses", "Expense Report"],
+    ["assets", "Assets", "Assets Report"],
+    ["balancesheet", "Bal. Sheet", "Balance Sheet"],
+    ["integrity", "Integrity", "System Integrity"],
+    ["business", "Full Rpt", "Full Business Report"],
+  ];
+  if (getBusinessProfile().modules.repairs) { TABS.splice(7, 0, ["repairs", "Repairs", "Repairs Report"]); }
 
   var KVRow = function (kvProps) {
     return (
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 14px", borderBottom: "1px solid " + C.borderLight, fontSize: 13 }}>
-        <span style={{ color: C.muted, fontWeight: 500 }}>{kvProps.label}</span>
-        <span style={{ fontWeight: 700, color: kvProps.color || C.text }}>{getCurrencySymbol()} {fmtNum(kvProps.value)}</span>
+      <div className="erp-rpt-row">
+        <span className="erp-rpt-row-label">{kvProps.label}</span>
+        <span className="erp-rpt-row-val" style={kvProps.color ? { color: kvProps.color } : undefined}>{getCurrencySymbol()} {fmtNum(kvProps.value)}</span>
       </div>
     );
   };
 
   var SectionHead = function (shProps) {
-    return <div style={{ padding: "8px 14px 6px", fontSize: 10, fontWeight: 800, color: C.th, textTransform: "uppercase", letterSpacing: "0.1em", background: "#f7f9ff", borderBottom: "1px solid " + C.border }}>{shProps.label}</div>;
-  };
-
-  var MetricChip = function (mcProps) {
-    var positive = mcProps.value >= 0;
-    return (
-      <div style={{ background: positive ? C.successSoft : C.dangerSoft, border: "1px solid " + (positive ? "#9ee8ce" : "#f9a8ba"), borderRadius: 10, padding: "12px 16px", textAlign: "center" }}>
-        <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>{mcProps.label}</div>
-        <div style={{ fontSize: 20, fontWeight: 800, color: positive ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(mcProps.value)}</div>
-        {mcProps.sub && <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{mcProps.sub}</div>}
-      </div>
-    );
+    return <div className="erp-rpt-section-head">{shProps.label}</div>;
   };
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", background: "#fff", padding: "10px 12px", borderRadius: 12, border: "1.5px solid " + C.border, boxShadow: C.shadowCard }}>
+    <div className="erp-page erp-reports-scope erp-rpt-modern">
+      <div className="erp-rpt-tabs" role="tablist">
         {TABS.map(function (item) {
-          var k = item[0]; var l = item[1];
+          var k = item[0]; var l = item[1]; var tip = item[2] || l;
           var isActive = tab === k;
-          return <button key={k} onClick={function () { setTab(k); }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: isActive ? "linear-gradient(135deg,#2979ff,#5591ff)" : "transparent", color: isActive ? "#fff" : C.textMd, fontSize: 12.5, fontWeight: isActive ? 700 : 500, cursor: "pointer", transition: "all .15s", boxShadow: isActive ? "0 2px 8px rgba(41,121,255,0.3)" : "none" }}>{l}</button>;
+          return (
+            <button
+              key={k}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              title={tip}
+              className={"erp-rpt-tab" + (isActive ? " is-active" : "")}
+              onClick={function () { setTab(k); }}
+            >{l}</button>
+          );
         })}
       </div>
 
@@ -725,7 +755,7 @@ var Reports = React.memo(function (props) {
         var rManualPay = S.get("tc3_manualPayables", []).filter(function (e) { return inR(e.date); });
         var rManualRec = S.get("tc3_manualReceivables", []).filter(function (e) { return inR(e.date); });
         /* FIX: Sales returns within the period must be subtracted from revenue */
-        var rSalesReturns = (state.salesReturns || []).filter(function (r) { return inR(r.date); });
+        var rSalesReturns = activeSalesReturns(state.sales, (state.salesReturns || []).filter(function (r) { return inR(r.date); }));
         /* Retail value of returned goods (for gross revenue bridge) — not the same as cash refunded */
         var totalSalesReturnAmt = rSalesReturns.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
         var totalCashRefundedReturns = rSalesReturns.filter(function (r) { return r.isRefund && (r.refundAmount || 0) > 0; }).reduce(function (a, r) { return a + (r.refundAmount || 0); }, 0);
@@ -861,7 +891,13 @@ var Reports = React.memo(function (props) {
           /* P&L integrity badge */
           var pnlIntegrity = (function () {
             var invOk = (state.sales || []).every(function (s) { var sum = (s.items || []).reduce(function (a, it) { return a + it.qty * (it.price || 0); }, 0); return Math.abs(Math.max(0, sum - (s.discount || 0)) - (s.total || 0)) <= 1; });
-            var phOk = (state.sales || []).every(function (s) { var phSum = (s.paymentHistory || []).reduce(function (a, ph) { return a + (ph.amount || 0); }, 0); return Math.abs(phSum - (s.paid || 0)) <= 1; });
+            var phOk = (state.sales || []).every(function (s) {
+              var phSum = (s.paymentHistory || []).reduce(function (a, ph) { return a + (ph.amount || 0); }, 0);
+              var paid = s.paid || 0;
+              var total = s.total || 0;
+              /* After concurrent-pay merge, paid may be capped at total while PH keeps both entries. */
+              return Math.abs(phSum - paid) <= 1 || Math.abs(Math.min(phSum, total) - paid) <= 1;
+            });
             var dupOk = (function () { var nos = (state.sales || []).map(function (s) { return s.invoiceNo; }).filter(Boolean); return nos.length === new Set(nos).size; })();
             return invOk && phOk && dupOk;
           })();
@@ -873,60 +909,71 @@ var Reports = React.memo(function (props) {
         var sharePnL = function () { shareAnyReport(printPnL, "PnL-Report"); };
 
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div className="erp-tab-content">
 
-            <Card>
-              <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Filter Period</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {[["daily", "📅 Daily"], ["monthly", "📆 Monthly"], ["quarterly", "📊 Quarterly"], ["yearly", "🗓 Yearly"], ["custom", "🔧 Custom"]].map(function (p) {
+            <Card pad={10}>
+              <div className="erp-rpt-toolbar">
+                <div className="erp-rpt-toolbar-field">
+                  <label>Period</label>
+                  <div className="erp-rpt-pill-group">
+                    {[["daily", "Daily"], ["monthly", "Monthly"], ["quarterly", "Quarterly"], ["yearly", "Yearly"], ["custom", "Custom"]].map(function (p) {
                       var isA = pnlPeriod === p[0];
-                      return <button key={p[0]} onClick={function () { setPnlPeriod(p[0]); }} style={{ padding: "8px 16px", borderRadius: 8, border: "1.5px solid " + (isA ? C.accent : C.border), background: isA ? "linear-gradient(135deg,#2979ff,#5591ff)" : "#fff", color: isA ? "#fff" : C.textMd, fontWeight: 700, fontSize: 12.5, cursor: "pointer", boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.3)" : "none" }}>{p[1]}</button>;
+                      return <button key={p[0]} type="button" className={"erp-rpt-pill" + (isA ? " is-active" : "")} onClick={function () { setPnlPeriod(p[0]); }}>{p[1]}</button>;
                     })}
                   </div>
                 </div>
-                {pnlPeriod === "daily" && <div><div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Date</div><input type="date" value={reportDate} onChange={function (e) { setReportDate(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none" }} /></div>}
-                {pnlPeriod === "monthly" && <div><div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Month</div><input type="month" value={pnlMonth} onChange={function (e) { setPnlMonth(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none" }} /></div>}
-                {pnlPeriod === "yearly" && <div><div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Year</div><select value={pnlYear} onChange={function (e) { setPnlYear(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", cursor: "pointer" }}>{(function () { var y = []; for (var i = parseInt(today().slice(0, 4)); i >= 2020; i--)y.push(String(i)); return y; })().map(function (y) { return <option key={y}>{y}</option>; })}</select></div>}
-                {pnlPeriod === "quarterly" && <div><div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Quarter</div><select value={pnlQuarter} onChange={function (e) { setPnlQuarter(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", cursor: "pointer" }}>{(function () { var o = []; var cy = parseInt(today().slice(0, 4)); for (var y = cy; y >= 2020; y--) ["Q4", "Q3", "Q2", "Q1"].forEach(function (q) { o.push(q + "-" + y); }); return o; })().map(function (q) { return <option key={q}>{q}</option>; })}</select></div>}
+                {pnlPeriod === "daily" && <div className="erp-rpt-toolbar-field"><label>Date</label><input type="date" value={reportDate} onChange={function (e) { setReportDate(e.target.value); }} /></div>}
+                {pnlPeriod === "monthly" && <div className="erp-rpt-toolbar-field"><label>Month</label><input type="month" value={pnlMonth} onChange={function (e) { setPnlMonth(e.target.value); }} /></div>}
+                {pnlPeriod === "yearly" && <div className="erp-rpt-toolbar-field"><label>Year</label><select value={pnlYear} onChange={function (e) { setPnlYear(e.target.value); }}>{(function () { var y = []; for (var i = parseInt(today().slice(0, 4)); i >= 2020; i--)y.push(String(i)); return y; })().map(function (y) { return <option key={y}>{y}</option>; })}</select></div>}
+                {pnlPeriod === "quarterly" && <div className="erp-rpt-toolbar-field"><label>Quarter</label><select value={pnlQuarter} onChange={function (e) { setPnlQuarter(e.target.value); }}>{(function () { var o = []; var cy = parseInt(today().slice(0, 4)); for (var y = cy; y >= 2020; y--) ["Q4", "Q3", "Q2", "Q1"].forEach(function (q) { o.push(q + "-" + y); }); return o; })().map(function (q) { return <option key={q}>{q}</option>; })}</select></div>}
                 {pnlPeriod === "custom" && <React.Fragment>
-                  <div><div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>From</div><input type="date" value={pnlFrom} onChange={function (e) { setPnlFrom(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none" }} /></div>
-                  <div><div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>To</div><input type="date" value={pnlTo} onChange={function (e) { setPnlTo(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none" }} /></div>
+                  <div className="erp-rpt-toolbar-field"><label>From</label><input type="date" value={pnlFrom} onChange={function (e) { setPnlFrom(e.target.value); }} /></div>
+                  <div className="erp-rpt-toolbar-field"><label>To</label><input type="date" value={pnlTo} onChange={function (e) { setPnlTo(e.target.value); }} /></div>
                 </React.Fragment>}
-                <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}><Btn col="blue" onClick={printPnL}>🖨 Print P&L Report</Btn><WABtn title="Share P&L as PDF via WhatsApp" onClick={sharePnL} /></div>
+                <div className="erp-rpt-toolbar-actions">
+                  <Btn col="blue" onClick={printPnL}>Print</Btn>
+                  <WABtn title="Share P&L as PDF via WhatsApp" onClick={sharePnL} />
+                </div>
               </div>
-              <div style={{ marginTop: 10, fontSize: 12, color: C.muted, fontWeight: 600, background: "#f7f9ff", padding: "7px 12px", borderRadius: 8, display: "inline-block" }}>📅 {range.label}</div>
+              <div className="erp-rpt-count-badge">{range.label}</div>
             </Card>
 
-            <div style={{ borderRadius: 14, padding: "22px 28px", background: isProfit ? "linear-gradient(135deg,#1b5e20,#2e7d32)" : "linear-gradient(135deg,#b71c1c,#c62828)", color: "#fff", display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 4px 24px rgba(0,0,0,0.18)" }}>
+            <div className={"erp-rpt-verdict " + (isProfit ? "is-profit" : "is-loss")}>
               <div>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.75, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 8 }}>{range.label} — Business Verdict</div>
-                <div style={{ fontSize: 36, fontWeight: 900 }}>{isProfit ? "✅ PROFIT" : "❌ LOSS"}</div>
-                <div style={{ fontSize: 13, opacity: 0.8, marginTop: 6 }}>{isProfit ? "Business is making money this period 🎉" : "Business is running at a loss this period ⚠"}</div>
+                <div className="erp-rpt-verdict-label">{range.label}</div>
+                <div className="erp-rpt-verdict-title">{isProfit ? "PROFIT" : "LOSS"}</div>
+                <div className="erp-rpt-verdict-sub">{isProfit ? "Business is profitable this period" : "Business is at a loss this period"}</div>
               </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75, marginBottom: 4 }}>Net {isProfit ? "Profit" : "Loss"}</div>
-                <div style={{ fontSize: 44, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(Math.abs(netProfit))}</div>
-                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 4 }}>Net Margin: {netMargin}% | Gross Margin: {grossMargin}%</div>
+              <div>
+                <div className="erp-rpt-verdict-amt">{getCurrencySymbol()} {fmtNum(Math.abs(netProfit))}</div>
+                <div className="erp-rpt-verdict-meta">Net {netMargin}% · Gross {grossMargin}%</div>
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(155px,1fr))", gap: 10 }}>
-              <StatCard label="Net Revenue" value={netRevenue} accent={C.blue} icon="💰" sub={rSales.length + " invoices" + (totalSalesReturnAmt > 0 ? " · Goods returned: " + getCurrencySymbol() + " " + fmtNum(totalSalesReturnAmt) : "")} />
-              <StatCard label="Cost of Goods" value={totalCOGS} accent={C.orange} icon="🛒" sub={(ingredientCOGS > 0 ? "Invoices + kitchen RM · " : "") + "Gross Margin: " + grossMargin + "%"} />
-              <StatCard label="Gross Profit" value={grossProfit} accent={grossProfit >= 0 ? C.green : C.red} icon="📊" sub="Net Revenue minus COGS" />
-              <StatCard label="Total Expenses" value={totalExpenses} accent={C.red} icon="💸" sub={rExp.length + " entries"} />
-              <StatCard label="Net Profit" value={netProfit} accent={isProfit ? C.green : C.red} icon={isProfit ? "📈" : "📉"} sub={"Margin: " + netMargin + "%"} />
-              <StatCard label="Cash Collected" value={totalCollected} accent={C.cyan} icon="✅" sub={"Unpaid: " + getCurrencySymbol() + " " + fmtNum(totalUnpaid)} />
-              {totalCashRefundedReturns > 0 ? <StatCard label="Cash refunded (returns)" value={totalCashRefundedReturns} accent={C.orange} icon="💸" sub="Actual cash paid back to customers" /> : null}
+            <div className="erp-rpt-kpi-strip">
+              {[
+                { label: "Net Revenue", val: netRevenue, color: C.blue, sub: rSales.length + " invoices" },
+                { label: "COGS", val: totalCOGS, color: C.orange, sub: "Gross " + grossMargin + "%" },
+                { label: "Gross Profit", val: grossProfit, color: grossProfit >= 0 ? C.green : C.red },
+                { label: "Expenses", val: totalExpenses, color: C.red, sub: rExp.length + " entries" },
+                { label: "Net Profit", val: netProfit, color: isProfit ? C.green : C.red, sub: "Net " + netMargin + "%" },
+                { label: "Collected", val: totalCollected, color: C.cyan, sub: "Unpaid " + getCurrencySymbol() + " " + fmtNum(totalUnpaid) },
+              ].map(function (k) {
+                return (
+                  <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                    <div className="erp-rpt-kpi-label">{k.label}</div>
+                    <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                    {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
+                  </div>
+                );
+              })}
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div className="erp-rpt-pnl-panels">
               <Card pad={0}>
-                <div style={{ padding: "14px 16px", borderBottom: "1.5px solid " + C.border }}>
-                  <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>📋 P&L Statement</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{range.label}</div>
+                <div style={{ padding: "8px 10px", borderBottom: "1px solid " + C.border }}>
+                  <div style={{ fontWeight: 800, fontSize: 12, color: C.text }}>P&amp;L Statement</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>{range.label}</div>
                 </div>
                 {[
                   { label: "Sales Revenue", val: totalRevenue, color: C.blue },
@@ -948,16 +995,20 @@ var Reports = React.memo(function (props) {
                   { label: "Capital Withdrawn", val: capitalOut, color: C.red, sub: true },
                   { label: "Profit Distributed", val: profitDist, color: C.purple, sub: true },
                 ].map(function (r, i) {
+                  var rowCls = "erp-rpt-pnl-row";
+                  if (r.sub) rowCls += " is-sub";
+                  if (r.bold) rowCls += " is-bold";
+                  if (r.large) rowCls += " is-total" + (isProfit ? "" : " is-loss");
                   return (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: r.large ? "12px 16px" : "8px 16px", borderBottom: "1px solid " + C.borderLight, background: r.large ? (isProfit ? "#e8f5e9" : "#fde8ed") : r.bold ? "#f7f9ff" : "#fff" }}>
-                      <span style={{ fontSize: r.large ? 14 : 12.5, fontWeight: r.bold ? 800 : 500, color: r.sub ? C.muted : C.text, paddingLeft: r.sub ? "14px" : "0" }}>{r.label}</span>
-                      <span style={{ fontWeight: r.large ? 900 : r.bold ? 800 : 700, fontSize: r.large ? 18 : 13, color: r.color }}>{r.txt ? r.val : getCurrencySymbol() + " " + fmtNum(r.val)}</span>
+                    <div key={i} className={rowCls}>
+                      <span className="erp-rpt-pnl-label" style={{ fontWeight: r.bold || r.large ? 800 : 500, fontSize: r.large ? 12.5 : undefined, color: r.sub ? undefined : C.text }}>{r.label}</span>
+                      <span style={{ fontWeight: r.large ? 900 : r.bold ? 800 : 700, fontSize: r.large ? 14 : 12, color: r.color }}>{r.txt ? r.val : getCurrencySymbol() + " " + fmtNum(r.val)}</span>
                     </div>
                   );
                 })}
               </Card>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 <Card>
                   <CardTitle sub="Where money was spent">Expense Breakdown</CardTitle>
                   {Object.keys(expByCategory).length === 0
@@ -1033,49 +1084,47 @@ var Reports = React.memo(function (props) {
       })()}
 
       {tab === "overview" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-            <div style={{ background: "#fff", borderRadius: 12, padding: "14px 16px", border: "1.5px solid " + C.border, boxShadow: C.shadow }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Total Cash</div>
-              {(function () { var cb = getCashBalances(state); return (<>
-              <div style={{ fontSize: 20, fontWeight: 900, color: cb.total >= 0 ? C.blue : C.red, marginBottom: 7 }}>{getCurrencySymbol()} {fmtNum(cb.total)}</div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <div style={{ flex: 1, background: "#f0f9f4", borderRadius: 7, padding: "5px 8px" }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: "#1b5e20", textTransform: "uppercase", marginBottom: 2 }}>Cash</div>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#1b5e20" }}>{getCurrencySymbol()} {fmtNum(cb.cash)}</div>
-                </div>
-                <div style={{ flex: 1, background: "#e8f0fe", borderRadius: 7, padding: "5px 8px" }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: "#1565c0", textTransform: "uppercase", marginBottom: 2 }}>Bank</div>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#1565c0" }}>{getCurrencySymbol()} {fmtNum(cb.bank)}</div>
-                </div>
-              </div>
-              </>); })()}
-            </div>
-            <StatCard label="Stock Value (Retail)" value={stockValue} accent={C.purple} icon="📦" sub={"Cost: " + getCurrencySymbol() + " " + fmtNum(stockCostValue)} />
-            <StatCard label="Total Receivable" value={totalReceivable} accent={C.cyan} icon="💳" sub={"Payable: " + getCurrencySymbol() + " " + fmtNum(totalPayable)} />
-            <StatCard label="Net Worth" value={netWorth} accent={netWorth >= 0 ? C.green : C.red} icon="🌟" sub={"Gross Margin: " + grossMarginPct + "%"} />
+        <div className="erp-tab-content">
+          <div className="erp-rpt-kpi-strip">
+            {(function () {
+              var cb = getCashBalances(state);
+              return [
+                { label: "Total Cash", val: cb.total, color: cb.total >= 0 ? C.blue : C.red, sub: "Cash " + getCurrencySymbol() + " " + fmtNum(cb.cash) + " · Bank " + fmtNum(cb.bank) },
+                { label: "Stock Value", val: stockValue, color: C.purple, sub: "Cost " + getCurrencySymbol() + " " + fmtNum(stockCostValue) },
+                { label: "Receivable", val: totalReceivable, color: C.cyan, sub: "Payable " + getCurrencySymbol() + " " + fmtNum(totalPayable) },
+                { label: "Net Worth", val: netWorth, color: netWorth >= 0 ? C.green : C.red, sub: "Gross margin " + grossMarginPct + "%" },
+              ].map(function (k) {
+                return (
+                  <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                    <div className="erp-rpt-kpi-label">{k.label}</div>
+                    <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                    {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
+                  </div>
+                );
+              });
+            })()}
           </div>
           {glPL && glBS && (
-            <Card>
+            <Card pad={10}>
               <CardTitle sub="All activity rolled into journal lines">Double-entry ledger</CardTitle>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12, fontSize: 13 }}>
-                <div style={{ background: "#f8fafc", borderRadius: 10, padding: "12px 14px", border: "1px solid " + C.borderLight }}>
-                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>P&amp;L (ledger)</div>
-                  <div style={{ fontWeight: 900, fontSize: 18, color: glPL.net >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(glPL.net)}</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Income {fmtNum(glPL.income)} · Expenses {fmtNum(glPL.expenses)}</div>
+              <div className="erp-rpt-ledger-mini">
+                <div className="erp-rpt-ledger-mini-card">
+                  <div className="lbl">P&amp;L (ledger)</div>
+                  <div className="val" style={{ color: glPL.net >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(glPL.net)}</div>
+                  <div className="sub">Income {fmtNum(glPL.income)} · Exp {fmtNum(glPL.expenses)}</div>
                 </div>
-                <div style={{ background: "#fffbeb", borderRadius: 10, padding: "12px 14px", border: "1px solid #fde68a" }}>
-                  <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Balance sheet (ledger)</div>
-                  <div style={{ fontWeight: 800, fontSize: 14 }}>Assets {getCurrencySymbol()} {fmtNum(glBS.assets)}</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-                    Liabilities {fmtNum(glBS.liabilities)} · Equity (book) {fmtNum(glBS.equity)}
-                    {(glBS.balancedWithEarnings !== undefined ? glBS.balancedWithEarnings : glBS.balanced) ? " · ✓ A=L+E+NI" : ""}
+                <div className="erp-rpt-ledger-mini-card">
+                  <div className="lbl">Balance sheet (ledger)</div>
+                  <div className="val">Assets {getCurrencySymbol()} {fmtNum(glBS.assets)}</div>
+                  <div className="sub">
+                    Liab {fmtNum(glBS.liabilities)} · Equity {fmtNum(glBS.equity)}
+                    {(glBS.balancedWithEarnings !== undefined ? glBS.balancedWithEarnings : glBS.balanced) ? " · Balanced" : ""}
                   </div>
                 </div>
               </div>
             </Card>
           )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
+          <div className="erp-rpt-panels">
             <Card pad={0}>
               <SectionHead label="Income & Cash Flow" />
               <KVRow label="Capital Invested" value={capital} color={C.blue} />
@@ -1084,7 +1133,7 @@ var Reports = React.memo(function (props) {
               <KVRow label="Purchases Paid" value={totalPurchasesPaid} color={C.red} />
               <KVRow label="Operating Expenses" value={totalExpenses} color={C.red} />
               <KVRow label="Assets Purchased" value={totalAssetsSpent} color={C.orange} />
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", fontSize: 13, fontWeight: 900, background: "#f0f4ff", borderTop: "2px solid " + C.border }}><span>Cash in Hand</span><span style={{ color: cashInHand >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(cashInHand)}</span></div>
+              <div className="erp-rpt-row-total"><span>Cash in Hand</span><span style={{ color: cashInHand >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(cashInHand)}</span></div>
             </Card>
             <Card pad={0}>
               <SectionHead label="Profit & Loss" />
@@ -1102,7 +1151,7 @@ var Reports = React.memo(function (props) {
               <KVRow label="Gross Profit" value={totalProfit} color={totalProfit >= 0 ? C.green : C.red} />
               <KVRow label="Repair / Service Revenue" value={totalRepairRevenue} color={C.green} />
               <KVRow label="Operating Expenses" value={totalExpenses} color={C.red} />
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", fontSize: 13, fontWeight: 900, background: "#f0f4ff", borderTop: "2px solid " + C.border }}><span>Net Profit</span><span style={{ color: (totalProfit + totalRepairRevenue - totalExpenses) >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(totalProfit + totalRepairRevenue - totalExpenses)}</span></div>
+              <div className="erp-rpt-row-total"><span>Net Profit</span><span style={{ color: (totalProfit + totalRepairRevenue - totalExpenses) >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(totalProfit + totalRepairRevenue - totalExpenses)}</span></div>
             </Card>
             <Card pad={0}>
               <SectionHead label="Business Summary" />
@@ -1110,7 +1159,7 @@ var Reports = React.memo(function (props) {
               <KVRow label="Total Products" value={state.products.length} color={C.purple} />
               <KVRow label="Total Customers" value={state.customers.length} color={C.cyan} />
               <KVRow label="Repair Jobs Done" value={state.repairs.filter(function(r){return r.status==="Delivered";}).length} color={C.green} />
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", fontSize: 13, fontWeight: 900, background: "#f0f4ff", borderTop: "2px solid " + C.border }}><span>Active Repairs</span><span style={{ color: activeRepairs > 0 ? C.orange : C.green }}>{activeRepairs} jobs</span></div>
+              <div className="erp-rpt-row-total"><span>Active Repairs</span><span style={{ color: activeRepairs > 0 ? C.orange : C.green }}>{activeRepairs} jobs</span></div>
             </Card>
           </div>
           {isNetworkServerRpt && (function () {
@@ -1153,35 +1202,39 @@ var Reports = React.memo(function (props) {
               </Card>
             );
           })()}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-            <MetricChip label="Gross Profit" value={totalProfit} sub={grossMarginPct + "% margin"} />
-            <MetricChip label="Net Profit" value={totalProfit + totalRepairRevenue - totalExpenses} />
-            <MetricChip label="Net Worth" value={netWorth} />
-            <MetricChip label="Working Capital" value={cashInHand + totalReceivable - totalPayable} />
-          </div>
         </div>
       )}
 
       {tab === "daily" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <Card>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Daily Report</div>
+        <div className="erp-tab-content">
+          <Card pad={10}>
+            <div className="erp-rpt-page-hdr">
+              <div className="erp-rpt-page-hdr-title">Daily Report</div>
               <Input type="date" value={reportDate} onChange={function (e) { setReportDate(e.target.value); }} />
-              {reportDate === today() && <span style={{ background: C.successSoft, color: C.green, padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, border: "1px solid #9ee8ce" }}>Today</span>}
-              <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-                <Btn sm col="cyan" onClick={printDailyReport}>🖨 Print</Btn>
+              {reportDate === today() && <span style={{ background: C.successSoft, color: C.green, padding: "2px 8px", borderRadius: 20, fontSize: 10, fontWeight: 700, border: "1px solid #9ee8ce" }}>Today</span>}
+              <div className="erp-rpt-page-hdr-actions">
+                <Btn sm col="cyan" onClick={printDailyReport}>Print</Btn>
                 <WABtn title="Share Daily Report via WhatsApp" onClick={function () { shareAnyReport(printDailyReport, "Daily-Report-" + reportDate); }} />
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-              <StatCard label="Invoiced" value={daySalesTotal} accent={C.cyan} icon="🧾" sub={daySales.length + " invoices"} />
-              <StatCard label="Collected" value={dayPaid} accent={C.green} icon="💰" sub={"Unpaid: " + getCurrencySymbol() + " " + fmtNum(dayUnpaid) + " · Tax: " + getCurrencySymbol() + " " + fmtNum(dayTaxCollected)} />
-              <StatCard label="Gross Profit" value={dayProfit} accent={dayProfit >= 0 ? C.green : C.red} icon="📈" sub={"COGS: " + getCurrencySymbol() + " " + fmtNum(dayCOGS) + (dayIngredientCOGS > 0 ? " (incl. kitchen RM " + getCurrencySymbol() + " " + fmtNum(dayIngredientCOGS) + ")" : "")} />
-              <StatCard label="Expenses" value={dayExpenses} accent={C.orange} icon="💸" sub={"Net: " + getCurrencySymbol() + " " + fmtNum(dayNetProfit)} />
+            <div className="erp-rpt-kpi-strip" style={{ marginTop: 8 }}>
+              {[
+                { label: "Invoiced", val: daySalesTotal, color: C.cyan, sub: daySales.length + " invoices" },
+                { label: "Collected", val: dayPaid, color: C.green, sub: "Unpaid " + getCurrencySymbol() + " " + fmtNum(dayUnpaid) },
+                { label: "Gross Profit", val: dayProfit, color: dayProfit >= 0 ? C.green : C.red, sub: "COGS " + getCurrencySymbol() + " " + fmtNum(dayCOGS) },
+                { label: "Expenses", val: dayExpenses, color: C.orange, sub: "Net " + getCurrencySymbol() + " " + fmtNum(dayNetProfit) },
+              ].map(function (k) {
+                return (
+                  <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                    <div className="erp-rpt-kpi-label">{k.label}</div>
+                    <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                    {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
+                  </div>
+                );
+              })}
             </div>
           </Card>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="erp-rpt-pnl-panels">
             <Card pad={0}>
               <SectionHead label={"Sales on " + fmtDateFull(reportDate)} />
               {daySales.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.muted }}>No sales on this date</div>}
@@ -1204,24 +1257,34 @@ var Reports = React.memo(function (props) {
       )}
 
       {tab === "monthly" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <Card>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Monthly Report</div>
-              <input type="month" value={reportMonth} onChange={function (e) { setReportMonth(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit" }} />
-              <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-                <Btn sm col="cyan" onClick={printMonthlyReport}>🖨 Print</Btn>
+        <div className="erp-tab-content">
+          <Card pad={10}>
+            <div className="erp-rpt-page-hdr">
+              <div className="erp-rpt-page-hdr-title">Monthly Report</div>
+              <input type="month" value={reportMonth} onChange={function (e) { setReportMonth(e.target.value); }} style={{ border: "1px solid " + C.border, borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit" }} />
+              <div className="erp-rpt-page-hdr-actions">
+                <Btn sm col="cyan" onClick={printMonthlyReport}>Print</Btn>
                 <WABtn title="Share Monthly Report via WhatsApp" onClick={function () { shareAnyReport(printMonthlyReport, "Monthly-Report-" + reportMonth); }} />
               </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-              <StatCard label="Revenue" value={monthSalesTotal} accent={C.cyan} icon="💰" sub={monthSales.length + " invoices"} />
-              <StatCard label="Gross Profit" value={monthProfit} accent={monthProfit >= 0 ? C.green : C.red} icon="📈" sub={"COGS: " + getCurrencySymbol() + " " + fmtNum(monthCOGS) + (monthIngredientCOGS > 0 ? " (incl. kitchen RM " + getCurrencySymbol() + " " + fmtNum(monthIngredientCOGS) + ")" : "")} />
-              <StatCard label="Expenses" value={monthExpenses} accent={C.orange} icon="💸" />
-              <StatCard label="Net Profit" value={monthNetProfit} accent={monthNetProfit >= 0 ? C.green : C.red} icon="🏆" />
+            <div className="erp-rpt-kpi-strip" style={{ marginTop: 8 }}>
+              {[
+                { label: "Revenue", val: monthSalesTotal, color: C.cyan, sub: monthSales.length + " invoices" },
+                { label: "Gross Profit", val: monthProfit, color: monthProfit >= 0 ? C.green : C.red, sub: "COGS " + getCurrencySymbol() + " " + fmtNum(monthCOGS) },
+                { label: "Expenses", val: monthExpenses, color: C.orange },
+                { label: "Net Profit", val: monthNetProfit, color: monthNetProfit >= 0 ? C.green : C.red },
+              ].map(function (k) {
+                return (
+                  <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                    <div className="erp-rpt-kpi-label">{k.label}</div>
+                    <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                    {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
+                  </div>
+                );
+              })}
             </div>
           </Card>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="erp-rpt-pnl-panels">
             <Card pad={0}>
               <SectionHead label="Monthly P&L Summary" />
               <KVRow label="Total Revenue" value={monthSalesTotal} color={C.blue} />
@@ -1238,7 +1301,7 @@ var Reports = React.memo(function (props) {
               )}
               <KVRow label="Operating Expenses" value={monthExpenses} color={C.red} />
               <KVRow label="Purchases Made" value={monthPurchases} color={C.purple} />
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", fontSize: 13, fontWeight: 900, background: "#f0f4ff", borderTop: "2px solid " + C.border }}><span>Net Profit</span><span style={{ color: monthNetProfit >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(monthNetProfit)}</span></div>
+              <div className="erp-rpt-row-total"><span>Net Profit</span><span style={{ color: monthNetProfit >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(monthNetProfit)}</span></div>
             </Card>
             <Card pad={0}>
               <SectionHead label={"Top Products — " + reportMonth} />
@@ -1266,16 +1329,27 @@ var Reports = React.memo(function (props) {
       )}
 
       {tab === "inventory" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
-            <Btn sm col="cyan" onClick={printStockReport}>🖨 Print Stock Report</Btn>
+        <div className="erp-tab-content">
+          <div className="erp-rpt-page-hdr" style={{ marginBottom: 4 }}>
+            <div className="erp-rpt-page-hdr-actions" style={{ marginLeft: 0, width: "100%", justifyContent: "flex-end" }}>
+              <Btn sm col="cyan" onClick={printStockReport}>Print</Btn>
               <WABtn title="Share Stock Report via WhatsApp" onClick={function () { shareAnyReport(printStockReport, "Stock-Report"); }} />
+            </div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-            <StatCard money={false} label="Total Products" value={state.products.length} accent={C.blue} icon="📦" sub="SKUs" />
-            <StatCard label="Stock Retail Value" value={stockValue} accent={C.purple} icon="💰" />
-            <StatCard label="Stock Cost Value" value={stockCostValue} accent={C.orange} icon="🏷" />
-            <StatCard label="Potential Profit" value={stockValue - stockCostValue} accent={C.green} icon="📈" />
+          <div className="erp-rpt-kpi-strip">
+            {[
+              { label: "Products", val: state.products.length, color: C.blue, isCount: true },
+              { label: "Retail Value", val: stockValue, color: C.purple },
+              { label: "Cost Value", val: stockCostValue, color: C.orange },
+              { label: "Potential Profit", val: stockValue - stockCostValue, color: C.green },
+            ].map(function (k) {
+              return (
+                <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                  <div className="erp-rpt-kpi-label">{k.label}</div>
+                  <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{k.isCount ? k.val : getCurrencySymbol() + " " + fmtNum(k.val)}</div>
+                </div>
+              );
+            })}
           </div>
           <Card>
             <CardTitle sub={state.products.length + " products"}>Inventory Report</CardTitle>
@@ -1421,17 +1495,26 @@ var Reports = React.memo(function (props) {
         var glDisp = rec ? round2(rec.glInventoryBalance) : 0;
         var diffDisp = rec ? round2(rec.difference) : 0;
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="erp-tab-content">
             <Card>
               <CardTitle sub={"Inventory account " + GL.INV + " vs replay engine"}>Inventory Reconciliation</CardTitle>
               {!bundle || !rec ? (
                 <div style={{ padding: 16, color: C.muted, fontSize: 13 }}>Live journal data is not available.</div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-                    <StatCard label="Inventory value (engine)" value={physDisp} accent={C.blue} icon="📊" />
-                    <StatCard label={"GL inventory (" + GL.INV + ")"} value={glDisp} accent={C.purple} icon="📒" />
-                    <StatCard label="Difference (GL − physical)" value={diffDisp} accent={mismatch ? C.red : C.green} icon={mismatch ? "⚠" : "✓"} />
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div className="erp-rpt-kpi-strip">
+                    {[
+                      { label: "Inventory (engine)", val: physDisp, color: C.blue },
+                      { label: "GL inventory", val: glDisp, color: C.purple },
+                      { label: "Difference", val: diffDisp, color: mismatch ? C.red : C.green },
+                    ].map(function (k) {
+                      return (
+                        <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                          <div className="erp-rpt-kpi-label">{k.label}</div>
+                          <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                        </div>
+                      );
+                    })}
                   </div>
                   <div style={{ border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", background: "#fafbff" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
@@ -1668,7 +1751,7 @@ var Reports = React.memo(function (props) {
       })()}
 
       {tab === "rawconsumption" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="erp-tab-content">
           <Card>
             <CardTitle
               sub="Opening + Purchase - Closing"
@@ -1681,10 +1764,20 @@ var Reports = React.memo(function (props) {
                 No daily stock count is saved on this date, so consumption values are skipped.
               </div>
             )}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 10, marginBottom: 10 }}>
-              <StatCard money={false} label="Raw Materials" value={rawMaterialProductsRpt.length} accent={C.blue} icon="RM" sub={reportDate} />
-              <StatCard label="Consumed Cost" value={rawConsumedReplayCostRpt} accent={C.green} icon="Cost" sub={(rawCountExactRpt ? "replay / GL kitchen" : "waiting for count")} />
-              <StatCard money={false} label="Negative Warnings" value={rawNegativeRowsRpt.length} accent={rawNegativeRowsRpt.length ? C.red : C.green} icon={rawNegativeRowsRpt.length ? "!" : "OK"} sub="review if not expected" />
+            <div className="erp-rpt-kpi-strip" style={{ marginBottom: 8 }}>
+              {[
+                { label: "Raw Materials", val: rawMaterialProductsRpt.length, color: C.blue, isCount: true, sub: reportDate },
+                { label: "Consumed Cost", val: rawConsumedReplayCostRpt, color: C.green, sub: rawCountExactRpt ? "replay / GL kitchen" : "waiting for count" },
+                { label: "Warnings", val: rawNegativeRowsRpt.length, color: rawNegativeRowsRpt.length ? C.red : C.green, isCount: true, sub: "negative rows" },
+              ].map(function (k) {
+                return (
+                  <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                    <div className="erp-rpt-kpi-label">{k.label}</div>
+                    <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{k.isCount ? k.val : getCurrencySymbol() + " " + fmtNum(k.val)}</div>
+                    {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
+                  </div>
+                );
+              })}
             </div>
             <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.45 }}>
               Cost total follows accounting replay / GL kitchen COGS (Dr {GL.COGS_KITCHEN}). Row “Consumed Cost” columns remain count × unit estimate for operational visibility and may differ from this total when timing diverges from usage replay.
@@ -1733,6 +1826,7 @@ var Reports = React.memo(function (props) {
       )}
 
       {tab === "customers" && (
+        <div className="erp-tab-content">
         <Card>
           <CardTitle sub={state.customers.length + " customers"} action={<div style={{ display: "flex", gap: 6, alignItems: "center" }}><Btn sm col="cyan" onClick={printCustomerBalanceReport}>🖨 Print Balance Report</Btn><WABtn title="Share via WhatsApp" onClick={function () { shareAnyReport(printCustomerBalanceReport, "Customer-Balance-Report"); }} /></div>}>Customer Report</CardTitle>
           <div style={{ overflowX: "auto" }}>
@@ -1762,15 +1856,26 @@ var Reports = React.memo(function (props) {
             </table>
           </div>
         </Card>
+        </div>
       )}
 
       {tab === "expenses" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-            <StatCard label="Total Expenses" value={totalExpenses} accent={C.red} icon="💸" sub={state.expenses.length + " records"} />
-            <StatCard label="This Month" value={state.expenses.filter(function (e) { return e.date.slice(0, 7) === today().slice(0, 7); }).reduce(function (a, e) { return a + e.amount; }, 0)} accent={C.orange} icon="📆" />
-            <StatCard label="Today" value={state.expenses.filter(function (e) { return e.date === today(); }).reduce(function (a, e) { return a + e.amount; }, 0)} accent={C.amber} icon="📅" />
-            <StatCard label="Avg per Month" value={Math.round(totalExpenses / Math.max(1, (function () { var m = {}; state.expenses.forEach(function (e) { m[e.date.slice(0, 7)] = 1; }); return Object.keys(m).length; })()))} accent={C.purple} icon="📊" />
+        <div className="erp-tab-content">
+          <div className="erp-rpt-kpi-strip">
+            {[
+              { label: "Total Expenses", val: totalExpenses, color: C.red, sub: state.expenses.length + " records" },
+              { label: "This Month", val: state.expenses.filter(function (e) { return e.date.slice(0, 7) === today().slice(0, 7); }).reduce(function (a, e) { return a + e.amount; }, 0), color: C.orange },
+              { label: "Today", val: state.expenses.filter(function (e) { return e.date === today(); }).reduce(function (a, e) { return a + e.amount; }, 0), color: C.amber },
+              { label: "Avg / Month", val: Math.round(totalExpenses / Math.max(1, (function () { var m = {}; state.expenses.forEach(function (e) { m[e.date.slice(0, 7)] = 1; }); return Object.keys(m).length; })())), color: C.purple },
+            ].map(function (k) {
+              return (
+                <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                  <div className="erp-rpt-kpi-label">{k.label}</div>
+                  <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                  {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
+                </div>
+              );
+            })}
           </div>
           <Card>
             <CardTitle sub="All-time breakdown by category">Expenses by Category</CardTitle>
@@ -1810,12 +1915,17 @@ var Reports = React.memo(function (props) {
       )}
 
       {tab === "repairs" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+        <div className="erp-tab-content">
+          <div className="erp-rpt-kpi-strip">
             {["Pending", "Repairing", "Ready", "Delivered", "Cancelled"].map(function (s) {
               var cnt = state.repairs.filter(function (r) { return r.status === s; }).length;
               var cols = { Pending: C.blue, Repairing: C.amber, Ready: C.green, Delivered: C.muted, Cancelled: C.red };
-              return <div key={s} style={{ background: "#fff", borderRadius: 12, padding: "14px", border: "1.5px solid " + C.border, textAlign: "center" }}><div style={{ fontSize: 22, fontWeight: 800, color: cols[s] }}>{cnt}</div><div style={{ fontSize: 11, color: cols[s], fontWeight: 700, marginTop: 3 }}>{s}</div></div>;
+              return (
+                <div key={s} className="erp-rpt-kpi" style={{ borderTopColor: cols[s], textAlign: "center" }}>
+                  <div className="erp-rpt-kpi-label">{s}</div>
+                  <div className="erp-rpt-kpi-val" style={{ color: cols[s] }}>{cnt}</div>
+                </div>
+              );
             })}
           </div>
           <Card>
@@ -1835,38 +1945,45 @@ var Reports = React.memo(function (props) {
       )}
 
       {tab === "assets" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div className="erp-tab-content">
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-            <StatCard label="Capital Invested" value={capital} accent={C.blue} icon="💰" />
-            <StatCard label="Total Assets Value" value={totalAssetsSpent} accent={C.orange} icon="🏛" />
-            <StatCard label="Remaining Capital" value={capital - totalAssetsSpent} accent={(capital - totalAssetsSpent) >= 0 ? C.green : C.red} icon="📊" sub="Capital minus assets" />
-            <StatCard money={false} label="Total Assets" value={(state.assets || []).length} accent={C.cyan} icon="📋" />
-            <StatCard money={false} label="Categories Used" value={(function () { var cats = {}; (state.assets || []).forEach(function (a) { cats[a.category] = 1; }); return Object.keys(cats).length; })()} accent={C.purple} icon="🗂" />
-            <StatCard label="Highest Value Asset" value={(function () { var mx = 0; (state.assets || []).forEach(function (a) { if ((a.amount || 0) > mx) mx = a.amount; }); return mx; })()} accent={C.amber} icon="🏆" sub="single asset" />
+          <div className="erp-rpt-kpi-strip">
+            {[
+              { label: "Capital Invested", val: capital, color: C.blue },
+              { label: "Assets Value", val: totalAssetsSpent, color: C.orange },
+              { label: "Remaining Capital", val: capital - totalAssetsSpent, color: (capital - totalAssetsSpent) >= 0 ? C.green : C.red },
+              { label: "Total Assets", val: (state.assets || []).length, color: C.cyan, isCount: true },
+              { label: "Categories", val: (function () { var cats = {}; (state.assets || []).forEach(function (a) { cats[a.category] = 1; }); return Object.keys(cats).length; })(), color: C.purple, isCount: true },
+            ].map(function (k) {
+              return (
+                <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                  <div className="erp-rpt-kpi-label">{k.label}</div>
+                  <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{k.isCount ? k.val : getCurrencySymbol() + " " + fmtNum(k.val)}</div>
+                </div>
+              );
+            })}
           </div>
 
-          <Card>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
-              <CardTitle sub={(state.assets || []).length + " assets recorded"}>Assets Register — Full Detail</CardTitle>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 4 }}>Category</div>
-                  <select value={assetFilterCat} onChange={function (e) { setAssetFilterCat(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 7, padding: "7px 10px", fontSize: 12, color: C.text, background: "#fff", fontFamily: "inherit" }}>
-                    <option>All</option>
-                    {["Shop Interior", "Advance Payment / Deposit", "Rent Deposit", "Equipment / Machinery", "Computers / Electronics", "Printer / Scanner", "Networking Equipment", "Furniture & Fixtures", "Vehicle", "Security System (CCTV)", "Electrical / UPS", "Software / Licenses", "Tools / Instruments", "Renovation / Improvements", "Other"].map(function (c) { return <option key={c}>{c}</option>; })}
-                  </select>
-                </div>
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 4 }}>From</div>
-                  <input type="date" value={assetFilterFrom} onChange={function (e) { setAssetFilterFrom(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 7, padding: "7px 10px", fontSize: 12, color: C.text, background: "#fff", outline: "none" }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 4 }}>To</div>
-                  <input type="date" value={assetFilterTo} onChange={function (e) { setAssetFilterTo(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 7, padding: "7px 10px", fontSize: 12, color: C.text, background: "#fff", outline: "none" }} />
-                </div>
-                <button onClick={function () { setAssetFilterCat("All"); setAssetFilterFrom(""); setAssetFilterTo(""); }} style={{ padding: "7px 14px", background: C.border, color: C.textMd, border: "none", borderRadius: 7, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Clear</button>
-                <button onClick={function () {
+          <Card pad={10}>
+            <div className="erp-rpt-toolbar" style={{ marginBottom: 8 }}>
+              <div className="erp-rpt-toolbar-field">
+                <label>Category</label>
+                <select value={assetFilterCat} onChange={function (e) { setAssetFilterCat(e.target.value); }}>
+                  <option>All</option>
+                  {["Shop Interior", "Advance Payment / Deposit", "Rent Deposit", "Equipment / Machinery", "Computers / Electronics", "Printer / Scanner", "Networking Equipment", "Furniture & Fixtures", "Vehicle", "Security System (CCTV)", "Electrical / UPS", "Software / Licenses", "Tools / Instruments", "Renovation / Improvements", "Other"].map(function (c) { return <option key={c}>{c}</option>; })}
+                </select>
+              </div>
+              <div className="erp-rpt-toolbar-field">
+                <label>From</label>
+                <input type="date" value={assetFilterFrom} onChange={function (e) { setAssetFilterFrom(e.target.value); }} />
+              </div>
+              <div className="erp-rpt-toolbar-field">
+                <label>To</label>
+                <input type="date" value={assetFilterTo} onChange={function (e) { setAssetFilterTo(e.target.value); }} />
+              </div>
+              <div className="erp-rpt-toolbar-actions">
+                <button type="button" className="erp-rpt-pill" onClick={function () { setAssetFilterCat("All"); setAssetFilterFrom(""); setAssetFilterTo(""); }}>Clear</button>
+                <Btn sm col="blue" onClick={function () {
                   var shopName = state.settings.shopName || "Techon ERP";
                   var addr = state.settings.address || "";
                   var phone = state.settings.phone || "";
@@ -1890,9 +2007,10 @@ var Reports = React.memo(function (props) {
                   fullAssets += "<table><thead><tr><th>#</th><th>Date</th><th>Asset Name</th><th>Category</th><th>Amount</th><th>Note</th></tr></thead><tbody>" + rows + "<tr class='tot'><td colspan='4'>TOTAL (" + filteredA.length + " assets)</td><td>" + getCurrencySymbol() + " " + Number(totalPrint).toLocaleString() + "</td><td></td></tr></tbody></table>";
                   fullAssets += "</body></html>";
                   openPrintWindow(fullAssets, { width: 1000, height: 750, delay: 500 });
-                }} style={{ padding: "7px 14px", background: C.blue, color: "#fff", border: "none", borderRadius: 7, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Print Register</button>
+                }}>Print</Btn>
               </div>
             </div>
+            <CardTitle sub={(state.assets || []).length + " assets recorded"}>Assets Register</CardTitle>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead><tr style={{ background: "#f0f4ff" }}>
@@ -1929,8 +2047,8 @@ var Reports = React.memo(function (props) {
                           <TD color={C.muted}>{a.note || "—"}</TD>
                           <td style={actBtnCellStyle}>
                             <ActBtnGroup>
-                              <ActBtn tone="blue" title="Edit asset" onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("edit"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }}>✎</ActBtn>
-                              <ActBtn tone="red" title="Delete asset" onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("delete"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }}>✕</ActBtn>
+                              <ActBtn tone="blue" title="Edit asset" onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("edit"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }} />
+                              <ActBtn tone="red" title="Delete asset" onClick={function () { setRptAssetEdit(Object.assign({}, a)); setRptAssetAction("delete"); setRptAssetPw(""); setRptAssetReason(""); setRptAssetPwMsg(""); }} />
                             </ActBtnGroup>
                           </td>
                         </TR>
@@ -2151,7 +2269,7 @@ var Reports = React.memo(function (props) {
           var obSnap = S.get("tc3_openBal", null);
           var obStockVal = (obSnap && obSnap.completed) ? (obSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
           var totalPurchasesVal = state.purchases.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
-          var totalPurchaseReturnsVal = (state.purchaseReturns || []).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
+          var totalPurchaseReturnsVal = activePurchaseReturns(state.purchases, state.purchaseReturns).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
           var theoreticalStock = obStockVal + totalPurchasesVal - totalCOGS - totalPurchaseReturnsVal;
           var manualStockAdjustments = stockCostValue - theoreticalStock;
           var totalProfitDist = S.get("tc3_profitDist", []).reduce(function (a, pd) { return a + pd.amount; }, 0);
@@ -2261,21 +2379,21 @@ var Reports = React.memo(function (props) {
         };
 
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <Card>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div className="erp-tab-content">
+            <Card pad={10}>
+              <div className="erp-rpt-page-hdr">
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 900, color: C.text, letterSpacing: "-0.02em" }}>⚖️ Balance Sheet</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Financial position as at {new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</div>
+                  <div className="erp-rpt-page-hdr-title">Balance Sheet</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>As at {new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}</div>
                 </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <Btn col="blue" onClick={printBS}>🖨 Print Balance Sheet</Btn>
+                <div className="erp-rpt-page-hdr-actions">
+                  <Btn col="blue" onClick={printBS}>Print</Btn>
                   <WABtn title="Share Balance Sheet via WhatsApp" onClick={function () { shareAnyReport(printBS, "Balance-Sheet"); }} />
                 </div>
               </div>
             </Card>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div className="erp-rpt-pnl-panels">
 
               {/* ── LEFT COLUMN: ASSETS ── */}
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -2324,16 +2442,14 @@ var Reports = React.memo(function (props) {
             </div>
 
             {/* ── NET WORTH BOX ── */}
-            <div style={{ background: bsTotalEquity >= 0 ? C.successSoft : C.dangerSoft, border: "2px solid " + (bsTotalEquity >= 0 ? "#9ee8ce" : "#f9a8ba"), borderRadius: 12, padding: "20px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+            <div className={"erp-rpt-status-banner " + (bsTotalEquity >= 0 ? "is-ok" : "is-bad")} style={{ padding: "10px 14px" }}>
               <div>
-                <div style={{ fontSize: 16, fontWeight: 900, color: C.text }}>💼 Net Worth — Owner's Equity</div>
-                <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>Total Assets minus Total Liabilities</div>
+                <div style={{ fontWeight: 800, fontSize: 13 }}>Net Worth — Owner&apos;s Equity</div>
+                <div style={{ fontSize: 10, opacity: 0.85, marginTop: 1 }}>Total Assets minus Total Liabilities</div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 32, fontWeight: 900, color: bsTotalEquity >= 0 ? C.green : C.red }}>{cur} {fmtNum(bsTotalEquity)}</div>
-                {bsTotalEquity < 0 && <div style={{ fontSize: 12, color: C.red, fontWeight: 700, marginTop: 2 }}>⚠️ Owner's equity is negative — review losses and distributions</div>}
-                {bsTotalEquity >= 0 && bsTotalAssets >= bsTotalLiabilities && <div style={{ fontSize: 12, color: C.green, fontWeight: 700, marginTop: 2 }}>✅ Business has positive equity</div>}
-                {bsTotalEquity >= 0 && bsTotalAssets < bsTotalLiabilities && <div style={{ fontSize: 12, color: "#92400e", fontWeight: 700, marginTop: 2 }}>⚠️ Liabilities exceed total assets</div>}
+                <div style={{ fontSize: 20, fontWeight: 900 }}>{cur} {fmtNum(bsTotalEquity)}</div>
+                {bsTotalEquity < 0 && <div style={{ fontSize: 10, fontWeight: 700, marginTop: 2 }}>Owner&apos;s equity is negative</div>}
               </div>
             </div>
 
@@ -2412,6 +2528,7 @@ var Reports = React.memo(function (props) {
         (state.sales || []).forEach(function (s) {
           var phSum = (s.paymentHistory || []).reduce(function (a, ph) { return a + (ph.amount || 0); }, 0);
           if (Math.abs(phSum - (s.paid || 0)) <= 1) return;
+          if (Math.abs(Math.min(phSum, s.total || 0) - (s.paid || 0)) <= 1) return;
           var row = { ref: s.invoiceNo || s.id.slice(0, 8), phSum: phSum, paid: s.paid || 0 };
           var hasSalesReturns = (state.salesReturns || []).some(function (r) { return r.invoiceId === s.id; });
           if (hasSalesReturns) phMismatchesLegacy.push(row);
@@ -2622,34 +2739,32 @@ var Reports = React.memo(function (props) {
         };
 
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* Header */}
-            <Card>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div className="erp-tab-content">
+            <Card pad={10}>
+              <div className="erp-rpt-page-hdr">
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 900, color: C.text, letterSpacing: "-0.02em" }}>🛡 System Integrity Report</div>
-                  <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Full audit of your data — run this daily to catch errors early</div>
+                  <div className="erp-rpt-page-hdr-title">System Integrity</div>
+                  <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>Full audit of your data</div>
                 </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <Btn col="blue" onClick={printReport}>🖨 Print Report</Btn>
+                <div className="erp-rpt-page-hdr-actions">
+                  <Btn col="blue" onClick={printReport}>Print</Btn>
                   <WABtn title="Share Report via WhatsApp" onClick={function () { shareAnyReport(printReport, "Business-Report"); }} />
                 </div>
               </div>
             </Card>
 
-            {/* Summary banner */}
-            <div style={{ background: isClean ? C.successSoft : totalIssues > 0 ? C.dangerSoft : "#fef9c3",
-              border: "2px solid " + (isClean ? "#9ee8ce" : totalIssues > 0 ? "#f9a8ba" : "#fde68a"),
-              borderRadius: 12, padding: "18px 22px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-              <div style={{ fontSize: 17, fontWeight: 900, color: isClean ? C.green : totalIssues > 0 ? C.red : "#92400e" }}>
-                {isClean ? "✅ All checks passed — system is clean!" : totalIssues > 0 ? "❌ " + totalIssues + " issue(s) found — action required" : "⚠️ " + totalWarnings + " warning(s) — review recommended"}
+            <div className={"erp-rpt-status-banner " + (isClean ? "is-ok" : totalIssues > 0 ? "is-bad" : "is-warn")}>
+              <div>
+                {isClean ? "All checks passed — system is clean" : totalIssues > 0 ? totalIssues + " issue(s) found — action required" : totalWarnings + " warning(s) — review recommended"}
               </div>
-              <div style={{ display: "flex", gap: 16 }}>
+              <div className="erp-rpt-status-stats">
                 {[["Issues", issues.length, C.red, "#fde8ed"], ["Warnings", totalWarnings, "#d97706", "#fef9c3"], ["Passed", passed.length, C.green, C.successSoft]].map(function (s) {
-                  return <div key={s[0]} style={{ textAlign: "center", background: s[3], borderRadius: 8, padding: "8px 16px" }}>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: s[2] }}>{s[1]}</div>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: s[2], textTransform: "uppercase" }}>{s[0]}</div>
-                  </div>;
+                  return (
+                    <div key={s[0]} className="erp-rpt-status-stat" style={{ background: s[3] }}>
+                      <div className="erp-rpt-status-stat-val" style={{ color: s[2] }}>{s[1]}</div>
+                      <div className="erp-rpt-status-stat-lbl" style={{ color: s[2] }}>{s[0]}</div>
+                    </div>
+                  );
                 })}
               </div>
             </div>
@@ -2700,17 +2815,17 @@ var Reports = React.memo(function (props) {
       })()}
 
       {tab === "business" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <Card>
-            <CardTitle sub="filter and print a complete business summary">Business Report — A to Z</CardTitle>
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 16 }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>From Date</div>
-                <input type="date" value={rangeFrom} onChange={function (e) { setRangeFrom(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none" }} />
+        <div className="erp-tab-content">
+          <Card pad={10}>
+            <CardTitle sub="Filter and print a complete business summary">Business Report</CardTitle>
+            <div className="erp-rpt-toolbar">
+              <div className="erp-rpt-toolbar-field">
+                <label>From</label>
+                <input type="date" value={rangeFrom} onChange={function (e) { setRangeFrom(e.target.value); }} />
               </div>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>To Date</div>
-                <input type="date" value={rangeTo} onChange={function (e) { setRangeTo(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none" }} />
+              <div className="erp-rpt-toolbar-field">
+                <label>To</label>
+                <input type="date" value={rangeTo} onChange={function (e) { setRangeTo(e.target.value); }} />
               </div>
               <Btn col="blue" onClick={function () {
                 try {
@@ -2723,8 +2838,8 @@ var Reports = React.memo(function (props) {
                 var website = state.settings.website || "";
                 var brn = state.settings.brn || "";
                 var inRange = function (d) { return d >= rf && d <= rt; };
-                var rSales = state.sales.filter(function (s) { return inRange(s.date); });
-                var rPurch = state.purchases.filter(function (p) { return inRange(p.date || ""); });
+                var rSales = liveSalesRpt.filter(function (s) { return inRange(s.date); });
+                var rPurch = livePurchasesRpt.filter(function (p) { return inRange(p.date || ""); });
                 var rExp = state.expenses.filter(function (e) { return inRange(e.date); });
                 var rRep = state.repairs.filter(function (r) { return inRange(r.dateIn || r.date || ""); });
                 var rAssets = state.assets ? state.assets.filter(function (a) { return !a._isOpening && inRange(a.date); }) : [];
@@ -2733,7 +2848,7 @@ var Reports = React.memo(function (props) {
                 var totalRev = rSales.reduce(function (a, s) { return a + s.total; }, 0);
                 var totalColl = rSales.reduce(function (a, s) { return a + (s.paid || 0); }, 0);
                 var totalUnpaid = rSales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
-                var rSalesRetsLocal = (state.salesReturns || []).filter(function (r) { return inRange(r.date); });
+                var rSalesRetsLocal = activeSalesReturns(state.sales, (state.salesReturns || []).filter(function (r) { return inRange(r.date); }));
                 var totalInvoicedCOGSr = round2(getNetCOGSForRange(rSales, rSalesRetsLocal)); /* Bug 3 fix */
                 var ingredientCOGSr = round2(sumRawMaterialKitchenCostInRange(state, rf, rt));
                 var totalCOGSr = round2(totalInvoicedCOGSr + ingredientCOGSr);
@@ -2746,14 +2861,8 @@ var Reports = React.memo(function (props) {
                 var totalPurchAmt = rPurch.reduce(function (a, p) { return a + p.total; }, 0);
                 var totalPurchPaid = rPurch.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0);
                 var totalPurchBal = rPurch.reduce(function (a, p) { return a + Math.max(0, (p.total || 0) - (p.paidAmount || 0)); }, 0);
-                /* BUG5 FIX: Repairs that were NOT converted to invoices contribute revenue directly.
-                   Repairs converted via convertToInvoice already have cost:0 in the POS sale so
-                   their full charge lands in grossProfit. We only add repair revenue for jobs that
-                   are Delivered but do NOT have a corresponding sale (i.e. not yet invoiced). */
-                /* BUG5 FIX: Only count repair revenue for jobs NOT already converted to a POS invoice.
-                   Repairs converted via convertToInvoice have cost:0 in the sale, so their full
-                   charge is already in grossProfit. We check sale.fromRepairId (set since this fix)
-                   and also scan sale items for any fromRepairId field. */
+                /* BUG5 FIX: Only count repair revenue for jobs NOT converted to an *active* POS invoice.
+                   Voided invoices must not keep a repair marked "already invoiced". */
                 var invoicedRepairIds = new Set();
                 rSales.forEach(function (s) {
                   if (s.fromRepairId) invoicedRepairIds.add(s.fromRepairId);
@@ -3069,14 +3178,24 @@ var Reports = React.memo(function (props) {
               var assets2 = rAssets2.reduce(function (a, x) { return a + x.amount; }, 0);
               var repRev2 = rRep2.filter(function (r) { return r.status === "Delivered"; }).reduce(function (a, r) { return a + (r.estimatedCost || r.cost || 0); }, 0);
               return (
-                <div style={{ display: "contents" }}>
-                  <StatCard label="Revenue" value={rev2} accent={C.blue} icon="💰" sub={rSales2.length + " invoices"} />
-                  <StatCard label="Gross Profit" value={rev2 - cogs2} accent={rev2 - cogs2 >= 0 ? C.green : C.red} icon="📈" />
-                  <StatCard label="Net Profit" value={rev2 - cogs2 - exp2} accent={rev2 - cogs2 - exp2 >= 0 ? C.green : C.red} icon="🎯" />
-                  <StatCard label="Total Expenses" value={exp2} accent={C.red} icon="💸" sub={rExp2.length + " records"} />
-                  <StatCard label="Purchases" value={pur2} accent={C.orange} icon="🛒" sub={rPurch2.length + " orders"} />
-                  <StatCard label="Repairs Revenue" value={repRev2} accent={C.cyan} icon="🔧" sub={rRep2.length + " jobs"} />
-                  <StatCard label="Assets Acquired" value={assets2} accent={C.purple} icon="🏛" sub={rAssets2.length + " items"} />
+                <div className="erp-rpt-kpi-strip" style={{ marginTop: 8 }}>
+                  {[
+                    { label: "Revenue", val: rev2, color: C.blue, sub: rSales2.length + " invoices" },
+                    { label: "Gross Profit", val: rev2 - cogs2, color: rev2 - cogs2 >= 0 ? C.green : C.red },
+                    { label: "Net Profit", val: rev2 - cogs2 - exp2, color: rev2 - cogs2 - exp2 >= 0 ? C.green : C.red },
+                    { label: "Expenses", val: exp2, color: C.red, sub: rExp2.length + " records" },
+                    { label: "Purchases", val: pur2, color: C.orange, sub: rPurch2.length + " orders" },
+                    { label: "Repairs", val: repRev2, color: C.cyan, sub: rRep2.length + " jobs" },
+                    { label: "Assets", val: assets2, color: C.purple, sub: rAssets2.length + " items" },
+                  ].map(function (k) {
+                    return (
+                      <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
+                        <div className="erp-rpt-kpi-label">{k.label}</div>
+                        <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                        {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })()}
@@ -3088,3 +3207,4 @@ var Reports = React.memo(function (props) {
   );
 });
 export default Reports;
+

@@ -4,6 +4,7 @@ import { round2 } from "../utils/moneyRound.js";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 import { glassInvoiceLineTotal } from "../utils/glassProduct.js";
 import { isVoidedTxn } from "../utils/voidInvoice.js";
+import { stampProductStock, stampUpdatedAt, stampCustomerBalance, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 
 /* ─── RETURNS PAGE ────────────────────────────────────────────────────────── */
 var Returns = function (props) {
@@ -34,7 +35,7 @@ var Returns = function (props) {
   var Pager = props.Pager;
   var tcTrialGuard = props.tcTrialGuard;
   var [tab, setTab] = useState("salesreturn");
-  var TABS = [["salesreturn", "↩ Sales Return"], ["purchasereturn", "🔄 Purchase Return"]];
+  var TABS = [["salesreturn", "Sales Return"], ["purchasereturn", "Purchase Return"]];
   useEffect(function () {
     try {
       var t = sessionStorage.getItem("tc3_returns_tab");
@@ -153,13 +154,14 @@ var SalesReturnTab = function (props) {
   var [returnQtys, setReturnQtys] = useState({});
   var [refundMethod, setRefundMethod] = useState("Cash");
   var [returnReason, setReturnReason] = useState("");
+  var [returnDate, setReturnDate] = useState(today());
   var [histSearch, setHistSearch] = useState("");
 
   var openModal = function () {
     setModal("search");
-    setCustSearch(""); setInvSearch(""); setSelInv(null); setReturnQtys({}); setReturnReason("");
+    setCustSearch(""); setInvSearch(""); setSelInv(null); setReturnQtys({}); setReturnReason(""); setReturnDate(today());
   };
-  var closeModal = function () { setModal(null); setSelInv(null); setReturnQtys({}); setCustSearch(""); setInvSearch(""); setReturnReason(""); };
+  var closeModal = function () { setModal(null); setSelInv(null); setReturnQtys({}); setCustSearch(""); setInvSearch(""); setReturnReason(""); setReturnDate(today()); };
 
   /* already-returned qty per invoice+product */
   var getReturnedQty = function (invoiceId, productId) {
@@ -195,6 +197,7 @@ var SalesReturnTab = function (props) {
   /* Filter invoices: match customer search OR invoice number search */
   var allSales = sortNewestFirst(state.sales || []);
   var filteredSales = allSales.filter(function (s) {
+    if (isVoidedTxn(s)) return false;
     var cq = custSearch.toLowerCase().trim();
     var iq = invSearch.toLowerCase().trim();
     var matchC = !cq || (s.customerName || "").toLowerCase().includes(cq) || (s.customerPhone || "").includes(cq);
@@ -259,20 +262,20 @@ var SalesReturnTab = function (props) {
         var lineReturnGross = isInclusive ? lineGross : round2(lineGross + lineReturnTax);
         var thisRefund = (needsRefund && !refundRecorded) ? refundAmt : 0;
         if (needsRefund && !refundRecorded) refundRecorded = true;
-        newReturns.push({
+        newReturns.push(stampTransactionIsoDateTime({
           id: uid(), returnId: genInvNo("SR"), invoiceId: selInv.id, invoiceNo: selInv.invoiceNo,
           productId: it.id, productName: it.name || "Unknown Product",
           qty: q, amount: lineNet, returnTax: lineReturnTax, returnGross: lineReturnGross, cost: it.cost || 0, /* FIX 1+3: store exact cost at return time — avoids cross-period lookup errors */
           taxMode: selInv.taxMode || (isInclusive ? "inclusive" : "exclusive"),
           selectedTaxes: (selInv.selectedTaxes || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; }),
-          date: today(),
+          date: returnDate || today(),
           createdAt: new Date().toISOString(),
           customer: selInv.customerName || selInv.customer || "",
           customerId: selInv.customerId || "",
           reason: returnReason.trim(),
           isRefund: needsRefund && thisRefund > 0, refundMethod: (needsRefund && thisRefund > 0) ? refundMethod : null,
           refundAmount: thisRefund
-        });
+        }));
         np = np.map(function (p) {
           if (p.id !== it.id) return p;
           var curS = p.stock || 0;
@@ -288,7 +291,7 @@ var SalesReturnTab = function (props) {
             /* Re-blend: returned items re-enter inventory at their original sale cost */
             newC = ((curS * curC) + (q * retCost)) / newS;
           }
-          return Object.assign({}, p, { stock: newS, cost: Math.round(newC * 100) / 100 });
+          return stampProductStock(Object.assign({}, p, { stock: newS, cost: Math.round(newC * 100) / 100 }), null, p);
         });
       });
 
@@ -316,14 +319,14 @@ var SalesReturnTab = function (props) {
             cashMethod: needsRefund && refundMethod === "Bank" ? "Bank" : (needsRefund ? "Cash" : "Adjustment"),
           });
         }
-        return Object.assign({}, s, taxPatch, {
+        return stampUpdatedAt(Object.assign({}, s, taxPatch, {
           subTotal: newLineSub,
           total: newTotal,
           balance: newBal,
           paid: newPaid,
           payStatus: newStat,
           paymentHistory: ph,
-        });
+        }));
       });
 
       /* Adjust customer credit and totalSpent — no early exit for needsRefund (Ghost Debt fix) */
@@ -331,10 +334,10 @@ var SalesReturnTab = function (props) {
       var debtReduced = Math.max(0, origOutstanding - newOutstanding);
       var nc = state.customers.map(function (c) {
         if (!selInv.customerId || c.id !== selInv.customerId) return c;
-        return Object.assign({}, c, {
+        return stampCustomerBalance(Object.assign({}, c, {
           credit: Math.max(0, (c.credit || 0) - debtReduced),
           totalSpent: Math.max(0, (c.totalSpent || 0) - returnTotal)
-        });
+        }), null, c);
       });
 
       S.set("tc3_salesReturns", newReturns);
@@ -501,7 +504,9 @@ var SalesReturnTab = function (props) {
           </table>
 
           {/* Reason for Return — required */}
-          <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, marginBottom: 14 }}>
+            <Input label="Return Date" type="date" value={returnDate} onChange={function (e) { setReturnDate(e.target.value); }} />
+            <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Reason for Return <span style={{ color: C.red }}>*</span></label>
             <input
               value={returnReason}
@@ -510,6 +515,7 @@ var SalesReturnTab = function (props) {
               style={{ border: "1.5px solid " + (!returnReason.trim() ? "#f9a8ba" : C.border), borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
             />
             {!returnReason.trim() && <div style={{ fontSize: 11, color: C.red, marginTop: 3 }}>Required — cannot process return without a reason</div>}
+            </div>
           </div>
 
           {/* Refund method if customer has overpaid relative to new total */}
@@ -592,14 +598,15 @@ var PurchaseReturnTab = function (props) {
   var [selPur, setSelPur] = useState(null);
   var [returnQtys, setReturnQtys] = useState({});
   var [purReturnReason, setPurReturnReason] = useState("");
+  var [purReturnDate, setPurReturnDate] = useState(today());
   var [purRefundMethod, setPurRefundMethod] = useState("Cash"); /* FIX Bug 1: cash back from supplier */
   var [histSearch, setHistSearch] = useState("");
 
   var openModal = function () {
     setModal("search");
-    setSuppSearch(""); setPurSearch(""); setSelPur(null); setReturnQtys({}); setPurReturnReason(""); setPurRefundMethod("Cash");
+    setSuppSearch(""); setPurSearch(""); setSelPur(null); setReturnQtys({}); setPurReturnReason(""); setPurReturnDate(today()); setPurRefundMethod("Cash");
   };
-  var closeModal = function () { setModal(null); setSelPur(null); setReturnQtys({}); setSuppSearch(""); setPurSearch(""); setPurReturnReason(""); setPurRefundMethod("Cash"); };
+  var closeModal = function () { setModal(null); setSelPur(null); setReturnQtys({}); setSuppSearch(""); setPurSearch(""); setPurReturnReason(""); setPurReturnDate(today()); setPurRefundMethod("Cash"); };
 
   var getPurReturnedQty = function (purchaseId, productId) {
     return roundQty((state.purchaseReturns || []).filter(function (r) {
@@ -629,6 +636,7 @@ var PurchaseReturnTab = function (props) {
 
   var allPurchases = sortNewestFirst(state.purchases || []);
   var filteredPurchases = allPurchases.filter(function (p) {
+    if (isVoidedTxn(p)) return false;
     var sq = suppSearch.toLowerCase().trim();
     var pq = purSearch.toLowerCase().trim();
     var matchS = !sq || (p.supplier || "").toLowerCase().includes(sq);
@@ -639,6 +647,7 @@ var PurchaseReturnTab = function (props) {
 
   var processReturn = function () {
     if (!selPur) return;
+    if (isVoidedTxn(selPur)) { showAlert("Cannot return a voided purchase."); return; }
     var hasQty = (selPur.items || []).some(function (it) { return (parseInt(returnQtys[it.id]) || 0) > 0; });
     if (!hasQty) { showAlert("Enter at least one return quantity."); return; }
     if (!purReturnReason.trim()) { showAlert("Please enter a reason for this purchase return."); return; }
@@ -651,6 +660,8 @@ var PurchaseReturnTab = function (props) {
       if (q > maxRet) { err = "\"" + (it.name || "Item") + "\": max returnable is " + maxRet + "."; }
     });
     if (err) { showAlert(err); return; }
+
+    if (!tcTrialGuard(state.purchaseReturns || [], "purchaseReturns")) return;
 
     /* FIX Bug 1 + Bug 2: Dynamic refund calculation for purchase returns.
        If the supplier already received payment and new total drops below paid amount,
@@ -699,18 +710,18 @@ var PurchaseReturnTab = function (props) {
         var prTaxBundle = state.settings && state.settings.taxEnabled ? computePurchaseReturnTax(selPur, amt, state.settings) : { taxReversal: 0, apGross: amt };
         var thisRefund = (needsRefund && !purRefundRecorded) ? refundAmt : 0;
         if (needsRefund && !purRefundRecorded) purRefundRecorded = true;
-        newReturns.push({
+        newReturns.push(stampTransactionIsoDateTime({
           id: uid(), returnId: genInvNo("PR"), purchaseId: selPur.id, purchaseNo: selPur.invoiceNo,
           purchaseLineId: it.id,
           productId: it.id, productName: it.name || "Unknown Product",
-          qty: q, amount: amt, returnTax: round2(prTaxBundle.taxReversal || 0), returnGross: round2(prTaxBundle.apGross || amt), date: today(),
+          qty: q, amount: amt, returnTax: round2(prTaxBundle.taxReversal || 0), returnGross: round2(prTaxBundle.apGross || amt), date: purReturnDate || today(),
           createdAt: new Date().toISOString(),
           supplier: selPur.supplier || "", cost: unitForGl,
           costSourceFallbackWac: costFallbackWac === true,
           reason: purReturnReason.trim(),
           isRefund: needsRefund && thisRefund > 0, refundMethod: (needsRefund && thisRefund > 0) ? purRefundMethod : null,
           refundAmount: thisRefund
-        });
+        }));
         np = np.map(function (p) {
           if (p.id !== it.id) return p;
           var curS = p.stock || 0;
@@ -721,7 +732,7 @@ var PurchaseReturnTab = function (props) {
              chronological order inverts WAC vs the true purchase timeline. We only deduct base qty.
              Inventory asset on the books drops by (returned_qty × line cost) via tc3_purchaseReturns rows
              and payable adjustments; remaining units keep the current frozen unit cost (curC). */
-          return Object.assign({}, p, { stock: newS, cost: Math.round(curC * 100) / 100 });
+          return stampProductStock(Object.assign({}, p, { stock: newS, cost: Math.round(curC * 100) / 100 }), null, p);
         });
       });
 
@@ -744,7 +755,7 @@ var PurchaseReturnTab = function (props) {
             cashMethod: needsRefund && purRefundMethod === "Bank" ? "Bank" : (needsRefund ? "Cash" : "Adjustment"),
           });
         }
-        return Object.assign({}, p, { total: newTotal, balance: newBal, paidAmount: newPaid, status: newStat, paymentHistory: ph });
+        return stampUpdatedAt(Object.assign({}, p, { total: newTotal, balance: newBal, paidAmount: newPaid, status: newStat, paymentHistory: ph }));
       });
 
       S.set("tc3_purchaseReturns", newReturns);
@@ -916,7 +927,9 @@ var PurchaseReturnTab = function (props) {
           </table>
 
           {/* Reason for Purchase Return — required */}
-          <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, marginBottom: 14 }}>
+            <Input label="Return Date" type="date" value={purReturnDate} onChange={function (e) { setPurReturnDate(e.target.value); }} />
+            <div>
             <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Reason for Return <span style={{ color: C.red }}>*</span></label>
             <input
               value={purReturnReason}
@@ -925,6 +938,7 @@ var PurchaseReturnTab = function (props) {
               style={{ border: "1.5px solid " + (!purReturnReason.trim() ? "#f9a8ba" : C.border), borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
             />
             {!purReturnReason.trim() && <div style={{ fontSize: 11, color: C.red, marginTop: 3 }}>Required — cannot process return without a reason</div>}
+            </div>
           </div>
 
           {/* FIX Bug 1: Show refund selector when supplier owes cash back */}

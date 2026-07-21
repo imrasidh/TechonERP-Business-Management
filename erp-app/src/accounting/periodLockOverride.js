@@ -5,6 +5,12 @@
 
 import { isLockedThroughDate } from "./periodLockDates.js";
 
+/** True when product unit cost changed (period-lock guard — stock moves via sales/damageLog). */
+export function productCostChanged(prev, row) {
+  if (!prev || !row) return false;
+  return Math.abs((Number(prev.cost) || 0) - (Number(row.cost) || 0)) > 1e-9;
+}
+
 /**
  * Collect affected record ids that strict period lock would have blocked.
  * Mirrors strict rules in App.jsx validateAccountingMutation (keep in sync when changing lock logic).
@@ -28,7 +34,16 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
     tc3_profitDist: 1,
     tc3_raw_material_usage: 1,
     tc3_raw_material_counts: 1,
+    tc3_repairs: 1,
+    tc3_cheques: 1,
+    tc3_damageLog: 1,
   };
+
+  function rowLockDate(row, key) {
+    if (!row) return "";
+    if (key === "tc3_repairs") return row.dateIn || row.date;
+    return row.date;
+  }
 
   function pushId(row) {
     if (row && row.id != null) out.push(String(row.id));
@@ -50,7 +65,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
     for (var od = 0; od < oldArr.length; od++) {
       var oDel = oldArr[od];
       if (!oDel || oDel.id == null) continue;
-      if (!newIds[String(oDel.id)] && isLockedThroughDate(oDel.date, lock)) {
+      if (!newIds[String(oDel.id)] && isLockedThroughDate(rowLockDate(oDel, k), lock)) {
         pushId(oDel);
       }
     }
@@ -60,7 +75,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
       var prevN = null;
       if (nrow.id != null) prevN = oldById[String(nrow.id)] || null;
       else if (li < oldArr.length && oldArr[li] && !nrow.id && !oldArr[li].id) prevN = oldArr[li];
-      if (prevN && isLockedThroughDate(prevN.date, lock)) {
+      if (prevN && isLockedThroughDate(rowLockDate(prevN, k), lock)) {
         try {
           if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
             pushId(nrow);
@@ -68,6 +83,36 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
         } catch (e) {
           pushId(nrow);
         }
+      }
+    }
+  }
+
+  if (k === "tc3_products" && Array.isArray(v)) {
+    var oldProdArr = Array.isArray(oldV) ? oldV : [];
+    var oldProdById = {};
+    for (var opi = 0; opi < oldProdArr.length; opi++) {
+      var oPr = oldProdArr[opi];
+      if (oPr && oPr.id != null) oldProdById[String(oPr.id)] = oPr;
+    }
+    var newProdIds = {};
+    for (var npi = 0; npi < v.length; npi++) {
+      var nPr = v[npi];
+      if (nPr && nPr.id != null) newProdIds[String(nPr.id)] = true;
+    }
+    for (var opd = 0; opd < oldProdArr.length; opd++) {
+      var oDelP = oldProdArr[opd];
+      if (!oDelP || oDelP.id == null) continue;
+      if (!newProdIds[String(oDelP.id)]) {
+        pushId(oDelP);
+      }
+    }
+    for (var pxi = 0; pxi < v.length; pxi++) {
+      var nProd = v[pxi];
+      if (!nProd || nProd.id == null) continue;
+      var prevProd = oldProdById[String(nProd.id)];
+      if (!prevProd) continue;
+      if (productCostChanged(prevProd, nProd)) {
+        pushId(nProd);
       }
     }
   }

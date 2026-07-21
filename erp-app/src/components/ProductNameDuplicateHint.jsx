@@ -33,6 +33,7 @@ export default function ProductNameDuplicateHint(props) {
   var excludeId = props.excludeId;
   var C = props.C;
   var visible = props.visible !== false;
+  var compact = !!props.compact;
 
   var trimmed = String(name || "").trim();
 
@@ -53,14 +54,84 @@ export default function ProductNameDuplicateHint(props) {
 
   if (!candidates.length && !isExact && !isLikelySame) return null;
 
-  var headerBg = isExact ? "#fef2f2" : isLikelySame ? "#fffbeb" : "#f0f9ff";
-  var headerBorder = isExact ? "#fca5a5" : isLikelySame ? "#fcd34d" : "#93c5fd";
-  var headerColor = isExact ? "#b91c1c" : isLikelySame ? "#92400e" : "#1d4ed8";
+  /* Teal for similar (stands out from blue form UI); red / amber for blocking cases */
+  var tone = isExact ? "exact" : isLikelySame ? "likely" : "similar";
+  var tones = {
+    exact: {
+      border: "#f87171",
+      headerBg: "linear-gradient(135deg, #fef2f2 0%, #ffe4e6 100%)",
+      headerColor: "#991b1b",
+      accent: "#dc2626",
+      chipBg: "#fee2e2",
+      chipColor: "#b91c1c",
+      rowBg: "#fff5f5",
+    },
+    likely: {
+      border: "#f59e0b",
+      headerBg: "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
+      headerColor: "#92400e",
+      accent: "#d97706",
+      chipBg: "#fef3c7",
+      chipColor: "#92400e",
+      rowBg: "#fffbeb",
+    },
+    similar: {
+      border: "#2dd4bf",
+      headerBg: "linear-gradient(135deg, #f0fdfa 0%, #ccfbf1 100%)",
+      headerColor: "#0f766e",
+      accent: "#0d9488",
+      chipBg: "#ccfbf1",
+      chipColor: "#0f766e",
+      rowBg: "#f0fdfa",
+    },
+  };
+  var t = tones[tone];
+
+  var wrapClass =
+    "erp-prod-name-hint erp-prod-name-hint--" + tone + (compact ? " erp-prod-name-hint--compact" : "");
 
   return (
-    <div style={{ marginTop: 6, borderRadius: 8, border: "1px solid " + headerBorder, overflow: "hidden", fontSize: 12, lineHeight: 1.45 }}>
-      <div style={{ padding: "10px 12px", background: headerBg, color: headerColor, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, minHeight: 40 }}>
-        <span style={{ flex: 1, lineHeight: 1.4, paddingRight: 4 }}>
+    <div
+      className={wrapClass}
+      style={{
+        marginTop: compact ? 4 : 6,
+        borderRadius: compact ? 8 : 10,
+        border: "1.5px solid " + t.border,
+        overflow: "hidden",
+        fontSize: compact ? 11.5 : 12,
+        lineHeight: 1.4,
+        boxShadow: "0 2px 10px rgba(15, 23, 42, 0.06)",
+      }}
+    >
+      <div
+        className="erp-prod-name-hint-hdr"
+        style={{
+          padding: compact ? "7px 10px" : "9px 12px",
+          background: t.headerBg,
+          color: t.headerColor,
+          fontWeight: 700,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          minHeight: compact ? 32 : 38,
+          borderBottom: "1px solid " + t.border,
+        }}
+      >
+        <span style={{ flex: 1, lineHeight: 1.35, paddingRight: 4 }}>
+          <span
+            style={{
+              display: "inline-block",
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: t.accent,
+              marginRight: 7,
+              verticalAlign: "middle",
+              boxShadow: "0 0 0 3px " + t.chipBg,
+            }}
+            aria-hidden="true"
+          />
           {isExact
             ? "Exact product name already exists — choose a different name or edit the existing product."
             : isLikelySame
@@ -72,47 +143,54 @@ export default function ProductNameDuplicateHint(props) {
             onMouseDown={function (e) { e.preventDefault(); }}
             onClick={props.onDismiss}
             ariaLabel="Close suggestions"
-            size={26}
-            bg="rgba(255,255,255,0.75)"
-            color={headerColor}
+            size={compact ? 22 : 26}
+            bg="rgba(255,255,255,0.85)"
+            color={t.headerColor}
           />
         )}
       </div>
-      <div style={{ background: "#fff" }}>
+      <div className="erp-prod-name-hint-list" style={{ background: "#fff", maxHeight: compact ? 148 : 180, overflowY: "auto" }}>
         {candidates.map(function (row) {
           var m = row.match;
           var rel = row.relation || m.relation;
-          var rowBg = rel === "exact" ? "#fef2f2" : (rel === "same_core" || rel === "subset") ? "#fffbeb" : "#fff";
+          var rowTone =
+            rel === "exact" ? tones.exact
+              : (rel === "same_core" || rel === "subset") ? tones.likely
+                : tones.similar;
           return (
             <div
               key={m.id}
+              className="erp-prod-name-hint-row"
               style={{
-                padding: "8px 10px",
+                padding: compact ? "6px 10px" : "8px 10px",
                 borderTop: "1px solid " + (C && C.borderLight ? C.borderLight : "#e5e7eb"),
-                background: rowBg,
+                background: rowTone.rowBg,
                 display: "flex",
                 justifyContent: "space-between",
-                gap: 10,
+                gap: 8,
                 alignItems: "flex-start",
               }}
             >
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 700, color: "#111827", wordBreak: "break-word" }}>{m.name}</div>
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                <div style={{ fontWeight: 700, color: "#0f172a", wordBreak: "break-word", fontSize: compact ? 12 : 12.5 }}>{m.name}</div>
+                <div style={{ fontSize: 10.5, color: "#64748b", marginTop: 1 }}>
                   {[m.category, m.barcode, m.productId].filter(Boolean).join(" · ")}
                 </div>
               </div>
-              <span style={{
-                flexShrink: 0,
-                fontSize: 10,
-                fontWeight: 800,
-                textTransform: "uppercase",
-                letterSpacing: "0.04em",
-                color: rel === "exact" ? "#b91c1c" : (rel === "same_core" || rel === "subset") ? "#92400e" : "#2563eb",
-                background: rel === "exact" ? "#fee2e2" : (rel === "same_core" || rel === "subset") ? "#fef3c7" : "#dbeafe",
-                padding: "2px 7px",
-                borderRadius: 999,
-              }}>
+              <span
+                style={{
+                  flexShrink: 0,
+                  fontSize: 9.5,
+                  fontWeight: 800,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                  color: rowTone.chipColor,
+                  background: rowTone.chipBg,
+                  border: "1px solid " + rowTone.border,
+                  padding: "2px 7px",
+                  borderRadius: 999,
+                }}
+              >
                 {relationLabel(rel)}
               </span>
             </div>

@@ -1,0 +1,359 @@
+/* TechonERP — Phase 5: Reports, Repairs, Barcodes, Settings polish */
+
+/* ── Shared classic panels ──────────────────────────────────── */
+.erp-panel-box {
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+}
+
+.erp-panel-box-muted {
+  background: #fafafa;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+}
+
+.erp-panel-hdr-blue {
+  background: linear-gradient(180deg, #3a6eb5 0%, #1a4fa0 100%);
+  color: #fff;
+  padding: 8px 12px;
+  border: 1px solid #0a2d5c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.erp-alert {
+  border: 1px solid #aca899;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.erp-alert-success {
+  background: #e8f5e9;
+  border-color: #2e7d32;
+  color: #1b5e20;
+}
+
+.erp-alert-warn {
+  background: #fff8e1;
+  border-color: #c9a227;
+  color: #7c5700;
+}
+
+.erp-alert-danger {
+  background: #fde8ed;
+  border-color: #c00000;
+  color: #991b1b;
+}
+
+.erp-alert-info {
+  background: #e8f0fc;
+  border-color: #7a9fd4;
+  color: #1a4fa0;
+}
+
+.erp-range-label {
+  display: inline-block;
+  font-size: 11px;
+  color: #444;
+  font-weight: 600;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  padding: 4px 10px;
+  margin-top: 6px;
+}
+
+/* ── Reports ────────────────────────────────────────────────── */
+.erp-reports-scope .erp-card {
+  box-shadow: none;
+}
+
+.erp-rpt-verdict {
+  border: 1px solid #aca899;
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: #fff;
+}
+
+.erp-rpt-verdict-profit {
+  border-left: 5px solid #2e7d32;
+}
+
+.erp-rpt-verdict-loss {
+  border-left: 5px solid #c00000;
+}
+
+.erp-rpt-verdict-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #444;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+
+.erp-rpt-verdict-title {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.erp-rpt-verdict-title.profit { color: #2e7d32; }
+.erp-rpt-verdict-title.loss { color: #c00000; }
+
+.erp-rpt-verdict-sub {
+  font-size: 11px;
+  color: #555;
+  margin-top: 4px;
+}
+
+.erp-rpt-verdict-amt {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.erp-rpt-verdict-amt.profit { color: #2e7d32; }
+.erp-rpt-verdict-amt.loss { color: #c00000; }
+
+.erp-rpt-section-hdr {
+  background: linear-gradient(180deg, #3a6eb5 0%, #1a4fa0 100%);
+  color: #fff;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid #0a2d5c;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.erp-rpt-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 6px;
+}
+
+.erp-rpt-stat-tile {
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 10px;
+  text-align: center;
+}
+
+.erp-rpt-stat-tile-val {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.erp-rpt-stat-tile-lbl {
+  font-size: 10px;
+  font-weight: 700;
+  margin-top: 3px;
+  text-transform: uppercase;
+}
+
+.erp-rpt-bs-total {
+  border: 2px solid #aca899;
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: #fff;
+}
+
+.erp-rpt-bs-total.positive {
+  border-left: 5px solid #2e7d32;
+  background: #f0faf4;
+}
+
+.erp-rpt-bs-total.negative {
+  border-left: 5px solid #c00000;
+  background: #fef2f2;
+}
+
+.erp-rpt-row-accent {
+  background: #e8f0fc !important;
+}
+
+.erp-rpt-row-sub {
+  background: #fafafa !important;
+}
+
+/* ── Repairs ────────────────────────────────────────────────── */
+.erp-repairs-scope .erp-card {
+  box-shadow: none;
+}
+
+.erp-repair-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.erp-repair-tab {
+  border: 1px solid #aca899;
+  background: #fff;
+  padding: 8px 12px;
+  min-width: 120px;
+  cursor: default;
+  font-family: inherit;
+  text-align: left;
+}
+
+.erp-repair-tab:hover {
+  background: #f5f5f5;
+}
+
+.erp-repair-tab.active {
+  background: #e8f0fc;
+  border-color: #316ac5;
+  border-width: 2px;
+  padding: 7px 11px;
+}
+
+.erp-repair-tab-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #555;
+  margin-bottom: 2px;
+}
+
+.erp-repair-tab-count {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  color: #1a4fa0;
+}
+
+.erp-repair-ticket-hdr {
+  background: linear-gradient(180deg, #3a6eb5 0%, #1a4fa0 100%);
+  color: #fff;
+  border: 1px solid #0a2d5c;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.erp-repair-detail-cell {
+  background: #fafafa;
+  border: 1px solid #aca899;
+  padding: 8px 10px;
+}
+
+.erp-repair-detail-lbl {
+  font-size: 9px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
+
+/* ── Barcodes ───────────────────────────────────────────────── */
+.erp-barcodes-scope .erp-card {
+  box-shadow: none;
+}
+
+.erp-barcode-preview {
+  padding: 20px 0;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+}
+
+.erp-barcodes-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: 8px;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .erp-barcodes-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Settings extras ────────────────────────────────────────── */
+.erp-settings-scope .erp-settings-info,
+.erp-settings-scope .erp-settings-info-warn {
+  border-radius: 0;
+}
+
+.erp-settings-feature-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: default;
+  padding: 8px 10px;
+  border: 1px solid #aca899;
+  background: #fff;
+  margin-bottom: 4px;
+}
+
+.erp-settings-feature-label.active {
+  background: #e8f0fc;
+  border-color: #316ac5;
+}
+
+.erp-settings-upload-btn {
+  display: inline-block;
+  background: #1a4fa0;
+  color: #fff;
+  border: 1px solid #0a2d5c;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: default;
+}
+
+.erp-settings-seg-bar {
+  display: flex;
+  gap: 2px;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  padding: 2px;
+}
+
+/* ── Accounts opening balance wizard ────────────────────────── */
+.erp-ob-step-btn {
+  flex: 1;
+  min-width: 88px;
+  padding: 8px 6px;
+  border: 1px solid #aca899;
+  background: #fff;
+  color: #333;
+  font-weight: 600;
+  font-size: 11px;
+  cursor: default;
+  font-family: inherit;
+  text-align: center;
+}
+
+.erp-ob-step-btn.active {
+  background: #e8f0fc;
+  border-color: #316ac5;
+  color: #1a4fa0;
+  font-weight: 700;
+}
+
+.erp-ob-step-btn.done {
+  background: #e8f5e9;
+  border-color: #2e7d32;
+  color: #1b5e20;
+}

@@ -10,6 +10,7 @@ import { productMatchesSearch } from "../utils/productSearch.js";
 import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 import { evaluateProductNameMatch } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
+import AddNewProductModal, { blankNewProductForm } from "../components/AddNewProductModal.jsx";
 import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
 import {
   isGlassProduct,
@@ -27,7 +28,8 @@ import {
 import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
 import CategorySelect from "../components/CategorySelect.jsx";
 import { COMPUTER_SHOP_EDITION, DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
-import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { ActBtn, ActBtnGroup } from "../components/ActBtn.jsx";
+import { stampProductStock, stampUpdatedAt, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
 
 var Inventory = React.memo(function (props) {
@@ -73,13 +75,7 @@ var Inventory = React.memo(function (props) {
 
   var shopSettings = hydrateShopSettings(state.settings, S.get("tc3_businessType", null));
   var blankProduct = function (extra) {
-    var cat = getDefaultProductCategory(shopSettings);
-    var unit = getDefaultProductUnit(shopSettings, cat);
-    return Object.assign({
-      name: "", barcode: genBarcode(), category: cat, unit: unit, type: "stock",
-      description: "", cost: "", price: "", stock: "", extraUnits: [],
-      require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
-    }, extra || {});
+    return blankNewProductForm(shopSettings, genBarcode, extra);
   };
   var onProductCategoryChange = function (setForm, cat) {
     var units = getUnitsForSubCategory(cat, shopSettings);
@@ -106,20 +102,35 @@ var Inventory = React.memo(function (props) {
   var [search, setSearch] = useState("");
   var [catFilter, setCatFilter] = useState("All");
   var [stockFilter, setStockFilter] = useState("All");
-  var [showHistory, setShowHistory] = useState(false);
   var [editP, setEditP] = useState(null);
   var [newP, setNewP] = useState(null);
+  var [newProdKey, setNewProdKey] = useState(0);
 
-  /* Ctrl++ shortcut - open Add Product */
+  /* Ctrl++ / F12 (via App) — open Add Product */
   useEffect(function () {
+    var openAdd = function () {
+      setNewProdKey(function (k) { return k + 1; });
+      setNewP(blankProduct());
+    };
+    var onAddProduct = function () { openAdd(); };
     var handler = function (e) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         e.preventDefault();
-        setNewP(blankProduct());
+        openAdd();
       }
     };
     window.addEventListener("keydown", handler);
-    return function () { window.removeEventListener("keydown", handler); };
+    window.addEventListener("tc3-add-product", onAddProduct);
+    try {
+      if (sessionStorage.getItem("tc3_pending_add_product") === "1") {
+        sessionStorage.removeItem("tc3_pending_add_product");
+        openAdd();
+      }
+    } catch (_e) { /* ignore */ }
+    return function () {
+      window.removeEventListener("keydown", handler);
+      window.removeEventListener("tc3-add-product", onAddProduct);
+    };
   }, []);
   var [actionP, setActionP] = useState(null);
   var [dmgQty, setDmgQty] = useState("1");
@@ -162,7 +173,8 @@ var Inventory = React.memo(function (props) {
   var [rmSearch, setRmSearch] = useState("");
   var [rmAcOpen, setRmAcOpen] = useState(false);
   var [rmDetailProduct, setRmDetailProduct] = useState(null);
-  var [rmDailySubtab, setRmDailySubtab] = useState("ingredients");
+  var [activitySubtab, setActivitySubtab] = useState("changes");
+  var [activitySearch, setActivitySearch] = useState("");
   var [rmUsageLogDate, setRmUsageLogDate] = useState(function () {
     return typeof today === "function" ? today() : "";
   });
@@ -175,7 +187,7 @@ var Inventory = React.memo(function (props) {
   }, []);
 
   useEffect(function () {
-    if (itab !== "rawcount" || !rmAcOpen) return;
+    if (itab !== "ingredients" || !rmAcOpen) return;
     var handler = function (e) {
       if (rmAcWrapRef.current && !rmAcWrapRef.current.contains(e.target)) setRmAcOpen(false);
     };
@@ -184,11 +196,38 @@ var Inventory = React.memo(function (props) {
   }, [itab, rmAcOpen]);
 
   useEffect(function () {
-    if (itab !== "rawcount") {
+    if (itab !== "ingredients") {
       setRmSearch("");
       setRmAcOpen(false);
     }
   }, [itab]);
+
+  useEffect(function () {
+    var hasIng = (state.products || []).some(function (p) {
+      return p && p.status !== "inactive" && String((p && p.type) || "").toLowerCase() === "raw_material";
+    }) || (Array.isArray(state.rawMaterialUsages) && state.rawMaterialUsages.length > 0);
+    setItab(function (cur) {
+      if (cur === "damaged") { setActivitySubtab("damage"); return "activity"; }
+      if (cur === "history") { setActivitySubtab("changes"); return "activity"; }
+      if (cur === "rawcount") return hasIng ? "ingredients" : "activity";
+      return cur;
+    });
+  }, []);
+
+  useEffect(function () {
+    if (itab === "ingredients") {
+      var hasIng = (state.products || []).some(function (p) {
+        return p && p.status !== "inactive" && String((p && p.type) || "").toLowerCase() === "raw_material";
+      }) || (Array.isArray(state.rawMaterialUsages) && state.rawMaterialUsages.length > 0);
+      if (!hasIng) setItab("overview");
+    }
+    if (itab === "activity" && activitySubtab === "usage") {
+      var hasUsage = (state.products || []).some(function (p) {
+        return p && String((p && p.type) || "").toLowerCase() === "raw_material";
+      }) || (Array.isArray(state.rawMaterialUsages) && state.rawMaterialUsages.length > 0);
+      if (!hasUsage) setActivitySubtab("changes");
+    }
+  }, [itab, activitySubtab, state.products, state.rawMaterialUsages]);
 
   /* FIX 8: Exclude inactive (soft-deleted) products from all inventory views and stats.
      Inactive products still exist in state.products so historical records remain intact. */
@@ -424,7 +463,7 @@ var Inventory = React.memo(function (props) {
     var res = rfStockAfterConsume(prod, consumeBase);
     if (res.err) { showAlert(res.err); return; }
     var newStock = res.stock;
-    var np = state.products.map(function (x) { return x.id === pid ? Object.assign({}, x, { stock: newStock }) : x; });
+    var np = state.products.map(function (x) { return x.id === pid ? stampProductStock(Object.assign({}, x, { stock: newStock }), null, x) : x; });
     var closingBase = inventoryQtyForTotals(Object.assign({}, prod, { stock: newStock }));
     var usageRow = {
       id: uid(),
@@ -521,75 +560,59 @@ var Inventory = React.memo(function (props) {
     return out;
   };
 
+  var saveNewFromShared = function (form, meta) {
+    if (!form) return false;
+    var nameStr = String(form.name == null ? "" : form.name).trim();
+    var isServiceNew = normalizeProductType(form.type) === "service";
+    if (!nameStr || (!isServiceNew && !form.price)) return false;
+    var unitFields = buildUnitsPersistFields({
+      unit: form.unit,
+      cost: form.cost,
+      price: form.price,
+      extraUnits: form.extraUnits || [],
+    });
+    var isGlassNew = isGlassSheetProductForm(form, shopSettings);
+    var prod = applyGlassProductFields(Object.assign(
+      {
+        id: uid(),
+        productId: nextProductId(state.products),
+        name: nameStr,
+        barcode: form.barcode || genBarcode(),
+        category: form.category || "General",
+        type: normalizeProductType(form.type),
+        description: form.description || "",
+        cost: parseFloat(form.cost) || 0,
+        price: parseFloat(form.price) || 0,
+        stock: normalizeProductType(form.type) === "service" ? 0 : (isGlassNew ? (parseFloat(form.stock) || 0) : (parseInt(form.stock) || 0)),
+        damaged: 0,
+        require_comment: false,
+        comment_label: String(form.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
+        weightGrams: form.weightGrams,
+        makingCharge: form.makingCharge,
+        expiryDate: form.expiryDate,
+        batchNo: form.batchNo,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      unitFields
+    ), form, shopSettings);
+    if (!tcTrialGuard(state.products, "products")) return false;
+    var np = state.products.concat([prod]);
+    var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Added", productId: prod.id, productName: prod.name, qty: prod.stock, reason: "New product" }]);
+    S.set("tc3_products", np); S.set("tc3_productLog", log);
+    setState(function (s) { return Object.assign({}, s, { products: np, productLog: log }); });
+    if (meta && meta.addAnother) {
+      setNewP(blankProduct({ type: form.type || "stock" }));
+      return true;
+    }
+    setNewP(null);
+    return true;
+  };
+
   var saveNew = function () {
+    /* legacy name kept for any leftover refs — use shared modal */
     if (!newP) return;
-    var nameStr = String(newP.name == null ? "" : newP.name).trim();
-    var isServiceNew = isServiceProduct({ type: newP.type });
-    if (!nameStr || (!isServiceNew && !newP.price)) return;
-    var nameCheck = checkProductName(nameStr, state.products, null);
-    if (nameCheck && nameCheck.type === "exact") {
-      showAlert("A product named \"" + nameCheck.match + "\" already exists.\nPlease use a different name.");
-      return;
-    }
-    if (newP.barcode && state.products.find(function (p) { return p.barcode === newP.barcode; })) {
-      showAlert("A product with barcode \"" + newP.barcode + "\" already exists.\nPlease use a different barcode.");
-      return;
-    }
-    var performNewSave = function () {
-      var unitErr = validateExtraUnits(newP.unit, newP.extraUnits || []);
-      if (unitErr) { showAlert(unitErr); return; }
-      var unitFields = buildUnitsPersistFields({
-        unit: newP.unit,
-        cost: newP.cost,
-        price: newP.price,
-        extraUnits: newP.extraUnits || [],
-      });
-      var glassFields = glassFieldsFromProductForm(newP);
-      var isGlassNew = isGlassSheetProductForm(newP, shopSettings);
-      var glassErr = validateGlassProductForm(newP, shopSettings);
-      if (glassErr) { showAlert(glassErr); return; }
-      var prod = applyGlassProductFields(Object.assign(
-        {
-          id: uid(),
-          productId: nextProductId(state.products),
-          name: nameStr,
-          barcode: newP.barcode || genBarcode(),
-          category: newP.category || "General",
-          type: normalizeProductType(newP.type),
-          description: newP.description || "",
-          cost: parseFloat(newP.cost) || 0,
-          price: parseFloat(newP.price) || 0,
-          stock: normalizeProductType(newP.type) === "service" ? 0 : (isGlassNew ? (parseFloat(newP.stock) || 0) : (parseInt(newP.stock) || 0)),
-          damaged: 0,
-          require_comment: false,
-          comment_label: String(newP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
-        },
-        unitFields
-      ), newP, shopSettings);
-      if (!tcTrialGuard(state.products, 'products')) return;
-      var np = state.products.concat([prod]);
-      var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Added", productId: prod.id, productName: prod.name, qty: prod.stock, reason: "New product" }]);
-      S.set("tc3_products", np); S.set("tc3_productLog", log);
-      setState(function (s) { return Object.assign({}, s, { products: np, productLog: log }); });
-      setNewP(null);
-    };
-    var maybeGuardThenNewSave = function () {
-      if (
-        normalizeProductType(newP.type) === "raw_material" &&
-        isRawMaterialGuardBaseUnit(newP.unit) &&
-        rawMaterialEnteredLooksLikePackTotal(newP.cost, newP.price, newP.unit)
-      ) {
-        showConfirm(rawMaterialPackPricingConfirmMessage(newP.cost, newP.price, newP.unit), performNewSave);
-        return;
-      }
-      performNewSave();
-    };
-    if (nameCheck && (nameCheck.type === "likely_same" || nameCheck.type === "reordered")) {
-      var dupNames = (nameCheck.matches || []).map(function (m) { return "\"" + m.name + "\""; }).join(", ");
-      showConfirm("This looks like a product you already have:\n" + dupNames + "\n\nCreate \"" + nameStr + "\" as a new product anyway?", maybeGuardThenNewSave);
-    } else {
-      maybeGuardThenNewSave();
-    }
+    saveNewFromShared(newP, {});
   };
 
   var saveEdit = function () {
@@ -627,7 +650,7 @@ var Inventory = React.memo(function (props) {
       if (glassErrEdit) { showAlert(glassErrEdit); return; }
       var np = state.products.map(function (p) {
         if (p.id !== editP.id) return p;
-        return applyGlassProductFields(Object.assign({}, p, {
+        var next = applyGlassProductFields(Object.assign({}, p, {
           name: editP.name,
           barcode: editP.barcode,
           category: editP.category,
@@ -639,6 +662,8 @@ var Inventory = React.memo(function (props) {
           require_comment: false,
           comment_label: String(editP.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
         }, unitFieldsEdit), editP, shopSettings);
+        var costChanged = Math.abs((parseFloat(editP.cost) || 0) - (parseFloat(p.cost) || 0)) > 0.0001;
+        return costChanged ? stampProductStock(next, null, p) : stampUpdatedAt(next);
       });
       S.set("tc3_products", np);
       addAudit("Edited Product", editP.name + " (" + (editP.productId || editP.id.slice(0, 6)) + ")");
@@ -676,15 +701,22 @@ var Inventory = React.memo(function (props) {
     var p = actionP.product;
     var qty = parseInt(dmgQty) || 1;
     if (actionP.mode === "damage") {
-      var np2 = state.products.map(function (x) { return x.id === p.id ? Object.assign({}, x, { stock: Math.max(0, x.stock - qty), damaged: (x.damaged || 0) + qty }) : x; });
-      var dl = (state.damageLog || []).concat([{ id: uid(), date: today(), productId: p.id, productName: p.name, qty: qty, cost: p.cost || 0, reason: reason }]);
+      var np2 = state.products.map(function (x) { return x.id === p.id ? stampProductStock(Object.assign({}, x, { stock: Math.max(0, x.stock - qty), damaged: (x.damaged || 0) + qty }), null, x) : x; });
+      var dmgTs = new Date().toISOString();
+      var dl = (state.damageLog || []).concat([stampTransactionIsoDateTime({
+        id: uid(), date: today(), createdAt: dmgTs, productId: p.id, productName: p.name, qty: qty, cost: p.cost || 0, reason: reason,
+      }, dmgTs)]);
       S.set("tc3_products", np2); S.set("tc3_damageLog", dl);
       setState(function (s) { return Object.assign({}, s, { products: np2, damageLog: dl }); });
     } else if (actionP.mode === "void") {
       /* Zero-stock void — hide from POS/stock lists; record + ID kept for accounting. */
       var voidDisplayId = p.productId || "";
+      var voidStockQty = Math.max(0, Number(p.stock) || 0);
+      var voidDamagedQty = Math.max(0, Number(p.damaged) || 0);
+      var voidWriteOffQty = voidStockQty + voidDamagedQty;
+      var isServiceVoid = normalizeProductType(p.type) === "service";
       var np3 = state.products.map(function (x) {
-        return x.id === p.id ? Object.assign({}, x, { status: "inactive", stock: 0, damaged: 0 }) : x;
+        return x.id === p.id ? stampProductStock(Object.assign({}, x, { status: "inactive", stock: 0, damaged: 0 }), null, x) : x;
       });
       var pl = (state.productLog || []).concat([{
         id: uid(),
@@ -692,18 +724,49 @@ var Inventory = React.memo(function (props) {
         type: "Voided",
         productId: p.id,
         productName: p.name,
-        qty: 0,
+        qty: voidWriteOffQty,
         reason: reason,
       }]);
-      S.set("tc3_products", np3); S.set("tc3_productLog", pl);
-      setState(function (s) { return Object.assign({}, s, { products: np3, productLog: pl }); });
-      addAudit("Voided Product", p.name + (voidDisplayId ? (" (ID " + voidDisplayId + ")") : ""));
+      var voidStorWrites = [["tc3_products", np3], ["tc3_productLog", pl]];
+      var voidStatePatch = { products: np3, productLog: pl };
+      if (!isServiceVoid && voidWriteOffQty > 0) {
+        var voidTs = new Date().toISOString();
+        var dlVoid = (state.damageLog || []).concat([stampTransactionIsoDateTime({
+          id: uid(),
+          date: today(),
+          createdAt: voidTs,
+          productId: p.id,
+          productName: p.name,
+          qty: voidWriteOffQty,
+          cost: p.cost || 0,
+          reason: "Product void: " + reason,
+        }, voidTs)]);
+        voidStorWrites.push(["tc3_damageLog", dlVoid]);
+        voidStatePatch.damageLog = dlVoid;
+      }
+      voidStorWrites.forEach(function (pair) { S.set(pair[0], pair[1]); });
+      setState(function (s) { return Object.assign({}, s, voidStatePatch); });
+      addAudit("Voided Product", p.name + (voidDisplayId ? (" (ID " + voidDisplayId + ")") : "") + (voidWriteOffQty > 0 ? (" — " + voidWriteOffQty + " units written off") : ""));
     } else {
       var removeQty = parseInt(dmgQty) || 1;
-      var np4 = state.products.map(function (x) { return x.id === p.id ? Object.assign({}, x, { stock: Math.max(0, x.stock - removeQty) }) : x; });
+      var np4 = state.products.map(function (x) { return x.id === p.id ? stampProductStock(Object.assign({}, x, { stock: Math.max(0, x.stock - removeQty) }), null, x) : x; });
       var pl2 = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Deleted", productId: p.id, productName: p.name, qty: removeQty, reason: reason }]);
-      S.set("tc3_products", np4); S.set("tc3_productLog", pl2);
-      setState(function (s) { return Object.assign({}, s, { products: np4, productLog: pl2 }); });
+      /* GL + inventory replay: stock removal posts as damage write-off (same as Mark Damaged). */
+      var rmTs = new Date().toISOString();
+      var dlRemove = (state.damageLog || []).concat([stampTransactionIsoDateTime({
+        id: uid(),
+        date: today(),
+        createdAt: rmTs,
+        productId: p.id,
+        productName: p.name,
+        qty: removeQty,
+        cost: p.cost || 0,
+        reason: "Stock removal: " + reason,
+      }, rmTs)]);
+      S.set("tc3_products", np4);
+      S.set("tc3_damageLog", dlRemove);
+      S.set("tc3_productLog", pl2);
+      setState(function (s) { return Object.assign({}, s, { products: np4, damageLog: dlRemove, productLog: pl2 }); });
     }
     setActionP(null); setReason(""); setDmgQty("1");
   };
@@ -711,42 +774,157 @@ var Inventory = React.memo(function (props) {
   // CATS defined globally
   /* FIX: Removed unused _unused_CATS variable */
 
-  var ITABS = [["overview", "Overview"], ["products", "Products"], ["rawcount", "Daily count"], ["damaged", "Damaged"], ["history", "Log"]];
+  var hasIngredients = rawMaterialProducts.length > 0
+    || (Array.isArray(state.rawMaterialUsages) && state.rawMaterialUsages.length > 0);
+  var ITABS = [["overview", "Overview", "📊"], ["products", "Products", "📦"]]
+    .concat(hasIngredients ? [["ingredients", "Ingredients", "🧪"]] : [])
+    .concat([["activity", "Activity", "📋"]]);
 
-  var invTabBtn = function (id, label) {
-    var active = itab === id;
+  var damagedProducts = products.filter(function (p) { return (p.damaged || 0) > 0; })
+    .sort(function (a, b) { return (b.damaged || 0) - (a.damaged || 0); });
+  var activitySearchQ = activitySearch.trim().toLowerCase();
+  var productLogRows = (state.productLog || []).slice().reverse().filter(function (l) {
+    if (!activitySearchQ) return true;
+    return (l.productName || "").toLowerCase().includes(activitySearchQ)
+      || (l.type || "").toLowerCase().includes(activitySearchQ)
+      || (l.reason || "").toLowerCase().includes(activitySearchQ);
+  });
+  var damageLogRows = (state.damageLog || []).slice().reverse().filter(function (l) {
+    if (!activitySearchQ) return true;
+    return (l.productName || "").toLowerCase().includes(activitySearchQ)
+      || (l.reason || "").toLowerCase().includes(activitySearchQ);
+  });
+  var stockChipFilters = ["All", "In Stock", "Low Stock", "Out of Stock", "Has Damage"];
+  var stockChipLabel = function (s) {
+    if (s === "All") return "All";
+    if (s === "Has Damage") return "Damaged";
+    if (s === "Out of Stock") return "Out";
+    if (s === "Low Stock") return "Low";
+    return "In stock";
+  };
+
+  var openActivity = function (sub) {
+    setItab("activity");
+    setActivitySubtab(sub || "changes");
+    setActivitySearch("");
+  };
+
+  var InvTabHead = function (headProps) {
+    var hp = headProps;
     return (
-      <button type="button" key={id} onClick={function () { setItab(id); }}
-        style={{
-          padding: "7px 14px", borderRadius: 8, border: "none",
-          background: active ? "#fff" : "transparent",
-          color: active ? C.accent : C.muted,
-          fontWeight: active ? 700 : 600,
-          fontSize: 12.5,
-          cursor: "pointer",
-          boxShadow: active ? "0 1px 4px rgba(15,23,42,0.08)" : "none",
-          fontFamily: "inherit",
-          whiteSpace: "nowrap",
-        }}>{label}</button>
+      <div className={"erp-inv-tab-head tone-" + (hp.tone || "green")}>
+        <span className="erp-inv-tab-head-icon" aria-hidden="true">{hp.icon}</span>
+        <div className="erp-inv-tab-head-text">
+          <div className="erp-inv-tab-head-title">{hp.title}</div>
+          {hp.sub ? <div className="erp-inv-tab-head-sub">{hp.sub}</div> : null}
+        </div>
+        {hp.extra ? <div className="erp-inv-tab-head-extra">{hp.extra}</div> : null}
+      </div>
     );
   };
 
+  var invToneAccent = function (tone) {
+    if (tone === "green") return C.green;
+    if (tone === "red") return C.red;
+    if (tone === "orange") return C.orange;
+    if (tone === "purple" || tone === "indigo") return C.purple;
+    if (tone === "cyan" || tone === "teal") return C.cyan;
+    if (tone === "navy") return "#1e3a8a";
+    return C.blue;
+  };
+
+  var InvKpiStrip = function (stripProps) {
+    var items = stripProps.items || [];
+    return (
+      <div className={"erp-inv-stat-row" + (stripProps.compact ? " is-compact" : "")}>
+        {items.map(function (k) {
+          var accent = invToneAccent(k.tone);
+          return (
+            <StatCard
+              key={k.label}
+              money={false}
+              label={k.label}
+              value={k.value}
+              accent={accent}
+              valueColor={accent}
+              icon={k.icon}
+              sub={k.sub}
+            />
+          );
+        })}
+      </div>
+    );
+  };
+
+  var invTabBtn = function (id, label, icon) {
+    return (
+      <button
+        type="button"
+        key={id}
+        role="tab"
+        aria-selected={itab === id}
+        className={"erp-inv-tab" + (itab === id ? " is-active" : "")}
+        onClick={function () { setItab(id); }}
+        title={label}
+      ><span className="erp-inv-tab-ico" aria-hidden="true">{icon || "•"}</span>{label}</button>
+    );
+  };
+
+  var ACTIVITY_TABS = [["changes", "Changes", "📝"], ["damage", "Damage", "⚠️"]]
+    .concat(hasIngredients ? [["usage", "Usage", "🧪"]] : []);
+
+  var productsTabTotals = rows.reduce(function (acc, p) {
+    if (isServiceProduct(p)) return acc;
+    acc.retail += inventoryQtyForTotals(p) * inventoryRetailSellPerBase(p);
+    acc.cost += inventoryQtyForTotals(p) * inventoryRetailCostPerBase(p);
+    acc.units += inventoryQtyForTotals(p);
+    return acc;
+  }, { retail: 0, cost: 0, units: 0 });
+  productsTabTotals.profit = productsTabTotals.retail - productsTabTotals.cost;
+  var productsOutInView = rows.filter(function (p) { return !isServiceProduct(p) && (p.stock || 0) === 0; }).length;
+  var productsTabKpis = [
+    { label: "In view", value: rows.length.toLocaleString(), sub: (showInactive ? "Voided products" : ("Of " + totalProducts.toLocaleString() + " active")), tone: "blue", icon: "📦" },
+    { label: "Units", value: fmtSumQty(productsTabTotals.units), sub: productsOutInView > 0 ? (productsOutInView + " out in view") : "On-hand in view", tone: "teal", icon: "📊" },
+    { label: "Retail", value: getCurrencySymbol() + " " + fmtNum(productsTabTotals.retail), sub: "Cost " + getCurrencySymbol() + " " + fmtNum(productsTabTotals.cost), tone: "indigo", icon: "💰" },
+    { label: "Profit", value: getCurrencySymbol() + " " + fmtNum(productsTabTotals.profit), sub: productsTabTotals.retail > 0 ? ("Margin " + Math.round(productsTabTotals.profit / productsTabTotals.retail * 100) + "%") : "Filtered view", tone: productsTabTotals.profit >= 0 ? "green" : "red", icon: productsTabTotals.profit >= 0 ? "📈" : "📉" },
+  ];
+
+  var activityChangesKpis = [
+    { label: "Entries", value: String(productLogRows.length), sub: activitySearchQ ? "Filtered" : "All product events", tone: "blue", icon: "📝" },
+    { label: "Products", value: String((function () { var s = {}; productLogRows.forEach(function (l) { if (l.productId) s[l.productId] = 1; }); return Object.keys(s).length; })()), sub: "Unique in view", tone: "indigo", icon: "📦" },
+    { label: "Damage log", value: String(damageLogRows.length), sub: "Related events", tone: "orange", icon: "⚠️" },
+    { label: "Today", value: String((state.productLog || []).filter(function (l) { return l.date === (typeof today === "function" ? today() : ""); }).length), sub: "Logged today", tone: "teal", icon: "📅" },
+  ];
+  var activityDamageKpis = [
+    { label: "Products", value: String(damagedProducts.length), sub: "With damage", tone: "orange", icon: "📦" },
+    { label: "Units", value: fmtSumQty(totalDamagedUnits), sub: "Damaged stock", tone: "red", icon: "🔻" },
+    { label: "Loss", value: getCurrencySymbol() + " " + fmtNum(damagedValue), sub: "At cost", tone: "red", icon: "💸" },
+    { label: "Events", value: String(damageLogRows.length), sub: activitySearchQ ? "Filtered log" : "Log entries", tone: "indigo", icon: "📋" },
+  ];
+  var rmUsageQtyTotal = rmUsagesForDay.reduce(function (a, u) { return a + (Number(u.qty) || 0); }, 0);
+  var activityUsageKpis = [
+    { label: "Events", value: String(rmUsagesForDay.length), sub: fmtDateFull(rmLogDateStr), tone: "teal", icon: "🧪" },
+    { label: "Qty used", value: fmtSumQty(rmUsageQtyTotal), sub: "Ingredients consumed", tone: "blue", icon: "📉" },
+    { label: "Ingredients", value: String(rawMaterialProducts.length), sub: "Tracked materials", tone: "indigo", icon: "📦" },
+    { label: "All time", value: String((state.rawMaterialUsages || []).length), sub: "Usage records", tone: "green", icon: "📋" },
+  ];
+
   var InvEmpty = function (p) {
     return (
-      <div style={{ padding: "32px 20px", textAlign: "center" }}>
-        <div style={{ width: 48, height: 48, borderRadius: 12, background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px", fontSize: 22, opacity: 0.85 }}>{p.icon || "📦"}</div>
-        <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 4 }}>{p.title}</div>
-        {p.sub ? <div style={{ fontSize: 12, color: C.muted, maxWidth: 300, margin: "0 auto", lineHeight: 1.45 }}>{p.sub}</div> : null}
+      <div className="erp-inv-empty">
+        <div className="erp-inv-empty-icon">{p.icon || "📦"}</div>
+        <div className="erp-inv-empty-title">{p.title}</div>
+        {p.sub ? <div className="erp-inv-empty-sub">{p.sub}</div> : null}
         {p.action || null}
       </div>
     );
   };
 
   var overviewKpis = [
-    { label: "Products", value: String(totalProducts), sub: fmtSumQty(totalStockUnits) + " units on hand", accent: C.blue },
-    { label: "Retail value", value: getCurrencySymbol() + " " + fmtNum(stockRetailValue), sub: "At selling price", accent: C.purple },
-    { label: "Cost value", value: getCurrencySymbol() + " " + fmtNum(stockCostValue), sub: "Inventory at cost", accent: "#6366f1" },
-    { label: "Potential profit", value: getCurrencySymbol() + " " + fmtNum(potentialProfit), sub: avgMargin == null ? "No margin data yet" : ("Avg margin " + avgMargin + "%"), accent: potentialProfit >= 0 ? C.green : C.red },
+    { label: "Products", value: String(totalProducts), sub: fmtSumQty(totalStockUnits) + " units on hand", tone: "blue", icon: "📦" },
+    { label: "Cost value", value: getCurrencySymbol() + " " + fmtNum(stockCostValue), sub: "Inventory at cost", tone: "indigo", icon: "🏷️" },
+    { label: "Potential profit", value: getCurrencySymbol() + " " + fmtNum(potentialProfit), sub: avgMargin == null ? "No margin data yet" : ("Avg margin " + avgMargin + "%"), tone: potentialProfit >= 0 ? "green" : "red", icon: potentialProfit >= 0 ? "📈" : "📉" },
+    { label: "Damaged loss", value: getCurrencySymbol() + " " + fmtNum(damagedValue), sub: fmtSumQty(totalDamagedUnits) + " damaged units", tone: totalDamagedUnits > 0 ? "orange" : "teal", icon: "⚠️" },
   ];
 
   var stockHealthRows = [
@@ -756,153 +934,182 @@ var Inventory = React.memo(function (props) {
     { label: "Has damage", val: stockProducts.filter(function (p) { return (p.damaged || 0) > 0; }).length, color: C.orange },
   ];
 
+  var INV_MODAL_HEADER = "linear-gradient(135deg, #15803d 0%, #166534 100%)";
+  var INV_MODAL_HEADER_DAMAGE = "linear-gradient(135deg, #d97706 0%, #b45309 100%)";
+  var INV_MODAL_HEADER_VOID = "linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)";
+  var INV_MODAL_HEADER_EDIT = "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)";
+
   var openAddProduct = function () {
-    setNewP(null);
-    setTimeout(function () {
-      setNewP(blankProduct());
-    }, 30);
+    setNewProdKey(function (k) { return k + 1; });
+    setNewP(blankProduct());
   };
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-      {/* -- Toolbar: tabs + primary action -- */}
-      <div style={{
-        background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0",
-        padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-        boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-      }}>
-        <div style={{ display: "flex", gap: 4, background: "#f1f5f9", borderRadius: 10, padding: 4, flexWrap: "wrap" }}>
-          {ITABS.map(function (t) { return invTabBtn(t[0], t[1]); })}
+    <div className="erp-page erp-inv-modern">
+      <div className="erp-inv-chrome">
+        <div className="erp-inv-topbar erp-inv-topbar-pro">
+          <div className="erp-inv-topbar-brand">
+            <h1 className="erp-inv-header-title">Inventory</h1>
+            <p className="erp-inv-header-sub">{getCurrencySymbol()} {fmtNum(stockRetailValue)} retail · {totalProducts} products</p>
+          </div>
+          <div className="erp-inv-health">
+            <span className={"erp-inv-health-pill" + (outOfStock === 0 ? " is-ok" : " is-warn")}>{outOfStock === 0 ? "✓ Stock OK" : outOfStock + " out"}</span>
+            {lowStock > 0 ? <span className="erp-inv-health-pill is-warn">{lowStock} low</span> : null}
+            {totalDamagedUnits > 0 ? <span className="erp-inv-health-pill is-damage">{totalDamagedUnits} dmg</span> : null}
+          </div>
+          <button type="button" className="erp-inv-btn-add" onClick={openAddProduct} title="Add Product (F12)">+ Add Product <kbd>F12</kbd></button>
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
-          <Btn sm col="cyan" onClick={openAddProduct}>+ Add Product</Btn>
+        <div className="erp-inv-tabbar" role="tablist" aria-label="Inventory sections">
+          {ITABS.map(function (t) { return invTabBtn(t[0], t[1], t[2]); })}
         </div>
       </div>
 
-      {/* -- KPI strip on list tabs (overview has its own unified strip) -- */}
-      {itab !== "rawcount" && itab !== "overview" && (
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
-        <StatCard money={false} label="Total Products" value={totalProducts} accent={C.blue} icon="Inventory" sub={fmtSumQty(totalStockUnits) + " units in stock"} />
-        <StatCard label="Retail Stock Value" value={stockRetailValue} accent={C.purple} icon="Money" sub={"Cost: " + getCurrencySymbol() + " " + fmtNum(stockCostValue)} />
-        <StatCard label="Potential Profit" value={potentialProfit} accent={potentialProfit >= 0 ? C.green : C.red} icon="Trend" sub={avgMargin == null ? "Avg margin: -" : ("Avg margin: " + avgMargin + "%")} />
-        <div style={{ cursor: "pointer" }} onClick={function () { setItab("products"); setStockFilter("Out of Stock"); }}><StatCard money={false} label="Out of Stock" value={outOfStock} accent={outOfStock > 0 ? C.red : C.green} icon="Out" sub={lowStock + " low stock"} /></div>
-      </div>
-      )}
-
+      <div className="erp-inv-body">
       {/* -- OVERVIEW TAB -- */}
       {itab === "overview" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <div className="erp-inv-overview-stack erp-inv-tab-pro">
 
-          {/* Unified KPI strip */}
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
-            background: "#fff",
-            borderRadius: 12,
-            border: "1px solid #e2e8f0",
-            overflow: "hidden",
-            boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-          }}>
-            {overviewKpis.map(function (k, i) {
-              return (
-                <div key={k.label} style={{
-                  padding: "18px 20px",
-                  borderRight: i < overviewKpis.length - 1 ? "1px solid #f1f5f9" : "none",
-                  position: "relative",
-                }}>
-                  <div style={{ position: "absolute", top: 0, left: 0, width: 3, height: "100%", background: k.accent, opacity: 0.85 }} />
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 6, letterSpacing: "0.02em" }}>{k.label}</div>
-                  <div style={{ fontWeight: 800, fontSize: 22, color: "#0f172a", letterSpacing: "-0.03em", lineHeight: 1.15 }}>{k.value}</div>
-                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 5, fontWeight: 500 }}>{k.sub}</div>
-                </div>
-              );
-            })}
+          <div className="erp-inv-ov-hero">
+            <div className="erp-inv-ov-hero-glow" aria-hidden="true" />
+            <div className="erp-inv-ov-hero-main">
+              <div className="erp-inv-ov-hero-eyebrow">Stock snapshot</div>
+              <div className="erp-inv-ov-hero-title">Retail value</div>
+              <div className="erp-inv-ov-hero-val">{getCurrencySymbol()} {fmtNum(stockRetailValue)}</div>
+              <div className="erp-inv-ov-hero-sub">{fmtSumQty(totalStockUnits)} units · {totalProducts} products · {stockProducts.length} tracked SKUs</div>
+            </div>
+            <div className="erp-inv-ov-hero-chips">
+              <span className={"erp-inv-ov-chip" + (outOfStock === 0 ? " is-ok" : " is-warn")}>{outOfStock === 0 ? "✓ No stockouts" : outOfStock + " out of stock"}</span>
+              <span className={"erp-inv-ov-chip" + (lowStock === 0 ? " is-ok" : " is-warn")}>{lowStock === 0 ? "✓ Stock levels OK" : lowStock + " low stock"}</span>
+              <span className={"erp-inv-ov-chip" + (totalDamagedUnits === 0 ? " is-neutral" : " is-warn")}>{totalDamagedUnits === 0 ? "No damage" : fmtSumQty(totalDamagedUnits) + " damaged"}</span>
+            </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.6fr) minmax(260px,1fr)", gap: 16, alignItems: "stretch" }}>
-            {/* Value breakdown */}
-            <div style={{ background: "#fff", borderRadius: 12, padding: "20px 22px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)" }}>
-              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 16, gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>Stock valuation</div>
-                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Retail, cost, margin and damage at a glance</div>
+          <InvKpiStrip items={overviewKpis} />
+
+          <div className="erp-inv-split-grid erp-inv-split-compact">
+            <div className="erp-inv-panel erp-inv-panel--health">
+              <div className="erp-inv-panel-head-gradient">
+                <span className="erp-inv-panel-icon" aria-hidden="true">📈</span>
+                <div className="erp-inv-panel-head-text">
+                  <div className="erp-inv-panel-title">Stock health</div>
+                  <div className="erp-inv-panel-sub">{stockProducts.length} tracked · {outOfStock} out · {lowStock} low</div>
                 </div>
                 {damagedValue > 0 ? (
-                  <span style={{ fontSize: 11, fontWeight: 700, color: C.orange, background: "#fff7ed", padding: "4px 10px", borderRadius: 20, border: "1px solid #fed7aa" }}>
-                    {getCurrencySymbol()} {fmtNum(damagedValue)} damaged
-                  </span>
+                  <button
+                    type="button"
+                    className="erp-inv-damage-pill erp-inv-damage-pill-btn"
+                    onClick={function () { openActivity("damage"); }}
+                  >
+                    {getCurrencySymbol()} {fmtNum(damagedValue)} dmg
+                  </button>
                 ) : null}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 10 }}>
-                {[
-                  { title: "Retail value", val: stockRetailValue, color: C.blue },
-                  { title: "At cost", val: stockCostValue, color: "#6366f1" },
-                  { title: "Margin", val: potentialProfit, color: potentialProfit >= 0 ? C.green : C.red },
-                  { title: "Damage cost", val: damagedValue, color: C.orange },
-                ].map(function (s) {
-                  return (
-                    <div key={s.title} style={{ background: "#f8fafc", borderRadius: 10, padding: "14px 16px", border: "1px solid #eef2f6" }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 6 }}>{s.title}</div>
-                      <div style={{ fontWeight: 800, fontSize: 18, color: s.color, letterSpacing: "-0.02em" }}>{getCurrencySymbol()} {fmtNum(s.val)}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Stock health */}
-            <div style={{ background: "#fff", borderRadius: 12, padding: "20px 22px", border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)" }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a", marginBottom: 4 }}>Stock health</div>
-              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 16 }}>{stockProducts.length} tracked products</div>
+              <div className="erp-inv-panel-body-pad">
               {stockHealthRows.map(function (s) {
                 var pct = stockProducts.length > 0 ? Math.round(s.val / stockProducts.length * 100) : 0;
                 return (
-                  <div key={s.label} style={{ marginBottom: 14 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-                      <span style={{ color: "#475569" }}>{s.label}</span>
-                      <span style={{ color: s.color, fontWeight: 800 }}>{s.val}<span style={{ color: "#94a3b8", fontWeight: 500 }}> · {pct}%</span></span>
+                  <div key={s.label} className="erp-inv-health-row">
+                    <div className="erp-inv-health-meta">
+                      <span className="erp-inv-health-label">{s.label}</span>
+                      <span className="erp-inv-health-val" style={{ color: s.color }}>{s.val}<span className="erp-inv-health-pct"> · {pct}%</span></span>
                     </div>
-                    <div style={{ height: 5, background: "#f1f5f9", borderRadius: 99, overflow: "hidden" }}>
-                      <div style={{ width: Math.max(pct, s.val > 0 ? 4 : 0) + "%", height: "100%", background: s.color, borderRadius: 99, transition: "width .35s ease" }} />
+                    <div className="erp-inv-health-bar">
+                      <span style={{ width: Math.max(pct, s.val > 0 ? 4 : 0) + "%", background: s.color }} />
                     </div>
                   </div>
                 );
               })}
               {(outOfStock > 0 || lowStock > 0) ? (
-                <button type="button" onClick={function () { setItab("products"); setStockFilter(outOfStock > 0 ? "Out of Stock" : "Low Stock"); }}
-                  style={{ marginTop: 4, width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid #e2e8f0", background: "#f8fafc", color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                <button type="button" className="erp-inv-btn-attention" onClick={function () { setItab("products"); setStockFilter(outOfStock > 0 ? "Out of Stock" : "Low Stock"); }}>
                   View items needing attention
                 </button>
               ) : null}
+              </div>
+            </div>
+
+            <div className="erp-inv-panel erp-inv-panel--alerts">
+              <div className="erp-inv-panel-head-gradient">
+                <span className="erp-inv-panel-icon" aria-hidden="true">🔔</span>
+                <div>
+                  <div className="erp-inv-panel-title">Alerts</div>
+                  <div className="erp-inv-panel-sub">Low stock, damage and expiry</div>
+                </div>
+              </div>
+              <div className="erp-inv-alert-list erp-inv-alert-list-compact">
+              {(function () {
+                var now = new Date();
+                var soon = new Date(); soon.setDate(soon.getDate() + 30);
+                var showExpiry = getBusinessProfile().modules.expiry;
+                var alertProds = stockProducts.filter(function (p) {
+                  if ((p.stock || 0) <= 5 || (p.damaged || 0) > 0) return true;
+                  if (showExpiry && p.expiryDate) {
+                    var ed = new Date(p.expiryDate);
+                    if (ed <= soon) return true;
+                  }
+                  return false;
+                }).sort(function (a, b) { return (a.stock || 0) - (b.stock || 0); }).slice(0, 8);
+                if (stockProducts.length === 0) {
+                  return <InvEmpty icon="✓" title="Nothing to flag" sub="Alerts appear when stock runs low or items are damaged." />;
+                }
+                if (alertProds.length === 0) {
+                  return (
+                    <div className="erp-inv-empty erp-inv-empty-inline">
+                      <div className="erp-inv-empty-icon is-ok">✓</div>
+                      <div className="erp-inv-empty-title is-ok">All products healthy</div>
+                    </div>
+                  );
+                }
+                return alertProds.map(function (p) {
+                  var isOut = (p.stock || 0) === 0;
+                  var isLow = !isOut && (p.stock || 0) <= 5;
+                  var hasDmg = (p.damaged || 0) > 0;
+                  var isExpired = showExpiry && p.expiryDate && new Date(p.expiryDate) < now;
+                  var isExpiringSoon = showExpiry && p.expiryDate && !isExpired && new Date(p.expiryDate) <= soon;
+                  return (
+                    <div key={p.id} className="erp-inv-alert-item">
+                      <div style={{ minWidth: 0 }}>
+                        <div className="erp-inv-alert-name">{p.name}</div>
+                        <div className="erp-inv-alert-meta">{p.category}</div>
+                      </div>
+                      <div className="erp-inv-badge-row">
+                        {isOut && <span className="erp-inv-badge is-out">Out</span>}
+                        {isLow && <span className="erp-inv-badge is-low">Low</span>}
+                        {hasDmg && <span className="erp-inv-badge is-damage">Damage</span>}
+                        {isExpired && <span className="erp-inv-badge is-expired">Expired</span>}
+                        {isExpiringSoon && <span className="erp-inv-badge is-expiring">Expiring</span>}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+              </div>
             </div>
           </div>
 
-          {/* Category breakdown */}
-          <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)", overflow: "hidden" }}>
-            <div style={{ padding: "18px 22px 14px", borderBottom: "1px solid #f1f5f9" }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>By category</div>
-              <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Units, value and margin per category</div>
+          <div className="erp-inv-split-grid erp-inv-overview-bottom">
+          <div className="erp-inv-panel erp-inv-panel--category">
+            <div className="erp-inv-panel-head-gradient">
+              <span className="erp-inv-panel-icon" aria-hidden="true">📂</span>
+              <div className="erp-inv-panel-head-text">
+                <div className="erp-inv-panel-title">By category</div>
+                <div className="erp-inv-panel-sub">Units, value and margin per category</div>
+              </div>
             </div>
-            <div style={{ overflowX: "auto" }}>
+            <div className="erp-inv-table-wrap">
               {totalProducts === 0 ? (
                 <InvEmpty
                   icon="📦"
                   title="No products yet"
                   sub="Add your first product to see stock value, categories and alerts here."
-                  action={<div style={{ marginTop: 14 }}><Btn sm col="cyan" onClick={openAddProduct}>+ Add Product</Btn></div>}
+                  action={<div style={{ marginTop: 14 }}><Btn sm col="cyan" onClick={openAddProduct} title="Add Product (F12)">+ Add Product (F12)</Btn></div>}
                 />
               ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <table className="erp-inv-table">
                 <thead>
-                  <tr style={{ background: "#f8fafc" }}>
+                  <tr>
                     {["Category", "Products", "Units", "Damaged", "Retail", "Cost", "Profit", "Margin"].map(function (h) {
                       return (
-                        <th key={h} style={{
-                          padding: "10px 14px", textAlign: h === "Category" ? "left" : "right",
-                          fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.06em",
-                          borderBottom: "1px solid #e2e8f0",
-                        }}>{h}</th>
+                        <th key={h} className={h === "Category" ? "is-left" : ""}>{h}</th>
                       );
                     })}
                   </tr>
@@ -925,9 +1132,9 @@ var Inventory = React.memo(function (props) {
                       var d = catMap[cat];
                       var margin = d.retail > 0 ? Math.round((d.retail - d.cost) / d.retail * 100) : 0;
                       return (
-                        <tr key={cat} style={{ background: i % 2 === 0 ? "#fff" : "#fafbfc", borderBottom: "1px solid #f1f5f9" }}>
-                          <td style={{ padding: "12px 14px" }}>
-                            <span style={{ background: "#eff6ff", color: C.accent, padding: "4px 10px", borderRadius: 6, fontWeight: 700, fontSize: 12 }}>{cat}</span>
+                        <tr key={cat}>
+                          <td style={{ textAlign: "left" }}>
+                            <span className="erp-inv-category-pill">{cat}</span>
                           </td>
                           <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 600, color: C.textMd }}>{d.count}</td>
                           <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 700, color: C.text }}>{fmtSumQty(d.units)}</td>
@@ -953,138 +1160,93 @@ var Inventory = React.memo(function (props) {
             </div>
           </div>
 
-          {/* Top products + alerts */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
-            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)", overflow: "hidden" }}>
-              <div style={{ padding: "18px 22px 12px", borderBottom: "1px solid #f1f5f9" }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>Top by value</div>
-                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Highest retail stock value</div>
+          <div className="erp-inv-panel erp-inv-panel--top">
+            <div className="erp-inv-panel-head-gradient">
+              <span className="erp-inv-panel-icon" aria-hidden="true">🏆</span>
+              <div className="erp-inv-panel-head-text">
+                <div className="erp-inv-panel-title">Top by value</div>
+                <div className="erp-inv-panel-sub">Highest retail stock value</div>
               </div>
-              <div style={{ padding: "4px 16px 12px" }}>
+            </div>
+            <div className="erp-inv-top-list">
               {stockProducts.length === 0 ? (
                 <InvEmpty icon="📊" title="No stock items" sub="Products with stock will rank here by retail value." />
               ) : stockProducts.slice().sort(function (a, b) {
                 return (inventoryQtyForTotals(b) * inventoryRetailSellPerBase(b)) - (inventoryQtyForTotals(a) * inventoryRetailSellPerBase(a));
-              }).slice(0, 8).map(function (p, i) {
+              }).slice(0, 6).map(function (p, i) {
                 var unitSell = inventoryRetailSellPerBase(p);
                 var val = inventoryQtyForTotals(p) * unitSell;
                 var pct = stockRetailValue > 0 ? Math.round(val / stockRetailValue * 100) : 0;
                 return (
-                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < 7 ? "1px solid #f1f5f9" : "none" }}>
-                    <div style={{
-                      width: 26, height: 26, borderRadius: 8, flexShrink: 0,
-                      background: i < 3 ? C.accentSoft : "#f1f5f9",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontWeight: 800, fontSize: 11, color: i < 3 ? C.accent : C.muted,
-                    }}>{i + 1}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                  <div key={p.id} className="erp-inv-top-item">
+                    <span className={"erp-inv-top-rank" + (i < 3 ? " is-top" : "")}>{i + 1}</span>
+                    <div className="erp-inv-top-body">
+                      <div className="erp-inv-top-name">{p.name}</div>
+                      <div className="erp-inv-top-meta">
                         {getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit)}
-                        <span style={{ margin: "0 6px", opacity: 0.4 }}>·</span>
+                        <span>·</span>
                         {getCurrencySymbol()} {fmtNum(unitSell)}/{p.unit || "Pcs"}
                       </div>
                     </div>
-                    <div style={{ textAlign: "right", flexShrink: 0 }}>
-                      <div style={{ fontWeight: 800, fontSize: 13, color: C.blue }}>{getCurrencySymbol()} {fmtNum(val)}</div>
-                      <div style={{ fontSize: 10, color: C.muted, fontWeight: 600 }}>{pct}% of total</div>
+                    <div className="erp-inv-top-val">
+                      <div>{getCurrencySymbol()} {fmtNum(val)}</div>
+                      <div className="erp-inv-top-pct">{pct}%</div>
                     </div>
                   </div>
                 );
               })}
-              </div>
             </div>
-
-            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", boxShadow: "0 1px 3px rgba(15,23,42,0.04)", overflow: "hidden" }}>
-              <div style={{ padding: "18px 22px 12px", borderBottom: "1px solid #f1f5f9" }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "#0f172a" }}>Alerts</div>
-                <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>Low stock, damage and expiry</div>
-              </div>
-              <div style={{ padding: "4px 16px 12px" }}>
-              {(function () {
-                var now = new Date();
-                var soon = new Date(); soon.setDate(soon.getDate() + 30);
-                var showExpiry = getBusinessProfile().modules.expiry;
-                var alertProds = stockProducts.filter(function (p) {
-                  if ((p.stock || 0) <= 5 || (p.damaged || 0) > 0) return true;
-                  if (showExpiry && p.expiryDate) {
-                    var ed = new Date(p.expiryDate);
-                    if (ed <= soon) return true;
-                  }
-                  return false;
-                }).sort(function (a, b) { return (a.stock || 0) - (b.stock || 0); }).slice(0, 12);
-                if (stockProducts.length === 0) {
-                  return <InvEmpty icon="✓" title="Nothing to flag" sub="Alerts appear when stock runs low or items are damaged." />;
-                }
-                if (alertProds.length === 0) {
-                  return (
-                    <div style={{ padding: "28px 12px", textAlign: "center" }}>
-                      <div style={{ width: 40, height: 40, borderRadius: "50%", background: "#ecfdf5", color: C.green, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 10px", fontSize: 18, fontWeight: 800 }}>✓</div>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>All products healthy</div>
-                      <div style={{ fontSize: 12, color: C.muted, marginTop: 4 }}>No low stock or damage alerts</div>
-                    </div>
-                  );
-                }
-                return alertProds.map(function (p, i) {
-                  var isOut = (p.stock || 0) === 0;
-                  var isLow = !isOut && (p.stock || 0) <= 5;
-                  var hasDmg = (p.damaged || 0) > 0;
-                  var isExpired = showExpiry && p.expiryDate && new Date(p.expiryDate) < now;
-                  var isExpiringSoon = showExpiry && p.expiryDate && !isExpired && new Date(p.expiryDate) <= soon;
-                  return (
-                    <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i < alertProds.length - 1 ? "1px solid #f1f5f9" : "none" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{p.category}</div>
-                      </div>
-                      <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end", flexShrink: 0 }}>
-                        {isOut && <span style={{ background: "#fef2f2", color: C.red, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Out</span>}
-                        {isLow && <span style={{ background: "#fffbeb", color: C.amber, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Low</span>}
-                        {hasDmg && <span style={{ background: "#fff7ed", color: C.orange, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Damage</span>}
-                        {isExpired && <span style={{ background: "#fef2f2", color: C.red, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Expired</span>}
-                        {isExpiringSoon && <span style={{ background: "#fff7ed", color: C.orange, padding: "3px 8px", borderRadius: 6, fontWeight: 700, fontSize: 10 }}>Expiring</span>}
-                      </div>
-                    </div>
-                  );
-                });
-              })()}
-              </div>
-            </div>
+          </div>
           </div>
         </div>
       )}
 
       {/* -- PRODUCTS TAB -- */}
       {itab === "products" && (
-        <Card>
-          <CardTitle sub={showInactive ? (rows.length + " voided products") : (rows.length.toLocaleString() + " of " + totalProducts.toLocaleString() + " products")}>
-            Products
-          </CardTitle>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-            <div style={{ flex: 2, minWidth: 200 }}><Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search by name, ID, barcode, or category..." /></div>
-            <div style={{ minWidth: 140 }}>
+        <div className="erp-inv-tab-pro erp-inv-products-tab">
+        <InvTabHead icon="📦" tone="blue" title="Product catalog" sub={showInactive ? (rows.length + " voided products") : (rows.length.toLocaleString() + " of " + totalProducts.toLocaleString() + " products · search, filter & manage stock")} />
+        <InvKpiStrip compact items={productsTabKpis} />
+        <div className="erp-inv-datatab erp-inv-products erp-inv-datatab-pro">
+          <div className="erp-inv-toolbar erp-inv-toolbar-pro">
+            <div className="erp-inv-search erp-inv-search-box" ref={invSearchRef}>
+              <input
+                type="text"
+                className="erp-inv-search-input erp-inv-search-input-icon"
+                value={search}
+                onChange={function (e) { setSearch(e.target.value); }}
+                placeholder="Search name, ID, barcode…"
+              />
+            </div>
+            <div className="erp-inv-select-wrap erp-inv-select-compact">
               <Sel value={catFilter} onChange={function (e) { setCatFilter(e.target.value); }}>
                 {cats.map(function (c) { return <option key={c}>{c}</option>; })}
               </Sel>
             </div>
-            <div style={{ minWidth: 140 }}>
-              <Sel value={stockFilter} onChange={function (e) { setStockFilter(e.target.value); }}>
-                {["All", "In Stock", "Low Stock", "Out of Stock", "Has Damage"].map(function (s) { return <option key={s}>{s}</option>; })}
-              </Sel>
+            <div className="erp-inv-chip-row erp-inv-chip-row-inline">
+              {stockChipFilters.map(function (s) {
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    className={"erp-inv-chip" + (stockFilter === s ? " is-active" : "")}
+                    onClick={function () { setStockFilter(s); }}
+                  >{stockChipLabel(s)}</button>
+                );
+              })}
             </div>
-            {/* FIX 8: Toggle to show/recover soft-deleted (inactive) products */}
             <button
+              type="button"
+              className={"erp-inv-btn-voided" + (showInactive ? " is-on" : "")}
               onClick={function () { setShowInactive(function (v) { return !v; }); setSearch(""); }}
-              style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid " + (showInactive ? C.orange : C.border), background: showInactive ? "#fef3e2" : "#fff", color: showInactive ? C.orange : C.muted, fontWeight: 700, fontSize: 12, cursor: "pointer" }}
             >
-              {showInactive ? "Showing Voided — click to go back" : "Show Voided"}
+              {showInactive ? "Voided ✓" : "Voided"}
             </button>
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><TH>ID</TH><TH>Product</TH><TH>Barcode</TH><TH>Category</TH><TH>Unit</TH><TH>Cost</TH><TH>Price</TH><TH>Margin</TH><TH>Stock</TH><TH>Stock Value</TH><TH>Damaged</TH><TH style={{ textAlign: "right", minWidth: 132 }}>Actions</TH></tr></thead>
+          <div className="erp-inv-table-wrap erp-inv-table-wrap-dense">
+            <table className="erp-inv-table erp-inv-products-table">
+              <thead><tr><TH>ID</TH><TH>Product</TH><TH>Barcode</TH><TH>Cat</TH><TH>Unit</TH><TH>Cost</TH><TH>Price</TH><TH>Mrg</TH><TH>Stock</TH><TH>Value</TH><TH>Dmg</TH><TH right style={{ minWidth: 132 }}>Actions</TH></tr></thead>
               <tbody>
-                {rows.length === 0 && <tr><td colSpan={12} style={{ padding: 20, textAlign: "center", color: C.muted }}>{showInactive ? "No voided products found" : "No products found"}</td></tr>}
+                {rows.length === 0 && <tr><td colSpan={12} className="erp-inv-empty-cell">{showInactive ? "No voided products" : "No products found"}</td></tr>}
                 {invPager.slice.map(function (p, i) {
                   var isService = isServiceProduct(p);
                   var isRaw = isRawMaterialProduct(p);
@@ -1094,28 +1256,27 @@ var Inventory = React.memo(function (props) {
                   var stockVal = isService ? 0 : (isGlassProduct(p, shopSettings) ? glassStockVal(p) : (inventoryQtyForTotals(p) * effectiveSell));
                   return (
                     <TR key={p.id} i={i}>
-                      <td style={{ padding: "10px 14px" }}><span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: C.accent }}>{p.productId || "-"}</span></td>
-                      <td style={{ padding: "10px 14px" }}>
-                        <div style={{ fontWeight: 700, color: showInactive ? C.orange : C.text }}>{p.name} {showInactive && <span style={{ fontSize: 10, background: "#fef3e2", color: C.orange, padding: "1px 6px", borderRadius: 10, marginLeft: 4 }}>VOIDED</span>}</div>
-                        {p.description && <div style={{ fontSize: 11, color: C.muted, marginTop: 1 }}>{p.description.slice(0, 40)}</div>}
+                      <td><span className="erp-inv-id">{p.productId || "-"}</span></td>
+                      <td>
+                        <div className="erp-inv-prod-name">{p.name}{showInactive ? <span className="erp-inv-void-tag">VOID</span> : null}</div>
                       </td>
-                      <TD><span style={{ fontFamily: "monospace", fontSize: 11, color: C.muted }}>{p.barcode}</span></TD>
-                      <td style={{ padding: "10px 14px" }}><span style={{ background: C.accentSoft, color: C.accent, padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{p.category}</span></td>
-                      <TD><span style={{ background: "rgba(41,121,255,0.07)", color: C.accent, padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{p.unit || "Pcs"}</span></TD>
+                      <TD><span className="erp-inv-mono">{p.barcode}</span></TD>
+                      <td><span className="erp-inv-category-pill">{p.category}</span></td>
+                      <TD><span className="erp-inv-unit-pill">{p.unit || "Pcs"}</span></TD>
                       <TD color={C.muted}>{getCurrencySymbol()} {fmtNum(effectiveCost)}</TD>
                       <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(effectiveSell)}</TD>
-                      <td style={{ padding: "10px 14px" }}>
+                      <td>
                         {margin == null ? (
-                          <span style={{ fontWeight: 700, fontSize: 12, color: C.muted }}>-</span>
+                          <span className="erp-inv-muted-dash">-</span>
                         ) : (
-                          <span style={{ fontWeight: 700, fontSize: 12, color: margin >= 30 ? C.green : margin >= 15 ? C.amber : C.red }}>{margin}%</span>
+                          <span className={"erp-inv-margin" + (margin >= 30 ? " is-good" : margin >= 15 ? " is-mid" : " is-low")}>{margin}%</span>
                         )}
                       </td>
-                      <td style={{ padding: "10px 14px" }}>
+                      <td>
                         {isService ? (
-                          <span style={{ background: "#e0f2fe", color: C.blue, padding: "3px 10px", borderRadius: 20, fontWeight: 800, fontSize: 13 }}>Service</span>
+                          <span className="erp-inv-stock-pill is-service">Svc</span>
                         ) : (
-                          <span style={{ background: (p.stock || 0) === 0 ? "#fde8ed" : (p.stock || 0) <= 5 ? "#fef3e2" : C.successSoft, color: (p.stock || 0) === 0 ? C.red : (p.stock || 0) <= 5 ? C.amber : C.green, padding: "3px 10px", borderRadius: 20, fontWeight: 800, fontSize: 13 }}>
+                          <span className={"erp-inv-stock-pill" + ((p.stock || 0) === 0 ? " is-out" : (p.stock || 0) <= 5 ? " is-low" : " is-ok")}>
                             {isGlassProduct(p, shopSettings)
                               ? formatGlassStockLabel(p, fmtNum)
                               : (getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit))}
@@ -1124,18 +1285,19 @@ var Inventory = React.memo(function (props) {
                       </td>
                       <TD color={isService ? C.muted : (isRaw ? C.orange : C.purple)}>{isService ? "-" : (getCurrencySymbol() + " " + fmtNum(stockVal))}</TD>
                       <TD color={(p.damaged || 0) > 0 ? C.orange : C.muted}>{p.damaged || 0}</TD>
-                      <td style={actBtnCellStyle}>
-                        <ActBtnGroup gap={5}>
+                      <td className="erp-inv-act-cell">
+                        <ActBtnGroup gap={4}>
                           {showInactive ? (
-                            <ActBtn tone="green" title="Restore voided product" onClick={function () { reactivateProduct(p.id); }}>↩</ActBtn>
+                            <ActBtn tone="green" title="Restore voided product" onClick={function () { reactivateProduct(p.id); }} />
                           ) : (
                             <React.Fragment>
-                              <ActBtn tone="cyan" title="View product" onClick={function () { setViewP(p); }}>🧾</ActBtn>
-                              <ActBtn tone="blue" title="Edit product" onClick={function () { setEditP(Object.assign({}, p, { extraUnits: formExtraUnitsFromProduct(p) })); }}>✎</ActBtn>
-                              <ActBtn tone="orange" title="Log damage" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>⚠</ActBtn>
+                              <ActBtn tone="cyan" title="View" onClick={function () { setViewP(p); }} />
+                              <ActBtn tone="blue" title="Edit" onClick={function () { setEditP(Object.assign({}, p, { extraUnits: formExtraUnitsFromProduct(p) })); }} />
+                              <ActBtn tone="orange" title="Damage" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }} />
                               <ActBtn
                                 tone="red"
                                 title={(p.stock || 0) > 0 ? "Void — clear stock first" : ((p.damaged || 0) > 0 ? "Void — clear damaged qty first" : "Void product")}
+                                style={((p.stock || 0) > 0 || (p.damaged || 0) > 0) ? { opacity: 0.35, cursor: "not-allowed" } : undefined}
                                 onClick={function () {
                                 if ((p.stock || 0) > 0) {
                                   showAlert("Cannot void \"" + p.name + "\" — it has " + fmtStock(p.stock, p.unit) + " in stock.\n\nSell or remove all stock first, then void.");
@@ -1147,8 +1309,7 @@ var Inventory = React.memo(function (props) {
                                 }
                                 setActionP({ product: p, mode: "void" }); setReason("");
                               }}
-                                style={((p.stock || 0) > 0 || (p.damaged || 0) > 0) ? { opacity: 0.35, cursor: "not-allowed" } : undefined}
-                              >✕</ActBtn>
+                              />
                             </React.Fragment>
                           )}
                         </ActBtnGroup>
@@ -1159,282 +1320,115 @@ var Inventory = React.memo(function (props) {
               </tbody>
             </table>
           </div>
-          <Pager pager={invPager} />
-          {rows.length > 0 && (
-            <div style={{ display: "flex", gap: 20, padding: "10px 14px", borderTop: "2px solid " + C.border, fontSize: 13, fontWeight: 700, background: "#f7f9ff", flexWrap: "wrap" }}>
-              <span>Total Products: <span style={{ color: C.blue }}>{rows.length}</span> items</span>
-              <span>Retail Value: <span style={{ color: C.purple }}>{getCurrencySymbol()} {fmtNum(rows.reduce(function (a, p) { if (isServiceProduct(p)) return a; return a + inventoryQtyForTotals(p) * inventoryRetailSellPerBase(p); }, 0))}</span></span>
-              <span>Cost Value: <span style={{ color: C.orange }}>{getCurrencySymbol()} {fmtNum(rows.reduce(function (a, p) { if (isServiceProduct(p)) return a; return a + inventoryQtyForTotals(p) * inventoryRetailCostPerBase(p); }, 0))}</span></span>
-              <span>Profit Potential: <span style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(rows.reduce(function (a, p) { if (isServiceProduct(p)) return a; return a + inventoryQtyForTotals(p) * (inventoryRetailSellPerBase(p) - inventoryRetailCostPerBase(p)); }, 0))}</span></span>
-            </div>
-          )}
-        </Card>
-      )}
-
-      {itab === "rawcount" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-            <button
-              type="button"
-              onClick={function () { setRmDailySubtab("ingredients"); }}
-              style={{
-                padding: "10px 18px",
-                borderRadius: 10,
-                border: "1.5px solid " + (rmDailySubtab === "ingredients" ? C.border : "transparent"),
-                background: rmDailySubtab === "ingredients" ? "#fff" : "transparent",
-                color: rmDailySubtab === "ingredients" ? C.accent : C.muted,
-                fontWeight: 800,
-                fontSize: 13,
-                cursor: "pointer",
-                boxShadow: rmDailySubtab === "ingredients" ? "0 1px 6px rgba(15,23,42,0.06)" : "none",
-              }}
-            >
-              Ingredients
-            </button>
-            <button
-              type="button"
-              onClick={function () { setRmDailySubtab("log"); }}
-              style={{
-                padding: "10px 18px",
-                borderRadius: 10,
-                border: "1.5px solid " + (rmDailySubtab === "log" ? C.border : "transparent"),
-                background: rmDailySubtab === "log" ? "#fff" : "transparent",
-                color: rmDailySubtab === "log" ? C.accent : C.muted,
-                fontWeight: 800,
-                fontSize: 13,
-                cursor: "pointer",
-                boxShadow: rmDailySubtab === "log" ? "0 1px 6px rgba(15,23,42,0.06)" : "none",
-              }}
-            >
-              Usage log
-            </button>
-            {rmDailySubtab === "log" && (
-              <div style={{ marginLeft: "auto", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Date</span>
-                <input
-                  type="date"
-                  value={rmUsageLogDate}
-                  min={periodLockTransactionMinDate || undefined}
-                  onChange={function (e) {
-                    setRmUsageLogDate(e.target.value || (typeof today === "function" ? today() : ""));
-                  }}
-                  style={{
-                    border: "1.5px solid " + C.border,
-                    borderRadius: 8,
-                    padding: "8px 12px",
-                    fontSize: 13,
-                    outline: "none",
-                    fontFamily: "inherit",
-                  }}
-                />
-                {rmLogDateStr !== (typeof today === "function" ? today() : "") && (
-                  <button
-                    type="button"
-                    onClick={function () {
-                      setRmUsageLogDate(typeof today === "function" ? today() : "");
-                    }}
-                    style={{
-                      padding: "8px 14px",
-                      borderRadius: 8,
-                      border: "1.5px solid " + C.border,
-                      background: "#f7f9ff",
-                      color: C.accent,
-                      fontWeight: 700,
-                      fontSize: 12,
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    Today
-                  </button>
-                )}
+          <div className="erp-inv-datatab-foot">
+            <Pager pager={invPager} />
+            {rows.length > 0 && (
+              <div className="erp-inv-table-foot erp-inv-table-foot-inline">
+                <span>{rows.length} items</span>
+                <span>Retail <b>{getCurrencySymbol()} {fmtNum(rows.reduce(function (a, p) { if (isServiceProduct(p)) return a; return a + inventoryQtyForTotals(p) * inventoryRetailSellPerBase(p); }, 0))}</b></span>
+                <span>Cost <b>{getCurrencySymbol()} {fmtNum(rows.reduce(function (a, p) { if (isServiceProduct(p)) return a; return a + inventoryQtyForTotals(p) * inventoryRetailCostPerBase(p); }, 0))}</b></span>
+                <span>Profit <b>{getCurrencySymbol()} {fmtNum(rows.reduce(function (a, p) { if (isServiceProduct(p)) return a; return a + inventoryQtyForTotals(p) * (inventoryRetailSellPerBase(p) - inventoryRetailCostPerBase(p)); }, 0))}</b></span>
               </div>
             )}
           </div>
+        </div>
+        </div>
+      )}
 
-          {rmDailySubtab === "ingredients" && (
-          <Card>
-            <CardTitle sub="Tap a row to log usage · Stock updates immediately">Raw materials (ingredients)</CardTitle>
+      {/* -- INGREDIENTS TAB -- */}
+      {itab === "ingredients" && (
+        <div className="erp-inv-overview-stack erp-inv-tab-pro">
+          <InvTabHead icon="🧪" tone="teal" title="Ingredients" sub="Raw materials — log daily usage and view purchase history" />
+          <Card className="erp-inv-ing-card">
+            <CardTitle sub="Tap a row to log usage · View history in Activity → Usage">Ingredient stock</CardTitle>
             {rawMaterialProducts.length > 0 && (
-              <div ref={rmAcWrapRef} style={{ position: "relative", marginBottom: 12 }}>
-                <div style={{ position: "relative" }}>
+              <div className="erp-inv-filter-bar">
+                <div className="erp-inv-search" ref={rmAcWrapRef}>
+                  <span className="erp-inv-search-ico" aria-hidden="true">🔍</span>
                   <input
                     type="text"
+                    className="erp-inv-search-input"
                     placeholder="Search by name, ID, barcode, or category…"
                     value={rmSearch}
                     autoComplete="off"
                     onChange={function (e) { setRmSearch(e.target.value); setRmAcOpen(true); }}
-                    onFocus={function (e) {
-                      setRmAcOpen(true);
-                      e.target.style.borderColor = "#2979ff";
-                      e.target.style.boxShadow = "0 0 0 3px rgba(41,121,255,0.12)";
-                    }}
-                    onBlur={function (e) {
-                      e.target.style.borderColor = C.border;
-                      e.target.style.boxShadow = "none";
-                    }}
-                    style={{
-                      border: "1.5px solid " + C.border,
-                      borderRadius: 8,
-                      padding: "9px " + (rmSearch ? "36px" : "13px") + " 9px 13px",
-                      fontSize: 13,
-                      outline: "none",
-                      fontFamily: "inherit",
-                      background: "#fff",
-                      color: C.text,
-                      width: "100%",
-                      boxSizing: "border-box",
-                      transition: "border-color .15s, box-shadow .15s",
-                    }}
+                    onFocus={function () { setRmAcOpen(true); }}
                   />
                   {rmSearch ? (
                     <button
                       type="button"
+                      className="erp-inv-search-clear"
                       aria-label="Clear search"
-                      title="Clear"
                       onMouseDown={function (e) { e.preventDefault(); }}
-                      onClick={function () {
-                        setRmSearch("");
-                        setRmAcOpen(false);
-                      }}
-                      style={{
-                        position: "absolute",
-                        right: 6,
-                        top: "50%",
-                        transform: "translateY(-50%)",
-                        width: 28,
-                        height: 28,
-                        padding: 0,
-                        border: "none",
-                        borderRadius: "50%",
-                        background: "transparent",
-                        color: C.muted,
-                        cursor: "pointer",
-                        fontSize: 18,
-                        lineHeight: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontFamily: "inherit",
-                      }}
-                    >
-                      ×
-                    </button>
+                      onClick={function () { setRmSearch(""); setRmAcOpen(false); }}
+                    >×</button>
                   ) : null}
+                  {rmAcOpen && rmSearch.trim() && rmAutocompleteSuggestions.length > 0 && (
+                    <div className="erp-inv-ac-dropdown">
+                      {rmAutocompleteSuggestions.map(function (p) {
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            className="erp-inv-ac-item"
+                            onMouseDown={function (e) { e.preventDefault(); }}
+                            onClick={function () { setRmSearch(p.name); setRmAcOpen(false); }}
+                          >
+                            <span className="erp-inv-ac-name">{p.name}</span>
+                            <span className="erp-inv-ac-meta">{p.category}</span>
+                            {p.barcode ? <span className="erp-inv-ac-meta erp-inv-ac-code">{p.barcode}</span> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-                {rmAcOpen && rmSearch.trim() && rmAutocompleteSuggestions.length > 0 && (
-                  <div
-                    style={{
-                      position: "absolute",
-                      left: 0,
-                      right: 0,
-                      top: "100%",
-                      marginTop: 6,
-                      zIndex: 25,
-                      background: "#fff",
-                      border: "1.5px solid " + C.border,
-                      borderRadius: 10,
-                      boxShadow: "0 10px 28px rgba(15,23,42,0.12)",
-                      maxHeight: 260,
-                      overflowY: "auto",
-                    }}
-                  >
-                    {rmAutocompleteSuggestions.map(function (p) {
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onMouseDown={function (e) { e.preventDefault(); }}
-                          onClick={function () {
-                            setRmSearch(p.name);
-                            setRmAcOpen(false);
-                          }}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            textAlign: "left",
-                            padding: "10px 14px",
-                            border: "none",
-                            borderBottom: "1px solid " + C.border,
-                            background: "transparent",
-                            cursor: "pointer",
-                            fontSize: 13,
-                            fontWeight: 600,
-                            color: C.text,
-                            fontFamily: "inherit",
-                          }}
-                        >
-                          <span style={{ fontWeight: 800 }}>{p.name}</span>
-                          <span style={{ fontSize: 11, color: C.muted, marginLeft: 8 }}>{p.category}</span>
-                          {(p.barcode ? <span style={{ fontSize: 11, color: C.muted, marginLeft: 8, fontFamily: "monospace" }}>{p.barcode}</span> : null)}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+                <button type="button" className="erp-inv-btn-attention" style={{ width: "auto", marginTop: 0 }} onClick={function () { openActivity("usage"); }}>
+                  View usage log
+                </button>
               </div>
             )}
             {rawMaterialProducts.length === 0 ? (
-              <div
-                style={{
-                  textAlign: "center",
-                  padding: "36px 24px",
-                  border: "2px dashed " + C.border,
-                  borderRadius: 14,
-                  background: "#fafbff",
-                }}
-              >
-                <div style={{ fontSize: 15, fontWeight: 800, color: C.text, marginBottom: 8 }}>No ingredients yet</div>
-                <p style={{ margin: "0 auto 16px", maxWidth: 420, fontSize: 13, color: C.muted, lineHeight: 1.55 }}>
-                  Add a product as an <strong style={{ color: C.text }}>ingredient</strong>, then return here.
-                </p>
-                <Btn
-                  col="cyan"
-                  onClick={function () {
-                    setItab("products");
-                    setTimeout(function () {
-                      setNewP(blankProduct({ type: "raw_material" }));
-                    }, 30);
-                  }}
-                >
-                  + Add ingredient
-                </Btn>
-              </div>
+              <InvEmpty
+                icon="🧪"
+                title="No ingredients yet"
+                sub="Add a product as an ingredient, then return here to log daily usage."
+                action={
+                  <div style={{ marginTop: 12 }}>
+                    <Btn col="cyan" onClick={function () {
+                      setItab("products");
+                      setTimeout(function () {
+                        setNewProdKey(function (k) { return k + 1; });
+                        setNewP(blankProduct({ type: "raw_material" }));
+                      }, 30);
+                    }}>+ Add ingredient</Btn>
+                  </div>
+                }
+              />
             ) : rawMaterialFiltered.length === 0 ? (
-              <div style={{ padding: "28px 16px", textAlign: "center", color: C.muted, fontSize: 13 }}>
-                No ingredients match &quot;{rmSearch}&quot;.{" "}
-                <button
-                  type="button"
-                  onClick={function () { setRmSearch(""); }}
-                  style={{ background: "none", border: "none", color: C.accent, fontWeight: 800, cursor: "pointer", textDecoration: "underline", fontFamily: "inherit", fontSize: 13 }}
-                >
-                  Clear search
-                </button>
+              <div className="erp-inv-empty erp-inv-empty-inline">
+                <div className="erp-inv-empty-sub">No ingredients match &quot;{rmSearch}&quot;.</div>
+                <button type="button" className="erp-inv-link-btn" onClick={function () { setRmSearch(""); }}>Clear search</button>
               </div>
             ) : (
-              <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid " + C.border }}>
-                <table style={{ width: "100%", minWidth: 360, borderCollapse: "collapse", fontSize: 13 }}>
+              <div className="erp-inv-table-wrap">
+                <table className="erp-inv-table">
                   <thead>
-                    <tr style={{ background: "#f1f5f9" }}>
-                      <th style={{ textAlign: "left", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid " + C.border }}>Name</th>
-                      <th style={{ textAlign: "right", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid " + C.border }}>Available</th>
-                      <th style={{ textAlign: "right", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid " + C.border }}> </th>
+                    <tr>
+                      <th className="is-left">Name</th>
+                      <th>Available</th>
+                      <th> </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rawMaterialFiltered.map(function (p, ri) {
-                      var rowBg = ri % 2 === 0 ? "#fff" : "#fafbff";
+                    {rawMaterialFiltered.map(function (p) {
                       var avail = getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit);
                       return (
-                        <tr
-                          key={p.id}
-                          onClick={function () { openRmUseModal(p); }}
-                          style={{ background: rowBg, cursor: "pointer" }}
-                        >
-                          <td style={{ padding: "12px 14px", fontWeight: 800, color: C.text }}>{p.name}</td>
-                          <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 800, color: (p.stock || 0) <= 0 ? C.red : C.text }}>{avail}</td>
-                          <td style={{ padding: "8px 14px", textAlign: "right", whiteSpace: "nowrap" }} onClick={function (e) { e.stopPropagation(); }}>
-                            <Btn sm col="blue" onClick={function () { setRmDetailProduct(p); }}>Detailed view</Btn>
+                        <tr key={p.id} className="erp-inv-row-click" onClick={function () { openRmUseModal(p); }}>
+                          <td style={{ fontWeight: 800 }}>{p.name}</td>
+                          <td style={{ textAlign: "right", fontWeight: 800, color: (p.stock || 0) <= 0 ? C.red : C.text }}>{avail}</td>
+                          <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={function (e) { e.stopPropagation(); }}>
+                            <Btn sm col="blue" onClick={function () { setRmDetailProduct(p); }}>History</Btn>
                           </td>
                         </tr>
                       );
@@ -1444,57 +1438,6 @@ var Inventory = React.memo(function (props) {
               </div>
             )}
           </Card>
-          )}
-
-          {rmDailySubtab === "log" && (
-            <Card>
-              <CardTitle sub={rmUsagesForDay.length + " use event" + (rmUsagesForDay.length === 1 ? "" : "s") + " — " + fmtDateFull(rmLogDateStr)}>
-                Ingredient usage log
-              </CardTitle>
-              {rawMaterialProducts.length === 0 ? (
-                <div style={{ padding: "24px 16px", textAlign: "center", color: C.muted, fontSize: 13 }}>
-                  No ingredients in your catalog. Add an ingredient from the Products tab first.
-                </div>
-              ) : rmUsagesForDay.length === 0 ? (
-                <div style={{ padding: "28px 16px", textAlign: "center", color: C.muted, fontSize: 13, border: "2px dashed " + C.border, borderRadius: 12, background: "#fafbff" }}>
-                  No raw-material usage logged for {fmtDateFull(rmLogDateStr)}. Pick another date or log usage from the Ingredients tab.
-                </div>
-              ) : (
-                <div style={{ overflowX: "auto", borderRadius: 10, border: "1px solid " + C.border }}>
-                  <table style={{ width: "100%", minWidth: 420, borderCollapse: "collapse", fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ background: "#f1f5f9" }}>
-                        <th style={{ textAlign: "left", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid " + C.border }}>Ingredient</th>
-                        <th style={{ textAlign: "right", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid " + C.border }}>Qty</th>
-                        <th style={{ textAlign: "left", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid " + C.border }}>Unit</th>
-                        <th style={{ textAlign: "right", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "2px solid " + C.border }}>Base qty</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rmUsagesForDay.map(function (u, ri) {
-                        var rowBg = ri % 2 === 0 ? "#fff" : "#fafbff";
-                        var pfind = (state.products || []).find(function (p) { return p && String(p.id) === String(u.productId); });
-                        var nm = pfind && pfind.name ? pfind.name : "Unknown ingredient";
-                        var baseDisp = u.qtyBase != null && isFinite(Number(u.qtyBase))
-                          ? (typeof fmtSumQty === "function" ? fmtSumQty(Number(u.qtyBase)) : String(u.qtyBase))
-                          : "—";
-                        return (
-                          <tr key={String(u.id || "row-" + ri)} style={{ background: rowBg }}>
-                            <td style={{ padding: "12px 14px", fontWeight: 800, color: C.text }}>{nm}</td>
-                            <td style={{ padding: "12px 14px", textAlign: "right", fontWeight: 800, color: C.text }}>
-                              {typeof fmtSumQty === "function" ? fmtSumQty(Number(u.qty) || 0) : String(u.qty)}
-                            </td>
-                            <td style={{ padding: "12px 14px", color: C.textMd, fontWeight: 600 }}>{String(u.unit || "—")}</td>
-                            <td style={{ padding: "12px 14px", textAlign: "right", color: C.muted, fontWeight: 600 }}>{baseDisp}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Card>
-          )}
 
           {rmUseModal && (
             <Modal title={"Log usage — " + rmUseModal.name} onClose={function () { setRmUseModal(null); }}>
@@ -1505,11 +1448,7 @@ var Inventory = React.memo(function (props) {
                 </strong>
               </div>
               <div style={{ marginBottom: 12 }}>
-                <Sel
-                  label="Unit"
-                  value={rmUseUnit}
-                  onChange={function (e) { setRmUseUnit(e.target.value); }}
-                >
+                <Sel label="Unit" value={rmUseUnit} onChange={function (e) { setRmUseUnit(e.target.value); }}>
                   {getProductUnitRows(rmUseModal).map(function (row, ui) {
                     var nm = String(row.name || "").trim();
                     var fac = Number(row.factor) || 1;
@@ -1524,22 +1463,9 @@ var Inventory = React.memo(function (props) {
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, lineHeight: 1.45 }}>
                 Choose the unit you measured in (same units as on the product / purchases). Stock is converted automatically.
               </div>
-              <Input
-                label={"Quantity used (" + rmUseUnit + ")"}
-                type="number"
-                min="0"
-                step="any"
-                value={rmUseQty}
-                onChange={function (e) { setRmUseQty(e.target.value); }}
-              />
+              <Input label={"Quantity used (" + rmUseUnit + ")"} type="number" min="0" step="any" value={rmUseQty} onChange={function (e) { setRmUseQty(e.target.value); }} />
               <div style={{ marginTop: 10 }}>
-                <Input
-                  label="Date"
-                  type="date"
-                  value={rmUseDate}
-                  min={periodLockTransactionMinDate || undefined}
-                  onChange={function (e) { setRmUseDate(e.target.value || today()); }}
-                />
+                <Input label="Date" type="date" value={rmUseDate} min={periodLockTransactionMinDate || undefined} onChange={function (e) { setRmUseDate(e.target.value || today()); }} />
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
                 <Btn col="gray" onClick={function () { setRmUseModal(null); }}>Cancel</Btn>
@@ -1560,22 +1486,22 @@ var Inventory = React.memo(function (props) {
                   {getBulkDisplayParts(rmDetailProduct) ? fmtStockDual(rmDetailProduct) : fmtStock(rmDetailProduct.stock || 0, rmDetailProduct.unit)}
                 </strong>
               </div>
-              <div style={{ maxHeight: 420, overflowY: "auto", border: "1px solid " + C.border, borderRadius: 10 }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <thead style={{ position: "sticky", top: 0, background: "#f1f5f9", zIndex: 1 }}>
+              <div className="erp-inv-table-wrap" style={{ maxHeight: 420 }}>
+                <table className="erp-inv-table">
+                  <thead>
                     <tr>
-                      <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "2px solid " + C.border, color: C.th }}>Date</th>
-                      <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "2px solid " + C.border, color: C.th }}>Event</th>
-                      <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "2px solid " + C.border, color: C.th }}>Detail</th>
+                      <th className="is-left">Date</th>
+                      <th className="is-left">Event</th>
+                      <th className="is-left">Detail</th>
                     </tr>
                   </thead>
                   <tbody>
                     {tl.map(function (row, idx) {
                       return (
-                        <tr key={row.sort + "_" + idx} style={{ background: idx % 2 === 0 ? "#fff" : "#fafbff" }}>
-                          <td style={{ padding: "8px 12px", whiteSpace: "nowrap", color: C.text }}>{fmtDateFull(row.date)}</td>
-                          <td style={{ padding: "8px 12px", fontWeight: 700, color: row.kind === "use" ? C.orange : row.kind === "purchase" ? C.green : row.kind === "return" ? C.red : C.textMd }}>{row.label}</td>
-                          <td style={{ padding: "8px 12px", color: C.text }}>{row.detail}</td>
+                        <tr key={row.sort + "_" + idx}>
+                          <td style={{ whiteSpace: "nowrap" }}>{fmtDateFull(row.date)}</td>
+                          <td style={{ fontWeight: 700, color: row.kind === "use" ? C.orange : row.kind === "purchase" ? C.green : row.kind === "return" ? C.red : C.textMd }}>{row.label}</td>
+                          <td>{row.detail}</td>
                         </tr>
                       );
                     })}
@@ -1594,72 +1520,190 @@ var Inventory = React.memo(function (props) {
         </div>
       )}
 
-      {/* -- DAMAGED TAB -- */}
-      {itab === "damaged" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-            <StatCard money={false} label="Damaged Products" value={products.filter(function (p) { return (p.damaged || 0) > 0; }).length} accent={C.orange} icon="!" sub="have damaged units" />
-            <StatCard money={false} label="Total Damaged Units" value={totalDamagedUnits} accent={C.red} icon="Inventory" sub="units damaged" />
-            <StatCard label="Damaged Value (Cost)" value={damagedValue} accent={C.red} icon="Money" sub="total loss" />
+      {/* -- ACTIVITY TAB -- */}
+      {itab === "activity" && (
+        <div className="erp-inv-tab-pro erp-inv-activity-tab">
+        <InvTabHead icon="📋" tone="purple" title="Activity log" sub="Stock changes, damage events and ingredient usage" />
+        {activitySubtab === "changes" ? <InvKpiStrip compact items={activityChangesKpis} /> : null}
+        {activitySubtab === "damage" ? <InvKpiStrip compact items={activityDamageKpis} /> : null}
+        {activitySubtab === "usage" && hasIngredients ? <InvKpiStrip compact items={activityUsageKpis} /> : null}
+        <div className="erp-inv-datatab erp-inv-activity erp-inv-datatab-pro">
+          <div className="erp-inv-activity-toolbar erp-inv-activity-toolbar-pro">
+            <div className="erp-inv-subtabs erp-inv-subtabs-pro">
+              {ACTIVITY_TABS.map(function (t) {
+                return (
+                  <button
+                    key={t[0]}
+                    type="button"
+                    className={"erp-inv-subtab tone-" + t[0] + (activitySubtab === t[0] ? " is-active" : "")}
+                    onClick={function () { setActivitySubtab(t[0]); setActivitySearch(""); }}
+                  ><span className="erp-inv-subtab-ico" aria-hidden="true">{t[2]}</span>{t[1]}</button>
+                );
+              })}
+            </div>
+            {activitySubtab === "usage" ? (
+              <div className="erp-inv-date-tools">
+                <span className="erp-inv-date-label">Date</span>
+                <div className="erp-inv-date-range">
+                  <input
+                    type="date"
+                    className="erp-inv-field-ctrl"
+                    value={rmUsageLogDate}
+                    min={periodLockTransactionMinDate || undefined}
+                    onChange={function (e) { setRmUsageLogDate(e.target.value || (typeof today === "function" ? today() : "")); }}
+                  />
+                </div>
+                {rmLogDateStr !== (typeof today === "function" ? today() : "") && (
+                  <button type="button" className="erp-inv-btn-attention erp-inv-btn-attention-inline" onClick={function () { setRmUsageLogDate(typeof today === "function" ? today() : ""); }}>Today</button>
+                )}
+              </div>
+            ) : (
+              <div className="erp-inv-activity-search">
+                <div className="erp-inv-search erp-inv-search-box">
+                  <span className="erp-inv-search-ico" aria-hidden="true">⌕</span>
+                  <input
+                    type="text"
+                    className="erp-inv-search-input"
+                    value={activitySearch}
+                    onChange={function (e) { setActivitySearch(e.target.value); }}
+                    placeholder={activitySubtab === "damage" ? "Search damage…" : "Search log…"}
+                  />
+                </div>
+              </div>
+            )}
           </div>
-          <Card>
-            <CardTitle sub="Products with damaged stock">Damaged Inventory</CardTitle>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><TH>Product</TH><TH>Category</TH><TH>Cost/Unit</TH><TH>Sell Price</TH><TH>Good Stock</TH><TH>Damaged Units</TH><TH>Damage Value</TH><TH>Action</TH></tr></thead>
-              <tbody>
-                {products.filter(function (p) { return (p.damaged || 0) > 0; }).sort(function (a, b) { return (b.damaged || 0) - (a.damaged || 0); }).map(function (p, i) {
-                  return (
-                    <TR key={p.id} i={i}>
-                      <TD bold>{p.name}</TD>
-                      <TD>{p.category}</TD>
-                      <TD>{getCurrencySymbol()} {fmtNum(p.cost || 0)}</TD>
-                      <TD color={C.blue}>{getCurrencySymbol()} {fmtNum(p.price)}</TD>
-                      <TD bold color={(p.stock || 0) > 0 ? C.green : C.red}>{getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit)}</TD>
-                      <td style={{ padding: "10px 14px" }}><span style={{ background: "#fff3e0", color: C.orange, padding: "3px 10px", borderRadius: 20, fontWeight: 800, fontSize: 13 }}>{p.damaged}</span></td>
-                      <TD bold color={C.red}>{getCurrencySymbol()} {fmtNum((p.damaged || 0) * (p.cost || 0))}</TD>
-                      <td style={{ padding: "9px 10px" }}><Btn sm col="orange" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>Log More</Btn></td>
-                    </TR>
-                  );
-                })}
-                {products.filter(function (p) { return (p.damaged || 0) > 0; }).length === 0 && <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", color: C.green, fontWeight: 700 }}>No damaged items.</td></tr>}
-              </tbody>
-            </table>
-          </Card>
-          <Card>
-            <CardTitle sub="All damage events">Damage Log</CardTitle>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><TH>Date</TH><TH>Product</TH><TH>Qty</TH><TH>Reason</TH></tr></thead>
-              <tbody>
-                {(state.damageLog || []).slice().reverse().map(function (l, i) {
-                  return <TR key={l.id} i={i}><TD>{fmtDateFull(l.date)}</TD><TD bold>{l.productName}</TD><TD center color={C.orange}>{fmtSumQty(l.qty)}</TD><TD>{l.reason}</TD></TR>;
-                })}
-                {(state.damageLog || []).length === 0 && <tr><td colSpan={4} style={{ padding: 20, textAlign: "center", color: C.muted }}>No damage logged</td></tr>}
-              </tbody>
-            </table>
-          </Card>
+
+          {activitySubtab === "damage" && (
+            <React.Fragment>
+              <div className="erp-inv-datatab-section">
+                <div className="erp-inv-section-head">
+                  <div className="erp-inv-section-title">Damaged inventory</div>
+                  <div className="erp-inv-section-sub">{damagedProducts.length} with damage</div>
+                </div>
+                <div className="erp-inv-table-wrap erp-inv-table-wrap-dense">
+                  <table className="erp-inv-table erp-inv-activity-table erp-inv-damage-inv-table">
+                    <thead>
+                      <tr>
+                        <th className="is-left">Product</th>
+                        <th className="is-left">Category</th>
+                        <th>Cost</th>
+                        <th>Stock</th>
+                        <th>Dmg</th>
+                        <th>Loss</th>
+                        <th> </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {damagedProducts.length === 0 ? (
+                        <tr><td colSpan={7} className="erp-inv-empty-cell">No damaged items</td></tr>
+                      ) : damagedProducts.map(function (p, i) {
+                        return (
+                          <TR key={p.id} i={i}>
+                            <TD bold>{p.name}</TD>
+                            <TD>{p.category}</TD>
+                            <TD>{getCurrencySymbol()} {fmtNum(p.cost || 0)}</TD>
+                            <TD bold color={(p.stock || 0) > 0 ? C.green : C.red}>{getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit)}</TD>
+                            <td><span className="erp-inv-badge is-damage">{p.damaged}</span></td>
+                            <TD bold color={C.red}>{getCurrencySymbol()} {fmtNum((p.damaged || 0) * (p.cost || 0))}</TD>
+                            <td className="erp-inv-act-cell"><Btn sm col="orange" onClick={function () { setActionP({ product: p, mode: "damage" }); setDmgQty("1"); setReason(""); }}>Log</Btn></td>
+                          </TR>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="erp-inv-datatab-section">
+                <div className="erp-inv-section-head">
+                  <div className="erp-inv-section-title">Damage log</div>
+                  <div className="erp-inv-section-sub">{damageLogRows.length} events{activitySearchQ ? " · filtered" : ""}</div>
+                </div>
+                <div className="erp-inv-table-wrap erp-inv-table-wrap-dense">
+                  <table className="erp-inv-table erp-inv-activity-table">
+                    <thead><tr><th className="is-left">Date</th><th className="is-left">Product</th><th>Qty</th><th className="is-left">Reason</th></tr></thead>
+                    <tbody>
+                      {damageLogRows.length === 0 && <tr><td colSpan={4} className="erp-inv-empty-cell">{activitySearchQ ? "No matches" : "No damage logged"}</td></tr>}
+                      {damageLogRows.map(function (l, i) {
+                        return <TR key={l.id} i={i}><TD>{fmtDateFull(l.date)}</TD><TD bold>{l.productName}</TD><TD center color={C.orange}>{fmtSumQty(l.qty)}</TD><TD>{l.reason}</TD></TR>;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </React.Fragment>
+          )}
+
+          {activitySubtab === "changes" && (
+            <div className="erp-inv-datatab-section">
+              <div className="erp-inv-section-head">
+                <div className="erp-inv-section-title">Product changes</div>
+                <div className="erp-inv-section-sub">{productLogRows.length} entries{activitySearchQ ? " · filtered" : ""}</div>
+              </div>
+              <div className="erp-inv-table-wrap erp-inv-table-wrap-dense">
+                <table className="erp-inv-table erp-inv-activity-table">
+                  <thead><tr><th className="is-left">Date</th><th className="is-left">Type</th><th className="is-left">Product</th><th>Qty</th><th className="is-left">Reason</th></tr></thead>
+                  <tbody>
+                    {productLogRows.length === 0 && <tr><td colSpan={5} className="erp-inv-empty-cell">{activitySearchQ ? "No matches" : "No log entries"}</td></tr>}
+                    {productLogRows.map(function (l, i) {
+                      return <TR key={l.id} i={i}><TD>{fmtDateFull(l.date)}</TD><td className="erp-inv-badge-cell"><Badge status={l.type} /></td><TD bold>{l.productName}</TD><TD center>{l.qty}</TD><TD>{l.reason}</TD></TR>;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {activitySubtab === "usage" && hasIngredients && (
+            <div className="erp-inv-datatab-section">
+              <div className="erp-inv-section-head">
+                <div className="erp-inv-section-title">Ingredient usage</div>
+                <div className="erp-inv-section-sub">{rmUsagesForDay.length} events · {fmtDateFull(rmLogDateStr)}</div>
+              </div>
+              {rmUsagesForDay.length === 0 ? (
+                <div className="erp-inv-empty erp-inv-empty-inline">No usage for {fmtDateFull(rmLogDateStr)}</div>
+              ) : (
+                <div className="erp-inv-table-wrap erp-inv-table-wrap-dense">
+                  <table className="erp-inv-table erp-inv-activity-table">
+                    <thead>
+                      <tr>
+                        <th className="is-left">Ingredient</th>
+                        <th>Qty</th>
+                        <th className="is-left">Unit</th>
+                        <th>Base</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rmUsagesForDay.map(function (u, ri) {
+                        var pfind = (state.products || []).find(function (p) { return p && String(p.id) === String(u.productId); });
+                        var nm = pfind && pfind.name ? pfind.name : "Unknown";
+                        var baseDisp = u.qtyBase != null && isFinite(Number(u.qtyBase))
+                          ? (typeof fmtSumQty === "function" ? fmtSumQty(Number(u.qtyBase)) : String(u.qtyBase))
+                          : "—";
+                        return (
+                          <tr key={String(u.id || "row-" + ri)}>
+                            <td style={{ fontWeight: 700 }}>{nm}</td>
+                            <td style={{ textAlign: "right", fontWeight: 700 }}>{typeof fmtSumQty === "function" ? fmtSumQty(Number(u.qty) || 0) : String(u.qty)}</td>
+                            <td>{String(u.unit || "—")}</td>
+                            <td style={{ textAlign: "right", color: "var(--inv-muted)" }}>{baseDisp}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
         </div>
       )}
 
-      {/* -- LOG TAB -- */}
-      {itab === "history" && (
-        <Card>
-          <CardTitle sub="Product additions and removals">Product Log</CardTitle>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><TH>Date</TH><TH>Type</TH><TH>Product</TH><TH>Qty</TH><TH>Reason</TH></tr></thead>
-            <tbody>
-              {(state.productLog || []).length === 0 && <tr><td colSpan={5} style={{ padding: 20, textAlign: "center", color: C.muted }}>No log entries</td></tr>}
-              {(state.productLog || []).slice().reverse().map(function (l, i) {
-                return <TR key={l.id} i={i}><TD>{fmtDateFull(l.date)}</TD><td style={{ padding: "9px 12px" }}><Badge status={l.type} /></td><TD bold>{l.productName}</TD><TD center>{l.qty}</TD><TD>{l.reason}</TD></TR>;
-              })}
-            </tbody>
-          </table>
-        </Card>
-      )}
+      </div>
 
       {/* -- PRODUCT DETAIL VIEW -- */}
       {viewP && (
-        <Modal title={viewP.name} onClose={function () { setViewP(null); }} wide>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12, marginBottom: 16 }}>
+        <Modal title={viewP.name} onClose={function () { setViewP(null); }} wide className="erp-inv-product-modal erp-inv-modal-view" headerBg={INV_MODAL_HEADER}>
+          <div className="erp-inv-modal-kpi-grid">
             {[
               { label: "Cost Price", val: getCurrencySymbol() + " " + fmtNum(inventoryRetailCostPerBase(viewP)), color: C.muted },
               { label: "Sell Price", val: getCurrencySymbol() + " " + fmtNum(inventoryRetailSellPerBase(viewP)), color: C.blue },
@@ -1687,18 +1731,18 @@ var Inventory = React.memo(function (props) {
               { label: "Batch / Lot No", val: viewP.batchNo || "-", color: C.muted }
             ] : []).map(function (s) {
               return (
-                <div key={s.label} style={{ background: "#f7f9ff", borderRadius: 10, padding: "12px 16px" }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>{s.label}</div>
-                  <div style={{ fontWeight: 800, fontSize: 16, color: s.color }}>{s.val}</div>
+                <div key={s.label} className="erp-inv-modal-kpi">
+                  <div className="erp-inv-modal-kpi-label">{s.label}</div>
+                  <div className="erp-inv-modal-kpi-val" style={{ color: s.color }}>{s.val}</div>
                 </div>
               );
             })}
           </div>
-          <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
-            <strong>Barcode:</strong> <span style={{ fontFamily: "monospace", color: C.accent }}>{viewP.barcode}</span>
-            {viewP.description && <span style={{ marginLeft: 16 }}>{viewP.description}</span>}
+          <div className="erp-inv-modal-meta">
+            <strong>Barcode:</strong> <span className="erp-inv-mono">{viewP.barcode}</span>
+            {viewP.description ? <span className="erp-inv-modal-desc">{viewP.description}</span> : null}
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="erp-inv-modal-actions">
             <Btn col="blue" onClick={function () { setEditP(Object.assign({}, viewP, { extraUnits: formExtraUnitsFromProduct(viewP) })); setViewP(null); }}>Edit</Btn>
             <Btn col="orange" onClick={function () { setActionP({ product: viewP, mode: "damage" }); setDmgQty("1"); setReason(""); setViewP(null); }}>Mark Damage</Btn>
             <Btn col="gray" onClick={function () { setViewP(null); }}>Close</Btn>
@@ -1707,216 +1751,33 @@ var Inventory = React.memo(function (props) {
       )}
 
       {newP && (
-        <Modal title={"Add New Product - ID: " + nextProductId(state.products)} onClose={function () { setNewP(null); }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <Input
-              id="inv-new-name"
-              label="Product Name *"
-              value={newP.name}
-              onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }}
-              onFocus={newNameHint.onNameFocus}
-              onBlur={newNameHint.onNameBlur}
-              onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-barcode"); } }}
-            />
-            <ProductNameDuplicateHint name={newP.name} products={state.products} C={C} visible={newNameHint.visible} onDismiss={newNameHint.onDismiss} />
-            <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
-              <div>
-                <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
-                <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{nextProductId(state.products)}</div>
-              </div>
-              <Input
-                id="inv-new-barcode"
-                label="Barcode"
-                value={newP.barcode}
-                onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }}
-                onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-main-category"); } }}
-              />
-            </div>
-            <CategorySelect
-              Sel={Sel}
-              value={newP.category}
-              settings={shopSettings}
-              onChange={function (e) { onProductCategoryChange(setNewP, e.target.value); }}
-              focusSubAfterGroupChange={false}
-              mainSelectProps={{
-                id: "inv-new-main-category",
-                onFocus: function () { markSelectEnterStage("main", false); },
-                onBlur: function () { markSelectEnterStage("main", false); },
-                onKeyDown: function (e) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSelectEnter("main", "inv-new-main-category", function () { focusById("inv-new-sub-category"); });
-                  }
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("main", true);
-                },
-                onKeyUp: function (e) {
-                  if (e.key === "Enter" && newProductSelectEnterState.current.main) {
-                    markSelectEnterStage("main", false);
-                    focusById("inv-new-sub-category");
-                  }
-                }
-              }}
-              subSelectProps={{
-                id: "inv-new-sub-category",
-                onFocus: function () { markSelectEnterStage("sub", false); },
-                onBlur: function () { markSelectEnterStage("sub", false); },
-                onKeyDown: function (e) {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleSelectEnter("sub", "inv-new-sub-category", function () { focusById("inv-new-type"); });
-                  }
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("sub", true);
-                },
-                onKeyUp: function (e) {
-                  if (e.key === "Enter" && newProductSelectEnterState.current.sub) {
-                    markSelectEnterStage("sub", false);
-                    focusById("inv-new-type");
-                  }
-                }
-              }}
-            />
-            <Sel
-              id="inv-new-type"
-              label="Product Type"
-              value={newP.type || "stock"}
-              onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}
-              onFocus={function () { markSelectEnterStage("type", false); }}
-              onBlur={function () { markSelectEnterStage("type", false); }}
-              onKeyDown={function (e) {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  handleSelectEnter("type", "inv-new-type", function () { focusById("inv-new-cost"); });
-                }
-                if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("type", true);
-              }}
-              onKeyUp={function (e) {
-                if (e.key === "Enter" && newProductSelectEnterState.current.type) {
-                  markSelectEnterStage("type", false);
-                  focusById("inv-new-cost");
-                }
-              }}
-            >
-              <option value="stock">stock</option>
-              <option value="service">service</option>
-              <option value="raw_material">raw_material</option>
-            </Sel>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, alignItems: "end" }}>
-              <Input id="inv-new-cost" label={glassCostPriceLabels(newP, shopSettings).cost} type="number" value={newP.cost} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-sell"); } }} />
-              <Input id="inv-new-sell" label={newP.type === "service" ? "Selling Price (optional — enter at sale)" : glassCostPriceLabels(newP, shopSettings).sell} type="number" value={newP.price} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-stock"); } }} placeholder={newP.type === "service" ? "Leave empty if price varies" : ""} />
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", minHeight: 30, display: "block" }}>
-                  {newP.type === "service" ? "Initial Stock (not required for service)" : "Initial Stock"}
-                </label>
-                <input
-                  id="inv-new-stock"
-                  type="number"
-                  value={newP.stock}
-                  onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { stock: e.target.value }); }); }}
-                  onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("inv-new-unit"); } }}
-                  style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
-                />
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", minHeight: 30, display: "block" }}>
-                  Base Unit
-                </label>
-                <select
-                  id="inv-new-unit"
-                  value={newP.unit || getDefaultProductUnit(shopSettings, newP.category)}
-                  onChange={function (e) {
-                    var nextUnit = e.target.value;
-                    setNewP(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
-                  }}
-                  onFocus={function (e) { markSelectEnterStage("unit", false); e.target.style.borderColor = "#2979ff"; e.target.style.boxShadow = "0 0 0 3px rgba(41,121,255,0.12)"; }}
-                  onBlur={function (e) { markSelectEnterStage("unit", false); e.target.style.borderColor = C.border; e.target.style.boxShadow = "none"; }}
-                  onKeyDown={function (e) {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleSelectEnter("unit", "inv-new-unit", function () { focusById("inv-new-desc"); });
-                    }
-                    if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("unit", true);
-                  }}
-                  onKeyUp={function (e) {
-                    if (e.key === "Enter" && newProductSelectEnterState.current.unit) {
-                      markSelectEnterStage("unit", false);
-                      focusById("inv-new-desc");
-                    }
-                  }}
-                  style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%" }}
-                >
-                  {getUnitsForSubCategory(newP.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}
-                </select>
-              </div>
-            </div>
-            {isGlassStockProductForm(newP, shopSettings) && (
-              <GlassSheetInfo form={newP} setForm={setNewP} C={C} Input={Input} Sel={Sel} />
-            )}
-            {!isGlassStockProductForm(newP, shopSettings) && newP.category && (
-              <div style={{ fontSize: 11, color: C.muted, marginTop: -4 }}>
-                Units for this category: {getUnitsForSubCategory(newP.category, shopSettings).join(", ")}
-              </div>
-            )}
-            <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
-              <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{newP.unit || "Pcs"}</strong> (base) are in one of that unit. Stock is always kept in base units.</div>
-              {(newP.extraUnits || []).map(function (row, idx) {
-                return (
-                  <div key={idx} style={{ display: "grid", gridTemplateColumns: "minmax(80px,1fr) 88px minmax(72px,1fr) minmax(72px,1fr) 34px", gap: 8, marginBottom: 8, alignItems: "end" }}>
-                    <Input label="Unit name" value={row.name || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { name: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="Strip / Box" />
-                    <Input label="Factor" type="number" value={row.factor || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { factor: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="e.g. 12" />
-                    <Input label="Sell (opt.)" type="number" value={row.sellPrice || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { sellPrice: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
-                    <Input label="Cost (opt.)" type="number" value={row.cost || ""} onChange={function (e) { var v = e.target.value; setNewP(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { cost: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
-                    <button type="button" onClick={function () { setNewP(function (x) { var next = (x.extraUnits || []).filter(function (_, j) { return j !== idx; }); return Object.assign({}, x, { extraUnits: next }); }); }} style={{ height: 36, borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", cursor: "pointer", fontSize: 14, color: C.red }} title="Remove"></button>
-                  </div>
-                );
-              })}
-              <button type="button" onClick={function () { setNewP(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
-            </div>
-            {normalizeProductType(newP.type) === "raw_material" ? (
-              <div style={{ fontSize: 12, color: "#92400e", background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 12px", lineHeight: 1.5 }}>
-                {RAW_MATERIAL_PRICE_COST_HINT}
-              </div>
-            ) : null}
-            {newP.price && (
-              <div style={{ background: C.accentSoft, borderRadius: 8, padding: "10px 14px", fontSize: 13, display: "flex", gap: 20 }}>
-                <span>Profit/unit: <strong style={{ color: C.green }}>{(newP.type === "service" && !(parseFloat(newP.cost) > 0)) ? "-" : (getCurrencySymbol() + " " + fmtNum((parseFloat(newP.price) || 0) - (parseFloat(newP.cost) || 0)))}</strong></span>
-                <span>Margin: <strong style={{ color: C.accent }}>{(newP.type === "service" && !(parseFloat(newP.cost) > 0)) ? "-" : (((parseFloat(newP.price) || 0) > 0 ? Math.round(((parseFloat(newP.price) || 0) - (parseFloat(newP.cost) || 0)) / (parseFloat(newP.price) || 1) * 100) : 0) + "%")}</strong></span>
-              </div>
-            )}
-            <div>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
-              <textarea id="inv-new-desc" value={newP.description || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
-            </div>
-            {getBusinessProfile().name === "Jewelry & Watches" && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input label="Weight (grams)" type="number" value={newP.weightGrams || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { weightGrams: e.target.value }); }); }} placeholder="e.g. 5.25" />
-                <Input label="Making Charge" type="number" value={newP.makingCharge || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { makingCharge: e.target.value }); }); }} placeholder="e.g. 500" />
-              </div>
-            )}
-            {getBusinessProfile().modules.expiry && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input label="Expiry Date" type="date" value={newP.expiryDate || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { expiryDate: e.target.value }); }); }} />
-                <Input label="Batch / Lot Number (optional)" value={newP.batchNo || ""} onChange={function (e) { setNewP(function (x) { return Object.assign({}, x, { batchNo: e.target.value }); }); }} placeholder="e.g. BATCH-2025-001" />
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-              <Btn col="cyan" onClick={saveNew} disabled={!newP.name || (!isServiceProduct({ type: newP.type }) && !newP.price) || newProductNameExactDup}>Save Product</Btn>
-              <Btn col="blue" onClick={function () {
-                if (!newP.name || (!isServiceProduct({ type: newP.type }) && !newP.price) || newProductNameExactDup) return;
-                saveNew();
-                setTimeout(function () {
-                  setNewP(blankProduct());
-                }, 80);
-              }} disabled={!newP.name || (!isServiceProduct({ type: newP.type }) && !newP.price) || newProductNameExactDup}>Save + Add Another</Btn>
-              <Btn col="gray" onClick={function () { setNewP(null); }}>Cancel</Btn>
-            </div>
-          </div>
-        </Modal>
+        <AddNewProductModal
+          mode="inventory"
+          remountKey={newProdKey}
+          initial={newP}
+          productIdLabel={nextProductId(state.products)}
+          shopSettings={shopSettings}
+          products={state.products}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          genBarcode={genBarcode}
+          getBusinessProfile={getBusinessProfile}
+          getCurrencySymbol={getCurrencySymbol}
+          fmtNum={fmtNum}
+          showAlert={showAlert}
+          showConfirm={showConfirm}
+          checkProductName={checkProductName}
+          onClose={function () { setNewP(null); }}
+          onSubmit={function (form, meta) { saveNewFromShared(form, meta); }}
+        />
       )}
 
       {editP && (
-        <Modal title={"Edit: " + editP.name} onClose={function () { setEditP(null); }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <Modal title={"Edit: " + editP.name} onClose={function () { setEditP(null); }} medium className="erp-inv-product-modal erp-inv-edit-modal" headerBg={INV_MODAL_HEADER_EDIT}>
+          <div className="erp-inv-modal-form">
             <Input label="Product Name" value={editP.name} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={editNameHint.onNameFocus} onBlur={editNameHint.onNameBlur} />
             <ProductNameDuplicateHint name={editP.name} products={state.products} excludeId={editP.id} C={C} visible={editNameHint.visible} onDismiss={editNameHint.onDismiss} />
             <CategorySelect Sel={Sel} value={editP.category || "General"} settings={shopSettings} onChange={function (e) { onProductCategoryChange(setEditP, e.target.value); }} />
@@ -1986,36 +1847,45 @@ var Inventory = React.memo(function (props) {
                 <Input label="Batch / Lot Number (optional)" value={editP.batchNo || ""} onChange={function (e) { setEditP(function (x) { return Object.assign({}, x, { batchNo: e.target.value }); }); }} placeholder="e.g. BATCH-2025-001" />
               </div>
             )}
-            <div style={{ display: "flex", gap: 8, marginTop: 4 }}><Btn col="cyan" onClick={saveEdit} disabled={editProductNameExactDup}>Save Changes</Btn><Btn col="gray" onClick={function () { setEditP(null); }}>Cancel</Btn></div>
+            <div className="erp-inv-modal-actions">
+              <Btn col="cyan" onClick={saveEdit} disabled={editProductNameExactDup}>Save Changes</Btn>
+              <Btn col="gray" onClick={function () { setEditP(null); }}>Cancel</Btn>
+            </div>
           </div>
         </Modal>
       )}
 
       {actionP && (
-        <Modal title={actionP.mode === "damage" ? "Mark as Damaged - " + actionP.product.name : (actionP.mode === "void" ? "Void Product - " + actionP.product.name : "Remove Stock - " + actionP.product.name)} onClose={function () { setActionP(null); }}>
-          <div style={{ background: actionP.mode === "damage" ? "#fef9c3" : "#fee2e2", borderRadius: 8, padding: "12px 14px", marginBottom: 12, fontSize: 13, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <Modal
+          title={actionP.mode === "damage" ? "Mark Damaged" : (actionP.mode === "void" ? "Void Product" : "Remove Stock")}
+          onClose={function () { setActionP(null); }}
+          medium
+          headerBg={actionP.mode === "damage" ? INV_MODAL_HEADER_DAMAGE : (actionP.mode === "void" ? INV_MODAL_HEADER_VOID : INV_MODAL_HEADER_EDIT)}
+          className={"erp-inv-product-modal erp-inv-action-modal" + (actionP.mode === "damage" ? " is-damage" : actionP.mode === "void" ? " is-void" : "")}
+        >
+          <div className={"erp-inv-modal-banner" + (actionP.mode === "damage" ? " is-warn" : " is-danger")}>
             <span>Product: <strong>{actionP.product.name}</strong></span>
             {actionP.mode === "void" ? (
-              <span>Product ID: <strong style={{ color: C.accent, fontFamily: "monospace" }}>{actionP.product.productId || "—"}</strong></span>
+              <span>ID: <strong className="erp-inv-mono">{actionP.product.productId || "—"}</strong></span>
             ) : (
-              <span>Current Stock: <strong style={{ color: C.blue }}>{getBulkDisplayParts(actionP.product) ? fmtStockDual(actionP.product) : fmtStock(actionP.product.stock || 0, actionP.product.unit)}</strong></span>
+              <span>Stock: <strong>{getBulkDisplayParts(actionP.product) ? fmtStockDual(actionP.product) : fmtStock(actionP.product.stock || 0, actionP.product.unit)}</strong></span>
             )}
           </div>
           {actionP.mode === "void" ? (
-            <div style={{ background: "#f0f4ff", border: "1.5px solid #c7d8ff", borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 12, color: C.textMd, lineHeight: 1.5 }}>
-              This product will be <strong>voided</strong> — hidden from POS and stock lists, but kept in the system with the same ID for invoices and reports. You can restore it later from <strong>Show Voided</strong>. Past invoices are not affected.
+            <div className="erp-inv-modal-note">
+              Hidden from POS and stock lists. Past invoices unchanged. Restore via <strong>Show Voided</strong>.
             </div>
           ) : null}
           {actionP.mode !== "void" && actionP.mode !== "damage" && (
-            <div style={{ marginBottom: 10 }}>
-              <Input label="Quantity" type="number" value={dmgQty} onChange={function (e) { setDmgQty(e.target.value); }} />
+            <div className="erp-inv-modal-field">
+              <Input label="Quantity" type="number" value={dmgQty} onChange={function (e) { setDmgQty(e.target.value); }} compact />
             </div>
           )}
-          <div style={{ marginBottom: 10 }}>
-            <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", display: "block", marginBottom: 4 }}>Reason (required)</label>
-            <textarea value={reason} onChange={function (e) { setReason(e.target.value); }} rows={3} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 7, padding: "8px 11px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Enter reason..." />
+          <div className="erp-inv-modal-field">
+            <label className="erp-inv-modal-lbl">Reason (required)</label>
+            <textarea className="erp-inv-modal-textarea" value={reason} onChange={function (e) { setReason(e.target.value); }} rows={2} placeholder="Enter reason..." />
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="erp-inv-modal-actions">
             <Btn col={actionP.mode === "damage" ? "orange" : "red"} onClick={confirmAction} disabled={!reason.trim()}>{actionP.mode === "void" ? "Void Product" : "Confirm"}</Btn>
             <Btn col="gray" onClick={function () { setActionP(null); }}>Cancel</Btn>
           </div>

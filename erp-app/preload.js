@@ -117,6 +117,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('tc-app-version');
   },
 
+  /** In-app auto-update (NSIS upgrade — preserves shop data). */
+  checkForAppUpdate: function() {
+    return ipcRenderer.invoke('tc-update-check');
+  },
+  downloadAppUpdate: function() {
+    return ipcRenderer.invoke('tc-update-download');
+  },
+  installAppUpdate: function() {
+    return ipcRenderer.invoke('tc-update-install');
+  },
+  installAppUpdatePrompt: function() {
+    return ipcRenderer.invoke('tc-update-install-prompt');
+  },
+  onAppUpdateEvent: function(callback) {
+    if (typeof callback !== 'function') return function() {};
+    var listener = function(_event, payload) { callback(payload); };
+    ipcRenderer.on('tc-update-event', listener);
+    return function() {
+      ipcRenderer.removeListener('tc-update-event', listener);
+    };
+  },
+
   /**
    * LICENSE_SECRET (or file/env) for financial snapshot HMAC v2. Empty string if unset.
    */

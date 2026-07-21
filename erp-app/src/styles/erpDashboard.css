@@ -1,0 +1,1728 @@
+/* TechonERP — Modern Dashboard (viewport-fit, no page scroll) */
+
+.erp-app-root .erp-page-content:has(.erp-md-dash) {
+  background: #f0f4ff !important;
+  background-image: none !important;
+  overflow: hidden !important;
+  padding: 4px 6px 4px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 0 !important;
+}
+
+.erp-app-root .erp-page-content:has(.erp-md-dash) > .erp-page.erp-md-dash {
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+}
+
+.erp-md-dash {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+  font-size: 12px;
+  color: #0f172a;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  background: #f0f4ff;
+  padding-bottom: 0;
+}
+
+.erp-md-dash-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1.12fr) minmax(0, 1fr);
+  gap: 5px;
+  overflow: hidden;
+}
+
+.erp-app-root .erp-main:has(.erp-md-dash) .erp-page-content,
+.erp-app-root .erp-md-dash {
+  background-color: #f0f4ff;
+}
+
+/* Hide the solid blue "Dashboard" title bar under the icon toolbar */
+.erp-app-root .erp-main:has(.erp-md-dash) .erp-page-header {
+  display: none !important;
+}
+
+.erp-md-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.erp-md-alert.warn {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+
+.erp-md-trial {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  flex-shrink: 0;
+}
+
+.erp-md-trial-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.erp-md-trial-track {
+  margin-top: 6px;
+  height: 7px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.erp-md-trial-fill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.erp-md-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.erp-md-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.erp-md-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.erp-md-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.erp-md-date {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.erp-md-refresh {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.erp-md-refresh:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #1e3a5f;
+}
+
+/* Dashboard top stat cards — same global StatCard compact style */
+.erp-md-stat-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 5px;
+  flex-shrink: 0;
+  min-height: 0;
+}
+
+.erp-md-stat-row .stat-card-hover {
+  height: 100%;
+}
+
+/* KPI cards */
+.erp-md-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1400px) {
+  .erp-md-kpi-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 800px) {
+  .erp-md-kpi-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.erp-md-kpi {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px 14px 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color .12s ease, box-shadow .12s ease;
+}
+
+.erp-md-kpi:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+}
+
+.erp-md-kpi-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.erp-md-kpi-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.erp-md-kpi-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.erp-md-kpi-value {
+  font-size: 18px;
+  font-weight: 800;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.erp-md-kpi-foot {
+  margin-top: 10px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.erp-md-kpi-delta {
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.erp-md-kpi-delta.up { color: #16a34a; }
+.erp-md-kpi-delta.down { color: #dc2626; }
+.erp-md-kpi-delta.muted { color: #94a3b8; font-weight: 600; }
+
+.erp-md-spark {
+  width: 72px;
+  height: 22px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.erp-md-kpi.tone-blue .erp-md-kpi-icon { background: #dbeafe; color: #2563eb; }
+.erp-md-kpi.tone-blue .erp-md-spark { color: #3b82f6; }
+.erp-md-kpi.tone-green .erp-md-kpi-icon { background: #e8eef5; color: #1e3a5f; }
+.erp-md-kpi.tone-green .erp-md-spark { color: #3b82f6; }
+.erp-md-kpi.tone-purple .erp-md-kpi-icon { background: #ede9fe; color: #7c3aed; }
+.erp-md-kpi.tone-purple .erp-md-spark { color: #8b5cf6; }
+.erp-md-kpi.tone-navy .erp-md-kpi-icon { background: #e0e7ff; color: #1e3a8a; }
+.erp-md-kpi.tone-navy .erp-md-spark { color: #3730a3; }
+.erp-md-kpi.tone-orange .erp-md-kpi-icon { background: #ffedd5; color: #ea580c; }
+.erp-md-kpi.tone-orange .erp-md-spark { color: #f97316; }
+.erp-md-kpi.tone-red .erp-md-kpi-icon { background: #fee2e2; color: #dc2626; }
+.erp-md-kpi.tone-red .erp-md-spark { color: #ef4444; }
+.erp-md-kpi.bad .erp-md-kpi-value { color: #b91c1c; }
+
+/* Cards */
+.erp-md-card {
+  background: #fff;
+  border: 1.5px solid #e1e8f5;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(13, 27, 62, 0.08);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.erp-md-card-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 8px;
+}
+
+.erp-md-card-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.erp-md-card-sub {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 2px;
+  font-weight: 500;
+}
+
+.erp-md-link {
+  border: none;
+  background: transparent;
+  color: #1e3a5f;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+}
+
+.erp-md-link:hover {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.erp-md-empty {
+  padding: 18px 14px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+/* Mid row */
+.erp-md-mid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(0, 0.85fr) minmax(0, 0.95fr);
+  gap: 5px;
+  align-items: stretch;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 1200px) {
+  .erp-md-mid {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .erp-md-mid .erp-dash-panel-chart {
+    grid-column: 1 / -1;
+  }
+}
+
+.erp-dash-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.erp-dash-panel > div {
+  height: 100%;
+  margin-bottom: 0 !important;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 8px 9px !important;
+  border-radius: 10px !important;
+}
+
+.erp-md-dash .erp-dash-panel > div > div:first-child {
+  margin-bottom: 6px !important;
+  flex-shrink: 0;
+}
+
+.erp-md-dash .erp-dash-panel > div > div:first-child > div:first-child {
+  font-size: 12.5px !important;
+}
+
+.erp-md-dash .erp-dash-panel > div > div:first-child > div > div:last-child {
+  font-size: 10px !important;
+  margin-top: 1px !important;
+}
+
+/* ERP1-style period tabs */
+.erp-dash-seg {
+  display: inline-flex;
+  background: #f0f4ff;
+  border: 1px solid #e1e8f5;
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.erp-dash-seg-btn {
+  border: none;
+  background: transparent;
+  color: #6b82a8;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 11px;
+  min-height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.erp-dash-seg-btn.active {
+  background: linear-gradient(135deg, #2979ff, #2255d4);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(41, 121, 255, 0.28);
+}
+
+.erp-dash-seg-btn:hover:not(.active) {
+  background: #e8eeff;
+  color: #2255d4;
+}
+
+.erp-dash-link {
+  border: none;
+  background: transparent;
+  color: #6b82a8;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.erp-dash-link:hover {
+  color: #2979ff;
+  text-decoration: underline;
+}
+
+/* Sales chart panel */
+.erp-dash-chart-panel {
+  background: #f8fafc;
+  border: 1px solid #eef2fb;
+  border-radius: 8px;
+  padding: 4px 4px 0;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.erp-dash-chart-panel .erp-md-chart-svg {
+  width: 100%;
+  flex: 1 1 0;
+  min-height: 72px;
+  height: auto;
+  display: block;
+}
+
+/* ── Quick Summary & Low Stock side panels ── */
+.erp-dash-side-card {
+  border-top: 3px solid #2979ff !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.erp-dash-panel-summary .erp-dash-side-card {
+  border-top-color: #0d9488 !important;
+}
+
+.erp-dash-panel-stock .erp-dash-side-card {
+  border-top-color: #ea580c !important;
+}
+
+.erp-dash-side-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #eef2f7;
+  flex-shrink: 0;
+}
+
+.erp-dash-side-head.tone-summary {
+  background: linear-gradient(90deg, rgba(13, 148, 136, 0.08), transparent 70%);
+  margin: -2px -2px 6px;
+  padding: 4px 4px 6px;
+  border-radius: 8px 8px 0 0;
+}
+
+.erp-dash-side-head.tone-stock {
+  background: linear-gradient(90deg, rgba(234, 88, 12, 0.08), transparent 70%);
+  margin: -2px -2px 6px;
+  padding: 4px 4px 6px;
+  border-radius: 8px 8px 0 0;
+}
+
+.erp-dash-side-head-ico {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.erp-dash-side-head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.erp-dash-side-head-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.erp-dash-side-head-sub {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #64748b;
+  margin-top: 1px;
+  line-height: 1.2;
+}
+
+.erp-dash-side-head-link {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 2px 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.erp-dash-side-head-link:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+/* Quick summary tiles — grow to fill card */
+.erp-dash-summary-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.erp-dash-sum-tile {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 0 7px;
+  border-radius: 7px;
+  border: 1px solid #e8ecf4;
+  background: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  color: inherit;
+  transition: box-shadow 0.12s ease, border-color 0.12s ease, filter 0.1s ease;
+  flex: 1 1 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.erp-dash-sum-tile::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--dash-sum-accent, #2563eb);
+  border-radius: 8px 0 0 8px;
+}
+
+.erp-dash-sum-tile:hover {
+  border-color: #c8d8f8;
+  box-shadow: 0 2px 8px rgba(41, 121, 255, 0.1);
+  filter: brightness(0.98);
+}
+
+.erp-dash-sum-tile-ico {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  flex-shrink: 0;
+  margin-left: 3px;
+  background: var(--dash-sum-ico-bg, #eff6ff);
+}
+
+.erp-dash-sum-tile-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.erp-dash-sum-tile-label {
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.erp-dash-sum-tile-val {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--dash-sum-val, #1d4ed8);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.1;
+}
+
+.erp-dash-sum-tile-chevron {
+  font-size: 14px;
+  font-weight: 700;
+  color: #cbd5e1;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.erp-dash-sum-tile:hover .erp-dash-sum-tile-chevron {
+  color: #94a3b8;
+}
+
+.erp-dash-sum-tile.tone-blue {
+  --dash-sum-accent: #2563eb;
+  --dash-sum-ico-bg: #dbeafe;
+  --dash-sum-val: #1d4ed8;
+}
+
+.erp-dash-sum-tile.tone-orange {
+  --dash-sum-accent: #ea580c;
+  --dash-sum-ico-bg: #ffedd5;
+  --dash-sum-val: #c2410c;
+}
+
+.erp-dash-sum-tile.tone-red {
+  --dash-sum-accent: #dc2626;
+  --dash-sum-ico-bg: #fee2e2;
+  --dash-sum-val: #b91c1c;
+}
+
+.erp-dash-sum-tile.tone-teal {
+  --dash-sum-accent: #0d9488;
+  --dash-sum-ico-bg: #ccfbf1;
+  --dash-sum-val: #0f766e;
+}
+
+.erp-dash-sum-tile.tone-purple {
+  --dash-sum-accent: #7c3aed;
+  --dash-sum-ico-bg: #ede9fe;
+  --dash-sum-val: #6d28d9;
+}
+
+/* Low stock tiles — equal height rows inside card */
+.erp-dash-stock-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.erp-dash-stock-grid.is-filled {
+  justify-content: stretch;
+}
+
+.erp-dash-stock-ok {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px;
+  border-radius: 8px;
+  background: linear-gradient(145deg, #ecfdf5, #d1fae5);
+  border: 1px solid #a7f3d0;
+  text-align: center;
+  min-height: 0;
+}
+
+.erp-dash-stock-ok-ico {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: #fff;
+  color: #059669;
+  font-size: 14px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.15);
+}
+
+.erp-dash-stock-ok-title {
+  font-size: 11px;
+  font-weight: 800;
+  color: #065f46;
+}
+
+.erp-dash-stock-ok-sub {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #047857;
+}
+
+.erp-dash-stock-tile {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 100%;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: box-shadow 0.12s ease, filter 0.1s ease;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.erp-dash-stock-tile.is-low {
+  background: linear-gradient(135deg, #fffbeb 0%, #fff 100%);
+  border-color: #fde68a;
+}
+
+.erp-dash-stock-tile.is-out {
+  background: linear-gradient(135deg, #fef2f2 0%, #fff 100%);
+  border-color: #fecaca;
+}
+
+.erp-dash-stock-tile:hover {
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.07);
+  filter: brightness(0.99);
+}
+
+.erp-dash-stock-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  line-height: 1.1;
+}
+
+.erp-dash-stock-tile-ico {
+  font-size: 8px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.erp-dash-stock-tile-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.erp-dash-stock-tile-badge {
+  flex-shrink: 0;
+  font-size: 8px;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 1px 5px;
+  letter-spacing: 0.03em;
+  line-height: 1.3;
+}
+
+.erp-dash-stock-tile-badge.low {
+  color: #b45309;
+  background: #fff;
+  border: 1px solid #fde68a;
+}
+
+.erp-dash-stock-tile-badge.out {
+  color: #dc2626;
+  background: #fff;
+  border: 1px solid #fecaca;
+}
+
+.erp-dash-stock-tile-bar {
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.erp-dash-stock-tile-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+.erp-dash-stock-tile-bar-fill.low {
+  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+}
+
+.erp-dash-stock-tile-bar-fill.out {
+  background: linear-gradient(90deg, #ef4444, #f87171);
+}
+
+.erp-dash-stock-tile-bar-fill.ok {
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+}
+
+.erp-dash-panel-summary .erp-dash-side-card > .erp-dash-side-head,
+.erp-dash-panel-stock .erp-dash-side-card > .erp-dash-side-head {
+  margin-bottom: 4px !important;
+  padding-bottom: 4px !important;
+  flex-shrink: 0;
+}
+
+.erp-md-seg {
+  display: inline-flex;
+  background: #eef1f5;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.erp-md-seg-btn {
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 12px;
+  min-height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.erp-md-seg-btn.active {
+  background: #1e3a5f;
+  color: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16);
+}
+
+.erp-md-seg-btn:hover:not(.active) {
+  background: #f1f5f9;
+  color: #1e3a5f;
+}
+
+.erp-md-chart-wrap {
+  padding: 0 8px 10px;
+  flex: 1;
+  min-height: 210px;
+}
+
+.erp-md-chart-svg {
+  width: 100%;
+  height: 210px;
+  display: block;
+}
+
+.erp-md-chart-axis {
+  fill: #94a3b8;
+  font-size: 10px;
+  font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+}
+
+/* Quick summary */
+.erp-md-summary {
+  padding: 4px 8px 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.erp-md-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 9px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  color: inherit;
+}
+
+.erp-md-summary-row:hover {
+  background: #f8fafc;
+}
+
+.erp-md-summary-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.erp-md-summary-icon.tone-blue { background: #dbeafe; color: #2563eb; }
+.erp-md-summary-icon.tone-orange { background: #ffedd5; color: #ea580c; }
+.erp-md-summary-icon.tone-red { background: #fee2e2; color: #dc2626; }
+.erp-md-summary-icon.tone-teal { background: #ccfbf1; color: #0d9488; }
+.erp-md-summary-icon.tone-navy { background: #e0e7ff; color: #3730a3; }
+.erp-md-summary-icon.tone-purple { background: #ede9fe; color: #7c3aed; }
+
+.erp-md-summary-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.erp-md-summary-value {
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Stock alerts */
+.erp-md-stock {
+  padding: 2px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.erp-md-stock-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  color: inherit;
+}
+
+.erp-md-stock-row:hover {
+  background: #f8fafc;
+}
+
+.erp-md-stock-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.erp-md-stock-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.erp-md-stock-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.erp-md-stock-bar-wrap {
+  height: 5px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.erp-md-stock-bar {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.erp-md-stock-bar.out { background: #ef4444; }
+.erp-md-stock-bar.low { background: #f97316; }
+.erp-md-stock-bar.ok { background: #22c55e; }
+
+.erp-md-stock-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.erp-md-stock-qty {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+/* Badges */
+.erp-md-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.erp-md-badge.paid,
+.erp-md-badge.ok {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.erp-md-badge.partial,
+.erp-md-badge.progress {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.erp-md-badge.unpaid,
+.erp-md-badge.out {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.erp-md-badge.pending,
+.erp-md-badge.low {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+/* Dashboard recent tables — ERP1 invoice page style */
+.erp-dash-inv-table-wrap {
+  overflow: hidden;
+  flex: 1 1 0;
+  min-height: 0;
+  border: 1px solid #eef2fb;
+  border-radius: 8px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.erp-dash-inv-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 11px;
+}
+
+.erp-md-dash .erp-dash-inv-table th,
+.erp-md-dash .erp-dash-inv-table td {
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+}
+
+.erp-md-dash .erp-dash-inv-table tbody tr td span {
+  font-size: 10.5px !important;
+}
+
+.erp-dash-inv-table th {
+  border: none;
+}
+
+.erp-dash-inv-table td {
+  border: none;
+}
+
+.erp-dash-inv-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+/* Tables row */
+.erp-md-tables {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.erp-md-tables.erp-md-tables-solo {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 1200px) {
+  .erp-md-tables {
+    grid-template-columns: 1fr;
+  }
+}
+
+.erp-md-table-wrap {
+  overflow: auto;
+  padding: 0 4px 8px;
+  max-height: 260px;
+  border: 1px solid #c5d4e8;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.erp-md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  border: 1px solid #c5d4e8;
+}
+
+.erp-md-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 10px;
+  border: 1px solid #c5d4e8;
+  background: #f8fafc;
+  white-space: nowrap;
+}
+
+.erp-md-table td {
+  padding: 8px 10px;
+  border: 1px solid #dce4ef;
+  color: #334155;
+  vertical-align: middle;
+  white-space: nowrap;
+  background: #fff;
+}
+
+.erp-md-table tbody tr:nth-child(even) td {
+  background: #fafcff;
+}
+
+.erp-md-table tr:last-child td {
+  border-bottom: 1px solid #dce4ef;
+}
+
+.erp-md-table tbody tr {
+  cursor: pointer;
+}
+
+.erp-md-table tbody tr:hover td {
+  background: #f1f5f9;
+}
+
+.erp-md-table .right { text-align: right; }
+.erp-md-table .strong { font-weight: 800; color: #0f172a; font-variant-numeric: tabular-nums; }
+.erp-md-table .link {
+  color: #2563eb;
+  font-weight: 700;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+/* Bottom */
+.erp-md-bottom {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 1100px) {
+  .erp-md-bottom {
+    grid-template-columns: 1fr;
+  }
+}
+
+.erp-md-timeline {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 14px 16px;
+  scrollbar-gutter: stable;
+}
+
+.erp-md-tl-item {
+  position: relative;
+  min-width: 140px;
+  flex: 1;
+  padding-top: 18px;
+}
+
+.erp-md-tl-item::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 10px;
+  right: -8px;
+  height: 2px;
+  background: #e2e8f0;
+}
+
+.erp-md-tl-item:last-child::before {
+  display: none;
+}
+
+.erp-md-tl-dot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 2px currentColor;
+  background: currentColor;
+  z-index: 1;
+}
+
+.erp-md-tl-item.tone-blue { color: #2563eb; }
+.erp-md-tl-item.tone-orange { color: #ea580c; }
+.erp-md-tl-item.tone-green { color: #16a34a; }
+.erp-md-tl-item.tone-purple { color: #7c3aed; }
+.erp-md-tl-item.tone-red { color: #dc2626; }
+.erp-md-tl-item.tone-teal { color: #0d9488; }
+
+.erp-md-tl-title {
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+  margin-bottom: 2px;
+}
+
+.erp-md-tl-detail {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+
+.erp-md-tl-when {
+  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.erp-md-health {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 4px 12px 14px;
+}
+
+.erp-md-health-tile {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px 8px;
+  text-align: center;
+  background: #f8fafc;
+}
+
+.erp-md-health-tile.ok {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.erp-md-health-tile.bad {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.erp-md-health-icon {
+  display: inline-flex;
+  color: #16a34a;
+  margin-bottom: 4px;
+}
+
+.erp-md-health-tile.bad .erp-md-health-icon {
+  color: #dc2626;
+}
+
+.erp-md-health-value {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.erp-md-health-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+/* Footer stats */
+.erp-md-footer-stats {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1200px) {
+  .erp-md-footer-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .erp-md-footer-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.erp-md-foot-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+.erp-md-foot-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.erp-md-foot-card.tone-blue .erp-md-foot-icon { background: #dbeafe; color: #2563eb; }
+.erp-md-foot-card.tone-orange .erp-md-foot-icon { background: #ffedd5; color: #ea580c; }
+.erp-md-foot-card.tone-red .erp-md-foot-icon { background: #fee2e2; color: #dc2626; }
+.erp-md-foot-card.tone-purple .erp-md-foot-icon { background: #ede9fe; color: #7c3aed; }
+.erp-md-foot-card.tone-teal .erp-md-foot-icon { background: #ccfbf1; color: #0d9488; }
+.erp-md-foot-card.tone-navy .erp-md-foot-icon { background: #e0e7ff; color: #3730a3; }
+.erp-md-foot-card.tone-green .erp-md-foot-icon { background: #dcfce7; color: #16a34a; }
+
+.erp-md-foot-value {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0f172a;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.erp-md-foot-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+
+/* Beat Phase7 cream / flatten / green glass on dashboard controls */
+.erp-app-root .erp-page-content .erp-md-dash button,
+.erp-app-root .erp-md-dash button {
+  background-image: none !important;
+  box-shadow: none !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  /* Kill glass-green fill that Phase7 applies to unmatched buttons */
+  border-color: transparent !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-seg-btn,
+.erp-app-root .erp-md-dash button.erp-md-seg-btn {
+  border: none !important;
+  background: transparent !important;
+  color: #64748b !important;
+  padding: 5px 12px !important;
+  min-height: 26px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  border-radius: 6px !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-seg-btn.active,
+.erp-app-root .erp-md-dash button.erp-md-seg-btn.active {
+  background: #1e3a5f !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.16) !important;
+  border: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-seg-btn.active:hover,
+.erp-app-root .erp-md-dash button.erp-md-seg-btn.active:hover {
+  background: #16304f !important;
+  background-image: none !important;
+  color: #ffffff !important;
+  border: none !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2) !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-seg-btn:hover:not(.active),
+.erp-app-root .erp-md-dash button.erp-md-seg-btn:hover:not(.active) {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  color: #1e3a5f !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-link,
+.erp-app-root .erp-md-dash button.erp-md-link {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #1e3a5f !important;
+  padding: 0 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-link:hover,
+.erp-app-root .erp-md-dash button.erp-md-link:hover {
+  color: #2563eb !important;
+  background: transparent !important;
+  background-image: none !important;
+  border: none !important;
+  box-shadow: none !important;
+  text-decoration: underline;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-seg-btn,
+.erp-app-root .erp-md-dash button.erp-dash-seg-btn {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: #6b82a8 !important;
+  padding: 5px 11px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-seg-btn.active,
+.erp-app-root .erp-md-dash button.erp-dash-seg-btn.active {
+  background: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  background-image: linear-gradient(135deg, #2979ff, #2255d4) !important;
+  color: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(41, 121, 255, 0.28) !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-seg-btn:hover:not(.active),
+.erp-app-root .erp-md-dash button.erp-dash-seg-btn:hover:not(.active) {
+  background: #e8eeff !important;
+  background-image: none !important;
+  color: #2255d4 !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-sum-tile,
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-stock-tile,
+.erp-app-root .erp-md-dash button.erp-dash-sum-tile,
+.erp-app-root .erp-md-dash button.erp-dash-stock-tile {
+  border-style: solid !important;
+  width: 100% !important;
+  text-align: left !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-sum-tile,
+.erp-app-root .erp-md-dash button.erp-dash-sum-tile {
+  background: #fff !important;
+  border-color: #e8ecf4 !important;
+  color: inherit !important;
+  padding: 0 7px !important;
+  box-shadow: none !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-sum-tile:hover,
+.erp-app-root .erp-md-dash button.erp-dash-sum-tile:hover {
+  border-color: #c8d8f8 !important;
+  box-shadow: 0 3px 10px rgba(41, 121, 255, 0.1) !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-stock-tile.is-low,
+.erp-app-root .erp-md-dash button.erp-dash-stock-tile.is-low {
+  background: linear-gradient(135deg, #fffbeb 0%, #fff 100%) !important;
+  border-color: #fde68a !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  padding: 3px 6px !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-stock-tile.is-out,
+.erp-app-root .erp-md-dash button.erp-dash-stock-tile.is-out {
+  background: linear-gradient(135deg, #fef2f2 0%, #fff 100%) !important;
+  border-color: #fecaca !important;
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  padding: 3px 6px !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-side-head-link,
+.erp-app-root .erp-md-dash button.erp-dash-side-head-link {
+  border: none !important;
+  background: transparent !important;
+  color: #2563eb !important;
+  padding: 2px 4px !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-link,
+.erp-app-root .erp-md-dash button.erp-dash-link {
+  border: none !important;
+  background: transparent !important;
+  color: #6b82a8 !important;
+  padding: 0 !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-link:hover,
+.erp-app-root .erp-md-dash button.erp-dash-link:hover {
+  color: #2979ff !important;
+  text-decoration: underline;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-summary-row,
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-stock-row,
+.erp-app-root .erp-md-dash button.erp-md-summary-row,
+.erp-app-root .erp-md-dash button.erp-md-stock-row {
+  border: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  color: inherit !important;
+  padding: 8px 6px !important;
+  border-radius: 8px !important;
+  font-size: inherit !important;
+  font-weight: inherit !important;
+  text-align: left !important;
+  box-shadow: none !important;
+  width: 100% !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-summary-row:hover,
+.erp-app-root .erp-page-content .erp-md-dash button.erp-md-stock-row:hover,
+.erp-app-root .erp-md-dash button.erp-md-summary-row:hover,
+.erp-app-root .erp-md-dash button.erp-md-stock-row:hover {
+  background: #f1f5f9 !important;
+  background-image: none !important;
+  color: inherit !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Segment strip polish */
+.erp-app-root .erp-md-dash .erp-md-seg {
+  background: #eef1f5 !important;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px !important;
+  padding: 3px !important;
+}
+
+/* Cards + KPI polish */
+.erp-app-root .erp-md-dash .erp-md-card {
+  border: 1.5px solid #e1e8f5 !important;
+  border-radius: 12px !important;
+  background: #ffffff !important;
+  box-shadow: 0 2px 8px rgba(13, 27, 62, 0.08) !important;
+}
+
+.erp-app-root .erp-md-dash .erp-md-kpi {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 12px !important;
+  background: #ffffff !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+}
+
+.erp-app-root .erp-md-dash .erp-md-kpi:hover {
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06) !important;
+}
+
+.erp-app-root .erp-md-dash .erp-md-card-title {
+  color: #1e3a5f !important;
+  font-weight: 800 !important;
+}
+
+.erp-app-root .erp-md-dash .erp-md-table th {
+  background: #f8fafc !important;
+  color: #64748b !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+
+.erp-app-root .erp-md-dash .erp-md-table .link {
+  color: #1e3a5f !important;
+}
+
+.erp-app-root .erp-md-dash .erp-md-table .link:hover {
+  color: #2563eb !important;
+}
+
+.erp-app-root .erp-md-dash .erp-md-card,
+.erp-app-root .erp-md-dash .erp-md-kpi,
+.erp-app-root .erp-md-dash .erp-md-foot-card,
+.erp-app-root .erp-md-dash .erp-md-date,
+.erp-app-root .erp-md-dash .erp-md-badge,
+.erp-app-root .erp-md-dash .erp-md-kpi-icon,
+.erp-app-root .erp-md-dash .erp-md-seg,
+.erp-app-root .erp-md-dash .erp-md-health-tile {
+  border-radius: inherit;
+}
+
+.erp-app-root .erp-md-dash .erp-md-card { border-radius: 12px !important; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important; }
+.erp-app-root .erp-md-dash .erp-md-kpi { border-radius: 12px !important; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important; }
+.erp-app-root .erp-md-dash .erp-md-foot-card { border-radius: 10px !important; }
+.erp-app-root .erp-md-dash .erp-md-date { border-radius: 8px !important; }
+.erp-app-root .erp-md-dash .erp-md-badge { border-radius: 999px !important; }
+.erp-app-root .erp-md-dash .erp-md-kpi-icon { border-radius: 999px !important; }
+.erp-app-root .erp-md-dash .erp-md-seg { border-radius: 8px !important; }
+.erp-app-root .erp-md-dash .erp-md-health-tile { border-radius: 10px !important; }
+.erp-app-root .erp-md-dash .erp-md-summary-icon,
+.erp-app-root .erp-md-dash .erp-md-stock-icon,
+.erp-app-root .erp-md-dash .erp-md-foot-icon { border-radius: 8px !important; }
+.erp-app-root .erp-md-dash .erp-md-tl-dot { border-radius: 999px !important; }
+
+/* ── Kill cream table chrome (legacy erp-md-table only) ── */
+.erp-app-root .erp-page.erp-md-dash table.erp-md-table th,
+.erp-app-root .erp-md-dash .erp-md-table th,
+.erp-page.erp-md-dash table.erp-md-table th {
+  background: #f8fafc !important;
+  background-image: none !important;
+  border: 1px solid #c5d4e8 !important;
+  color: #64748b !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.04em !important;
+  padding: 8px 10px !important;
+}
+
+.erp-app-root .erp-page.erp-md-dash table.erp-md-table td,
+.erp-app-root .erp-md-dash .erp-md-table td,
+.erp-page.erp-md-dash table.erp-md-table td {
+  background: #ffffff !important;
+  background-image: none !important;
+  border: 1px solid #dce4ef !important;
+  color: #334155 !important;
+  padding: 8px 10px !important;
+}
+
+.erp-app-root .erp-md-dash table.erp-md-table tbody tr:nth-child(even) td,
+.erp-app-root .erp-md-dash .erp-md-table tbody tr:nth-child(even) td {
+  background: #ffffff !important;
+}
+
+.erp-app-root .erp-md-dash table.erp-md-table tbody tr:hover td,
+.erp-app-root .erp-md-dash .erp-md-table tbody tr:hover td {
+  background: #f1f5f9 !important;
+}
+
+.erp-app-root .erp-md-dash table.erp-md-table tbody tr:nth-child(even) td,
+.erp-app-root .erp-md-dash .erp-md-table tbody tr:nth-child(even) td {
+  background: #fafcff !important;
+}
+
+.erp-app-root .erp-md-dash table.erp-md-table tbody tr:last-child td {
+  border-bottom: none !important;
+}

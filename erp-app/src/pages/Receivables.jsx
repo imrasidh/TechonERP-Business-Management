@@ -4,6 +4,19 @@ import { isVoidedTxn } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
+import { stampUpdatedAt, stampCustomerBalance, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import {
+  buildInvoiceEditLockIdentity,
+  checkForeignInvoiceEditLock,
+  findActiveInvoiceEditLock,
+  formatInvoiceEditLockMessage,
+  readInvoiceEditLocks,
+} from "../utils/invoiceEditLocks.js";
+import {
+  assertPaymentFitsSaleBalance,
+  loadFreshSaleForPayment,
+  pushKeysNow,
+} from "../utils/concurrencyGuards.js";
 
 /* ═══════════════════════════════════════════════════════════
    ENHANCED RECEIVABLES — Sales invoices + Manual (Loan Given, Other)
@@ -14,6 +27,7 @@ var EnhancedReceivables = function (props) {
   var S = props.S;
   var today = props.today;
   var uid = props.uid;
+  var tcTrialGuard = props.tcTrialGuard;
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var addAudit = props.addAudit;
@@ -54,12 +68,25 @@ var EnhancedReceivables = function (props) {
   var [newForm, setNewForm] = useState({ date: today(), person: "", type: "Loan Given", amount: "", paymentMethod: "Cash", reference: "", note: "" });
 
   var manualRecs = S.get("tc3_manualReceivables", []);
+  var lockIdentity = buildInvoiceEditLockIdentity({
+    currentUser: props.currentUser || null,
+    clientMachineLabel: String(props.clientMachineLabel || "").trim(),
+  });
+  var assertSaleUnlockedForPayment = function (saleId) {
+    var lock = findActiveInvoiceEditLock(readInvoiceEditLocks(S), saleId);
+    if (lock && String(lock.deviceId || "") !== String(lockIdentity.deviceId || "")) {
+      showAlert(formatInvoiceEditLockMessage(lock) + " Cannot record payment until they finish.");
+      return false;
+    }
+    return true;
+  };
 
   /* ── processSplitSale: handles split/multi-method payments on sales invoices ── */
   var processSplitSale = function (saleId, splits, __forcedId, __legacyAll) {
-    var sale = state.sales.find(function (s) { return s.id === saleId; });
+    var runSplit = function (sale, salesBase) {
     if (!sale) return;
     if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return; }
+    if (!assertSaleUnlockedForPayment(saleId)) return;
     var newPh = (sale.paymentHistory || []).slice();
     var newCheques = (state.cheques || []).slice();
     var totalAdded = 0;
@@ -69,7 +96,8 @@ var EnhancedReceivables = function (props) {
       if (amt <= 0) return;
       totalAdded += amt;
       if (row.method === "Cheque") {
-        var newChq = { id: uid(), type: "incoming", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), customerId: sale.customerId || "", customerName: sale.customerName || "", saleId: saleId, invoiceNo: sale.invoiceNo || "", note: row.note || "", createdAt: today() };
+        var chTs = new Date().toISOString();
+        var newChq = stampTransactionIsoDateTime({ id: uid(), type: "incoming", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), customerId: sale.customerId || "", customerName: sale.customerName || "", saleId: saleId, invoiceNo: sale.invoiceNo || "", note: row.note || "", createdAt: chTs, updatedAt: chTs }, chTs);
         newCheques.push(newChq);
         newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + (row.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + (row.chequeDueDate || today()) + ")" + (row.note ? " | " + row.note : ""), chequeId: newChq.id });
       } else {
@@ -78,10 +106,12 @@ var EnhancedReceivables = function (props) {
         newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
       }
     });
+    var fit = assertPaymentFitsSaleBalance(sale, totalNonCheque);
+    if (!fit.ok) { showAlert(fit.message); return; }
     var newPaid = (sale.paid || 0) + totalNonCheque;
     var newBal = sale.total - newPaid;
     var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-    var updSale = Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: newPh });
+    var updSale = stampUpdatedAt(Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: newPh }));
     var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: __forcedId, legacyApplyAllNameMatches: __legacyAll });
     if (res.needPicker && res.candidates.length) {
       maybeShowPaymentMatchToasts(sale, res);
@@ -94,13 +124,32 @@ var EnhancedReceivables = function (props) {
     }
     warnPaymentCustomerMatchSafety(state.customers, sale, "EnhancedReceivables.processSplitSale");
     maybeShowPaymentMatchToasts(sale, res);
-    var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - totalNonCheque) }) : c; });
-    var ns = state.sales.map(function (s) { return s.id === saleId ? updSale : s; });
+    var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - totalNonCheque) }), null, c) : c; });
+    var ns = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale : s; });
     S.set("tc3_sales", ns); S.set("tc3_customers", nc); S.set("tc3_cheques", newCheques);
+    try { pushKeysNow([["tc3_sales", ns], ["tc3_customers", nc], ["tc3_cheques", newCheques]]); } catch (_e) { /* ignore */ }
     setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc, cheques: newCheques }); });
     setSplitPayModal(null);
     addAudit("Payment " + getCurrencySymbol() + " " + fmtNum(totalAdded), sale.invoiceNo || saleId.slice(0, 8));
     toastAfterCustomerPaymentApplied(state.customers, res);
+    };
+
+    loadFreshSaleForPayment(S, saleId)
+      .then(function (fresh) {
+        var sale = fresh.sale || state.sales.find(function (s) { return s.id === saleId; });
+        if (!sale) { showAlert("Invoice not found. Refresh and try again."); return; }
+        if (fresh.sales) setState(function (st) { return Object.assign({}, st, { sales: fresh.sales }); });
+        return checkForeignInvoiceEditLock(S, saleId, lockIdentity).then(function (fl) {
+          if (fl) {
+            showAlert(formatInvoiceEditLockMessage(fl) + " Cannot record payment until they finish.");
+            return;
+          }
+          runSplit(sale, fresh.sales || state.sales);
+        });
+      })
+      .catch(function () {
+        runSplit(state.sales.find(function (s) { return s.id === saleId; }), state.sales);
+      });
   };
 
   /* ── Build unified list ── */
@@ -131,7 +180,9 @@ var EnhancedReceivables = function (props) {
   var saveManual = function () {
     if (!newForm.person.trim()) { showAlert("Please enter person / customer name."); return; }
     if (!newForm.amount || parseFloat(newForm.amount) <= 0) { showAlert("Please enter a valid amount."); return; }
-    var entry = { id: uid(), date: newForm.date, person: newForm.person.trim(), type: newForm.type, amount: parseFloat(newForm.amount), paymentMethod: newForm.paymentMethod || "Cash", reference: newForm.reference || "", note: newForm.note || "", paymentHistory: [], createdAt: new Date().toISOString() };
+    if (!tcTrialGuard(manualRecs, "manualReceivables")) return;
+    var recTs = new Date().toISOString();
+    var entry = stampTransactionIsoDateTime({ id: uid(), date: newForm.date, person: newForm.person.trim(), type: newForm.type, amount: parseFloat(newForm.amount), paymentMethod: newForm.paymentMethod || "Cash", reference: newForm.reference || "", note: newForm.note || "", paymentHistory: [], createdAt: recTs, updatedAt: recTs }, recTs);
     var list = manualRecs.concat([entry]);
     S.set("tc3_manualReceivables", list);
     /* Fix 4: Trigger re-render so cash balance and receivable totals update immediately */
@@ -142,33 +193,68 @@ var EnhancedReceivables = function (props) {
   };
 
   var applyErSaleCashPayment = function (item, amt, forcedId, legacyAll) {
-    var sale = state.sales.find(function (s) { return s.id === item.id; });
-    if (!sale) return true;
-    if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return false; }
-    var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: forcedId, legacyApplyAllNameMatches: legacyAll });
-    if (res.needPicker && res.candidates.length) {
+    var apply = function (sale, salesBase) {
+      if (!sale) return true;
+      if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return false; }
+      if (!assertSaleUnlockedForPayment(item.id)) return false;
+      var fit = assertPaymentFitsSaleBalance(sale, amt);
+      if (!fit.ok) { showAlert(fit.message); return false; }
+      var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: forcedId, legacyApplyAllNameMatches: legacyAll });
+      if (res.needPicker && res.candidates.length) {
+        maybeShowPaymentMatchToasts(sale, res);
+        showPaymentDupPick({
+          candidates: res.candidates,
+          onSelect: function (id) { applyErSaleCashPayment(item, amt, id, false); },
+          onSkip: function () { applyErSaleCashPayment(item, amt, null, true); }
+        });
+        return false;
+      }
+      var newPaid = (sale.paid || 0) + amt;
+      var newBal = sale.total - newPaid;
+      var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+      var ph = (sale.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: payNote || "Payment received" }]);
+      var updSale = stampUpdatedAt(Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: ph }));
+      warnPaymentCustomerMatchSafety(state.customers, sale, "EnhancedReceivables.recordPayment");
       maybeShowPaymentMatchToasts(sale, res);
-      showPaymentDupPick({
-        candidates: res.candidates,
-        onSelect: function (id) { applyErSaleCashPayment(item, amt, id, false); },
-        onSkip: function () { applyErSaleCashPayment(item, amt, null, true); }
+      var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - amt) }), null, c) : c; });
+      var ns = (salesBase || state.sales).map(function (s) { return s.id === item.id ? updSale : s; });
+      S.set("tc3_sales", ns); S.set("tc3_customers", nc);
+      try { pushKeysNow([["tc3_sales", ns], ["tc3_customers", nc]]); } catch (_e) { /* ignore */ }
+      addAudit("Receivable Payment: Rs " + amt, item.reference || (sale.invoiceNo || sale.id.slice(0, 8)));
+      setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc }); });
+      toastAfterCustomerPaymentApplied(state.customers, res);
+      return true;
+    };
+
+    /* Async refresh — caller treats false as "wait / aborted"; true as done.
+       When network refresh is in flight we return false and complete in then(). */
+    var localSale = state.sales.find(function (s) { return s.id === item.id; });
+    if (!localSale) return true;
+    var pending = { done: false, ok: true };
+    loadFreshSaleForPayment(S, item.id)
+      .then(function (fresh) {
+        var sale = fresh.sale || localSale;
+        if (fresh.sales) setState(function (st) { return Object.assign({}, st, { sales: fresh.sales }); });
+        return checkForeignInvoiceEditLock(S, item.id, lockIdentity).then(function (fl) {
+          if (fl) {
+            showAlert(formatInvoiceEditLockMessage(fl) + " Cannot record payment until they finish.");
+            pending.ok = false;
+            return;
+          }
+          pending.ok = apply(sale, fresh.sales || state.sales);
+          if (pending.ok) {
+            setPayModal(null); setPayAmt(""); setPayMethod("Cash"); setPayNote("");
+          }
+        });
+      })
+      .catch(function () {
+        pending.ok = apply(localSale, state.sales);
+        if (pending.ok) {
+          setPayModal(null); setPayAmt(""); setPayMethod("Cash"); setPayNote("");
+        }
       });
-      return false;
-    }
-    var newPaid = (sale.paid || 0) + amt;
-    var newBal = sale.total - newPaid;
-    var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-    var ph = (sale.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: payNote || "Payment received" }]);
-    var updSale = Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: ph });
-    warnPaymentCustomerMatchSafety(state.customers, sale, "EnhancedReceivables.recordPayment");
-    maybeShowPaymentMatchToasts(sale, res);
-    var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - amt) }) : c; });
-    var ns = state.sales.map(function (s) { return s.id === item.id ? updSale : s; });
-    S.set("tc3_sales", ns); S.set("tc3_customers", nc);
-    addAudit("Receivable Payment: Rs " + amt, item.reference || (sale.invoiceNo || sale.id.slice(0, 8)));
-    setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc }); });
-    toastAfterCustomerPaymentApplied(state.customers, res);
-    return true;
+    /* Defer modal close to async path for sale cash payments */
+    return false;
   };
 
   var recordPayment = function () {
@@ -178,6 +264,7 @@ var EnhancedReceivables = function (props) {
     /* ── Cheque: save ALL cheques in chequeList ── */
     if (payMethod === "Cheque") {
       if (chequeList.length === 0) { showAlert("Add at least one cheque using the + Add Cheque button."); return; }
+      if (item._type === "sale" && !assertSaleUnlockedForPayment(item.id)) return;
       var chqTotal = chequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
       if (chqTotal <= 0) { showAlert("Total cheque amount must be greater than zero."); return; }
       var nch = (state.cheques || []).slice();
@@ -185,7 +272,8 @@ var EnhancedReceivables = function (props) {
       chequeList.forEach(function (chq) {
         var chqAmt = parseFloat(chq.amount) || 0;
         if (chqAmt <= 0 || !chq.no.trim()) return;
-        var newCheque = {
+        var chTs = new Date().toISOString();
+        var newCheque = stampTransactionIsoDateTime({
           id: uid(), type: "incoming", status: "Pending",
           chequeNo: chq.no.trim(), bankName: (chq.bank || "").trim(),
           amount: chqAmt, dueDate: chq.due || today(), issuedDate: today(),
@@ -194,8 +282,8 @@ var EnhancedReceivables = function (props) {
           saleId: item._type === "sale" ? item.id : "",
           invoiceNo: item.reference || "",
           manualReceivableId: item._type === "manual" ? item.id : "",
-          note: payNote || "", createdAt: today()
-        };
+          note: payNote || "", createdAt: chTs, updatedAt: chTs
+        }, chTs);
         nch.push(newCheque);
         phEntries.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque",
           note: "Cheque #" + chq.no.trim() + " " + getCurrencySymbol() + " " + fmtNum(chqAmt) + " (Pending — due " + chq.due + ")" + (payNote ? " | " + payNote : ""),
@@ -204,7 +292,7 @@ var EnhancedReceivables = function (props) {
       if (item._type === "sale") {
         var sale = state.sales.find(function (s) { return s.id === item.id; });
         if (sale) {
-          var updSale = Object.assign({}, sale, { paymentHistory: (sale.paymentHistory || []).concat(phEntries) });
+          var updSale = stampUpdatedAt(Object.assign({}, sale, { paymentHistory: (sale.paymentHistory || []).concat(phEntries) }));
           var ns = state.sales.map(function (s) { return s.id === item.id ? updSale : s; });
           S.set("tc3_sales", ns); S.set("tc3_cheques", nch);
           addAudit(chequeList.length + " Cheque(s) Received " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.reference || "");
@@ -213,7 +301,7 @@ var EnhancedReceivables = function (props) {
       } else {
         var list0 = S.get("tc3_manualReceivables", []);
         var upd0 = list0.map(function (mr) {
-          return mr.id !== item.id ? mr : Object.assign({}, mr, { paymentHistory: (mr.paymentHistory || []).concat(phEntries) });
+          return mr.id !== item.id ? mr : stampUpdatedAt(Object.assign({}, mr, { paymentHistory: (mr.paymentHistory || []).concat(phEntries) }));
         });
         S.set("tc3_manualReceivables", upd0); S.set("tc3_cheques", nch);
         addAudit(chequeList.length + " Cheque(s) Received " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.source || "");
@@ -230,7 +318,7 @@ var EnhancedReceivables = function (props) {
       var updated = list.map(function (mr) {
         if (mr.id !== item.id) return mr;
         var ph2 = (mr.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: payNote || "Payment received" }]);
-        return Object.assign({}, mr, { paymentHistory: ph2 });
+        return stampUpdatedAt(Object.assign({}, mr, { paymentHistory: ph2 }));
       });
       S.set("tc3_manualReceivables", updated);
       addAudit("Manual Receivable Payment: Rs " + amt, item.source || item.reference || "");
@@ -313,12 +401,12 @@ var EnhancedReceivables = function (props) {
                     <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: C.muted }}>{e.reference || "—"}</td>
                     <td style={actBtnCellStyle}>
                       <ActBtnGroup>
-                        <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }}>🧾</ActBtn>
+                        <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
                         {isOut && (state.cheques || []).some(function (ch) { return ch.saleId === (e._saleObj && e._saleObj.id) && ch.status === "Pending"; }) ? (
                           <span title="Has pending cheque(s)" style={{ fontSize: 11, lineHeight: 1 }}>🕐</span>
                         ) : null}
-                        {isOut ? <ActBtn tone="green" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
-                        {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }}>✕</ActBtn> : null}
+                        {isOut ? <ActBtn tone="green" icon="pay" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
+                        {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }} /> : null}
                       </ActBtnGroup>
                     </td>
                   </tr>
@@ -557,7 +645,8 @@ var EnhancedReceivables = function (props) {
                 var amt = parseFloat(row.amount) || 0; if (amt <= 0) return;
                 totalAdded += amt;
                 if (row.method === "Cheque") {
-                  var nc = { id: uid(), type: "incoming", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), manualReceivableId: splitPayModal.id, note: row.note || "", createdAt: today() };
+                  var chTs = new Date().toISOString();
+                  var nc = stampTransactionIsoDateTime({ id: uid(), type: "incoming", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), manualReceivableId: splitPayModal.id, note: row.note || "", createdAt: chTs, updatedAt: chTs }, chTs);
                   newCheques.push(nc);
                   newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + (row.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + (row.chequeDueDate || today()) + ")", chequeId: nc.id });
                 } else {
@@ -565,7 +654,7 @@ var EnhancedReceivables = function (props) {
                   newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
                 }
               });
-              var updMan = manRecs.map(function (mr) { return mr.id === splitPayModal.id ? Object.assign({}, mr, { paymentHistory: (mr.paymentHistory || []).concat(newPh) }) : mr; });
+              var updMan = manRecs.map(function (mr) { return mr.id === splitPayModal.id ? stampUpdatedAt(Object.assign({}, mr, { paymentHistory: (mr.paymentHistory || []).concat(newPh) })) : mr; });
               S.set("tc3_manualReceivables", updMan); S.set("tc3_cheques", newCheques);
               setState(function (st) { return Object.assign({}, st, { cheques: newCheques }); });
               setSplitPayModal(null);

@@ -59,7 +59,7 @@ let _configReloadPromise = null;    // dedupe disk config reload
 export const CLIENT_PULL_INTERVAL_MS = 2500; /* Pull server data every 2.5s on all network PCs */
 
 export const NETWORK_KV_KEYS = [
-  'tc3_settings', 'tc3_products', 'tc3_customers', 'tc3_suppliers',
+  'tc3_settings', 'tc3_products', 'tc3_customers', 'tc3_suppliers', 'tc3_others',
   'tc3_sales', 'tc3_purchases', 'tc3_expenses', 'tc3_repairs',
   'tc3_assets', 'tc3_damageLog', 'tc3_productLog', 'tc3_repairDeleteLog',
   'tc3_salesReturns', 'tc3_purchaseReturns', 'tc3_quotations', 'tc3_cheques',
@@ -73,6 +73,10 @@ export const NETWORK_KV_KEYS = [
   'tc3_codRecords', 'tc3_codPartners',
   'tc3_codProfitSettings',
   'tc3_codWithdrawals',
+  'tc3_invoice_edit_locks',
+  'tc3_raw_material_usage',
+  'tc3_raw_material_counts',
+  'tc3_users',
 ];
 
 const SYNC_KEY_SET = {};
@@ -198,6 +202,9 @@ const RECORD_SYNC_KEYS = {
   tc3_purchases: 1, tc3_expenses: 1, tc3_repairs: 1, tc3_assets: 1,
   tc3_salesReturns: 1, tc3_purchaseReturns: 1, tc3_quotations: 1, tc3_cheques: 1,
   tc3_manualReceivables: 1, tc3_manualPayables: 1,
+  tc3_invoice_edit_locks: 1,
+  tc3_raw_material_usage: 1,
+  tc3_raw_material_counts: 1,
 };
 
 function _syncPaused() { return _hydrating || _pullPaused; }
@@ -394,6 +401,10 @@ const VALIDATORS = {
   },
   tc3_suppliers(v) {
     if (!Array.isArray(v)) return 'tc3_suppliers must be an array';
+    return null;
+  },
+  tc3_others(v) {
+    if (!Array.isArray(v)) return 'tc3_others must be an array';
     return null;
   },
   tc3_sales(v) {

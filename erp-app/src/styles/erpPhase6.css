@@ -1,0 +1,446 @@
+/* TechonERP — Phase 6: Settings, Sales modals, Accounts polish */
+
+/* ── Shared form / layout helpers ───────────────────────────── */
+.erp-form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.erp-form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.erp-wiz-back-btn {
+  padding: 5px 12px;
+  border: 1px solid #aca899;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  color: #333;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-wiz-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 6px;
+  border-top: 1px solid #aca899;
+  margin-top: 4px;
+}
+
+.erp-settings-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  background: #e8f0fc;
+  color: #1a4fa0;
+  border: 1px solid #7a9fd4;
+}
+
+.erp-settings-seg-btn {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid #aca899;
+  background: #fff;
+  color: #333;
+  font-weight: 600;
+  font-size: 11px;
+  cursor: default;
+  font-family: inherit;
+  text-align: center;
+}
+
+.erp-settings-seg-btn.active {
+  background: #e8f0fc;
+  border-color: #316ac5;
+  color: #1a4fa0;
+  font-weight: 700;
+}
+
+.erp-settings-seg-btn.active-orange {
+  background: #fff8e1;
+  border-color: #c9a227;
+  color: #7c5700;
+  font-weight: 700;
+}
+
+.erp-settings-upload-zone {
+  background: #fafafa;
+  border: 1px dashed #aca899;
+  padding: 12px;
+  text-align: center;
+}
+
+.erp-settings-dismiss-btn {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 3px 8px;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-settings-rest-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+@media (max-width: 820px) {
+  .erp-settings-rest-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Settings scope — flatten native controls */
+.erp-settings-scope select:not(.erp-select),
+.erp-settings-scope textarea:not(.erp-input) {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #aca899;
+  border-radius: 2px;
+  padding: 5px 8px;
+  font-size: 12px;
+  background: #fff;
+  color: #000;
+  font-family: inherit;
+}
+
+.erp-settings-scope textarea:not(.erp-input) {
+  resize: vertical;
+}
+
+.erp-settings-scope .erp-settings-feature-label {
+  margin-left: 0;
+}
+
+.erp-settings-scope .erp-settings-feature-label.indented {
+  margin-left: 18px;
+}
+
+/* ── POS / Sales extras ─────────────────────────────────────── */
+.erp-pos-shell .erp-pos-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border: 1px solid #aca899;
+  margin-left: 6px;
+}
+
+.erp-pos-shell .erp-pos-badge.service {
+  background: #e8f0fc;
+  color: #1a4fa0;
+  border-color: #7a9fd4;
+}
+
+.erp-pos-shell .erp-pos-badge.oos {
+  background: #fde8ed;
+  color: #c00000;
+  border-color: #c00000;
+}
+
+.erp-pos-shell .erp-pos-badge.adding {
+  font-size: 8px;
+  color: #fff;
+  background: #1a4fa0;
+  border-color: #0a2d5c;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.erp-pos-rest-section {
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.erp-pos-rest-section-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.erp-pos-order-card {
+  border: 1px solid #aca899;
+  padding: 8px 10px;
+  background: #fff;
+  text-align: left;
+  cursor: default;
+  font-family: inherit;
+  width: 100%;
+}
+
+.erp-pos-order-card:hover {
+  background: #f5f5f5;
+}
+
+.erp-pos-status-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-table-btn.status-free {
+  background: #e8f5e9;
+  border-color: #2e7d32;
+  color: #1b5e20;
+}
+
+.erp-pos-table-btn.status-occupied {
+  background: #fde8ed;
+  border-color: #c00000;
+  color: #991b1b;
+}
+
+.erp-pos-table-btn.status-pending {
+  background: #fff8e1;
+  border-color: #c9a227;
+  color: #7c5700;
+}
+
+.erp-pos-shell input[type="text"]:not(.erp-input):not(.erp-pos-search-input),
+.erp-pos-shell input[type="number"]:not(.erp-input),
+.erp-pos-shell textarea:not(.erp-input),
+.erp-pos-shell select:not(.erp-select) {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #aca899;
+  border-radius: 2px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #fff;
+  color: #000;
+}
+
+.erp-pos-shell textarea:not(.erp-input) {
+  resize: vertical;
+}
+
+.erp-pos-inline-alert {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 11px;
+  border: 1px solid #aca899;
+}
+
+.erp-pos-inline-alert.warn {
+  background: #fff8e1;
+  border-color: #c9a227;
+  color: #7c5700;
+}
+
+.erp-pos-inline-alert.info {
+  background: #f5f5f5;
+  border-color: #aca899;
+  color: #555;
+}
+
+.erp-pos-inline-alert.rest {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #e8f0fc;
+  border-color: #7a9fd4;
+  color: #1a4fa0;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.erp-pos-qty-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #aca899;
+  background: #fff;
+  cursor: default;
+  font-weight: 700;
+  font-family: inherit;
+  padding: 0;
+}
+
+.erp-pos-modal-panel {
+  background: #fafafa;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.erp-pos-modal-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  background: #ece9d8;
+  border: 1px solid #aca899;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.erp-pos-modal-empty {
+  text-align: center;
+  padding: 20px 12px;
+  color: #555;
+  font-size: 12px;
+  background: #fafafa;
+  border: 1px dashed #aca899;
+}
+
+.erp-pos-order-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 28vh;
+  overflow-y: auto;
+  border: 1px solid #aca899;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.erp-pos-manage-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #aca899;
+  padding: 6px 8px;
+  background: #fff;
+}
+
+.erp-pos-kitchen-btn {
+  border: 1px solid #aca899;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: default;
+  font-family: inherit;
+}
+
+.erp-pos-kitchen-btn.primary {
+  background: #e65100;
+  border-color: #bf360c;
+  color: #fff;
+}
+
+.erp-pos-kitchen-btn.primary:disabled {
+  background: #9ca3af;
+  border-color: #6b7280;
+  cursor: not-allowed;
+}
+
+.erp-pos-kitchen-btn.secondary {
+  background: #fff;
+  color: #333;
+}
+
+.erp-pos-kitchen-btn.secondary:disabled {
+  background: #f3f4f6;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+/* ── Accounts opening balance ───────────────────────────────── */
+.erp-accounts-scope .erp-ob-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.erp-accounts-scope .erp-ob-readonly-hdr {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.erp-ob-cash-panel,
+.erp-ob-bank-panel {
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.erp-ob-cash-panel {
+  border-left: 4px solid #2e7d32;
+}
+
+.erp-ob-bank-panel {
+  border-left: 4px solid #1a4fa0;
+}
+
+.erp-ob-amount-input {
+  width: 100%;
+  border: 1px solid #aca899;
+  padding: 8px 10px;
+  font-size: 18px;
+  font-weight: 700;
+  outline: none;
+  background: #fff;
+  box-sizing: border-box;
+  font-variant-numeric: tabular-nums;
+}
+
+.erp-ob-cash-panel .erp-ob-amount-input {
+  color: #2e7d32;
+}
+
+.erp-ob-bank-panel .erp-ob-amount-input {
+  color: #1a4fa0;
+}
+
+.erp-ob-total-bar {
+  background: #f5f5f5;
+  border: 1px solid #aca899;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.erp-ob-review-panel {
+  background: #fff;
+  border: 1px solid #aca899;
+  padding: 10px 12px;
+}
+
+.erp-ob-review-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-top: 1px solid #e0e0e0;
+  font-size: 12px;
+}
+
+.erp-ob-review-row.divider {
+  border-top: 2px solid #aca899;
+  margin-top: 6px;
+  padding-top: 8px;
+}
+
+.erp-ob-review-row.grand {
+  background: #ece9d8;
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-weight: 700;
+}
+
+.erp-ob-review-row.grand.positive {
+  background: #e8f5e9;
+}
+
+.erp-ob-review-row.grand.negative {
+  background: #fde8ed;
+}

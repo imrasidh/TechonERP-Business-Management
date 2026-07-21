@@ -19,14 +19,16 @@ import {
   sumShareholderInvestments,
   withdrawalMatchesMonth,
   currentMonthKey,
+  activeCodRecords,
   getPaidItemsCost,
   summarizeCodPoolBalance,
 } from "../utils/codTracking.js";
-import { sortNewestFirst } from "../utils/listPage.js";
+import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 import { isCodCostProfitEnabled } from "../utils/featureFlags.js";
 import { printCodAddressLabel, codAddressLabelTotal, buildCodAddressLabelHtml, codAddressLabelStyleTag } from "../utils/codAddressLabelPrint.js";
 import CloseIconButton from "../components/CloseIconButton.jsx";
 import { modalHeaderBarStyle, modalShellStyle, modalBodyStyle } from "../components/modalChrome.js";
+import { stampUpdatedAt } from "../utils/stampUpdatedAt.js";
 
 var STATUS_COLORS = { Accepted: "#2979ff", Dispatched: "#f59e0b", Delivered: "#16a34a", Returned: "#dc2626", All: "#64748b" };
 var STATUS_ICONS = { All: "📋", Accepted: "📥", Dispatched: "🚚", Delivered: "✅", Returned: "↩️" };
@@ -43,6 +45,7 @@ var CodDatabase = function (props) {
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var addAudit = props.addAudit;
+  var tcTrialGuard = props.tcTrialGuard;
   var pwMatchesAsync = props.pwMatchesAsync;
   var isNetworkClient = props.isNetworkClient;
   var businessType = props.businessType;
@@ -122,7 +125,7 @@ var CodDatabase = function (props) {
     if (!costProfitEnabled && tab === "finance") setTab("tracker");
   }, [costProfitEnabled, tab]);
 
-  var records = state.codRecords || S.get("tc3_codRecords", []) || [];
+  var records = activeCodRecords(state.codRecords || S.get("tc3_codRecords", []) || [], state.sales || []);
   var withdrawals = state.codWithdrawals || S.get("tc3_codWithdrawals", []) || [];
   var profitSettings = hydrateProfitSettings(state.codProfitSettings || ensureCodProfitSettings(S));
   var shareholders = profitSettings.shareholders || [];
@@ -130,19 +133,33 @@ var CodDatabase = function (props) {
   var investedSum = sumShareholderInvestments(shareholders);
 
   var persistRecords = function (next) {
+    var cur = state.codRecords || S.get("tc3_codRecords", []) || [];
+    if (next.length > cur.length && typeof tcTrialGuard === "function" && !tcTrialGuard(cur, "codRecords")) return;
     S.set("tc3_codRecords", next);
     setState(function (st) { return Object.assign({}, st, { codRecords: next }); });
   };
 
   var persistWithdrawals = function (next) {
+    var cur = state.codWithdrawals || S.get("tc3_codWithdrawals", []) || [];
+    if (next.length > cur.length && typeof tcTrialGuard === "function" && !tcTrialGuard(cur, "codWithdrawals")) return;
     S.set("tc3_codWithdrawals", next);
     setState(function (st) { return Object.assign({}, st, { codWithdrawals: next }); });
   };
 
   var persistProfitSettings = function (next) {
     var hydrated = hydrateProfitSettings(next);
+    hydrated.shareholders = (hydrated.shareholders || []).map(function (sh) {
+      return stampUpdatedAt(Object.assign({}, sh));
+    });
+    /* Mirror shareholders into mergeable partners array for multi-PC sync. */
+    S.set("tc3_codPartners", hydrated.shareholders.slice());
     S.set("tc3_codProfitSettings", hydrated);
-    setState(function (st) { return Object.assign({}, st, { codProfitSettings: hydrated }); });
+    setState(function (st) {
+      return Object.assign({}, st, {
+        codProfitSettings: hydrated,
+        codPartners: hydrated.shareholders.slice(),
+      });
+    });
   };
 
   var updateSettings = function (patch) {
@@ -236,7 +253,7 @@ var CodDatabase = function (props) {
     });
   }, [records, search, statusFilter]);
 
-  var pager = usePager(filtered, 25);
+  var pager = usePager(filtered, LIST_PAGE_SIZE);
   var balanceRows = useMemo(function () {
     return computeShareholderBalances(profitSettings, records, withdrawals);
   }, [profitSettings, records, withdrawals]);
@@ -324,7 +341,7 @@ var CodDatabase = function (props) {
     }
     var fundAfter = Math.round((maxAmt - amt) * 100) / 100;
     var payeeAfter = fundAfter;
-    var entry = {
+    var entry = stampUpdatedAt({
       id: uid(),
       shareholderId: shId || "",
       shareholderName: fund === "profit" && sh ? sh.name : (fund === "yourProfit" ? shopName : "Shop"),
@@ -335,7 +352,7 @@ var CodDatabase = function (props) {
       balanceAfter: payeeAfter,
       fundBalanceAfter: fundAfter,
       createdAt: new Date().toISOString(),
-    };
+    });
     var next = [entry].concat(withdrawals);
     persistWithdrawals(next);
     addAudit("COD withdrawal", codWithdrawalFundLabel(fund) + " " + sym + " " + fmtNum(amt));

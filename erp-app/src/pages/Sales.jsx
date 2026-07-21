@@ -6,6 +6,7 @@ import {
   rawMaterialOpeningQty,
 } from "../utils/rawMaterialQty.js";
 import CustomerPicker from "../components/CustomerPicker.jsx";
+import { createAndPersistCustomer } from "../utils/customerCreate.js";
 import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
 import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 import { splitSaleItemsByFree, baseQtyInCartLines, FREE_ITEM_LABEL } from "../utils/posFreeItems.js";
@@ -30,6 +31,19 @@ import {
 } from "../utils/glassProduct.js";
 import { isFreeItemsEnabled, isPosLineCommentsEnabled, isCodSalesTrackEnabled } from "../utils/featureFlags.js";
 import { emptyCodTrackForm, buildCodRecordFromSale, shouldPersistCodRecord, COD_SALE_TYPES, validateCodCheckout, isCodCustomerReady } from "../utils/codTracking.js";
+import {
+  acquireInvoiceEditLockSynced,
+  buildInvoiceEditLockIdentity,
+  checkForeignInvoiceEditLock,
+  formatInvoiceEditLockMessage,
+  INVOICE_EDIT_LOCK_HEARTBEAT_MS,
+  INVOICE_EDIT_LOCK_OWNERSHIP_MS,
+  releaseInvoiceEditLock,
+  renewInvoiceEditLockSynced,
+  tryAcquireInvoiceEditLock,
+} from "../utils/invoiceEditLocks.js";
+import { stampProductStock, stampUpdatedAt, stampCustomerBalance, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import { loadFreshProductsForStock, pushKeysNow } from "../utils/concurrencyGuards.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
 var POS = React.memo(function (props) {
@@ -89,6 +103,11 @@ var POS = React.memo(function (props) {
   var currentUser = props.currentUser || null;
   var currentUserRole = String(props.currentUserRole || "cashier");
   var currentUserName = String((currentUser && (currentUser.name || currentUser.username)) || "Staff");
+  var clientMachineLabel = String(props.clientMachineLabel || "").trim();
+  var invoiceLockIdentity = buildInvoiceEditLockIdentity({
+    currentUser: currentUser,
+    clientMachineLabel: clientMachineLabel,
+  });
   var showPermissionDenied = typeof props.showPermissionDenied === "function"
     ? props.showPermissionDenied
     : function () { showAlert("You do not have permission for this action."); };
@@ -103,7 +122,10 @@ var POS = React.memo(function (props) {
   var freeItemsEnabled = isFreeItemsEnabled(state.settings, businessType, netRole, currentUserRole);
   var codSalesTrackEnabled = isCodSalesTrackEnabled(state.settings, businessType, netRole, currentUserRole);
   var posLineCommentsEnabled = isPosLineCommentsEnabled(state.settings, businessType, netRole, currentUserRole);
-  var [posPageTab, setPosPageTab] = useState("sale");
+  var [posPageTab, setPosPageTab] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return pf && pf.posPageTab === "quotation" ? "quotation" : "sale";
+  });
   var isQuotationMode = posPageTab === "quotation" && !isRestaurant;
   var [restaurantProductFilter, setRestaurantProductFilter] = useState("all");
   var getProductType = function (p) { return String((p && p.type) || "stock").toLowerCase(); };
@@ -205,11 +227,19 @@ var POS = React.memo(function (props) {
   var [cart, setCart] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     if (pf && Array.isArray(pf.items)) {
-      return pf.items.slice().reverse().map(function (it) { return Object.assign({}, it, { cartLineId: it.cartLineId || uid() }); });
+      return pf.items.slice().reverse().map(function (it) { return mapPrefillItemToCartLine(it, uid); }).filter(Boolean);
     }
     return [];
   });
-  var [freeCart, setFreeCart] = useState([]);
+  var [freeCart, setFreeCart] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    if (pf && Array.isArray(pf.freeItems) && pf.freeItems.length) {
+      return pf.freeItems.map(function (it) {
+        return Object.assign(mapPrefillItemToCartLine(it, uid) || {}, { isFree: true, price: 0 });
+      }).filter(function (it) { return it && it.id; });
+    }
+    return [];
+  });
   var [codTrack, setCodTrack] = useState(function () { return emptyCodTrackForm(); });
   var [freeSearch, setFreeSearch] = useState("");
   var [freeDropPos, setFreeDropPos] = useState(null);
@@ -230,6 +260,26 @@ var POS = React.memo(function (props) {
     if (pf && pf.customerName) return "walkin";
     return "walkin";
   });
+  var [custFocusKey, setCustFocusKey] = useState(0);
+  var [productFocusKey, setProductFocusKey] = useState(0);
+  var focusCustomerPicker = useCallback(function () {
+    setCustFocusKey(function (k) { return k + 1; });
+  }, []);
+  var requestProductSearchFocus = useCallback(function () {
+    setProductFocusKey(function (k) { return k + 1; });
+  }, []);
+  var openRecordDatePicker = useCallback(function () {
+    var el = recordDateRef.current;
+    if (!el) return;
+    if (typeof el.showPicker === "function") {
+      try {
+        el.showPicker();
+        return;
+      } catch (e) { /* fall through */ }
+    }
+    el.focus();
+    el.click();
+  }, []);
   var [custSearch, setCustSearch] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     return pf ? (pf.customerName || "") : "";
@@ -251,11 +301,14 @@ var POS = React.memo(function (props) {
   });
   var [custId, setCustId] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
-    if (pf) { S.set("tc3_repair_prefill", null); }
     return pf ? (pf.customerId || "") : "";
   });
   var [newCust, setNewCust] = useState({ name: "", phone: "", address: "" });
-  var [discount, setDiscount] = useState("");
+  var [discount, setDiscount] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return pf && pf.discount != null && pf.discount !== "" ? String(pf.discount) : "";
+  });
+  var [discountPct, setDiscountPct] = useState("");
   var normalizeDiscountNumber = function (raw) {
     if (raw === null || raw === undefined) return 0;
     var txt = String(raw).trim();
@@ -266,18 +319,48 @@ var POS = React.memo(function (props) {
     if (num < -1000000000) num = -1000000000;
     return num;
   };
-  var [payMode, setPayMode] = useState("full");
-  var [paidAmt, setPaidAmt] = useState("");
+  var [payMode, setPayMode] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return (pf && pf.payMode) || "full";
+  });
+  var [paidAmt, setPaidAmt] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return pf && pf.paidAmt != null && pf.paidAmt !== "" ? String(pf.paidAmt) : "";
+  });
   var [posSplitModal, setPosSplitModal] = useState(false);
   var [posSplitRows, setPosSplitRows] = useState([]);
-  var [includeWarranty, setIncludeWarranty] = useState(false);
+  var [includeWarranty, setIncludeWarranty] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return !!(pf && pf.includeWarranty);
+  });
   var [posCashMethod, setPosCashMethod] = useState("Cash");
   var [posChequeList, setPosChequeList] = useState([]);
   var [posChqForm, setPosChqForm] = useState({ no: "", bank: "", amount: "", due: today() });
   var [posChqModal, setPosChqModal] = useState(false);
-  var [invoiceNo, setInvoiceNo] = useState(function () { return genInvNo(); });
-  var [quotationNo, setQuotationNo] = useState(function () { return genInvNo("QT"); });
-  var [quotationNotes, setQuotationNotes] = useState("");
+  var [invoiceNo, setInvoiceNo] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return (pf && pf.invoiceNo) ? String(pf.invoiceNo) : genInvNo();
+  });
+  var [quotationNo, setQuotationNo] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return (pf && pf.quotationNo) ? String(pf.quotationNo) : genInvNo("QT");
+  });
+  var [quotationNotes, setQuotationNotes] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return pf && pf.quotationNotes != null ? String(pf.quotationNotes) : "";
+  });
+  var [saleNotes, setSaleNotes] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return pf && pf.saleNotes != null ? String(pf.saleNotes) : "";
+  });
+  var [paymentTerms, setPaymentTerms] = useState("Due on Receipt");
+  var [priceLevel, setPriceLevel] = useState("");
+  var [salesPerson, setSalesPerson] = useState("");
+  var [recordDate, setRecordDate] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return (pf && pf.recordDate) ? String(pf.recordDate) : today();
+  });
+  var [showRecentItems, setShowRecentItems] = useState(false);
   var [isSavingQuotation, setIsSavingQuotation] = useState(false);
   var [printMode, setPrintMode] = useState(null);
   var [invoice, setInvoice] = useState(null);
@@ -285,17 +368,20 @@ var POS = React.memo(function (props) {
   var [waSharePickerKind, setWaSharePickerKind] = useState("sale");
   var [posPrintPicker, setPosPrintPicker] = useState(false);
   var [posPrintPickerKind, setPosPrintPickerKind] = useState("sale");
+  var [posPrintPickerIntent, setPosPrintPickerIntent] = useState("save"); /* save | preview */
   var [dropPos, setDropPos] = useState(null);
   var [pendingPrint, setPendingPrint] = useState(null);
   var [posDropIdx, setPosDropIdx] = useState(-1);
   var searchRef = useRef(null);
+  var recordDateRef = useRef(null);
   var pendingCartFocusRef = useRef(null);
   var waPendingRef = useRef(false); /* true when Save+WhatsApp was clicked */
   var posShortcutRef = useRef({});
   var custModeRef = useRef("walkin");
+  var posPageTabRef = useRef("sale");
+  var isRestaurantRef = useRef(false);
+  var switchPosPageTabRef = useRef(null);
   var lastBeepAtRef = useRef(0);
-  var cartPulseTimerRef = useRef(null);
-  var [cartPulse, setCartPulse] = useState(false);
   var isNetworkClientPos = props.isNetworkClient === true;
   var focusPosSearch = useCallback(function () {
     setTimeout(function () {
@@ -308,6 +394,32 @@ var POS = React.memo(function (props) {
       } catch (e) { /* ignore */ }
     }, 0);
   }, []);
+
+  useEffect(function () {
+    if (!productFocusKey) return;
+    var t1 = setTimeout(function () {
+      try {
+        var el = searchRef.current;
+        if (el) {
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        }
+      } catch (e) { /* ignore */ }
+    }, 30);
+    var t2 = setTimeout(function () {
+      try {
+        var el = searchRef.current;
+        if (el && document.activeElement !== el) {
+          el.focus();
+          if (typeof el.select === "function") el.select();
+        }
+      } catch (e) { /* ignore */ }
+    }, 120);
+    return function () {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [productFocusKey]);
 
   var focusCartField = useCallback(function (row, col) {
     setTimeout(function () {
@@ -425,8 +537,82 @@ var POS = React.memo(function (props) {
     return Array.isArray(saved) ? saved : [];
   });
   var [activeHeldId, setActiveHeldId] = useState(null); /* ID of the currently loaded held invoice */
+  var [showHoldModal, setShowHoldModal] = useState(false);
 
-  var [editingSaleId,  setEditingSaleId]  = useState("");      /* non-empty when POS is in edit mode */
+  var [editingSaleId,  setEditingSaleId]  = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    return pf && pf.editingSaleId ? String(pf.editingSaleId) : "";
+  });      /* non-empty when POS is in edit mode */
+  var [editingQuotationId, setEditingQuotationId] = useState(function () {
+    var pf = S.get("tc3_repair_prefill", null);
+    /* Consume prefill once all mount initializers have read it */
+    if (pf) { S.set("tc3_repair_prefill", null); }
+    return pf && pf.editingQuotationId ? String(pf.editingQuotationId) : "";
+  });
+
+  useEffect(function () {
+    if (!editingSaleId) return;
+    var saleId = editingSaleId;
+    var alive = true;
+    var clearEditUi = function () {
+      setEditingSaleId("");
+      setInvoiceNo(genInvNo());
+      setCart([]);
+      setCustMode("walkin");
+      setCustSearch("");
+      setCustId("");
+      setDiscount("");
+    };
+    acquireInvoiceEditLockSynced(S, saleId, invoiceLockIdentity)
+      .then(function (acquired) {
+        if (!alive) return;
+        if (!acquired || !acquired.ok) {
+          showAlert((acquired && acquired.message) || formatInvoiceEditLockMessage(acquired && acquired.conflict));
+          clearEditUi();
+          return;
+        }
+      })
+      .catch(function () {
+        if (!alive) return;
+        showAlert("Could not lock this invoice for editing. Check network and try again.");
+        clearEditUi();
+      });
+    var tick = function () {
+      renewInvoiceEditLockSynced(S, saleId, invoiceLockIdentity).then(function (r) {
+        if (!alive) return;
+        if (r && r.ok) return;
+        showAlert((r && r.message) || formatInvoiceEditLockMessage(r && r.conflict));
+        clearEditUi();
+      }).catch(function () { /* ignore */ });
+    };
+    var hb = setInterval(tick, INVOICE_EDIT_LOCK_HEARTBEAT_MS);
+    var own = setInterval(function () {
+      checkForeignInvoiceEditLock(S, saleId, invoiceLockIdentity).then(function (foreign) {
+        if (!alive || !foreign) return;
+        showAlert(formatInvoiceEditLockMessage(foreign));
+        clearEditUi();
+      }).catch(function () { /* ignore */ });
+    }, INVOICE_EDIT_LOCK_OWNERSHIP_MS);
+    return function () {
+      alive = false;
+      clearInterval(hb);
+      clearInterval(own);
+      releaseInvoiceEditLock(S, saleId, invoiceLockIdentity);
+    };
+  }, [editingSaleId, invoiceLockIdentity.deviceId]);
+
+  var clearPosSaleEdit = function () {
+    setEditingSaleId("");
+    setEditingQuotationId("");
+    setInvoiceNo(genInvNo());
+    setCart([]);
+    setFreeCart([]);
+    setCustMode("walkin");
+    setCustSearch("");
+    setCustId("");
+    setDiscount("");
+    setRecordDate(today());
+  };
 
   /* ?? Keep window snapshot current so Hold Invoice modal can capture it ?? */
   useEffect(function () {
@@ -440,10 +626,11 @@ var POS = React.memo(function (props) {
       includeWarranty: includeWarranty, posSplitRows: posSplitRows,
       paidAmt: paidAmt, payMode: payMode,
       editingSaleId: editingSaleId,
+      recordDate: recordDate,
       codTrack: codTrack,
       _activeHeldId: activeHeldId
     };
-  }, [cart, freeCart, custId, custMode, custSearch, newCust, discount, includeWarranty, posSplitRows, invoiceNo, quotationNo, quotationNotes, isQuotationMode, paidAmt, payMode, editingSaleId, fromRepairId, fromRepairDeviceIndexes, fromQuotationId, activeHeldId, codTrack]);
+  }, [cart, freeCart, custId, custMode, custSearch, newCust, discount, includeWarranty, posSplitRows, invoiceNo, quotationNo, quotationNotes, isQuotationMode, paidAmt, payMode, editingSaleId, fromRepairId, fromRepairDeviceIndexes, fromQuotationId, activeHeldId, codTrack, recordDate]);
 
   /* Clear snapshot on unmount, refresh held invoices on mount */
   useEffect(function () {
@@ -501,6 +688,14 @@ var POS = React.memo(function (props) {
   }, [custMode]);
 
   useEffect(function () {
+    posPageTabRef.current = posPageTab;
+  }, [posPageTab]);
+
+  useEffect(function () {
+    isRestaurantRef.current = isRestaurant;
+  }, [isRestaurant]);
+
+  useEffect(function () {
     var onKey = function (e) {
       var tag = String((e.target && e.target.tagName) || "").toLowerCase();
       var isTextInput = tag === "input" || tag === "textarea" || (e.target && e.target.isContentEditable);
@@ -518,30 +713,56 @@ var POS = React.memo(function (props) {
     return function () { document.removeEventListener("keydown", onKey); };
   }, [focusPosSearch]);
 
-  /* Alt alone toggles Walk-in ↔ Customer (ignores Alt used with other keys) */
+  /* Alt alone: Walk-in ↔ Customer. Ctrl alone: Sales ↔ Quotation. */
   useEffect(function () {
     var altAlone = false;
+    var ctrlAlone = false;
     var onDown = function (e) {
-      if (e.key === "Alt") {
+      if (e.key === "Alt" || e.code === "AltLeft" || e.code === "AltRight") {
         altAlone = true;
         return;
       }
+      if (e.key === "Control" || e.code === "ControlLeft" || e.code === "ControlRight") {
+        ctrlAlone = true;
+        return;
+      }
       if (e.altKey) altAlone = false;
+      if (e.ctrlKey) ctrlAlone = false;
     };
     var onUp = function (e) {
-      if (e.key !== "Alt") return;
-      var wasAlone = altAlone;
-      altAlone = false;
-      if (!wasAlone) return;
-      if (e.ctrlKey || e.metaKey || e.shiftKey) return;
-      if (custModeRef.current === "walkin") {
-        setCustMode("existing");
-        setCustId("");
-      } else {
-        setCustMode("walkin");
-        setCustId("");
-        setCustSearch("");
-        setNewCust({ name: "", phone: "", address: "" });
+      var isAlt = e.key === "Alt" || e.code === "AltLeft" || e.code === "AltRight";
+      var isCtrl = e.key === "Control" || e.code === "ControlLeft" || e.code === "ControlRight";
+      if (!isAlt && !isCtrl) return;
+
+      if (isAlt) {
+        var wasAltAlone = altAlone;
+        altAlone = false;
+        if (!wasAltAlone) return;
+        if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+        e.preventDefault();
+        if (custModeRef.current === "walkin") {
+          setCustMode("existing");
+          setCustId("");
+          setCustFocusKey(function (k) { return k + 1; });
+        } else {
+          setCustMode("walkin");
+          setCustId("");
+          setCustSearch("");
+          setNewCust({ name: "", phone: "", address: "" });
+          requestProductSearchFocus();
+        }
+        return;
+      }
+
+      var wasCtrlAlone = ctrlAlone;
+      ctrlAlone = false;
+      if (!wasCtrlAlone) return;
+      if (e.altKey || e.metaKey || e.shiftKey) return;
+      if (isRestaurantRef.current) return;
+      e.preventDefault();
+      var nextTab = posPageTabRef.current === "quotation" ? "sale" : "quotation";
+      if (typeof switchPosPageTabRef.current === "function") {
+        switchPosPageTabRef.current(nextTab);
       }
     };
     document.addEventListener("keydown", onDown, true);
@@ -550,13 +771,7 @@ var POS = React.memo(function (props) {
       document.removeEventListener("keydown", onDown, true);
       document.removeEventListener("keyup", onUp, true);
     };
-  }, []);
-
-  useEffect(function () {
-    return function () {
-      if (cartPulseTimerRef.current) clearTimeout(cartPulseTimerRef.current);
-    };
-  }, []);
+  }, [requestProductSearchFocus]);
 
   /* Auto-focus product / barcode field for fast scanning */
   useEffect(function () {
@@ -621,23 +836,16 @@ var POS = React.memo(function (props) {
   }, [freeSearch, state.products, isRestaurant]);
   var posDupNameKeys = getDuplicateNormalizedNameKeys(state.customers);
   var savePosInlineCustomer = function (draft) {
-    var name = String(draft && draft.name || "").trim();
-    var phone = String(draft && draft.phone || "").trim();
-    if (!name) return null;
-    var created = {
-      id: uid(),
-      name: name,
-      phone: phone,
-      address: "",
-      credit: 0,
-      totalSpent: 0,
-      createdAt: today(),
-      updatedAt: today(),
-    };
-    if (!tcTrialGuard(state.customers, "customers")) return null;
-    var nextCustomers = state.customers.concat([created]);
-    S.set("tc3_customers", nextCustomers);
-    setState(function (st) { return Object.assign({}, st, { customers: nextCustomers }); });
+    var result = createAndPersistCustomer({
+      customers: state.customers,
+      setState: setState,
+      S: S,
+      uid: uid,
+      tcTrialGuard: tcTrialGuard,
+      draft: draft,
+    });
+    if (!result.ok) return null;
+    var created = result.customer;
     setCustMode("existing");
     setCustId(created.id);
     setCustSearch(created.name + (created.phone ? (" - " + created.phone) : ""));
@@ -689,6 +897,65 @@ var POS = React.memo(function (props) {
   var payStatus = (posSplitRows && posSplitRows.length > 0)
     ? (splitAllTotal >= total ? "Paid" : splitNonChequeTotal > 0 || splitAllTotal > 0 ? "Partial" : "Unpaid")
     : (paidNum >= total ? "Paid" : paidNum > 0 ? "Partial" : "Unpaid");
+  var cartTotalQty = Number(cart.reduce(function (a, it) { return a + (Number(it.qty) || 0); }, 0).toFixed(2));
+  var selectedPosCustomer = (custMode === "existing" && custId)
+    ? (state.customers || []).find(function (c) { return c.id === custId; }) || null
+    : null;
+  var posDisplayPhone = custMode === "walkin"
+    ? ""
+    : (custMode === "new" ? (newCust.phone || "") : (selectedPosCustomer ? (selectedPosCustomer.phone || "") : ""));
+  var recentPosProducts = useMemo(function () {
+    var ids = [];
+    (state.sales || []).slice(-40).reverse().forEach(function (s) {
+      (s.items || []).forEach(function (it) {
+        if (it && it.id && ids.indexOf(it.id) < 0) ids.push(it.id);
+      });
+    });
+    return ids.slice(0, 12).map(function (id) {
+      return (state.products || []).find(function (p) { return p.id === id; });
+    }).filter(Boolean);
+  }, [state.sales, state.products]);
+  var applyDiscountAmount = function (raw) {
+    var nextNum = normalizeDiscountNumber(raw);
+    if (!canOverrideDiscount && nextNum > 0) {
+      showPermissionDenied("apply discount overrides");
+      return;
+    }
+    setDiscount(raw);
+    if (!subTotal) { setDiscountPct(""); return; }
+    var pct = Math.max(0, Math.min(100, (nextNum / subTotal) * 100));
+    setDiscountPct(nextNum > 0 ? String(Number(pct.toFixed(2))) : "");
+  };
+  var applyDiscountPercent = function (raw) {
+    var pct = normalizeDiscountNumber(raw);
+    if (!canOverrideDiscount && pct > 0) {
+      showPermissionDenied("apply discount overrides");
+      return;
+    }
+    if (pct > 100) pct = 100;
+    setDiscountPct(raw);
+    var amt = Number(((subTotal * pct) / 100).toFixed(2));
+    setDiscount(pct > 0 ? String(amt) : "");
+  };
+  var selectPosPayMethod = function (method) {
+    if (posSetupBlocksCriticalActions() || isCheckingOut) return;
+    setPosCashMethod(method);
+    if (method === "Cheque") {
+      setPosChqModal(true);
+      return;
+    }
+    setPosChequeList([]);
+    if (!(posSplitRows && posSplitRows.length > 0)) {
+      setPayMode("full");
+      setPaidAmt("");
+    }
+  };
+  var removeLastCartRow = function () {
+    if (!cart.length) return;
+    var last = cart[0];
+    if (!last) return;
+    updateQty(cartLineKey(last), 0);
+  };
 
   function findOpenOrderForTable(tableId) {
     if (!tableId) return null;
@@ -941,9 +1208,6 @@ var POS = React.memo(function (props) {
       });
     }
     setSearch("");
-    setCartPulse(true);
-    if (cartPulseTimerRef.current) clearTimeout(cartPulseTimerRef.current);
-    cartPulseTimerRef.current = setTimeout(function () { setCartPulse(false); }, 150);
     if (!focusAfterAdd) focusPosSearch();
   };
   var duplicateCartItem = function (lineKey) {
@@ -954,24 +1218,23 @@ var POS = React.memo(function (props) {
     var step = isDecimalUnit(item.saleUnit || item.unit || "Pcs") ? 0.5 : 1;
     updateQty(lineKey, (Number(item.qty) || 0) + step);
     if (rowIdx >= 0) pendingCartFocusRef.current = { row: rowIdx, col: 0 };
-    setCartPulse(true);
-    if (cartPulseTimerRef.current) clearTimeout(cartPulseTimerRef.current);
-    cartPulseTimerRef.current = setTimeout(function () { setCartPulse(false); }, 150);
   };
   var clearCurrentCart = function () {
     if (!cart.length) return;
     var prevSnapshot = cart.map(function (x) { return Object.assign({}, x); });
-    if (isRestaurant) {
-      showConfirm("Clear current items?", function () {
-        setCart([]);
+    var doClear = function () {
+      setCart([]);
+      setFreeCart([]);
+      if (isRestaurant) {
         setRestaurantUndo({ cart: prevSnapshot, msg: "Cart cleared" });
-        focusPosSearch();
-      });
+      }
+      focusPosSearch();
+    };
+    if (typeof showConfirm === "function") {
+      showConfirm("Are you sure you want to clear all items from the cart?", doClear);
       return;
     }
-    setCart([]);
-    setFreeCart([]);
-    focusPosSearch();
+    doClear();
   };
   var setCartItemRestaurantNote = function (lineKey, note) {
     setCart(function (prev) {
@@ -1022,6 +1285,17 @@ var POS = React.memo(function (props) {
       var cleanHeld = (S.get("tc3_held_invoices", []) || []).filter(function (x) { return x.id !== heldIdToRemove; });
       S.set("tc3_held_invoices", cleanHeld);
     }
+    /* Push stock + sale (+ customers/cheques) immediately on LAN. */
+    try {
+      pushKeysNow([
+        ["tc3_products", nextState.products],
+        ["tc3_sales", nextState.sales],
+        ["tc3_customers", nextState.customers],
+        ["tc3_cheques", nextState.cheques || []],
+        ["tc3_quotations", nextState.quotations || []],
+        ["tc3_repairs", nextState.repairs],
+      ]);
+    } catch (_pushNow) { /* ignore */ }
   };
 
   var saveAndFinishRef = useRef(function () {});
@@ -1044,7 +1318,9 @@ var POS = React.memo(function (props) {
     }
     posIsSavingRef.current = true;
     setIsCheckingOut(true);
+    var runPosCheckout = function (productsSnap) {
     try {
+    productsSnap = Array.isArray(productsSnap) && productsSnap.length ? productsSnap : state.products;
     /* Trial guard: block new sales if trial limit reached (editing existing sales is allowed).
        Pass cart.length > 0 as isActiveCheckout so a mid-sale server dropout gets cart grace. */
     if (!editingSaleId && !tcTrialGuard(state.sales, 'sales', cart.length > 0)) return;
@@ -1075,7 +1351,7 @@ var POS = React.memo(function (props) {
       if (stockErr) return;
       if (seenStockPid[item.id]) return;
       seenStockPid[item.id] = 1;
-      var prod = state.products.find(function (p) { return p.id === item.id; });
+      var prod = productsSnap.find(function (p) { return p.id === item.id; });
       if (!prod) return;
       if (isServiceProduct(prod)) return;
       var totalReq = getReservedBaseQtyForProduct(prod);
@@ -1086,7 +1362,7 @@ var POS = React.memo(function (props) {
     });
     if (stockErr) { showAlert(stockErr); return; }
     var missingServicePrice = cart.find(function (item) {
-      var pr = state.products.find(function (p) { return p.id === item.id; });
+      var pr = productsSnap.find(function (p) { return p.id === item.id; });
       return isServiceProduct(pr) && !(Number(item.price) > 0);
     });
     if (missingServicePrice) {
@@ -1095,7 +1371,7 @@ var POS = React.memo(function (props) {
     }
     /* Block selling below cost */
     var belowCostItem = cart.find(function (item) {
-      var pr = state.products.find(function (p) { return p.id === item.id; });
+      var pr = productsSnap.find(function (p) { return p.id === item.id; });
       var lc = item.isGlassLine && pr
         ? getGlassCostPerSqFt(pr)
         : (pr ? getPosCostPerSaleUnit(pr, item.saleUnit || item.unit || "Pcs") : (item.cost || 0));
@@ -1105,7 +1381,7 @@ var POS = React.memo(function (props) {
       return (sell || 0) < lc;
     });
     if (belowCostItem) {
-      var pr2 = state.products.find(function (p) { return p.id === belowCostItem.id; });
+      var pr2 = productsSnap.find(function (p) { return p.id === belowCostItem.id; });
       var minCost = pr2 ? getPosCostPerSaleUnit(pr2, belowCostItem.saleUnit || belowCostItem.unit || "Pcs") : (belowCostItem.cost || 0);
       showAlert("\u274C Cannot sell below cost price.\n\n\"" + belowCostItem.name + "\" is priced at " + getCurrencySymbol() + " " + fmtNum(belowCostItem.price) + " but cost is " + getCurrencySymbol() + " " + fmtNum(minCost) + " per " + (belowCostItem.saleUnit || belowCostItem.unit || "Pcs") + ".\n\nPlease increase the price to at least " + getCurrencySymbol() + " " + fmtNum(minCost) + ".");
       return;
@@ -1173,7 +1449,24 @@ var POS = React.memo(function (props) {
         return Object.assign({}, it, { lineTax: lt });
       });
     }
-    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: today(), customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromRepairDeviceIndexes: (fromRepairDeviceIndexes || []).slice(), fromQuotationId: fromQuotationId || undefined, createdAt: new Date().toISOString() };
+    var saleTs = new Date().toISOString();
+    var txnDate = recordDate || today();
+    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: txnDate, isoDateTime: saleTs, customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromRepairDeviceIndexes: (fromRepairDeviceIndexes || []).slice(), fromQuotationId: fromQuotationId || undefined, createdAt: saleTs, updatedAt: saleTs };
+    if (editingSaleId) {
+      var _origMeta = state.sales.find(function (s) { return s.id === editingSaleId; });
+      if (_origMeta) {
+        if (_origMeta.createdAt) saleObj.createdAt = _origMeta.createdAt;
+        saleObj.paymentHistory = Array.isArray(_origMeta.paymentHistory) ? _origMeta.paymentHistory.slice() : [];
+        saleObj.paid = Number(_origMeta.paid) || 0;
+        saleObj.balance = Math.max(0, Number(((saleObj.total || 0) - saleObj.paid).toFixed(2)));
+        saleObj.payStatus = saleObj.balance <= 0.005 ? "Paid" : (saleObj.paid > 0.005 ? "Partial" : "Unpaid");
+        if (_origMeta.cashMethod) saleObj.cashMethod = _origMeta.cashMethod;
+      }
+      if (saleNotes) saleObj.saleNote = String(saleNotes).trim();
+      else if (_origMeta && _origMeta.saleNote) saleObj.saleNote = _origMeta.saleNote;
+    } else if (saleNotes) {
+      saleObj.saleNote = String(saleNotes).trim();
+    }
     if (isNetworkClientPos) {
       var li = props.licenseInfo || (typeof window !== "undefined" ? window._tcLicInfo : null) || {};
       var oid = li.terminalDeviceId || li.deviceId || "";
@@ -1196,14 +1489,14 @@ var POS = React.memo(function (props) {
       saleObj.selectedTaxes = [];
     }
     /* When editing, first restore stock deducted by the original sale, then deduct the updated cart */
-    var _baseProds = state.products;
+    var _baseProds = productsSnap;
     if (editingSaleId) {
       var _origSale = state.sales.find(function (s) { return s.id === editingSaleId; });
       if (_origSale) {
-        _baseProds = state.products.map(function (p) {
+        _baseProds = productsSnap.map(function (p) {
           var back = (_origSale.items || []).filter(function (x) { return x.id === p.id; }).reduce(function (a, oi) { return a + (oi.qty || 0); }, 0);
           if (!back) return p;
-          return Object.assign({}, p, { stock: (p.stock || 0) + back });
+          return stampProductStock(Object.assign({}, p, { stock: (p.stock || 0) + back }), saleTs, p);
         });
       }
     }
@@ -1214,7 +1507,7 @@ var POS = React.memo(function (props) {
       var deductQty = lines.reduce(function (acc, ci) {
         return acc + toProductBaseQty(ci.qty || 0, ci.saleUnit || ci.unit || "Pcs", p);
       }, 0);
-      return Object.assign({}, p, { stock: (p.stock || 0) - deductQty });
+      return stampProductStock(Object.assign({}, p, { stock: (p.stock || 0) - deductQty }), saleTs, p);
     });
     var nc = state.customers.slice();
     if (editingSaleId) {
@@ -1223,16 +1516,16 @@ var POS = React.memo(function (props) {
         var oldOut = Math.max(0, (_origSaleCr.total || 0) - (_origSaleCr.paid || 0));
         nc = nc.map(function (c) {
           if (c.id !== custId) return c;
-          return Object.assign({}, c, {
+          return stampCustomerBalance(Object.assign({}, c, {
             credit: Math.max(0, (c.credit || 0) - oldOut),
             totalSpent: Math.max(0, (c.totalSpent || 0) - (_origSaleCr.total || 0)),
-          });
+          }), saleTs, c);
         });
       }
     }
     /* FIX2: use effectiveBalance (not balanceDue) ? for cheque payments effectivePaid=0 so full balance should be credited */
-    if (custMode === "new" && newCust.name) { nc.push({ id: uid(), name: newCust.name, phone: newCust.phone || "", address: newCust.address || "", credit: effectiveBalance, totalSpent: total }); }
-    else if (custMode === "existing" && custId) { nc = nc.map(function (c) { return c.id === custId ? Object.assign({}, c, { credit: (c.credit || 0) + effectiveBalance, totalSpent: (c.totalSpent || 0) + total }) : c; }); }
+    if (custMode === "new" && newCust.name) { nc.push(stampCustomerBalance({ id: uid(), name: newCust.name, phone: newCust.phone || "", address: newCust.address || "", credit: effectiveBalance, totalSpent: total }, saleTs, { credit: 0, totalSpent: 0, updatedAt: "" })); }
+    else if (custMode === "existing" && custId) { nc = nc.map(function (c) { return c.id === custId ? stampCustomerBalance(Object.assign({}, c, { credit: (c.credit || 0) + effectiveBalance, totalSpent: (c.totalSpent || 0) + total }), saleTs, c) : c; }); }
     /* Auto-update repair status to Delivered when this sale originated from a repair ticket */
     var nr = state.repairs;
     if (fromRepairId) {
@@ -1262,7 +1555,20 @@ var POS = React.memo(function (props) {
         }];
         (fromRepairDeviceIndexes || []).forEach(function (idx) {
           if (idx < 0 || idx >= devices.length) return;
-          devices[idx] = Object.assign({}, devices[idx], { status: "Delivered" });
+          var prev = devices[idx] || {};
+          var deliveredDay = (function () {
+            var n = new Date();
+            var y = n.getFullYear();
+            var m = String(n.getMonth() + 1);
+            var day = String(n.getDate());
+            if (m.length < 2) m = "0" + m;
+            if (day.length < 2) day = "0" + day;
+            return y + "-" + m + "-" + day;
+          })();
+          devices[idx] = Object.assign({}, prev, {
+            status: "Delivered",
+            timeline: Object.assign({}, prev.timeline || {}, { deliveredAt: deliveredDay })
+          });
         });
         var nextStatus = deriveRepairStatus(devices);
         var first = devices[0] || {};
@@ -1293,6 +1599,9 @@ var POS = React.memo(function (props) {
     });
 
     var codRecords = state.codRecords || S.get("tc3_codRecords", []) || [];
+    if (codSalesTrackEnabled && shouldPersistCodRecord(codTrack) && !codRecords.find(function (r) { return r.saleId === saleObj.id; })) {
+      if (!tcTrialGuard(codRecords, "codRecords")) return;
+    }
     if (codSalesTrackEnabled) {
       if (shouldPersistCodRecord(codTrack)) {
         var existingCod = codRecords.find(function (r) { return r.saleId === saleObj.id; });
@@ -1326,7 +1635,8 @@ var POS = React.memo(function (props) {
       var splitChequeRows = posSplitRows.filter(function (r) { return r.method === "Cheque" && parseFloat(r.amount) > 0; });
       if (splitChequeRows.length > 0) {
         var splitChqs = splitChequeRows.map(function (r) {
-          return { id: uid(), type: "incoming", status: "Pending", chequeNo: (r.chequeNo || "").trim(), bankName: (r.chequeBankName || "").trim(), amount: parseFloat(r.amount), dueDate: r.chequeDueDate || today(), issuedDate: today(), customerId: custId || "", customerName: custName, saleId: saleObj.id, invoiceNo: saleObj.invoiceNo, note: r.note || "", createdAt: today() };
+          var chTs = saleTs;
+          return stampTransactionIsoDateTime({ id: uid(), type: "incoming", status: "Pending", chequeNo: (r.chequeNo || "").trim(), bankName: (r.chequeBankName || "").trim(), amount: parseFloat(r.amount), dueDate: r.chequeDueDate || today(), issuedDate: today(), customerId: custId || "", customerName: custName, saleId: saleObj.id, invoiceNo: saleObj.invoiceNo, note: r.note || "", createdAt: chTs, updatedAt: chTs }, chTs);
         });
         var splitChqPh = splitChqs.map(function (ch) { return { id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + ch.chequeNo + " " + getCurrencySymbol() + " " + fmtNum(ch.amount) + " (Pending - due " + ch.dueDate + ")", chequeId: ch.id }; });
         var saleWithSplitChq = Object.assign({}, saleObj, { paymentHistory: initPh.concat(splitChqPh) });
@@ -1339,7 +1649,8 @@ var POS = React.memo(function (props) {
     /* If paid by cheque, create cheque records and attach to sale paymentHistory */
     if (isChequePayment && posChequeList.length > 0) {
       var newCheques = posChequeList.filter(function (c) { return c.no.trim() && parseFloat(c.amount) > 0; }).map(function (c) {
-        return { id: uid(), type: "incoming", status: "Pending", chequeNo: c.no.trim(), bankName: (c.bank || "").trim(), amount: parseFloat(c.amount), dueDate: c.due || today(), issuedDate: today(), customerId: custId || "", customerName: custName, saleId: saleObj.id, invoiceNo: saleObj.invoiceNo, note: "", createdAt: today() };
+        var chTs = saleTs;
+        return stampTransactionIsoDateTime({ id: uid(), type: "incoming", status: "Pending", chequeNo: c.no.trim(), bankName: (c.bank || "").trim(), amount: parseFloat(c.amount), dueDate: c.due || today(), issuedDate: today(), customerId: custId || "", customerName: custName, saleId: saleObj.id, invoiceNo: saleObj.invoiceNo, note: "", createdAt: chTs, updatedAt: chTs }, chTs);
       });
       var chqPh = newCheques.map(function (ch) { return { id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + ch.chequeNo + " " + getCurrencySymbol() + " " + fmtNum(ch.amount) + " (Pending - due " + ch.dueDate + ")", chequeId: ch.id }; });
       var saleWithCheques = Object.assign({}, saleObj, { paymentHistory: chqPh });
@@ -1410,7 +1721,7 @@ var POS = React.memo(function (props) {
     var finalSaleForPrint = (newState.sales || []).find(function (s) { return s.id === saleObj.id; }) || saleObj;
     if (withPrint) {
       setPendingPrint({ sale: finalSaleForPrint, mode: mode || "thermal", settings: Object.assign({}, state.settings), warranty: includeWarranty, invoiceLang: "en" });
-      setCart([]); setFreeCart([]); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId(""); setFromRepairDeviceIndexes([]); setFreeSearch("");
+      setCart([]); setFreeCart([]); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setPosSplitRows([]); setPosSplitModal(false); setInvoiceNo(genInvNo()); setFromRepairId(""); setFromRepairDeviceIndexes([]); setFreeSearch(""); setRecordDate(today());
       try { sessionStorage.removeItem("tc3_dirty"); } catch (e2) { }
       focusPosSearch();
     } else {
@@ -1421,6 +1732,18 @@ var POS = React.memo(function (props) {
       posIsSavingRef.current = false;
       setIsCheckingOut(false);
     }
+    };
+
+    loadFreshProductsForStock(S)
+      .then(function (fresh) {
+        if (fresh && fresh.length) {
+          try { setState(function (st) { return Object.assign({}, st, { products: fresh }); }); } catch (_e) { /* ignore */ }
+        }
+        runPosCheckout(fresh && fresh.length ? fresh : state.products);
+      })
+      .catch(function () {
+        runPosCheckout(state.products);
+      });
   };
 
   var saveAndFinish = useCallback(function (withPrint, mode, onSaved) {
@@ -1465,15 +1788,127 @@ var POS = React.memo(function (props) {
     if (posIsSavingRef.current || isCheckingOut) return;
     if (posSetupBlocksCriticalActions()) return;
     setPosPrintPickerKind("sale");
+    setPosPrintPickerIntent("save");
+    setPosPrintPicker(true);
+  };
+  var openPosPreviewPicker = function () {
+    if (!cart.length) return;
+    setPosPrintPickerKind("sale");
+    setPosPrintPickerIntent("preview");
     setPosPrintPicker(true);
   };
   var openQuotationPrintPicker = function () {
     if (!cart.length || isSavingQuotation) return;
     if (!canEditInvoices) return;
     setPosPrintPickerKind("quotation");
+    setPosPrintPickerIntent("save");
     setPosPrintPicker(true);
   };
+  var openQuotationPreviewPicker = function () {
+    if (!cart.length) return;
+    setPosPrintPickerKind("quotation");
+    setPosPrintPickerIntent("preview");
+    setPosPrintPicker(true);
+  };
+  var buildPosPreviewSale = function () {
+    var cust = resolvePosCustomer();
+    var chronoCart = cartChronological();
+    var saleItems = chronoCart.map(mapCartLineToSaleItem).concat(freeCart.map(mapCartLineToSaleItem));
+    if (state.settings && state.settings.taxEnabled && posTotalTax > 0 && subTotal > 0.005) {
+      var lineAmts = chronoCart.map(function (it) { return posLineAmount(it); });
+      var subSum = lineAmts.reduce(function (a, b) { return a + b; }, 0);
+      var remTax = posTotalTax;
+      var paidLineCount = cart.length;
+      saleItems = saleItems.map(function (it, sidx) {
+        if (sidx >= paidLineCount) return it;
+        var lt;
+        if (sidx === paidLineCount - 1) lt = Number(remTax.toFixed(2));
+        else if (subSum > 0.005) {
+          lt = Number((posTotalTax * (lineAmts[sidx] / subSum)).toFixed(2));
+          remTax = Number((remTax - lt).toFixed(2));
+        } else lt = 0;
+        return Object.assign({}, it, { lineTax: lt });
+      });
+    }
+    var previewPaid = (posSplitRows && posSplitRows.length > 0)
+      ? posSplitRows.reduce(function (a, r) { return r.method !== "Cheque" ? a + (parseFloat(r.amount) || 0) : a; }, 0)
+      : (posCashMethod === "Cheque" ? 0 : paidNum);
+    var previewBal = Math.max(0, total - previewPaid);
+    var draft = {
+      id: "preview-" + Date.now(),
+      invoiceNo: invoiceNo || "PREVIEW",
+      date: recordDate || today(),
+      isoDateTime: new Date().toISOString(),
+      customerId: cust.custId || "",
+      customerName: cust.custName,
+      customerPhone: cust.custPhone,
+      items: saleItems,
+      subTotal: subTotal,
+      discount: discAmt,
+      total: total,
+      paid: previewPaid,
+      balance: previewBal,
+      payStatus: previewPaid >= total ? "Paid" : previewPaid > 0 ? "Partial" : "Unpaid",
+      includeWarranty: includeWarranty,
+      paymentHistory: [],
+      cashMethod: posCashMethod,
+      notes: saleNotes || "",
+      paymentTerms: paymentTerms || "",
+    };
+    if (state.settings && state.settings.taxEnabled) {
+      draft.taxMode = posTaxCalc.taxMode || "exclusive";
+      draft.totalTax = posTotalTax;
+      draft.taxApplyBase = taxApplyBase;
+      draft.selectedTaxes = (posTaxLines || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; });
+    }
+    return draft;
+  };
+  var buildPosPreviewQuotation = function () {
+    var cust = resolvePosCustomer();
+    var items = cartChronological().map(mapCartLineToQuotationItem);
+    var taxExtra = buildQuotationTaxExtras(
+      state.settings,
+      subTotal,
+      discAmt,
+      null,
+      posTaxCalc,
+      total,
+      posTaxLines,
+      posTotalTax
+    );
+    var q = Object.assign({
+      id: "preview-qt-" + Date.now(),
+      quotationNo: quotationNo || "PREVIEW",
+      date: recordDate || today(),
+      customerId: cust.custId || "",
+      customer: cust.custName,
+      customerName: cust.custName,
+      customerPhone: cust.custPhone,
+      items: items,
+      notes: quotationNotes || "",
+      paymentTerms: paymentTerms || "",
+      status: "Draft",
+    }, taxExtra);
+    return quotationToPrintInv(q);
+  };
+  var previewWithMode = function (mode) {
+    setPosPrintPicker(false);
+    var sale = posPrintPickerKind === "quotation" ? buildPosPreviewQuotation() : buildPosPreviewSale();
+    setPendingPrint({
+      sale: sale,
+      mode: mode || "a4",
+      settings: Object.assign({}, state.settings),
+      warranty: includeWarranty,
+      invoiceLang: "en",
+      kind: posPrintPickerKind === "quotation" ? "quotation" : "invoice",
+      previewOnly: true,
+    });
+  };
   var saveAndPrintWithMode = function (mode) {
+    if (posPrintPickerIntent === "preview") {
+      previewWithMode(mode);
+      return;
+    }
     if (posPrintPickerKind === "quotation") {
       if (isSavingQuotation) return;
       setPosPrintPicker(false);
@@ -1513,12 +1948,14 @@ var POS = React.memo(function (props) {
     setFromRepairId("");
     setFromRepairDeviceIndexes([]);
     setActiveHeldId(null);
+    setEditingQuotationId("");
     setQuotationNotes("");
     setQuotationNo(genInvNo("QT"));
     setCustMode("walkin");
     setCustSearch("");
     setCustId("");
     setNewCust({ name: "", phone: "", address: "" });
+    setRecordDate(today());
     try {
       sessionStorage.removeItem("tc3_dirty");
       sessionStorage.removeItem("tc3_held_pos");
@@ -1535,6 +1972,8 @@ var POS = React.memo(function (props) {
       setFreeCart([]);
       setDiscount("");
       setEditingSaleId("");
+      setEditingQuotationId("");
+      setRecordDate(today());
       if (tab === "quotation") {
         setQuotationNo(genInvNo("QT"));
         setQuotationNotes("");
@@ -1550,10 +1989,11 @@ var POS = React.memo(function (props) {
       applySwitch();
     }
   };
+  switchPosPageTabRef.current = switchPosPageTab;
 
   var saveQuotation = function (withPrint, printMode, waShare) {
     if (!canEditInvoices) {
-      showPermissionDenied("create quotations");
+      showPermissionDenied(editingQuotationId ? "edit quotations" : "create quotations");
       return;
     }
     if (!cart.length) {
@@ -1571,10 +2011,11 @@ var POS = React.memo(function (props) {
       return;
     }
     if (isSavingQuotation) return;
-    if (!tcTrialGuard(state.quotations || [], "quotations")) return;
+    if (!editingQuotationId && !tcTrialGuard(state.quotations || [], "quotations")) return;
     setIsSavingQuotation(true);
+    var wasEditingQuotation = !!editingQuotationId;
     try {
-      var finalQtNo = ensureUniqueDocumentNumber(quotationNo, "QT", state);
+      var finalQtNo = ensureUniqueDocumentNumber(quotationNo, "QT", state, wasEditingQuotation ? { excludeQuotationId: editingQuotationId } : undefined);
       var cust = resolvePosCustomer();
       var items = cartChronological().map(mapCartLineToQuotationItem);
       var taxExtra = buildQuotationTaxExtras(
@@ -1587,24 +2028,36 @@ var POS = React.memo(function (props) {
         posTaxLines,
         posTotalTax
       );
-      var newQ = Object.assign({}, {
-        id: uid(),
+      var qtTs = new Date().toISOString();
+      var origQ = editingQuotationId
+        ? (state.quotations || []).find(function (q) { return q.id === editingQuotationId; })
+        : null;
+      var newQ = stampTransactionIsoDateTime(Object.assign({}, {
+        id: editingQuotationId || uid(),
         quotationNo: finalQtNo,
         customer: cust.custName,
         customerId: cust.custId,
         customerPhone: cust.custPhone,
         items: items,
         notes: String(quotationNotes || "").trim(),
-        status: "Sent",
-        date: today(),
-        createdAt: today(),
-        createdBy: currentUserName,
-      }, taxExtra);
-      var nq = (state.quotations || []).concat([newQ]);
+        status: (origQ && origQ.status) ? origQ.status : "Sent",
+        date: recordDate || today(),
+        createdAt: (origQ && origQ.createdAt) ? origQ.createdAt : qtTs,
+        updatedAt: qtTs,
+        createdBy: (origQ && origQ.createdBy) ? origQ.createdBy : currentUserName,
+      }, taxExtra, origQ && origQ.convertedInvoiceId ? {
+        convertedInvoiceId: origQ.convertedInvoiceId,
+        convertedAt: origQ.convertedAt,
+      } : {}), qtTs);
+      var nq = editingQuotationId
+        ? (state.quotations || []).map(function (q) { return q.id === editingQuotationId ? newQ : q; })
+        : (state.quotations || []).concat([newQ]);
       S.set("tc3_quotations", nq);
-      addAudit("Created Quotation", newQ.quotationNo);
+      try { pushKeysNow([["tc3_quotations", nq]]); } catch (_e) { /* ignore */ }
+      addAudit(wasEditingQuotation ? "Updated Quotation" : "Created Quotation", newQ.quotationNo);
       setState(function (st) { return Object.assign({}, st, { quotations: nq }); });
       var heldIdToClear = activeHeldId;
+      setEditingQuotationId("");
       resetQuotationForm();
       if (heldIdToClear) deleteHeldInvoice(heldIdToClear);
       if (withPrint || waShare) {
@@ -1617,7 +2070,7 @@ var POS = React.memo(function (props) {
           invoiceLang: "en",
         });
       } else {
-        showAlert("Quotation " + finalQtNo + " saved. View it under Invoices → Quotations.");
+        showAlert("Quotation " + finalQtNo + (wasEditingQuotation ? " updated" : " saved") + ". View it under Invoices → Quotations.");
       }
     } finally {
       setIsSavingQuotation(false);
@@ -1627,6 +2080,7 @@ var POS = React.memo(function (props) {
   var resetForm = function () {
     setCart([]); setFreeCart([]); setFreeSearch(""); setCodTrack(emptyCodTrackForm()); setCustMode("walkin"); setCustSearch(""); setCustId(""); setNewCust({ name: "", phone: "", address: "" }); setDiscount(""); setPayMode("full"); setPaidAmt(""); setInvoice(null); setPrintMode(null); setInvoiceNo(genInvNo()); setFromRepairId(""); setFromRepairDeviceIndexes([]);
     setEditingSaleId("");
+    setRecordDate(today());
     focusPosSearch();
   };
 
@@ -1655,6 +2109,7 @@ var POS = React.memo(function (props) {
     if (Array.isArray(h.fromRepairDeviceIndexes)) setFromRepairDeviceIndexes(h.fromRepairDeviceIndexes);
     if (h.fromQuotationId) setFromQuotationId(h.fromQuotationId);
     if (h.editingSaleId) setEditingSaleId(h.editingSaleId);
+    setRecordDate(h.recordDate || today());
     if (h.codTrack) setCodTrack(Object.assign(emptyCodTrackForm(), h.codTrack));
     else setCodTrack(emptyCodTrackForm());
     setActiveHeldId(h.id);
@@ -1671,6 +2126,7 @@ var POS = React.memo(function (props) {
     setPosSplitRows([]);
     setIncludeWarranty(false);
     setEditingSaleId("");
+    setRecordDate(today());
     setFromQuotationId("");
     setFromRepairId("");
     setFromRepairDeviceIndexes([]);
@@ -1724,6 +2180,7 @@ var POS = React.memo(function (props) {
       paidAmt: paidAmt,
       payMode: payMode,
       editingSaleId: editingSaleId,
+      recordDate: recordDate,
       label: custLabel + " - " + kindLabel + (docNo ? (" " + docNo) : "") + " - " + itemCount + " item(s)",
       heldAt: new Date().toISOString(),
     };
@@ -1752,14 +2209,33 @@ var POS = React.memo(function (props) {
     posPrintPicker: posPrintPicker,
     waSharePicker: waSharePicker,
     saveOnly: function () { saveAndFinish(false); },
+    saveAndPrint: function () { openPosPrintPicker(); },
     saveQuotationOnly: function () { saveQuotation(false); },
     openPrintPicker: openPosPrintPicker,
+    openPreviewPicker: openPosPreviewPicker,
     openQuotationPrintPicker: openQuotationPrintPicker,
+    openQuotationPreviewPicker: openQuotationPreviewPicker,
     openWhatsApp: saveAndWhatsApp,
     openQuotationWhatsApp: openQuotationWhatsApp,
+    openSplitPayment: function () {
+      if (posSetupBlocksCriticalActions() || isCheckingOut || !cart.length) return;
+      setPosSplitModal(true);
+      setPayMode("partial");
+    },
     holdCart: holdCurrentCart,
+    focusSearch: focusPosSearch,
+    clearCart: clearCurrentCart,
+    removeLastRow: removeLastCartRow,
     printA4: function () { saveAndPrintWithMode(state.settings.invoiceDefaultSize || "a4"); },
     printThermal: function () { saveAndPrintWithMode(state.settings.invoiceThermalSize || "thermal80"); },
+    previewA4: function () {
+      setPosPrintPickerIntent("preview");
+      previewWithMode(state.settings.invoiceDefaultSize || "a4");
+    },
+    previewThermal: function () {
+      setPosPrintPickerIntent("preview");
+      previewWithMode(state.settings.invoiceThermalSize || "thermal80");
+    },
     waShareA4: function () {
       var mode = state.settings.invoiceDefaultSize || "a4";
       if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(mode);
@@ -1806,44 +2282,72 @@ var POS = React.memo(function (props) {
         }
         return;
       }
-      var mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
-      var key = e.key.toLowerCase();
-      if (key === "h") {
-        if (s.isRestaurant || (s.cartLength < 1 && s.freeCartLength < 1)) return;
-        e.preventDefault();
-        s.holdCart();
-        return;
-      }
-      if (s.isRestaurant) return;
-      if (s.isQuotationMode) {
-        if (key === "s") {
-          if (!s.canQuotationAction) return;
+      if (!s.isRestaurant) {
+        if (e.key === "F9") {
           e.preventDefault();
-          s.saveQuotationOnly();
-        } else if (key === "p") {
-          if (!s.canQuotationAction) return;
-          e.preventDefault();
-          s.openQuotationPrintPicker();
-        } else if (key === "w") {
-          if (!s.canQuotationAction) return;
-          e.preventDefault();
-          s.openQuotationWhatsApp();
+          if ((s.cartLength > 0 || s.freeCartLength > 0) && s.holdCart) s.holdCart();
+          return;
         }
-        return;
-      }
-      if (key === "s") {
-        if (!s.canCheckout) return;
-        e.preventDefault();
-        s.saveOnly();
-      } else if (key === "p") {
-        if (!s.canCheckout) return;
-        e.preventDefault();
-        s.openPrintPicker();
-      } else if (key === "w") {
-        if (!s.canCheckout) return;
-        e.preventDefault();
-        s.openWhatsApp();
+        if (e.key === "F2") {
+          e.preventDefault();
+          if (s.focusSearch) s.focusSearch();
+          return;
+        }
+        if (e.key === "F3") {
+          e.preventDefault();
+          if (s.focusSearch) s.focusSearch();
+          return;
+        }
+        if (e.key === "F4") {
+          e.preventDefault();
+          if (!s.isQuotationMode && s.cartLength > 0 && s.openSplitPayment) s.openSplitPayment();
+          return;
+        }
+        if (e.key === "F5") {
+          e.preventDefault();
+          if (s.isQuotationMode) {
+            if (s.canQuotationAction) s.openQuotationPrintPicker();
+          } else if (s.canCheckout) {
+            s.saveAndPrint();
+          }
+          return;
+        }
+        if (e.key === "F6") {
+          e.preventDefault();
+          if (s.isQuotationMode) {
+            if (s.canQuotationAction) s.saveQuotationOnly();
+          } else if (s.canCheckout) {
+            s.saveOnly();
+          }
+          return;
+        }
+        if (e.key === "F7") {
+          e.preventDefault();
+          if (s.isQuotationMode) {
+            if (s.cartLength > 0 && s.openQuotationPreviewPicker) s.openQuotationPreviewPicker();
+          } else if (s.cartLength > 0 && s.openPreviewPicker) {
+            s.openPreviewPicker();
+          }
+          return;
+        }
+        if (e.key === "F8") {
+          e.preventDefault();
+          if (s.isQuotationMode) {
+            if (s.canQuotationAction) s.openQuotationWhatsApp();
+          } else if (s.canCheckout) {
+            s.openWhatsApp();
+          }
+          return;
+        }
+        if (e.key === "Delete" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          var tag = (e.target && e.target.tagName) ? String(e.target.tagName).toLowerCase() : "";
+          var typing = tag === "input" || tag === "textarea" || tag === "select" || (e.target && e.target.isContentEditable);
+          if (!typing && s.cartLength > 0 && s.removeLastRow) {
+            e.preventDefault();
+            s.removeLastRow();
+            return;
+          }
+        }
       }
     };
     document.addEventListener("keydown", onKey);
@@ -2127,6 +2631,13 @@ var POS = React.memo(function (props) {
     if (st === "served") return { bg: "#f3f4f6", fg: "#374151" };
     if (st === "billed") return { bg: "#dcfce7", fg: "#166534" };
     return { bg: "#fef3c7", fg: "#92400e" };
+  };
+  var restaurantStatusClass = function (st) {
+    if (st === "preparing") return "preparing";
+    if (st === "ready") return "ready";
+    if (st === "served") return "served";
+    if (st === "billed") return "billed";
+    return "pending";
   };
   var sendToKitchen = function () {
     if (!isRestaurant) return;
@@ -2574,38 +3085,8 @@ var POS = React.memo(function (props) {
         disabled={disabled}
         aria-describedby={opts.ariaDescribedby}
         title={opts.title || ""}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          background: disabled ? "#9ca3af" : "linear-gradient(135deg,#25d366,#128c7e)",
-          color: "#fff",
-          border: "none",
-          borderRadius: 8,
-          padding: "8px 16px 7px",
-          fontSize: 13,
-          fontWeight: 700,
-          cursor: disabled ? "not-allowed" : "pointer",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontFamily: "inherit",
-          letterSpacing: "0.01em",
-          boxShadow: disabled ? "none" : "0 2px 10px rgba(37,211,102,0.35)",
-          opacity: disabled ? 0.45 : 1,
-          transition: "opacity .15s, transform .15s, box-shadow .15s",
-        }}
-        onMouseEnter={function (e) {
-          if (!disabled) {
-            e.currentTarget.style.boxShadow = "0 4px 14px rgba(37,211,102,0.45)";
-            e.currentTarget.style.transform = "translateY(-1px)";
-          }
-        }}
-        onMouseLeave={function (e) {
-          if (!disabled) {
-            e.currentTarget.style.boxShadow = "0 2px 10px rgba(37,211,102,0.35)";
-            e.currentTarget.style.transform = "none";
-          }
-        }}
+        className={"erp-btn erp-btn-full erp-btn-wa" + (disabled ? " erp-btn-disabled" : "")}
+        style={{ opacity: disabled ? 0.45 : 1, cursor: disabled ? "not-allowed" : "default" }}
       >
         <PosWhatsAppBtnContent busy={opts.busy} busyText={opts.busyText} />
       </button>
@@ -2614,83 +3095,14 @@ var POS = React.memo(function (props) {
 
   return (
     <React.Fragment>
+    <div className="erp-pos-shell">
     {clientPosOfflineBar ? (
-      <div
-        role="status"
-        style={{
-          marginBottom: 12,
-          padding: "8px 14px",
-          borderRadius: 8,
-          border: "1px solid #fcd34d",
-          background: "linear-gradient(90deg,#fffbeb,#fef3c7)",
-          color: "#92400e",
-          fontSize: 12,
-          fontWeight: 700,
-          textAlign: "center",
-        }}
-      >
+      <div role="status" className="erp-settings-info erp-settings-info-warn" style={{ marginBottom: 8, justifyContent: "center", fontWeight: 700 }}>
         Offline - sales may sync when connection restores
       </div>
     ) : null}
-    {!isRestaurant && (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
-        <div style={{ display: "flex", gap: 4, background: "#fff", borderRadius: 12, padding: 5, border: "1.5px solid " + C.border, boxShadow: C.shadowCard, alignSelf: "flex-start" }}>
-          {[["sale", "Sales"], ["quotation", "Quotation"]].map(function (t) {
-            var isA = posPageTab === t[0];
-            return (
-              <button
-                key={t[0]}
-                type="button"
-                onClick={function () { switchPosPageTab(t[0]); }}
-                style={{
-                  background: isA ? "linear-gradient(135deg,#2979ff,#2255d4)" : "transparent",
-                  color: isA ? "#fff" : C.textMd,
-                  border: "none",
-                  borderRadius: 8,
-                  padding: "8px 20px",
-                  fontSize: 13,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                  transition: "all .15s",
-                  fontFamily: "inherit",
-                  boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.28)" : "none",
-                }}
-              >
-                {t[1]}
-              </button>
-            );
-          })}
-        </div>
-        <button
-          type="button"
-          onClick={holdCurrentCart}
-          disabled={!cart.length}
-          style={{
-            padding: "10px 16px 9px",
-            borderRadius: 12,
-            border: "1.5px solid " + (!cart.length ? "#f3b7c1" : "#d11a42"),
-            background: !cart.length ? "#fde8ed" : "linear-gradient(135deg,#f04464,#c81e45)",
-            color: !cart.length ? "#b76a78" : "#fff",
-            fontSize: 13,
-            fontWeight: 800,
-            cursor: !cart.length ? "not-allowed" : "pointer",
-            fontFamily: "inherit",
-            boxShadow: !cart.length ? "none" : "0 10px 20px rgba(209,26,66,0.26)",
-            minWidth: 170,
-          }}
-        >
-          <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%" }}>
-            <span style={{ fontSize: 14, lineHeight: 1 }} aria-hidden="true">⏸</span>
-            <PosShortcutBtnContent
-              label={isQuotationMode ? "Hold Quotation" : "Hold Invoice"}
-            />
-          </span>
-        </button>
-      </div>
-    )}
     <form
-      className="erp-page erp-pos"
-      style={{ display: "flex", gap: 16, minHeight: "100%", boxSizing: "border-box", alignItems: "flex-start", margin: 0 }}
+      className={"erp-pos" + (!isRestaurant ? " erp-pos-modern" : "")}
       noValidate
       onSubmit={function (e) {
         e.preventDefault();
@@ -2698,156 +3110,441 @@ var POS = React.memo(function (props) {
       }}
     >
       {/* Left panel */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12, overflowY: "visible" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <Card>
-          <CardTitle sub={isQuotationMode ? ("Quotation: " + quotationNo) : ("Invoice: " + invoiceNo)}>
-            {isQuotationMode
-              ? "New Quotation"
-              : (editingSaleId
-                ? <span>Edit Sale <span style={{ fontSize: 11, fontWeight: 600, background: "#fff3cd", color: "#856404", borderRadius: 5, padding: "2px 7px", marginLeft: 6 }}>EDITING</span></span>
-                : "New Sale")}
-          </CardTitle>
+      <div className="erp-pos-left">
+        <div className="erp-pos-main-card">
+        <Card pad={5}>
           {!isQuotationMode && editingSaleId && (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#fff8e1", border: "1px solid #ffe082", borderRadius: 8, padding: "7px 12px", marginBottom: 8 }}>
-              <span style={{ fontSize: 12, color: "#7c5700" }}>You are editing invoice <b>{invoiceNo}</b>. Save to apply changes or cancel.</span>
-              <button onClick={function () { setEditingSaleId(""); setInvoiceNo(genInvNo()); setCart([]); setCustMode("walkin"); setCustSearch(""); setCustId(""); setDiscount(""); }} style={{ background: "none", border: "1px solid #ffe082", color: "#856404", borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Cancel Edit</button>
+            <div className="erp-pos-edit-banner">
+              <span>You are editing invoice <b>{invoiceNo}</b>. Save to apply changes or cancel.</span>
+              <button type="button" onClick={clearPosSaleEdit} className="erp-pos-seg-btn">Cancel Edit</button>
             </div>
           )}
-          {/* Customer selector */}
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Customer</div>
-            <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-              {[["walkin", "Walk-in"], ["customer", "Customer"]].map(function (item) {
-                var v = item[0]; var l = item[1];
-                var active = v === "walkin" ? custMode === "walkin" : custMode !== "walkin";
-                return <button type="button" key={v} onClick={function () { if (v === "walkin") { setCustMode("walkin"); setCustId(""); setCustSearch(""); setNewCust({ name: "", phone: "", address: "" }); } else { setCustMode("existing"); setCustId(""); if (custMode === "new" && newCust.name) setCustSearch(newCust.name + (newCust.phone ? (" - " + newCust.phone) : "")); } }} style={{ padding: "5px 12px", borderRadius: 5, border: "1px solid " + (active ? C.cyan : C.border), background: active ? "#e0f2fe" : "transparent", color: active ? C.cyan : C.textMd, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>;
-              })}
+          {isQuotationMode && editingQuotationId && (
+            <div className="erp-pos-edit-banner">
+              <span>You are editing quotation <b>{quotationNo}</b>. Save to apply changes or cancel.</span>
+              <button type="button" onClick={function () { setEditingQuotationId(""); resetQuotationForm(); }} className="erp-pos-seg-btn">Cancel Edit</button>
             </div>
-            {custMode !== "walkin" && (
-              <CustomerPicker
-                customers={state.customers}
-                value={custMode === "new" ? (newCust.name + (newCust.phone ? (" - " + newCust.phone) : "")) : custSearch}
-                selectedCustomerId={custId}
-                onValueChange={function (nextValue) {
-                  setCustMode("existing");
-                  setCustSearch(nextValue);
-                  setCustId("");
-                  setNewCust({ name: "", phone: "", address: "" });
-                }}
-                onSelectCustomer={function (c) {
-                  setCustMode("existing");
-                  setCustId(c.id);
-                  setCustSearch(c.name + (c.phone ? (" - " + c.phone) : ""));
-                  setNewCust({ name: "", phone: "", address: "" });
-                }}
-                onCreateCustomer={savePosInlineCustomer}
-                onAfterSelect={focusPosSearch}
-                duplicateNameKeys={posDupNameKeys}
-                normalizeNameKey={normalizePaymentCustomerName}
-                C={C}
-                Input={Input}
-              />
-            )}
-          </div>
-          {/* Product search */}
-          <div style={{ position: "relative", marginBottom: 12 }}>
-            {isRestaurant && (
-              <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
-                {[
-                  { id: "all", label: "All" },
-                  { id: "service", label: "Service" },
-                  { id: "stock", label: "Stock" },
-                ].map(function (f) {
-                  var active = restaurantProductFilter === f.id;
-                  return (
+          )}
+          {!isRestaurant ? (
+            <React.Fragment>
+              <div className="erp-sale-panel erp-sale-panel-entry" style={{ position: "relative" }}>
+                <div className="erp-sale-box-title erp-sale-entry-title-bar">
+                  <div className="erp-pos-mode-tabs erp-pos-mode-tabs-compact">
+                    {[["sale", "Sales"], ["quotation", "Quotation"]].map(function (t) {
+                      var isA = posPageTab === t[0];
+                      return (
+                        <button
+                          key={t[0]}
+                          type="button"
+                          className={"erp-pos-mode-tab" + (isA ? " active" : "")}
+                          onClick={function () { switchPosPageTab(t[0]); }}
+                        >
+                          {t[1]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <span className="erp-pos-header-doc erp-pos-header-doc-in-title">
+                    <span className="erp-pos-header-doc-label">
+                      {isQuotationMode
+                        ? (editingQuotationId ? "Edit Quotation" : "New Quotation")
+                        : (editingSaleId ? "Edit Sale" : "New Sale")}
+                    </span>
+                    <span className="erp-pos-header-doc-sep" aria-hidden="true">·</span>
+                    <span className="erp-pos-header-doc-no">
+                      {isQuotationMode ? quotationNo : invoiceNo}
+                    </span>
+                    {(!isQuotationMode && editingSaleId) || (isQuotationMode && editingQuotationId) ? (
+                      <span className="erp-pos-edit-badge">EDITING</span>
+                    ) : null}
+                    <span className="erp-pos-header-doc-sep" aria-hidden="true">·</span>
+                    <span className="erp-pos-header-doc-date-wrap">
+                      <input
+                        ref={recordDateRef}
+                        type="date"
+                        className="erp-pos-header-doc-date-input"
+                        value={recordDate}
+                        onChange={function (e) { setRecordDate(e.target.value); }}
+                        onClick={openRecordDatePicker}
+                        aria-label="Record date"
+                      />
+                      <span className="erp-pos-header-doc-date-arrow" aria-hidden="true">
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                          <path d="M3 4.5L6 7.5L9 4.5" stroke="#2a5298" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    </span>
+                  </span>
+                </div>
+                <div className="erp-sale-entry-body">
+                <div className="erp-sale-cust-top erp-sale-cust-inline">
+                  <div className="erp-pos-cust-mode">
+                    {[["walkin", "Walk-in"], ["customer", "Customer"]].map(function (item) {
+                      var v = item[0]; var l = item[1];
+                      var active = v === "walkin" ? custMode === "walkin" : custMode !== "walkin";
+                      return (
+                        <button
+                          type="button"
+                          key={v}
+                          className={"erp-sale-cust-toggle" + (active ? " active" : "")}
+                          onClick={function () {
+                            if (v === "walkin") {
+                              setCustMode("walkin");
+                              setCustId("");
+                              setCustSearch("");
+                              setNewCust({ name: "", phone: "", address: "" });
+                              requestProductSearchFocus();
+                            } else {
+                              setCustMode("existing");
+                              setCustId("");
+                              if (custMode === "new" && newCust.name) {
+                                setCustSearch(newCust.name + (newCust.phone ? (" - " + newCust.phone) : ""));
+                              }
+                              focusCustomerPicker();
+                            }
+                          }}
+                        >
+                          {l}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="erp-sale-field erp-sale-field-name">
+                    {custMode === "walkin" ? (
+                      <input type="text" className="erp-sale-cust-input" value="Walk-in Customer" disabled placeholder="Name" aria-label="Name" />
+                    ) : (
+                      <CustomerPicker
+                        customers={state.customers}
+                        value={custMode === "new" ? (newCust.name + (newCust.phone ? (" - " + newCust.phone) : "")) : custSearch}
+                        selectedCustomerId={custId}
+                        focusKey={custFocusKey}
+                        onValueChange={function (nextValue) {
+                          setCustMode("existing");
+                          setCustSearch(nextValue);
+                          setCustId("");
+                          setNewCust({ name: "", phone: "", address: "" });
+                        }}
+                        onSelectCustomer={function (c) {
+                          setCustMode("existing");
+                          setCustId(c.id);
+                          setCustSearch(c.name + (c.phone ? (" - " + c.phone) : ""));
+                          setNewCust({ name: "", phone: "", address: "" });
+                        }}
+                        onCreateCustomer={savePosInlineCustomer}
+                        onAfterSelect={focusPosSearch}
+                        duplicateNameKeys={posDupNameKeys}
+                        normalizeNameKey={normalizePaymentCustomerName}
+                        C={C}
+                        Input={Input}
+                        Modal={Modal}
+                        Btn={Btn}
+                        compact={true}
+                        placeholder="Name"
+                      />
+                    )}
+                  </div>
+                  <div className="erp-sale-field erp-sale-field-phone">
+                    <input
+                      type="text"
+                      className="erp-sale-cust-input"
+                      value={posDisplayPhone}
+                      disabled={custMode !== "new"}
+                      onChange={function (e) {
+                        if (custMode === "new") setNewCust(function (x) { return Object.assign({}, x, { phone: e.target.value }); });
+                      }}
+                      placeholder="Phone"
+                      aria-label="Phone"
+                    />
+                  </div>
+                  <div className="erp-sale-field erp-sale-field-price">
+                    <select
+                      className={!priceLevel ? "erp-sale-select-empty" : ""}
+                      value={priceLevel}
+                      onChange={function (e) { setPriceLevel(e.target.value); }}
+                      aria-label="Price Level"
+                    >
+                      <option value="">Price Level</option>
+                      <option>Default Retail</option>
+                      <option>Wholesale</option>
+                      <option>Special</option>
+                    </select>
+                  </div>
+                  <div className="erp-sale-field erp-sale-field-salesperson">
+                    <select
+                      className={!salesPerson ? "erp-sale-select-empty" : ""}
+                      value={salesPerson}
+                      onChange={function (e) { setSalesPerson(e.target.value); }}
+                      aria-label="Sales Person"
+                    >
+                      <option value="">Sales Person</option>
+                      <option>Default Sales Person</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="erp-sale-product-bar">
+                  <div className="erp-sale-product-search">
+                    <span className="erp-sale-search-ico" aria-hidden="true">⌕</span>
+                    <input
+                      id="pos-product-search"
+                      ref={searchRef}
+                      value={search}
+                      onChange={function (e) {
+                        var val = e.target.value;
+                        setSearch(val);
+                        setShowRecentItems(false);
+                        setPosDropIdx(-1);
+                        if (searchRef.current) {
+                          var r = searchRef.current.getBoundingClientRect();
+                          setDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
+                        }
+                      }}
+                      onKeyDown={function (e) {
+                        var list = filteredProds.slice(0, 10);
+                        if (e.key === "ArrowDown") { e.preventDefault(); setPosDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
+                        if (e.key === "ArrowUp") { e.preventDefault(); setPosDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                        }
+                        if (e.key === "Enter" && list.length > 0) {
+                          var pick = posDropIdx >= 0 ? list[posDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, search); }) || list[0]);
+                          addToCart(pick); setPosDropIdx(-1);
+                        }
+                        if (e.key === "Escape") { setSearch(""); setDropPos(null); setPosDropIdx(-1); setShowRecentItems(false); }
+                      }}
+                      onFocus={function () {
+                        if (searchRef.current) {
+                          var r = searchRef.current.getBoundingClientRect();
+                          setDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
+                        }
+                      }}
+                      onBlur={function () {
+                        setTimeout(function () { setDropPos(null); setShowRecentItems(false); }, 180);
+                      }}
+                      className="erp-pos-search-input"
+                      placeholder="Scan barcode or search product by name, code, category..."
+                    />
+                  </div>
+                  <div className="erp-sale-product-actions">
+                    <button type="button" className="erp-sale-outline-btn" onClick={function () { setShowRecentItems(false); focusPosSearch(); }}>Scan (F2)</button>
                     <button
-                      key={f.id}
                       type="button"
-                      onClick={function () { setRestaurantProductFilter(f.id); }}
-                      style={{
-                        fontSize: 11,
-                        fontWeight: active ? 800 : 700,
-                        padding: "4px 10px",
-                        borderRadius: 999,
-                        border: "1px solid " + (active ? C.accent : C.border),
-                        background: active ? C.accentSoft : "#fff",
-                        color: active ? C.accent : C.textMd,
-                        cursor: "pointer",
-                        fontFamily: "inherit",
+                      className="erp-sale-outline-btn"
+                      onClick={function () {
+                        setShowRecentItems(function (v) { return !v; });
+                        setDropPos(null);
                       }}
                     >
-                      {f.label}
+                      Recent
+                    </button>
+                    <button type="button" className="erp-sale-outline-btn danger" disabled={!cart.length} onClick={clearCurrentCart}>Clear</button>
+                  </div>
+                </div>
+                {showRecentItems ? (
+                  <div className="erp-sale-recent-drop">
+                    {recentPosProducts.length === 0 ? (
+                      <div style={{ padding: "12px 14px", fontSize: 12, color: C.muted }}>No recent sale items yet</div>
+                    ) : recentPosProducts.map(function (p) {
+                      return (
+                        <div
+                          key={"recent-" + p.id}
+                          className="erp-sale-recent-item"
+                          onMouseDown={function (e) {
+                            e.preventDefault();
+                            addToCart(p);
+                            setShowRecentItems(false);
+                          }}
+                        >
+                          <span style={{ fontWeight: 600 }}>{p.name}</span>
+                          <span style={{ color: C.accent, fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(p.price)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {isNetworkClientPos && (state.products || []).length === 0 ? (
+                  <div className="erp-pos-inline-alert warn" style={{ marginTop: 8 }}>
+                    No products synced from the main PC yet. On the <strong>main PC</strong>, open Settings → Network → <strong>Upload Shop Data to Server</strong>, then wait a few seconds.
+                  </div>
+                ) : null}
+                {isNetworkClientPos && search && (state.products || []).length > 0 && filteredProds.length === 0 ? (
+                  <div className="erp-pos-inline-alert info" style={{ marginTop: 8 }}>
+                    No matching products. Try another search term or check stock on the main PC.
+                  </div>
+                ) : null}
+                {search && filteredProds.length > 0 && dropPos ? (
+                  <div className="erp-pos-dropdown" style={{ top: dropPos.top + 2, left: dropPos.left, width: dropPos.width }}>
+                    <div style={{ padding: "6px 14px 4px", fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid " + C.borderLight }}>
+                      {filteredProds.length} product{filteredProds.length > 1 ? "s" : ""} found — Enter adds · then Price → Qty → Search
+                    </div>
+                    {filteredProds.slice(0, 10).map(function (p, pidx) {
+                      var isService = isServiceProduct(p);
+                      var oos = !isService && (p.stock || 0) === 0;
+                      return (
+                        <div key={p.id} onMouseDown={function (e) { e.preventDefault(); addToCart(p); setPosDropIdx(-1); }}
+                          style={{ padding: "9px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: posDropIdx === pidx ? C.accentSoft : "#fff", opacity: (oos && !isQuotationMode) ? 0.65 : 1 }}
+                          onMouseEnter={function () { setPosDropIdx(pidx); }}
+                          onMouseLeave={function () { setPosDropIdx(-1); }}>
+                          <div>
+                            <span style={{ fontWeight: 600, color: C.text }}>{p.name}</span>
+                            {p.barcode && <span style={{ marginLeft: 8, fontSize: 11, color: C.muted, fontFamily: "monospace" }}>{p.barcode}</span>}
+                            {isService && <span className="erp-pos-badge service">SERVICE</span>}
+                            {oos && <span className="erp-pos-badge oos">OUT OF STOCK</span>}
+                          </div>
+                          <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                            <span style={{ color: C.accent, fontWeight: 700 }}>{getCurrencySymbol()} {(isService && !(Number(p.price) > 0)) ? "—" : fmtNum(glassCartLayout && isGlassProduct(p, shopSettings) ? getGlassSellRatePerSqFt(p) : p.price)}{glassCartLayout && isGlassProduct(p, shopSettings) ? " / Sq Ft" : ""}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                </div>
+              </div>
+            </React.Fragment>
+          ) : (
+          <div className="erp-pos-entry-grid">
+            <div className="erp-pos-entry-labels">
+              <div className="erp-pos-field-label">Customer</div>
+              <label className="erp-pos-field-label" htmlFor="pos-product-search">Add product</label>
+            </div>
+
+            <div className="erp-pos-entry-controls">
+              <div className="erp-pos-seg-group erp-pos-cust-mode">
+                {[["walkin", "Walk-in"], ["customer", "Customer"]].map(function (item) {
+                  var v = item[0]; var l = item[1];
+                  var active = v === "walkin" ? custMode === "walkin" : custMode !== "walkin";
+                  return (
+                    <button
+                      type="button"
+                      key={v}
+                      className={"erp-pos-seg-btn" + (active ? " active" : "")}
+                      onClick={function () {
+                        if (v === "walkin") {
+                          setCustMode("walkin");
+                          setCustId("");
+                          setCustSearch("");
+                          setNewCust({ name: "", phone: "", address: "" });
+                          requestProductSearchFocus();
+                        } else {
+                          setCustMode("existing");
+                          setCustId("");
+                          if (custMode === "new" && newCust.name) {
+                            setCustSearch(newCust.name + (newCust.phone ? (" - " + newCust.phone) : ""));
+                          }
+                          focusCustomerPicker();
+                        }
+                      }}
+                    >
+                      {l}
                     </button>
                   );
                 })}
               </div>
-            )}
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em" }}>Add Product (name, ID, barcode, or category)</label>
-              <input
-                ref={searchRef}
-                value={search}
-                onChange={function (e) {
-                  var val = e.target.value;
-                  setSearch(val);
-                  setPosDropIdx(-1);
-                  if (searchRef.current) {
-                    var r = searchRef.current.getBoundingClientRect();
-                    setDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
-                  }
-                }}
-                onKeyDown={function (e) {
-                  var list = filteredProds.slice(0, 10);
-                  if (e.key === "ArrowDown") { e.preventDefault(); setPosDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
-                  if (e.key === "ArrowUp") { e.preventDefault(); setPosDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                  }
-                  if (e.key === "Enter" && list.length > 0) {
-                    var pick = posDropIdx >= 0 ? list[posDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, search); }) || list[0]);
-                    addToCart(pick); setPosDropIdx(-1);
-                  }
-                  if (e.key === "Escape") { setSearch(""); setDropPos(null); setPosDropIdx(-1); }
-                }}
-                onFocus={function (e) {
-                  if (isRestaurantDineIn && selectedTableLocked) {
-                    var nextFreeTable = restaurantTables.find(function (t) {
-                      return t && t.id && getRestaurantTableComputedStatus(t.id, t.status) === "free";
-                    });
-                    if (nextFreeTable && nextFreeTable.id && nextFreeTable.id !== selectedTableId) {
-                      handleRestaurantTablePick(nextFreeTable.id);
-                      setRestaurantToast("Switched to free table " + getRestaurantTableDisplayName(nextFreeTable.id));
+
+              <div className="erp-pos-product-field">
+                <div className="erp-pos-filter-bar">
+                  {[
+                    { id: "all", label: "All" },
+                    { id: "service", label: "Service" },
+                    { id: "stock", label: "Stock" },
+                  ].map(function (f) {
+                    var active = restaurantProductFilter === f.id;
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        className={"erp-pos-chip-btn" + (active ? " active" : "")}
+                        onClick={function () { setRestaurantProductFilter(f.id); }}
+                      >
+                        {f.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <input
+                  id="pos-product-search"
+                  ref={searchRef}
+                  value={search}
+                  onChange={function (e) {
+                    var val = e.target.value;
+                    setSearch(val);
+                    setPosDropIdx(-1);
+                    if (searchRef.current) {
+                      var r = searchRef.current.getBoundingClientRect();
+                      setDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
                     }
-                  }
-                  e.target.style.borderColor = "#2979ff";
-                  e.target.style.boxShadow = "0 0 0 3px rgba(41,121,255,0.12)";
-                  if (searchRef.current) {
-                    var r = searchRef.current.getBoundingClientRect();
-                    setDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
-                  }
-                }}
-                onBlur={function (e) {
-                  e.target.style.borderColor = C.border;
-                  e.target.style.boxShadow = "none";
-                  setTimeout(function () { setDropPos(null); }, 180);
-                }}
-                placeholder="Type name, ID, barcode, category, or scan..."
-                style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s" }}
-              />
-              {isNetworkClientPos && (state.products || []).length === 0 && (
-                <div style={{ marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "#fff7ed", border: "1px solid #fdba74", fontSize: 12, color: "#9a3412", lineHeight: 1.5 }}>
-                  No products synced from the main PC yet. On the <strong>main PC</strong>, open Settings → Network → <strong>Upload Shop Data to Server</strong>, then wait a few seconds. Products appear here when you search by name, ID, or barcode.
-                </div>
-              )}
-              {isNetworkClientPos && search && (state.products || []).length > 0 && filteredProds.length === 0 && (
-                <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 8, background: "#f8fafc", border: "1px solid " + C.border, fontSize: 12, color: C.muted }}>
-                  No matching products. Try another search term or check stock on the main PC.
-                </div>
-              )}
+                  }}
+                  onKeyDown={function (e) {
+                    var list = filteredProds.slice(0, 10);
+                    if (e.key === "ArrowDown") { e.preventDefault(); setPosDropIdx(function (i) { return Math.min(i + 1, list.length - 1); }); return; }
+                    if (e.key === "ArrowUp") { e.preventDefault(); setPosDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                    }
+                    if (e.key === "Enter" && list.length > 0) {
+                      var pick = posDropIdx >= 0 ? list[posDropIdx] : (list.find(function (p) { return productMatchesSearchExact(p, search); }) || list[0]);
+                      addToCart(pick); setPosDropIdx(-1);
+                    }
+                    if (e.key === "Escape") { setSearch(""); setDropPos(null); setPosDropIdx(-1); }
+                  }}
+                  onFocus={function () {
+                    if (isRestaurantDineIn && selectedTableLocked) {
+                      var nextFreeTable = restaurantTables.find(function (t) {
+                        return t && t.id && getRestaurantTableComputedStatus(t.id, t.status) === "free";
+                      });
+                      if (nextFreeTable && nextFreeTable.id && nextFreeTable.id !== selectedTableId) {
+                        handleRestaurantTablePick(nextFreeTable.id);
+                        setRestaurantToast("Switched to free table " + getRestaurantTableDisplayName(nextFreeTable.id));
+                      }
+                    }
+                    if (searchRef.current) {
+                      var r = searchRef.current.getBoundingClientRect();
+                      setDropPos({ top: r.bottom + window.scrollY, left: r.left + window.scrollX, width: r.width });
+                    }
+                  }}
+                  onBlur={function () {
+                    setTimeout(function () { setDropPos(null); }, 180);
+                  }}
+                  className="erp-pos-search-input"
+                  placeholder="Name, ID, barcode, category, or scan..."
+                />
+              </div>
             </div>
-            {search && filteredProds.length > 0 && dropPos && (
-              <div style={{ position: "fixed", top: dropPos.top + 2, left: dropPos.left, width: dropPos.width, background: "#fff", border: "1px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 260, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.14)" }}>
+
+            {custMode !== "walkin" ? (
+              <div className="erp-pos-entry-picker">
+                <CustomerPicker
+                  customers={state.customers}
+                  value={custMode === "new" ? (newCust.name + (newCust.phone ? (" - " + newCust.phone) : "")) : custSearch}
+                  selectedCustomerId={custId}
+                  focusKey={custFocusKey}
+                  onValueChange={function (nextValue) {
+                    setCustMode("existing");
+                    setCustSearch(nextValue);
+                    setCustId("");
+                    setNewCust({ name: "", phone: "", address: "" });
+                  }}
+                  onSelectCustomer={function (c) {
+                    setCustMode("existing");
+                    setCustId(c.id);
+                    setCustSearch(c.name + (c.phone ? (" - " + c.phone) : ""));
+                    setNewCust({ name: "", phone: "", address: "" });
+                  }}
+                  onCreateCustomer={savePosInlineCustomer}
+                  onAfterSelect={focusPosSearch}
+                  duplicateNameKeys={posDupNameKeys}
+                  normalizeNameKey={normalizePaymentCustomerName}
+                  C={C}
+                  Input={Input}
+                  Modal={Modal}
+                  Btn={Btn}
+                />
+              </div>
+            ) : null}
+
+            {search && filteredProds.length > 0 && dropPos ? (
+              <div className="erp-pos-dropdown" style={{ top: dropPos.top + 2, left: dropPos.left, width: dropPos.width }}>
                 <div style={{ padding: "6px 14px 4px", fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", borderBottom: "1px solid " + C.borderLight }}>
                   {filteredProds.length} product{filteredProds.length > 1 ? "s" : ""} found — Enter adds · then Price → Qty → Search
                 </div>
@@ -2857,43 +3554,74 @@ var POS = React.memo(function (props) {
                   return (
                     <div key={p.id} onMouseDown={function (e) { e.preventDefault(); if (selectedTableLocked) return; addToCart(p); setPosDropIdx(-1); }}
                       style={{ padding: "9px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f1f5f9", display: "flex", justifyContent: "space-between", alignItems: "center", background: posDropIdx === pidx ? C.accentSoft : "#fff", opacity: (oos && !isQuotationMode) ? 0.65 : 1 }}
-                      onMouseEnter={function (e) { setPosDropIdx(pidx); }}
-                      onMouseLeave={function (e) { setPosDropIdx(-1); }}>
+                      onMouseEnter={function () { setPosDropIdx(pidx); }}
+                      onMouseLeave={function () { setPosDropIdx(-1); }}>
                       <div>
                         <span style={{ fontWeight: 600, color: C.text }}>{p.name}</span>
                         {p.barcode && <span style={{ marginLeft: 8, fontSize: 11, color: C.muted, fontFamily: "monospace" }}>{p.barcode}</span>}
-                        {isService && <span style={{ marginLeft: 6, fontSize: 10, background: "#e0f2fe", color: "#0369a1", padding: "1px 6px", borderRadius: 10, fontWeight: 700 }}>SERVICE</span>}
-                        {oos && <span style={{ marginLeft: 6, fontSize: 10, background: "#fee2e2", color: C.red, padding: "1px 6px", borderRadius: 10, fontWeight: 700 }}>OUT OF STOCK</span>}
+                        {isService && <span className="erp-pos-badge service">SERVICE</span>}
+                        {oos && <span className="erp-pos-badge oos">OUT OF STOCK</span>}
                       </div>
                       <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
                         <span style={{ color: C.accent, fontWeight: 700 }}>{getCurrencySymbol()} {(isService && !(Number(p.price) > 0)) ? "—" : fmtNum(glassCartLayout && isGlassProduct(p, shopSettings) ? getGlassSellRatePerSqFt(p) : p.price)}{glassCartLayout && isGlassProduct(p, shopSettings) ? " / Sq Ft" : ""}</span>
-                        {isService
-                          ? <span style={{ color: C.muted, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>(service item)</span>
-                          : (!oos && <span style={{ color: C.muted, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>({glassCartLayout && isGlassProduct(p, shopSettings) ? (fmtNum(glassAvailableSqFt(p)) + " Sq Ft left") : (getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit) + " left")})</span>)}
                       </div>
                     </div>
                   );
                 })}
               </div>
-            )}
+            ) : null}
           </div>
-          {/* Cart ? keyboard navigable like a spreadsheet */}
+          )}
+          {/* Cart — keyboard navigable like a spreadsheet */}
+          <div className={"erp-pos-cart-area" + (!isRestaurant && cart.length === 0 ? " is-empty" : "")}>
+          <div className={!isRestaurant ? "erp-sale-cart-scroll" : undefined}>
+          {!isRestaurant && cart.length === 0 ? (
+            <React.Fragment>
+              <table className="erp-sale-table erp-sale-excel-table" style={{ width: "100%", tableLayout: "fixed" }}>
+                <colgroup>
+                  <col />
+                  {posLineCommentsEnabled ? <col style={{ width: 150 }} /> : null}
+                  <col style={{ width: 128 }} />
+                  <col style={{ width: 72 }} />
+                  <col style={{ width: 100 }} />
+                  <col style={{ width: 28 }} />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th className="erp-sale-excel-th left">Item</th>
+                    {posLineCommentsEnabled ? <th className="erp-sale-excel-th left">Note</th> : null}
+                    <th className="erp-sale-excel-th ctr">Price</th>
+                    <th className="erp-sale-excel-th ctr">Qty</th>
+                    <th className="erp-sale-excel-th num">Total</th>
+                    <th className="erp-sale-excel-th ctr"> </th>
+                  </tr>
+                </thead>
+              </table>
+              <div className="erp-pos-empty-cart">
+                <div className="erp-sale-empty-ico" aria-hidden="true">🛒</div>
+                <div className="erp-pos-empty-title">No items added</div>
+                <div className="erp-pos-empty-sub">Scan or search products above to build the invoice</div>
+              </div>
+            </React.Fragment>
+          ) : null}
           {cart.length > 0 && (
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6, tableLayout: "fixed", transform: cartPulse ? "scale(1.01)" : "scale(1)", transformOrigin: "50% 0%", transition: "transform .14s ease" }}>
+            <table className={!isRestaurant ? "erp-sale-excel-table" : undefined} style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, marginBottom: 6, tableLayout: "fixed" }}>
               <colgroup>
                 <col />
-                <col style={{ width: glassCartLayout ? 160 : 168 }} />
-                <col style={{ width: glassCartLayout ? 248 : 120 }} />
-                <col style={{ width: 88 }} />
-                <col style={{ width: isRestaurant ? 48 : 30 }} />
+                {!isRestaurant && posLineCommentsEnabled && !glassCartLayout ? <col style={{ width: 150 }} /> : null}
+                <col style={{ width: glassCartLayout ? 150 : 128 }} />
+                <col style={{ width: glassCartLayout ? 240 : 72 }} />
+                <col style={{ width: 100 }} />
+                <col style={{ width: isRestaurant ? 48 : 28 }} />
               </colgroup>
               <thead>
-                <tr style={{ background: "#f8fafc" }}>
-                  <th style={{ textAlign: "left", padding: "3px 6px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>Item</th>
-                  <th style={{ textAlign: "center", padding: "3px 5px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout ? (cartMixedGlassLayout ? "Price" : "Rate / Sq Ft") : "Price"}</th>
-                  <th style={{ textAlign: "center", padding: "3px 5px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>{glassCartLayout && !cartMixedGlassLayout ? "W · H · Unit · Pcs" : (glassCartLayout ? "Qty / Cut" : "Qty")}</th>
-                  <th style={{ textAlign: "right", padding: "3px 6px", fontWeight: 700, color: C.th, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid " + C.border, whiteSpace: "nowrap" }}>Total</th>
-                  <th style={{ padding: "3px 4px", borderBottom: "1px solid " + C.border }}></th>
+                <tr className="erp-sale-excel-head">
+                  <th className="erp-sale-excel-th left">Item</th>
+                  {!isRestaurant && posLineCommentsEnabled && !glassCartLayout ? <th className="erp-sale-excel-th left">Note</th> : null}
+                  <th className="erp-sale-excel-th ctr">{glassCartLayout ? (cartMixedGlassLayout ? "Price" : "Rate / Sq Ft") : "Price"}</th>
+                  <th className="erp-sale-excel-th ctr">{glassCartLayout && !cartMixedGlassLayout ? "W · H · Unit · Pcs" : (glassCartLayout ? "Qty / Cut" : "Qty")}</th>
+                  <th className="erp-sale-excel-th num">Total</th>
+                  <th className="erp-sale-excel-th ctr"> </th>
                 </tr>
               </thead>
               <tbody>
@@ -2904,7 +3632,6 @@ var POS = React.memo(function (props) {
                     ? getGlassCostPerSqFt(prodRow)
                     : (prodRow ? getPosCostPerSaleUnit(prodRow, saleU) : (item.cost || 0));
                   var showLineComment = !isRestaurant && !item.isGlassLine && posLineCommentsEnabled;
-                  var commentInDetail = showLineComment;
                   var unitForDetail = item.saleUnit || item.unit || "Pcs";
                   var prodForDetail = state.products.find(function (p) { return p.id === item.id; });
                   var unitRowsForDetail = prodForDetail ? getProductUnitRows(prodForDetail) : [];
@@ -2916,48 +3643,108 @@ var POS = React.memo(function (props) {
                   var convHintForDetail = fCurForDetail != null && fCurForDetail > 1
                     ? "1 " + unitForDetail + " = " + (fCurForDetail % 1 === 0 ? fCurForDetail : parseFloat(fCurForDetail.toFixed(4))) + " " + baseUForDetail
                     : null;
-                  var hasNonGlassExtras = !item.isGlassLine && (hasSecondaryForDetail || quickAmtsForDetail.length > 0 || !!prodForDetail || !!convHintForDetail);
+                  var needsUnitExtras = !item.isGlassLine && (hasSecondaryForDetail || quickAmtsForDetail.length > 0 || !!convHintForDetail);
                   var isNewestRow = i === 0;
-                  var rowBg = isNewestRow ? "#eef5ff" : "#fafbfc";
-                  var detailBg = isNewestRow ? "#f3f8ff" : "#f4f6f9";
-                  var hasDetailRow = item.isGlassLine || commentInDetail || hasNonGlassExtras;
-                  var cartQtyInputStyle = Object.assign({}, glassCartFieldStyle(C), { width: 56, maxWidth: "100%", margin: "0 auto", fontSize: 12, fontWeight: 700 });
+                  var hasDetailRow = item.isGlassLine || needsUnitExtras;
+                  var cartQtyInputStyle = Object.assign({}, glassCartFieldStyle(C), { width: 52, maxWidth: "100%", margin: "0 auto", fontSize: 11, fontWeight: 700, height: 24, minHeight: 24, lineHeight: 1, padding: "0 4px" });
+                  var stockLeftLabel = "";
+                  var stockAfterLabel = "";
+                  if (prodForDetail && !isRestaurant) {
+                    stockLeftLabel = getBulkDisplayParts(prodForDetail)
+                      ? fmtStockDual(prodForDetail)
+                      : fmtStock(prodForDetail.stock || 0, prodForDetail.unit || "Pcs");
+                    stockAfterLabel = fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForDetail, cart, freeCart), prodForDetail);
+                  }
+                  var stockHint = stockLeftLabel
+                    ? (stockLeftLabel + " left → " + stockAfterLabel + " after sale")
+                    : "";
                   return (
                     <React.Fragment key={String(cartLineKey(item)) + "-" + i}>
-                    <tr style={{ borderBottom: hasDetailRow ? "none" : ("1px solid " + C.border), background: rowBg, boxShadow: isNewestRow ? ("inset 2px 0 0 " + C.accent) : "none" }}
-                      onMouseEnter={function (e) { e.currentTarget.style.background = isNewestRow ? "#e5efff" : "#f3f7ff"; }}
-                      onMouseLeave={function (e) { e.currentTarget.style.background = rowBg; }}>
-                      <td style={{ padding: "2px 6px", fontSize: 12, verticalAlign: "middle", lineHeight: 1.25 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap", minHeight: GLASS_CART_FIELD_H }}>
-                          <div style={{ fontWeight: 600, color: C.text, fontSize: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.name}</div>
-                          {isNewestRow ? (
-                            <span style={{ fontSize: 8, fontWeight: 800, color: "#fff", background: C.accent, padding: "1px 5px", borderRadius: 999, letterSpacing: "0.06em", textTransform: "uppercase", flexShrink: 0 }}>Adding</span>
-                          ) : null}
-                        </div>
-                        {item.description && <div style={{ fontSize: 9, color: C.muted, marginTop: 1, lineHeight: 1.2 }}>{item.description}</div>}
-                        {isRestaurant && (
-                          <div style={{ marginTop: 6, maxWidth: 220 }}>
-                            <div style={{ fontSize: 10, fontWeight: 700, color: C.textMd, marginBottom: 3 }}>
-                              Modifier
+                    <tr className={"erp-pos-cart-row" + (isNewestRow ? " newest" : "") + (hasDetailRow ? "" : " no-detail")}>
+                      <td className="erp-sale-excel-td item">
+                        <div className="erp-sale-cart-item" title={stockHint || undefined}>
+                          <div className="erp-sale-cart-item-main">
+                            <div className="erp-sale-cart-item-top">
+                              <div className="erp-sale-cart-item-name">{item.name}</div>
+                              {!isDecimalUnit(item.unit) && item.unit && item.unit !== "Pcs" ? (
+                                <span className="erp-sale-cart-item-unit">{item.unit}</span>
+                              ) : null}
                             </div>
-                            <input
-                              type="text"
-                              data-cartrow={i}
-                              data-cartcol="2"
-                              value={item.restaurantNote || ""}
-                              disabled={selectedTableLocked}
-                              onChange={function (e) { setCartItemRestaurantNote(cartLineKey(item), e.target.value); }}
-                              onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
-                              placeholder="No onion / Extra spicy / Less sugar"
-                              style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit", outline: "none" }}
-                            />
+                            {stockLeftLabel ? (
+                              <div className="erp-sale-cart-stock">
+                                <span>{stockLeftLabel} left</span>
+                                <span className="erp-sale-cart-stock-sep">·</span>
+                                <span>{stockAfterLabel} after sale</span>
+                              </div>
+                            ) : null}
+                            {item.description ? <div className="erp-sale-cart-item-desc">{item.description}</div> : null}
+                            {isRestaurant && (
+                              <div className="erp-pos-cart-modifier-wrap">
+                                <div className="erp-pos-cart-modifier-label">modifier</div>
+                                <input
+                                  type="text"
+                                  className="erp-pos-cart-modifier-input"
+                                  data-cartrow={i}
+                                  data-cartcol="2"
+                                  value={item.restaurantNote || ""}
+                                  disabled={selectedTableLocked}
+                                  onChange={function (e) { setCartItemRestaurantNote(cartLineKey(item), e.target.value); }}
+                                  onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
+                                  placeholder="No onion / Extra spicy / Less sugar"
+                                />
+                              </div>
+                            )}
+                            {showLineComment && glassCartLayout ? (
+                              <input
+                                type="text"
+                                className="erp-pos-cart-comment-input erp-sale-cart-comment"
+                                data-cartrow={i}
+                                data-cartcol="2"
+                                value={item.comment || ""}
+                                disabled={selectedTableLocked}
+                                onChange={function (e) {
+                                  var lk = cartLineKey(item);
+                                  setCart(function (prev) {
+                                    return prev.map(function (x) {
+                                      if (cartLineKey(x) !== lk) return x;
+                                      return Object.assign({}, x, { comment: e.target.value });
+                                    });
+                                  });
+                                }}
+                                onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
+                                placeholder="Serial / note…"
+                                title={stockHint || "Serial / IMEI / note"}
+                              />
+                            ) : null}
                           </div>
-                        )}
-                        {!isDecimalUnit(item.unit) && item.unit && item.unit !== "Pcs" && (
-                          <div style={{ fontSize: 9, color: C.accent, fontWeight: 700 }}>{item.unit}</div>
-                        )}
+                          {isNewestRow ? <span className="erp-pos-badge adding">New</span> : null}
+                        </div>
                       </td>
-                      <td style={{ padding: "2px 5px", verticalAlign: "middle", textAlign: "center", width: glassCartLayout ? 160 : 168, overflow: "hidden" }}>
+                      {showLineComment && !glassCartLayout ? (
+                        <td className="erp-sale-excel-td note">
+                          <input
+                            type="text"
+                            className="erp-pos-cart-comment-input erp-sale-cart-comment"
+                            data-cartrow={i}
+                            data-cartcol="2"
+                            value={item.comment || ""}
+                            disabled={selectedTableLocked}
+                            onChange={function (e) {
+                              var lk = cartLineKey(item);
+                              setCart(function (prev) {
+                                return prev.map(function (x) {
+                                  if (cartLineKey(x) !== lk) return x;
+                                  return Object.assign({}, x, { comment: e.target.value });
+                                });
+                              });
+                            }}
+                            onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
+                            placeholder="Serial / note…"
+                            title={stockHint || "Serial / IMEI / note"}
+                          />
+                        </td>
+                      ) : null}
+                      <td className="erp-sale-excel-td price">
                         {item.isGlassLine ? (
                         <GlassRateInput
                           C={C}
@@ -3013,11 +3800,7 @@ var POS = React.memo(function (props) {
                         />
                         )}
                       </td>
-                      <td style={{
-                        padding: "2px 5px",
-                        verticalAlign: "middle",
-                        textAlign: "center",
-                      }}>
+                      <td className="erp-sale-excel-td qty">
                         {item.isGlassLine ? (
                           <GlassCutFields
                             item={item}
@@ -3045,62 +3828,38 @@ var POS = React.memo(function (props) {
                             onFocus={function (e) { e.target.select(); }}
                             onKeyDown={function (e) { handleCartFieldKey(e, i, 1); }}
                             style={cartQtyInputStyle}
-                            onFocusCapture={function (e) { e.target.style.border = "1px solid " + C.accent; e.target.style.background = "#f0f4ff"; }}
-                            onBlur={function (e) { e.target.style.border = "1px solid " + C.border; e.target.style.background = "#fff"; }}
+                            onFocusCapture={function (e) { e.target.style.border = "1px solid #1a4fa0"; e.target.style.background = "#f0f4ff"; }}
+                            onBlur={function (e) { e.target.style.border = "1px solid #7a9fd4"; e.target.style.background = "#fff"; }}
                           />
                         )}
                       </td>
-                      <td style={{ padding: "2px 6px", fontWeight: 700, color: C.blue, fontSize: 12, whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "right", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis" }}>{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
-                      <td style={{ padding: "2px 2px", whiteSpace: "nowrap", verticalAlign: "middle", textAlign: "center", width: isRestaurant ? 48 : 30 }}>
+                      <td className="erp-sale-excel-td total">{getCurrencySymbol()} {fmtNum(posLineAmount(item))}</td>
+                      <td className="erp-sale-excel-td actions">
                         {isRestaurant && (
                           <button
                             type="button"
+                            className="erp-pos-cart-dup-btn"
                             disabled={selectedTableLocked}
                             onClick={function () { duplicateCartItem(cartLineKey(item)); }}
                             title="Duplicate item"
-                            style={{ background: "#eef2ff", border: "1px solid " + C.border, color: C.accent, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 800, lineHeight: 1, padding: "2px 5px", borderRadius: 6, opacity: selectedTableLocked ? 0.5 : 1, marginRight: 2 }}
                           >
                             +
                           </button>
                         )}
                         <button
                           type="button"
+                          className="erp-pos-cart-remove-btn"
                           disabled={selectedTableLocked}
                           onClick={function () { updateQty(cartLineKey(item), 0); }}
                           title="Remove item"
                           aria-label="Remove item"
-                          style={{ background: "none", border: "none", color: C.red, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontSize: 17, fontWeight: 700, lineHeight: 1, padding: 0, width: 22, height: 22, opacity: selectedTableLocked ? 0.5 : 1 }}
                         >×</button>
                       </td>
                     </tr>
                     {hasDetailRow ? (
-                      <tr style={{ borderBottom: "1px solid " + C.border, background: detailBg }}>
-                        <td colSpan={5} style={{ padding: "3px 8px 5px", verticalAlign: "top" }}>
+                      <tr className={"erp-pos-cart-detail-row" + (isNewestRow ? " newest" : "")}>
+                        <td colSpan={(!isRestaurant && posLineCommentsEnabled && !glassCartLayout) ? 6 : 5} style={{ padding: "3px 8px 5px", verticalAlign: "top" }}>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-start" }}>
-                            {commentInDetail && (
-                              <div style={{ flex: "1 1 180px", minWidth: 140, maxWidth: 280 }}>
-                                <div style={{ fontSize: 8, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>{DEFAULT_PRODUCT_COMMENT_LABEL}</div>
-                                <input
-                                  type="text"
-                                  data-cartrow={i}
-                                  data-cartcol="2"
-                                  value={item.comment || ""}
-                                  disabled={selectedTableLocked}
-                                  onChange={function (e) {
-                                    var lk = cartLineKey(item);
-                                    setCart(function (prev) {
-                                      return prev.map(function (x) {
-                                        if (cartLineKey(x) !== lk) return x;
-                                        return Object.assign({}, x, { comment: e.target.value });
-                                      });
-                                    });
-                                  }}
-                                  onKeyDown={function (e) { handleCartFieldKey(e, i, 2); }}
-                                  placeholder="Serial, IMEI, note…"
-                                  style={{ width: "100%", boxSizing: "border-box", border: "1px solid " + C.border, borderRadius: 4, padding: "3px 6px", fontSize: 11, fontFamily: "inherit", outline: "none", background: "#fff", height: 24 }}
-                                />
-                              </div>
-                            )}
                             {item.price < lineCost && (
                               <div style={{ fontSize: 9, color: C.red, fontWeight: 700, alignSelf: "center" }}>Below cost</div>
                             )}
@@ -3117,18 +3876,19 @@ var POS = React.memo(function (props) {
                                 />
                               </div>
                             ) : null}
-                            {hasNonGlassExtras ? (
+                            {needsUnitExtras ? (
                               <div style={{ flex: "1 1 280px" }}>
                                 {hasSecondaryForDetail && (
                                   <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 6 }}>
                                     <span style={{ fontSize: 10, fontWeight: 700, color: C.textMd }}>Unit</span>
-                                    <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "3px 4px", background: "#f1f5f9", borderRadius: 8, border: "1px solid " + C.borderLight }}>
+                                    <div className="erp-pos-unit-seg-bar">
                                       {unitOptsForDetail.map(function (uOpt) {
                                         var activeUnit = unitForDetail === uOpt;
                                         return (
                                           <button
                                             key={uOpt}
                                             type="button"
+                                            className={"erp-pos-unit-seg-btn" + (activeUnit ? " active" : "")}
                                             onClick={function () {
                                               if (selectedTableLocked) return;
                                               setCart(function (prev) {
@@ -3143,10 +3903,6 @@ var POS = React.memo(function (props) {
                                                 });
                                               });
                                             }}
-                                            style={{
-                                              fontSize: 11, padding: "4px 8px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 700,
-                                              background: activeUnit ? "#3b82f6" : "#fff", color: activeUnit ? "#fff" : "#4b5563", whiteSpace: "nowrap"
-                                            }}
                                             disabled={selectedTableLocked}
                                           >
                                             {uOpt}
@@ -3159,6 +3915,7 @@ var POS = React.memo(function (props) {
                                         <button
                                           key={"qb-d-" + r.name}
                                           type="button"
+                                          className="erp-pos-qty-pack-btn"
                                           onClick={function () {
                                             if (selectedTableLocked) return;
                                             setCart(function (prev) {
@@ -3175,7 +3932,7 @@ var POS = React.memo(function (props) {
                                               });
                                             });
                                           }}
-                                          style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", color: C.accent, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" }}
+                                          disabled={selectedTableLocked}
                                         >
                                           +1 {r.name}
                                         </button>
@@ -3191,29 +3948,12 @@ var POS = React.memo(function (props) {
                                     {quickAmtsForDetail.map(function (qa) {
                                       var active = item.qty === qa.qty;
                                       return (
-                                        <button key={qa.label} disabled={selectedTableLocked} onClick={function () { updateQty(cartLineKey(item), qa.qty); }} style={{
-                                          fontSize: 9, padding: "2px 6px", borderRadius: 10,
-                                          border: "1px solid " + (active ? C.accent : C.border),
-                                          background: active ? C.accentSoft : "#fff",
-                                          color: active ? C.accent : C.muted,
-                                          fontWeight: active ? 800 : 600,
-                                          cursor: selectedTableLocked ? "not-allowed" : "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
-                                          opacity: selectedTableLocked ? 0.5 : 1,
-                                        }}>{qa.label}</button>
+                                        <button key={qa.label} type="button" disabled={selectedTableLocked} className={"erp-pos-qty-quick-btn" + (active ? " active" : "")} onClick={function () { updateQty(cartLineKey(item), qa.qty); }}>{qa.label}</button>
                                       );
                                     })}
                                   </div>
                                 )}
-                                {prodForDetail && (
-                                  <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.35 }}>
-                                    <span style={{ fontWeight: 600, color: C.textMd }}>Stock:</span>{" "}
-                                    {getBulkDisplayParts(prodForDetail) ? fmtStockDual(prodForDetail) : fmtStock(prodForDetail.stock || 0, prodForDetail.unit || "Pcs")}
-                                    {" | "}
-                                    <span style={{ fontWeight: 600, color: C.textMd }}>After sale:</span>{" "}
-                                    {fmtDualFromPcs(remainingPcsAfterCartForProduct(prodForDetail, cart, freeCart), prodForDetail)}
-                                  </div>
-                                )}
-                              </div>
+</div>
                             ) : null}
                           </div>
                         </td>
@@ -3225,22 +3965,61 @@ var POS = React.memo(function (props) {
               </tbody>
             </table>
           )}
-          {cart.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: 13 }}>{isRestaurant ? "Add items to start order" : "Cart is empty - search and add products above"}</div>}
-
-        </Card>
-        {!isRestaurant && !isQuotationMode && freeItemsEnabled && (
-          <Card>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 800, color: C.red }}>Free Items (Complimentary)</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Gifts with purchase — stock deducted, shown as FREE on invoice</div>
-              </div>
-              {freeCart.length > 0 && (
-                <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: "#dcfce7", padding: "3px 10px", borderRadius: 999 }}>{freeCart.length} free line{freeCart.length > 1 ? "s" : ""}</span>
-              )}
+          {cart.length === 0 && isRestaurant && (
+            <div className="erp-pos-empty-cart">
+              <div className="erp-pos-empty-title">Cart is empty</div>
+              <div className="erp-pos-empty-sub">Add items to start order</div>
             </div>
-            <div style={{ position: "relative", marginBottom: 10 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Add Free Item</label>
+          )}
+          </div>
+          {!isRestaurant ? (
+            <div className="erp-sale-cart-footer">
+              <div className="erp-sale-summary-bar">
+                <span className="erp-sale-summary-metric"><em>Items</em><strong>{cart.length}</strong></span>
+                <span className="erp-sale-summary-metric"><em>Qty</em><strong>{fmtNum(cartTotalQty)}</strong></span>
+                <span className="erp-sale-summary-metric"><em>Sub</em><strong>{getCurrencySymbol()} {fmtNum(subTotal)}</strong></span>
+                <span className="erp-sale-summary-metric"><em>Disc</em><strong>{getCurrencySymbol()} {fmtNum(discAmt)}</strong></span>
+                <span className="erp-sale-summary-metric"><em>Tax</em><strong>{getCurrencySymbol()} {fmtNum(posTotalTax)}</strong></span>
+                <span className="erp-sale-summary-metric erp-sale-summary-bar-grand"><em>Total</em><strong>{getCurrencySymbol()} {fmtNum(total)}</strong></span>
+              </div>
+              {cart.length > 0 ? (
+              <div className="erp-sale-terms-row">
+                <div className="erp-sale-field">
+                  <label>Terms</label>
+                  <select value={paymentTerms} onChange={function (e) { setPaymentTerms(e.target.value); }}>
+                    <option>Due on Receipt</option>
+                    <option>Net 7</option>
+                    <option>Net 15</option>
+                    <option>Net 30</option>
+                  </select>
+                </div>
+                <div className="erp-sale-field erp-sale-field-notes">
+                  <label>Notes</label>
+                  <input
+                    type="text"
+                    value={isQuotationMode ? quotationNotes : saleNotes}
+                    onChange={function (e) {
+                      if (isQuotationMode) setQuotationNotes(e.target.value);
+                      else setSaleNotes(e.target.value);
+                    }}
+                    placeholder="Invoice notes…"
+                  />
+                </div>
+              </div>
+              ) : null}
+            </div>
+          ) : null}
+          </div>
+
+          <div className="erp-sale-footer-stack">
+        {!isRestaurant && !isQuotationMode && freeItemsEnabled && (
+          <details className="erp-pos-secondary-panel erp-sale-free-details">
+          <summary className="erp-sale-free-summary">
+            Free items{freeCart.length > 0 ? (" (" + freeCart.length + ")") : ""}
+          </summary>
+          <Card>
+            <div style={{ position: "relative", marginBottom: 6 }}>
+              <label style={{ fontSize: 10, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 3 }}>Add Free Item</label>
               <input
                 ref={freeSearchRef}
                 value={freeSearch}
@@ -3275,15 +4054,15 @@ var POS = React.memo(function (props) {
                   }
                 }}
                 onBlur={function (e) {
-                  e.target.style.borderColor = C.border;
+                  e.target.style.borderColor = "#7a9fd4";
                   e.target.style.boxShadow = "none";
                   setTimeout(function () { setFreeDropPos(null); }, 180);
                 }}
                 placeholder={cart.length ? "Search product to add as free gift..." : "Add a paid item first"}
-                style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, outline: "none", fontFamily: "inherit", background: cart.length ? "#fff" : "#f8fafc", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s", opacity: cart.length ? 1 : 0.7 }}
+                style={{ border: "1.5px solid #7a9fd4", borderRadius: 8, padding: "6px 10px", fontSize: 12, outline: "none", fontFamily: "inherit", background: cart.length ? "#fff" : "#f8fafc", color: C.text, width: "100%", transition: "border-color .15s, box-shadow .15s", opacity: cart.length ? 1 : 0.7 }}
               />
               {freeSearch && filteredFreeProds.length > 0 && freeDropPos && cart.length > 0 && (
-                <div style={{ position: "fixed", top: freeDropPos.top + 2, left: freeDropPos.left, width: freeDropPos.width, background: "#fff", border: "1px solid " + C.border, borderRadius: 8, zIndex: 9999, maxHeight: 220, overflowY: "auto", boxShadow: "0 8px 24px rgba(13,27,62,0.14)" }}>
+                <div className="erp-pos-dropdown" style={{ top: freeDropPos.top + 2, left: freeDropPos.left, width: freeDropPos.width, maxHeight: 220 }}>
                   {filteredFreeProds.slice(0, 10).map(function (p, pidx) {
                     var oos = (p.stock || 0) === 0 && !isServiceProduct(p);
                     return (
@@ -3318,9 +4097,9 @@ var POS = React.memo(function (props) {
                         <td style={{ padding: "6px 8px", fontWeight: 600 }}>{item.name}</td>
                         <td style={{ padding: "6px 8px", textAlign: "center" }}>
                           <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                            <button type="button" onClick={function () { updateFreeQty(cartLineKey(item), Math.max(0, (Number(item.qty) || 0) - step)); }} style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid " + C.border, background: "#fff", cursor: "pointer", fontWeight: 800 }}>-</button>
+                            <button type="button" className="erp-pos-qty-btn" onClick={function () { updateFreeQty(cartLineKey(item), Math.max(0, (Number(item.qty) || 0) - step)); }}>-</button>
                             <span style={{ minWidth: 36, textAlign: "center", fontWeight: 700 }}>{item.qty}</span>
-                            <button type="button" onClick={function () { updateFreeQty(cartLineKey(item), (Number(item.qty) || 0) + step); }} style={{ width: 24, height: 24, borderRadius: 6, border: "1px solid " + C.border, background: "#fff", cursor: "pointer", fontWeight: 800 }}>+</button>
+                            <button type="button" className="erp-pos-qty-btn" onClick={function () { updateFreeQty(cartLineKey(item), (Number(item.qty) || 0) + step); }}>+</button>
                           </div>
                         </td>
                         <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 800, color: C.green }}>{FREE_ITEM_LABEL}</td>
@@ -3333,27 +4112,24 @@ var POS = React.memo(function (props) {
                 </tbody>
               </table>
             ) : (
-              <div style={{ textAlign: "center", padding: "14px 0", color: C.muted, fontSize: 12 }}>{cart.length ? "No free items yet" : "Add paid items first, then add complimentary gifts here"}</div>
+              <div style={{ textAlign: "center", padding: "8px 0", color: C.muted, fontSize: 12 }}>{cart.length ? "No free items yet" : "Add paid items first, then add complimentary gifts here"}</div>
             )}
           </Card>
+          </details>
         )}
         {!isRestaurant && !isQuotationMode && codSalesTrackEnabled && (
+          <details className="erp-pos-secondary-panel erp-sale-free-details">
+          <summary className="erp-sale-free-summary erp-sale-cod-summary">COD / Delivery track</summary>
           <Card>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 800, color: C.blue }}>COD / Delivery track</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>Optional — saves to COD Database when checked</div>
-              </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={!!codTrack.trackInCod}
-                  disabled={!cart.length}
-                  onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { trackInCod: e.target.checked }); }); }}
-                />
-                Record in COD database
-              </label>
-            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={!!codTrack.trackInCod}
+                disabled={!cart.length}
+                onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { trackInCod: e.target.checked }); }); }}
+              />
+              Record in COD database
+            </label>
             {codTrack.trackInCod ? (
               <div style={{ display: "grid", gap: 10 }}>
                 {!codCustomerReady && (
@@ -3373,7 +4149,7 @@ var POS = React.memo(function (props) {
                       }
                       setCodTrack(function (x) { return Object.assign({}, x, { saleType: v }); });
                     }}
-                    style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", background: "#fff" }}
+                    style={{ width: "100%", border: "1.5px solid #7a9fd4", borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", background: "#fff" }}
                   >
                     {COD_SALE_TYPES.map(function (t) {
                       var codDisabled = t === "COD" && !codCustomerReady;
@@ -3388,7 +4164,7 @@ var POS = React.memo(function (props) {
                       value={codTrack.address}
                       onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }}
                       placeholder="Delivery address"
-                      style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                      style={{ width: "100%", border: "1.5px solid #7a9fd4", borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
                     />
                   </div>
                 )}
@@ -3400,7 +4176,7 @@ var POS = React.memo(function (props) {
                         value={codTrack.trackingNumber}
                         onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { trackingNumber: e.target.value }); }); }}
                         placeholder="Courier tracking (optional)"
-                        style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                        style={{ width: "100%", border: "1.5px solid #7a9fd4", borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
                       />
                     </div>
                     <div>
@@ -3409,7 +4185,7 @@ var POS = React.memo(function (props) {
                         value={codTrack.altPhone}
                         onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { altPhone: e.target.value }); }); }}
                         placeholder="Second contact number"
-                        style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                        style={{ width: "100%", border: "1.5px solid #7a9fd4", borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
                       />
                     </div>
                   </div>
@@ -3424,7 +4200,7 @@ var POS = React.memo(function (props) {
                       value={codTrack.courierCost}
                       onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { courierCost: e.target.value }); }); }}
                       placeholder="0"
-                      style={{ width: "100%", maxWidth: 200, border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                      style={{ width: "100%", maxWidth: 200, border: "1.5px solid #7a9fd4", borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
                     />
                   </div>
                 )}
@@ -3435,65 +4211,59 @@ var POS = React.memo(function (props) {
                       value={codTrack.trackingNumber}
                       onChange={function (e) { setCodTrack(function (x) { return Object.assign({}, x, { trackingNumber: e.target.value }); }); }}
                       placeholder="Internal reference if needed"
-                      style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
+                      style={{ width: "100%", border: "1.5px solid #7a9fd4", borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }}
                     />
                   </div>
                 )}
               </div>
             ) : (
-              <div style={{ textAlign: "center", padding: "14px 0", color: C.muted, fontSize: 12 }}>
+              <div style={{ textAlign: "center", padding: "8px 0", color: C.muted, fontSize: 12 }}>
                 {cart.length ? "Check the box above to track this sale in COD Database" : "Add items to the cart first"}
               </div>
             )}
           </Card>
+          </details>
         )}
+          </div>
+
+        </Card>
         </div>
         {isRestaurant && (
+          <div className="erp-pos-restaurant">
           <Card pad={0}>
-            <div
-              style={{
-                background: "linear-gradient(180deg,#0a1628 0%,#0d1e38 60%,#0a1628 100%)",
-                padding: "11px 14px",
-                borderBottom: "1px solid rgba(255,255,255,0.12)",
-                borderRadius: "12px 12px 0 0",
-              }}
-            >
-              <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontWeight: 900, fontSize: 17, color: "#e8f1ff", letterSpacing: "-0.01em", lineHeight: 1.05 }}>Restaurant Workflow</div>
-                  <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 2 }}>Simple live table and order flow</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={function () { setRestaurantWorkflowTab(restaurantWorkflowTab === "overview" ? "orders" : "overview"); }}
-                  style={{ border: "1px solid #334155", background: "#111827", color: "#cbd5e1", borderRadius: 999, padding: "6px 11px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}
-                >
-                  {restaurantWorkflowTab === "overview" ? "Recent Orders" : "Back to Workflow"}
-                </button>
+            <div className="erp-pos-panel-hdr">
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2 }}>Restaurant Workflow</div>
+                <div className="erp-pos-panel-hdr-sub">Simple live table and order flow</div>
               </div>
-              {(todayIngredientSummary || currentUserRole === "cashier") && (
-                <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
-                  {todayIngredientSummary && (
-                    <span style={{ fontSize: 11, fontWeight: 800, border: "1px solid " + (todayIngredientSummary.negativeCount > 0 ? "#fca5a5" : "#fed7aa"), background: todayIngredientSummary.negativeCount > 0 ? "#fee2e2" : "#fff7ed", color: todayIngredientSummary.negativeCount > 0 ? "#991b1b" : "#9a3412", borderRadius: 999, padding: "3px 9px" }}>
-                      {"Today's Ingredient Cost: "}{getCurrencySymbol()} {fmtNum(todayIngredientSummary.totalCost)}
-                    </span>
-                  )}
-                  {currentUserRole === "cashier" && (
-                    <span style={{ fontSize: 11, fontWeight: 800, border: "1px solid #bfdbfe", background: "#eff6ff", color: "#1d4ed8", borderRadius: 999, padding: "3px 9px" }}>
-                      Billing Mode
-                    </span>
-                  )}
-                </div>
-              )}
+              <button
+                type="button"
+                className="erp-pos-seg-btn"
+                onClick={function () { setRestaurantWorkflowTab(restaurantWorkflowTab === "overview" ? "orders" : "overview"); }}
+              >
+                {restaurantWorkflowTab === "overview" ? "Recent Orders" : "Back to Workflow"}
+              </button>
             </div>
-            <div style={{ padding: 14 }}>
+            {(todayIngredientSummary || currentUserRole === "cashier") && (
+              <div className="erp-pos-panel-body" style={{ paddingBottom: 0, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+                {todayIngredientSummary && (
+                  <span className={"erp-pos-rest-meta-chip" + (todayIngredientSummary.negativeCount > 0 ? " danger" : " warn")}>
+                    {"Today's Ingredient Cost: "}{getCurrencySymbol()} {fmtNum(todayIngredientSummary.totalCost)}
+                  </span>
+                )}
+                {currentUserRole === "cashier" && (
+                  <span className="erp-pos-rest-meta-chip info">Billing Mode</span>
+                )}
+              </div>
+            )}
+            <div className="erp-pos-panel-body">
             {restaurantUndo && (
-              <div style={{ marginBottom: 8, padding: "6px 8px", borderRadius: 8, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div className="erp-pos-inline-alert rest">
                 <span>{restaurantUndo.msg}</span>
                 <button
                   type="button"
+                  className="erp-pos-seg-btn"
                   onClick={function () { setCart((restaurantUndo.cart || []).map(function (x) { return Object.assign({}, x); })); setRestaurantUndo(null); focusPosSearch(); }}
-                  style={{ border: "1px solid #93c5fd", background: "#fff", color: "#1d4ed8", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}
                 >
                   Undo
                 </button>
@@ -3501,16 +4271,16 @@ var POS = React.memo(function (props) {
             )}
             {restaurantWorkflowTab === "overview" && (
               <div style={{ display: "grid", gap: 12, alignItems: "start" }}>
-                <div style={{ border: "1px solid " + C.borderLight, borderRadius: 12, padding: "12px", background: "#fff", boxShadow: "0 6px 16px rgba(15,23,42,0.05)" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginBottom: 10 }}>
+                <div className="erp-pos-rest-order-panel">
+                  <div className="erp-pos-rest-order-type-grid">
                     {[["dine-in", "Dine-In"], ["takeaway", "Takeaway"], ["delivery", "Delivery"]].map(function (row) {
                       var active = restaurantOrderType === row[0];
                       return (
                         <button
                           key={"simple-type-" + row[0]}
                           type="button"
+                          className={"erp-pos-rest-type-btn" + (active ? " active" : "")}
                           onClick={function () { setRestaurantOrderType(row[0]); }}
-                          style={{ border: "1px solid " + (active ? C.accent : C.border), borderRadius: 9, padding: "8px 7px", background: active ? C.accentSoft : "#fff", color: active ? C.accent : C.textMd, fontSize: 12, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}
                         >
                           {row[1]}
                         </button>
@@ -3519,10 +4289,10 @@ var POS = React.memo(function (props) {
                   </div>
 
                   {restaurantOrderType === "delivery" && (
-                    <div style={{ display: "grid", gap: 7, marginBottom: 10 }}>
-                      <input type="text" value={restaurantDeliveryDetails.name} onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} placeholder="Customer name" style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", background: "#fff" }} />
-                      <input type="text" value={restaurantDeliveryDetails.phone} onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { phone: sanitizeRestaurantPhone(e.target.value) }); }); }} placeholder="Phone" style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", background: "#fff" }} />
-                      <textarea value={restaurantDeliveryDetails.address} onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }} placeholder="Address" rows={2} style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", background: "#fff", resize: "vertical" }} />
+                    <div className="erp-pos-rest-delivery-grid">
+                      <input type="text" value={restaurantDeliveryDetails.name} onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} placeholder="Customer name" />
+                      <input type="text" value={restaurantDeliveryDetails.phone} onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { phone: sanitizeRestaurantPhone(e.target.value) }); }); }} placeholder="Phone" />
+                      <textarea value={restaurantDeliveryDetails.address} onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }} placeholder="Address" rows={2} />
                     </div>
                   )}
 
@@ -3531,23 +4301,23 @@ var POS = React.memo(function (props) {
                     value={restaurantOrderNote}
                     onChange={function (e) { setRestaurantOrderNote(e.target.value); }}
                     placeholder="Order note (optional)"
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", background: "#fff", marginBottom: 10 }}
+                    style={{ width: "100%", boxSizing: "border-box", marginBottom: 10 }}
                   />
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <button
                       type="button"
+                      className="erp-pos-kitchen-btn primary"
                       onClick={sendToKitchen}
                       disabled={!cart.length || selectedTableLocked}
-                      style={{ border: "none", borderRadius: 8, padding: "9px 10px", background: (!cart.length || selectedTableLocked) ? "#9ca3af" : "#ea580c", color: "#fff", fontSize: 12.5, fontWeight: 800, cursor: (!cart.length || selectedTableLocked) ? "not-allowed" : "pointer", fontFamily: "inherit" }}
                     >
                       Send to Kitchen
                     </button>
                     <button
                       type="button"
+                      className="erp-pos-kitchen-btn secondary"
                       onClick={clearCurrentCart}
                       disabled={!cart.length || selectedTableLocked}
-                      style={{ border: "1px solid " + C.border, borderRadius: 8, padding: "9px 10px", background: (!cart.length || selectedTableLocked) ? "#f3f4f6" : "#fff", color: (!cart.length || selectedTableLocked) ? "#9ca3af" : C.textMd, fontSize: 12.5, fontWeight: 700, cursor: (!cart.length || selectedTableLocked) ? "not-allowed" : "pointer", fontFamily: "inherit" }}
                     >
                       Clear Cart
                     </button>
@@ -3555,19 +4325,19 @@ var POS = React.memo(function (props) {
                 </div>
 
                 {restaurantOrderType === "dine-in" && (
-                  <div style={{ border: "1px solid " + C.borderLight, borderRadius: 12, padding: "12px", background: "#fff", boxShadow: "0 6px 16px rgba(15,23,42,0.05)" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 800, color: C.text }}>Table Selection</div>
+                  <div className="erp-pos-rest-section">
+                    <div className="erp-pos-rest-section-hdr">
+                      <div>Table Selection</div>
                       <button
                         type="button"
+                        className="erp-pos-seg-btn"
                         onClick={function () { setShowRestaurantTableManager(true); }}
-                        style={{ fontSize: 11, fontWeight: 800, border: "1px solid " + C.border, background: "#fff", color: C.textMd, borderRadius: 999, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit" }}
                       >
                         Manage Tables
                       </button>
                     </div>
 
-                    <select value={selectedTableId} onChange={function (e) { handleRestaurantTablePick(e.target.value); }} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, background: "#fff", fontFamily: "inherit", marginBottom: 8 }}>
+                    <select value={selectedTableId} onChange={function (e) { handleRestaurantTablePick(e.target.value); }} style={{ marginBottom: 8 }}>
                       {restaurantTables.map(function (t) {
                         var ts = restaurantTableStatusUi(getRestaurantTableComputedStatus(t.id, t.status));
                         var stat = tableOrderStats(t.id);
@@ -3579,18 +4349,18 @@ var POS = React.memo(function (props) {
                       })}
                     </select>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 8 }}>
+                    <div className="erp-pos-rest-table-grid">
                       {restaurantTables.map(function (t) {
                         var tableState = getRestaurantTableComputedStatus(t.id, t.status);
                         var stat = tableOrderStats(t.id);
                         var active = selectedTableId === t.id;
-                        var bg = tableState === "occupied" ? "#ef4444" : (tableState === "pending" ? "#f59e0b" : "#22c55e");
+                        var statusCls = tableState === "occupied" ? "status-occupied" : (tableState === "pending" ? "status-pending" : "status-free");
                         return (
                           <button
                             key={"simple-table-" + t.id}
                             type="button"
+                            className={"erp-pos-table-btn " + statusCls + (active ? " active" : "")}
                             onClick={function () { handleRestaurantTablePick(t.id); }}
-                            style={{ border: active ? "2px solid #3b82f6" : "1px solid rgba(15,23,42,0.12)", borderRadius: 10, padding: "8px", background: bg, color: "#fff", textAlign: "left", cursor: "pointer", fontFamily: "inherit", minHeight: 74 }}
                           >
                             <div style={{ fontSize: 13, fontWeight: 900 }}>{t.name || t.id}</div>
                             <div style={{ fontSize: 10.5, fontWeight: 800, marginTop: 2 }}>{tableState === "occupied" ? "Occupied" : (tableState === "pending" ? "Pending" : "Free")}</div>
@@ -3601,17 +4371,17 @@ var POS = React.memo(function (props) {
                     </div>
 
                     {selectedTableReopenOrder && !selectedTableLocked && (
-                      <div style={{ marginTop: 8, fontSize: 11.5, color: C.accent, fontWeight: 700 }}>
+                      <div className="erp-pos-rest-status-msg accent">
                         Loaded existing order ({(selectedTableReopenOrder.items || []).length} items)
                       </div>
                     )}
                     {!selectedTableReopenOrder && !selectedTableLocked && (
-                      <div style={{ marginTop: 8, fontSize: 11.5, color: C.muted, fontWeight: 700 }}>
+                      <div className="erp-pos-rest-status-msg muted">
                         Ready for new order
                       </div>
                     )}
                     {selectedTableLocked && (
-                      <div style={{ marginTop: 8, fontSize: 11.5, color: "#166534", fontWeight: 800 }}>
+                      <div className="erp-pos-rest-status-msg ok">
                         Order closed
                       </div>
                     )}
@@ -3619,31 +4389,30 @@ var POS = React.memo(function (props) {
                 )}
               </div>
             )}            {restaurantWorkflowTab === "orders" && (
-              <div style={{ border: "1px solid " + C.borderLight, borderRadius: 14, padding: "14px 15px", background: "#fcfdff", boxShadow: "0 8px 20px rgba(15,23,42,0.04)" }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: C.textMd, marginBottom: 2 }}>Recent Orders</div>
-                <div style={{ fontSize: 11, color: C.muted, marginBottom: 12 }}>Click any order to open the detailed view and manage billing or status.</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 540, overflowY: "auto" }}>
+              <div className="erp-pos-rest-section">
+                <div className="erp-pos-rest-section-hdr">Recent Orders</div>
+                <div className="erp-settings-info-meta" style={{ marginBottom: 8 }}>Click any order to open the detailed view and manage billing or status.</div>
+                <div className="erp-pos-order-list">
                   {restaurantOrders.length === 0 && (
-                    <div style={{ textAlign: "center", padding: "22px 12px", color: C.muted, fontSize: 13 }}>
+                    <div className="erp-pos-rest-orders-empty">
                       No restaurant orders yet.
                     </div>
                   )}
                   {restaurantOrders.map(function (o) {
-                    var st = restaurantStatusStyle(o.status);
                     var orderTypeLabel = o.type === "takeaway" ? "Takeaway" : (o.type === "delivery" ? "Delivery" : "Dine-in");
                     return (
                       <button
                         key={"orders-tab-" + o.id}
                         type="button"
+                        className="erp-pos-order-card"
                         onClick={function () { setRestaurantOrderDetailId(o.id); }}
-                        style={{ border: "1px solid " + C.border, borderRadius: 12, padding: "12px 13px", background: "#fff", textAlign: "left", cursor: "pointer", fontFamily: "inherit", boxShadow: "0 3px 10px rgba(15,23,42,0.04)" }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 7 }}>
-                          <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>{o.tableId ? getRestaurantTableDisplayName(o.tableId) : orderTypeLabel}</div>
-                          <span style={{ fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 999, background: st.bg, color: st.fg }}>{restaurantStatusLabel(o.status)}</span>
+                        <div className="erp-pos-order-card-hdr">
+                          <div className="erp-pos-order-card-title">{o.tableId ? getRestaurantTableDisplayName(o.tableId) : orderTypeLabel}</div>
+                          <span className={"erp-pos-status-pill " + restaurantStatusClass(o.status)}>{restaurantStatusLabel(o.status)}</span>
                         </div>
-                        <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 4 }}>{orderTypeLabel} - {(o.items || []).length} items</div>
-                        <div style={{ fontSize: 11.5, color: C.textMd }}>By: {o.createdBy || "Staff"}</div>
+                        <div className="erp-pos-order-card-meta">{orderTypeLabel} - {(o.items || []).length} items</div>
+                        <div className="erp-pos-order-card-by">By: {o.createdBy || "Staff"}</div>
                       </button>
                     );
                   })}
@@ -3652,656 +4421,352 @@ var POS = React.memo(function (props) {
             )}
             </div>
           </Card>
+          </div>
         )}
       </div>
 
-      {/* Right panel */}
-      <div style={{ width: 310, display: "flex", flexDirection: "column", gap: 10, overflowY: "auto", position: "sticky", top: 0, alignSelf: "flex-start", maxHeight: "calc(100vh - 24px)" }}>
-        {false && isRestaurant && (
-          <Card pad={12}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-              <span style={{ fontWeight: 800, fontSize: 13, color: C.text }}>Restaurant Workflow</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: C.muted }}>
-                {restaurantOrders.length} orders
-              </span>
-            </div>
-            {restaurantQuickSellProducts.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-                  Quick Sell
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {restaurantQuickSellProducts.map(function (p) {
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        disabled={selectedTableLocked}
-                        onClick={function () { addToCart(p); focusPosSearch(); }}
-                        style={{ fontSize: 11, border: "1px solid " + C.border, borderRadius: 999, padding: "4px 9px", background: "#fff", color: C.textMd, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontWeight: 700, opacity: selectedTableLocked ? 0.55 : 1 }}
-                      >
-                        {p.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {restaurantRecentItems.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-                  Recent Items
-                </div>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  {restaurantRecentItems.map(function (pid) {
-                    var p = state.products.find(function (x) { return x.id === pid && x.status !== "inactive" && !isRepair3pInternalProduct(x); });
-                    if (!p) return null;
-                    return (
-                      <button
-                        key={"ri-" + pid}
-                        type="button"
-                        disabled={selectedTableLocked}
-                        onClick={function () { addToCart(p); focusPosSearch(); }}
-                        style={{ fontSize: 11, border: "1px solid " + C.border, borderRadius: 999, padding: "4px 9px", background: "#fff", color: C.textMd, cursor: selectedTableLocked ? "not-allowed" : "pointer", fontWeight: 700, opacity: selectedTableLocked ? 0.55 : 1 }}
-                      >
-                        {p.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {restaurantCategoryDisplay.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-                  Category Order
-                </div>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                  {restaurantCategoryDisplay.map(function (cat) {
-                    return (
-                      <span key={cat} style={{ fontSize: 10, border: "1px solid " + C.borderLight, borderRadius: 999, padding: "2px 7px", background: "#f8fafc", color: C.textMd, fontWeight: 700 }}>
-                        {cat}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-                Order Type
-              </div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {[["dine-in", "Dine-in"], ["takeaway", "Takeaway"], ["delivery", "Delivery"]].map(function (row) {
-                  var active = restaurantOrderType === row[0];
-                  return (
-                    <button
-                      key={row[0]}
-                      type="button"
-                      onClick={function () { setRestaurantOrderType(row[0]); }}
-                      style={{ fontSize: 11, border: "1px solid " + (active ? C.accent : C.border), borderRadius: 999, padding: "5px 10px", background: active ? C.accentSoft : "#fff", color: active ? C.accent : C.textMd, cursor: "pointer", fontWeight: 800, fontFamily: "inherit" }}
-                    >
-                      {row[1]}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            {restaurantOrderType !== "dine-in" && (
-              <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, border: "1px solid " + C.borderLight, background: "#f8fafc", fontSize: 12, fontWeight: 700, color: C.textMd }}>
-                {restaurantOrderType === "takeaway" ? "Takeaway Order" : "Delivery Order"}
-              </div>
-            )}
-            {restaurantOrderType === "delivery" && (
-              <div style={{ marginBottom: 10, border: "1px solid " + C.borderLight, borderRadius: 8, padding: "9px 10px", background: "#f8fafc" }}>
-                <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
-                  Delivery Customer
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                  <input
-                    type="text"
-                    value={restaurantDeliveryDetails.name}
-                    onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }}
-                    placeholder="Customer Name"
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", background: "#fff" }}
-                  />
-                  <input
-                    type="text"
-                    value={restaurantDeliveryDetails.phone}
-                    onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { phone: sanitizeRestaurantPhone(e.target.value) }); }); }}
-                    placeholder="Phone"
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", background: "#fff" }}
-                  />
-                  <textarea
-                    value={restaurantDeliveryDetails.address}
-                    onChange={function (e) { setRestaurantDeliveryDetails(function (x) { return Object.assign({}, x, { address: e.target.value }); }); }}
-                    placeholder="Address"
-                    rows={3}
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", background: "#fff", resize: "vertical" }}
-                  />
-                </div>
-              </div>
-            )}
-            {restaurantOrderType === "dine-in" && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 5 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", display: "block" }}>
-                  Table
-                </label>
-                <button
-                  type="button"
-                  onClick={function () { setShowRestaurantTableManager(true); }}
-                  style={{ fontSize: 10.5, fontWeight: 800, border: "1px solid " + (isRestaurantUsingDefaultTables ? "#93c5fd" : C.border), background: isRestaurantUsingDefaultTables ? "#eff6ff" : "#fff", color: isRestaurantUsingDefaultTables ? "#1d4ed8" : C.textMd, borderRadius: 999, padding: "4px 9px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0, whiteSpace: "nowrap", boxShadow: isRestaurantUsingDefaultTables ? "0 0 0 2px rgba(59,130,246,0.10)" : "none" }}
-                  title="Manage tables (add / rename / delete)"
-                >
-                  Manage
-                </button>
-              </div>
-              {isRestaurantUsingDefaultTables && (
-                <div style={{ marginBottom: 6, fontSize: 10.5, color: "#1d4ed8", fontWeight: 700 }}>
-                  Click Manage to add more tables
-                </div>
-              )}
-              <select
-                value={selectedTableId}
-                onChange={function (e) { handleRestaurantTablePick(e.target.value); }}
-                style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "7px 10px", fontSize: 13, background: "#fff", fontFamily: "inherit" }}
-              >
-                {restaurantTables.map(function (t) {
-                  var ts = restaurantTableStatusUi(getRestaurantTableComputedStatus(t.id, t.status));
-                  var stat = tableOrderStats(t.id);
-                  return (
-                    <option key={t.id} value={t.id}>
-                      {(t.name || t.id) + " - " + ts.label + (stat.count ? (" - " + stat.count + " orders") : " - New Order")}
-                    </option>
-                  );
-                })}
-              </select>
-              <div style={{ marginTop: 7, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 9.5, fontWeight: 800, border: "1px solid #86efac", background: "#dcfce7", color: "#166534", borderRadius: 999, padding: "2px 7px" }}>Free: {restaurantTableCounts.free}</span>
-                <span style={{ fontSize: 9.5, fontWeight: 800, border: "1px solid #fca5a5", background: "#fee2e2", color: "#991b1b", borderRadius: 999, padding: "2px 7px" }}>Occupied: {restaurantTableCounts.occupied}</span>
-                <span style={{ fontSize: 9.5, fontWeight: 800, border: "1px solid #fcd34d", background: "#fef3c7", color: "#92400e", borderRadius: 999, padding: "2px 7px" }}>Pending: {restaurantTableCounts.pending}</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 6, marginTop: 8 }}>
-                {restaurantTables.map(function (t) {
-                  var ts = restaurantTableStatusUi(getRestaurantTableComputedStatus(t.id, t.status));
-                  var stat = tableOrderStats(t.id);
-                  var active = selectedTableId === t.id;
-                  var needsAttention = restaurantTableNeedsAttention(t.id);
-                  return (
-                    <button
-                      key={"table-board-" + t.id}
-                      type="button"
-                      onClick={function () { handleRestaurantTablePick(t.id); }}
-                      style={{
-                        border: (needsAttention ? "2px solid #f59e0b" : (active ? "2px solid " + C.accent : "1px solid " + C.borderLight)),
-                        borderRadius: 10,
-                        padding: "6px 7px",
-                        background: ts.bg,
-                        color: ts.fg,
-                        textAlign: "left",
-                        cursor: "pointer",
-                        boxShadow: needsAttention
-                          ? "0 0 0 2px rgba(245,158,11,0.22), 0 0 18px rgba(245,158,11,0.18)"
-                          : (active ? "0 0 0 2px rgba(41,121,255,0.22), 0 10px 18px rgba(41,121,255,0.18)" : "0 1px 2px rgba(15,23,42,0.06)"),
-                        transform: active ? "scale(1.02)" : "scale(1)",
-                        transition: "transform .12s ease, box-shadow .12s ease, border-color .12s ease",
-                        fontFamily: "inherit",
-                      }}
-                      title={(t.name || t.id) + " - " + ts.label}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 900 }}>
-                        <span style={{ width: 6, height: 6, borderRadius: "50%", background: ts.dot, display: "inline-block" }} />
-                        {t.name || t.id}
-                      </div>
-                      <div style={{ fontSize: 9.5, fontWeight: 700, marginTop: 2 }}>{ts.label}</div>
-                      <div style={{ fontSize: 9, fontWeight: 800, marginTop: 2, opacity: 0.95 }}>{stat.count ? (stat.count + " orders") : "New Order"}</div>
-                      {needsAttention && <div style={{ fontSize: 8.5, marginTop: 1, fontWeight: 800, color: "#b45309" }}>Attention needed</div>}
-                      <div style={{ fontSize: 8.5, marginTop: 1, opacity: 0.85 }}>Last: {minutesAgoLabel(stat.lastAt)}</div>
-                    </button>
-                  );
-                })}
-              </div>
-              {selectedTableReopenOrder && !selectedTableLocked && (
-                <div style={{ marginTop: 5, fontSize: 10.5, color: C.accent, fontWeight: 700 }}>
-                  Loaded existing order for this table ({(selectedTableReopenOrder.items || []).length} items)
-                </div>
-              )}
-              {!selectedTableReopenOrder && !selectedTableLocked && (
-                <div style={{ marginTop: 5, fontSize: 10.5, color: C.muted, fontWeight: 700 }}>
-                  Start new order
-                </div>
-              )}
-              {selectedTableLocked && (
-                <div style={{ marginTop: 5, fontSize: 10.5, color: "#166534", fontWeight: 800 }}>
-                  Order Closed
-                </div>
-              )}
-            </div>
-            )}
-            <div style={{ marginBottom: 10 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
-                Order Note
-              </label>
-              <input
-                type="text"
-                value={restaurantOrderNote}
-                onChange={function (e) { setRestaurantOrderNote(e.target.value); }}
-                placeholder="Takeaway / VIP customer / Serve fast"
-                style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", background: "#fff" }}
-              />
-            </div>
-            <button
-              type="button"
-              onClick={sendToKitchen}
-              disabled={!cart.length || selectedTableLocked}
-              style={{
-                width: "100%",
-                border: "none",
-                borderRadius: 8,
-                padding: "9px 12px",
-                background: (!cart.length || selectedTableLocked) ? "#9ca3af" : "linear-gradient(135deg,#ea580c,#c2410c)",
-                color: "#fff",
-                fontSize: 13,
-                fontWeight: 800,
-                cursor: (!cart.length || selectedTableLocked) ? "not-allowed" : "pointer",
-                marginBottom: 10,
-              }}
-            >
-              Send to Kitchen
-            </button>
-            <button
-              type="button"
-              onClick={clearCurrentCart}
-              disabled={!cart.length || selectedTableLocked}
-              style={{
-                width: "100%",
-                border: "1px solid " + C.border,
-                borderRadius: 8,
-                padding: "8px 10px",
-                background: (!cart.length || selectedTableLocked) ? "#f3f4f6" : "#fff",
-                color: (!cart.length || selectedTableLocked) ? "#9ca3af" : C.textMd,
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: (!cart.length || selectedTableLocked) ? "not-allowed" : "pointer",
-                marginBottom: 10,
-                fontFamily: "inherit",
-              }}
-            >
-              Clear Cart
-            </button>
-            {restaurantToast && (
-              <div style={{ marginTop: -4, marginBottom: 8, padding: "7px 9px", borderRadius: 8, border: "1px solid #86efac", background: "#dcfce7", color: "#166534", fontSize: 11.5, fontWeight: 800 }}>
-                {restaurantToast}
-              </div>
-            )}
-            {restaurantUndo && (
-              <div style={{ marginTop: -2, marginBottom: 8, padding: "7px 9px", borderRadius: 8, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <span>{restaurantUndo.msg}</span>
-                <button
-                  type="button"
-                  onClick={function () { setCart((restaurantUndo.cart || []).map(function (x) { return Object.assign({}, x); })); setRestaurantUndo(null); focusPosSearch(); }}
-                  style={{ border: "1px solid #93c5fd", background: "#fff", color: "#1d4ed8", borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}
-                >
-                  Undo
-                </button>
-              </div>
-            )}
-            {restaurantOrders.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 220, overflowY: "auto" }}>
-                {restaurantOrders.slice(0, 8).map(function (o) {
-                  var st = restaurantStatusStyle(o.status);
-                  var orderTypeLabel = o.type === "takeaway" ? "Takeaway" : (o.type === "delivery" ? "Delivery" : "Dine-in");
-                  var deliveryInfo = o.type === "delivery" ? (o.deliveryDetails || {}) : null;
-                  var shortAddress = deliveryInfo && deliveryInfo.address
-                    ? (deliveryInfo.address.length > 60 ? deliveryInfo.address.slice(0, 60) + "..." : deliveryInfo.address)
-                    : "";
-                  return (
-                    <div key={o.id} style={{ border: "1px solid " + C.border, borderRadius: 8, padding: "8px 9px", background: "#fff" }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: C.text }}>{o.tableId ? getRestaurantTableDisplayName(o.tableId) : orderTypeLabel}</span>
-                        <span style={{ fontSize: 10, fontWeight: 800, padding: "2px 7px", borderRadius: 999, background: st.bg, color: st.fg, textTransform: "uppercase" }}>
-                          {restaurantStatusLabel(o.status)}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>
-                        {o.type === "takeaway" ? "Takeaway - " : (orderTypeLabel + " - ")}
-                        {(o.items || []).length} items
-                        {(o.splitBills && o.splitBills.length > 0) ? (" - " + o.splitBills.length + " split bill(s)") : ""}
-                      </div>
-                      <div style={{ fontSize: 10.5, color: C.textMd, marginBottom: 6 }}>
-                        By: {o.createdBy || "Staff"}
-                      </div>
-                      {deliveryInfo && (deliveryInfo.name || deliveryInfo.phone || deliveryInfo.address) && (
-                        <div style={{ fontSize: 10.5, color: C.textMd, marginBottom: 6, background: "#f8fafc", border: "1px solid " + C.borderLight, borderRadius: 6, padding: "4px 6px" }}>
-                          {deliveryInfo.name && <div>Name: {deliveryInfo.name}</div>}
-                          {deliveryInfo.phone && (
-                            <div>
-                              Phone:{" "}
-                              <button
-                                type="button"
-                                onClick={function () { openDeliveryCall(deliveryInfo.phone); }}
-                                style={{ background: "none", border: "none", color: C.accent, padding: 0, cursor: "pointer", fontSize: 10.5, fontWeight: 800, fontFamily: "inherit" }}
-                              >
-                                {deliveryInfo.phone}
-                              </button>
-                            </div>
-                          )}
-                          {shortAddress && <div>Address: {shortAddress}</div>}
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                            {deliveryInfo.address && (
-                              <button
-                                type="button"
-                                onClick={function () { openDeliveryMap(deliveryInfo.address); }}
-                                style={{ fontSize: 10, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 6px", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}
-                              >
-                                Maps
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={function () { copyDeliveryDetails(deliveryInfo); }}
-                              style={{ fontSize: 10, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 6px", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}
-                            >
-                              Copy
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {o.note && (
-                        <div style={{ fontSize: 10.5, color: C.textMd, marginBottom: 6, background: "#f8fafc", border: "1px solid " + C.borderLight, borderRadius: 6, padding: "4px 6px" }}>
-                          Note: {o.note}
-                        </div>
-                      )}
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                        <button type="button" disabled={isOrderFullyBilled(o)} onClick={function () { setRestaurantOrderStatus(o.id, "preparing"); }} style={{ fontSize: 10, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 6px", background: "#fff", cursor: isOrderFullyBilled(o) ? "not-allowed" : "pointer", opacity: isOrderFullyBilled(o) ? 0.5 : 1 }}>Preparing</button>
-                        <button type="button" disabled={isOrderFullyBilled(o)} onClick={function () { setRestaurantOrderStatus(o.id, "ready"); }} style={{ fontSize: 10, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 6px", background: "#fff", cursor: isOrderFullyBilled(o) ? "not-allowed" : "pointer", opacity: isOrderFullyBilled(o) ? 0.5 : 1 }}>Ready</button>
-                        <button type="button" disabled={isOrderFullyBilled(o)} onClick={function () { setRestaurantOrderStatus(o.id, "served"); }} style={{ fontSize: 10, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 6px", background: "#fff", cursor: isOrderFullyBilled(o) ? "not-allowed" : "pointer", opacity: isOrderFullyBilled(o) ? 0.5 : 1 }}>Served</button>
-                        {!isOrderFullyBilled(o) && restaurantBillingAllowed && (
-                          <button
-                            type="button"
-                            onClick={function () { billRestaurantOrder(o.id); }}
-                            disabled={isCheckingOut || billingOrderId === o.id}
-                            style={{ fontSize: 10, border: "none", borderRadius: 5, padding: "3px 6px", background: "#1d4ed8", color: "#fff", cursor: isCheckingOut || billingOrderId === o.id ? "not-allowed" : "pointer", opacity: isCheckingOut || billingOrderId === o.id ? 0.65 : 1 }}
-                          >
-                            {billingOrderId === o.id ? "Billing..." : ((o.splitBills && o.splitBills.length > 0) ? "Bill Remaining" : "Bill Order")}
-                          </button>
-                        )}
-                        {!isOrderFullyBilled(o) && restaurantBillingAllowed && (
-                          <button
-                            type="button"
-                            onClick={function () { setSplitOrderId(splitOrderId === o.id ? "" : o.id); setItemSplitPick({}); }}
-                            style={{ fontSize: 10, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 6px", background: "#fff", cursor: "pointer" }}
-                          >
-                            Split Bill
-                          </button>
-                        )}
-                      </div>
-                      {!isOrderFullyBilled(o) && !restaurantBillingAllowed && (
-                        <div style={{ marginTop: 6, fontSize: 10.5, color: C.muted, fontWeight: 700 }}>
-                          Billing available at counter
-                        </div>
-                      )}
-                      {splitOrderId === o.id && !isOrderFullyBilled(o) && (
-                        <div style={{ marginTop: 8, borderTop: "1px dashed " + C.border, paddingTop: 8 }}>
-                          <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Equal Split</div>
-                          <div style={{ display: "flex", gap: 5, marginBottom: 8 }}>
-                            {[2, 3, 4].map(function (n) {
-                              return (
-                                <button key={n} type="button" onClick={function () { billRestaurantEqualSplit(o.id, n); }} disabled={isCheckingOut || billingOrderId === o.id} style={{ fontSize: 10, border: "1px solid " + C.border, borderRadius: 5, padding: "3px 8px", background: "#fff", cursor: isCheckingOut || billingOrderId === o.id ? "not-allowed" : "pointer" }}>
-                                  {n} People
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Item-based Split</div>
-                          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 6, maxHeight: 110, overflowY: "auto" }}>
-                            {getOrderRemainingItems(o).map(function (ri, idx) {
-                              var pickKey = o.id + "::" + idx;
-                              return (
-                                <label key={pickKey} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.textMd }}>
-                                  <input type="checkbox" checked={!!itemSplitPick[pickKey]} onChange={function () { toggleItemSplitPick(o.id, idx); }} />
-                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {ri.name} x {ri.qty} {ri.saleUnit || "Pcs"}
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                          <button type="button" onClick={function () { billRestaurantItemSplit(o.id); }} disabled={isCheckingOut || billingOrderId === o.id} style={{ fontSize: 10, border: "none", borderRadius: 5, padding: "4px 8px", background: "#0f766e", color: "#fff", cursor: isCheckingOut || billingOrderId === o.id ? "not-allowed" : "pointer", opacity: isCheckingOut || billingOrderId === o.id ? 0.65 : 1 }}>
-                            Bill Selected Items
-                          </button>
-                        </div>
-                      )}
-                      {isOrderFullyBilled(o) && (
-                        <div style={{ marginTop: 6, fontSize: 10.5, color: "#166534", fontWeight: 700 }}>
-                          Fully billed
-                        </div>
-                      )}
-                      {(o.splitBills || []).length > 0 && (
-                        <div style={{ marginTop: 6, fontSize: 10, color: C.muted }}>
-                          Split invoice IDs: {(o.splitBills || []).map(function (sb) { return sb.invoicedSaleId; }).filter(Boolean).slice(0, 5).join(", ")}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
-        )}
-        <Card>
-          <Input
-            label="Discount (Rs)"
-            type="number"
-            value={discount}
-            onChange={function (e) {
-              var nextVal = e.target.value;
-              var nextNum = normalizeDiscountNumber(nextVal);
-              if (!canOverrideDiscount && nextNum > 0) {
-                showPermissionDenied("apply discount overrides");
-                return;
-              }
-              setDiscount(nextVal);
-            }}
-            onBlur={function () {
-              if (discount === "" || discount === null || discount === undefined) { setDiscount(""); return; }
-              var cleaned = normalizeDiscountNumber(discount);
-              setDiscount(String(cleaned));
-            }}
-            placeholder="0"
-          />
-          <div style={{ background: "#f8fafc", borderRadius: 8, padding: "12px 14px", margin: "12px 0", display: "flex", flexDirection: "column", gap: 5 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.textMd }}><span>Sub Total</span><span>{getCurrencySymbol()} {fmtNum(subTotal)}</span></div>
-            {discAmt > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.red }}><span>Discount</span><span>- {getCurrencySymbol()} {fmtNum(discAmt)}</span></div>}
-            {state.settings && state.settings.taxEnabled && posTaxLines && posTaxLines.length > 0 && posTaxLines.map(function (tl, ti) {
-              return (
-                <div key={"ptx-" + ti + "-" + (tl.name || "")} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: C.muted }}>
-                  <span>{tl.name} ({fmtNum(tl.rate)}%)</span>
-                  <span>{getCurrencySymbol()} {fmtNum(tl.amount)}</span>
-                </div>
-              );
-            })}
-            {state.settings && state.settings.taxEnabled && posTotalTax > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, color: C.textMd }}><span>Total Tax</span><span>{getCurrencySymbol()} {fmtNum(posTotalTax)}</span></div>
-            )}
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 900, color: C.navBg, borderTop: "1px solid " + C.border, paddingTop: 8, marginTop: 2 }}><span>GRAND TOTAL</span><span>{getCurrencySymbol()} {fmtNum(total)}</span></div>
-          </div>
-          {isQuotationMode ? (
-            <React.Fragment>
-              <div style={{ marginBottom: 10 }}>
-                <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Notes / Terms</label>
-                <textarea
-                  value={quotationNotes}
-                  onChange={function (e) { setQuotationNotes(e.target.value); }}
-                  placeholder="Validity, payment terms, delivery notes..."
-                  rows={3}
-                  style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 13, fontFamily: "inherit", resize: "vertical", background: "#fff" }}
+      {/* Right panel — checkout sidebar */}
+      <div className="erp-pos-right">
+        <div className="erp-pos-checkout-panel">
+        {/* Legacy restaurant sidebar replaced by erp-pos-restaurant workflow above */}
+        <div className="erp-sale-checkout">
+          <div className="erp-sale-checkout-hdr">{isQuotationMode ? "Quotation" : "Checkout"}</div>
+          <div className="erp-sale-checkout-body">
+            <div className="erp-sale-disc-row">
+              <div className="erp-sale-field">
+                <label>Discount %</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={discountPct}
+                  onChange={function (e) { applyDiscountPercent(e.target.value); }}
+                  placeholder="0"
                 />
               </div>
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.borderLight }}>
-                <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Save quotation</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <Btn stack={true} onClick={function () { saveQuotation(false); }} disabled={!cart.length || isSavingQuotation || !canEditInvoices} col="blue" full>
-                    <PosShortcutBtnContent label="Save Only" busy={isSavingQuotation} busyText="Saving..." />
-                  </Btn>
-                  <Btn stack={true} onClick={openQuotationPrintPicker} disabled={!cart.length || isSavingQuotation || !canEditInvoices} col="gray" full>
-                    <PosShortcutBtnContent label="Print" busy={isSavingQuotation} busyText="Saving..." />
-                  </Btn>
-                  {renderPosWhatsAppBtn({
-                    onClick: openQuotationWhatsApp,
-                    disabled: !cart.length || isSavingQuotation || !canEditInvoices,
-                    busy: isSavingQuotation,
-                    busyText: "Saving...",
-                    title: "Save quotation and share as PDF via WhatsApp",
-                  })}
-                </div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 10, lineHeight: 1.45 }}>
-                  Saved quotations appear under <strong>Invoices → Quotations</strong>. Convert to invoice when the customer confirms.
-                </div>
+              <div className="erp-sale-field">
+                <label>Discount ({getCurrencySymbol()})</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={discount}
+                  onChange={function (e) { applyDiscountAmount(e.target.value); }}
+                  onBlur={function () {
+                    if (discount === "" || discount === null || discount === undefined) { setDiscount(""); setDiscountPct(""); return; }
+                    var cleaned = normalizeDiscountNumber(discount);
+                    applyDiscountAmount(String(cleaned));
+                  }}
+                  placeholder="0"
+                />
               </div>
-            </React.Fragment>
-          ) : (
-          <React.Fragment>
-          {/* Auto payment status badge ? updates live based on splitRows */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: C.muted, textTransform: "uppercase" }}>Payment Mode</div>
-            <div style={{ padding: "4px 12px", borderRadius: 20, fontSize: 12, fontWeight: 800,
-              background: payStatus === "Paid" ? "#dcfce7" : payStatus === "Partial" ? "#fef9c3" : "#fee2e2",
-              color: payStatus === "Paid" ? C.green : payStatus === "Partial" ? C.amber : C.red }}>
-              {payStatus === "Paid" ? "Fully Paid" : payStatus === "Partial" ? "Partial" : "Unpaid"}
             </div>
-          </div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Receive Via</div>
-          <div style={{ marginBottom: 8 }}>
-            {posSplitRows && posSplitRows.length > 0 ? (
-              <div style={{ background: "#f0f9f4", borderRadius: 9, padding: "9px 12px", border: "1px solid #9ee8ce", cursor: posSetupBlocked || isCheckingOut ? "not-allowed" : "pointer", opacity: posSetupBlocked || isCheckingOut ? 0.55 : 1 }} title={posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : "Edit payment split"} onClick={function () { if (posSetupBlocked || isCheckingOut) return; setPosSplitModal(true); }}>
-                {posSplitRows.map(function (r, i) {
-                  return <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span style={{ color: C.textMd }}>{r.method === "Cheque" ? "" : r.method === "Bank" ? "" : ""}{r.method}</span><strong style={{ color: r.method === "Cheque" ? "#d97706" : C.green }}>{getCurrencySymbol()} {fmtNum(parseFloat(r.amount) || 0)}</strong></div>;
-                })}
-                <div style={{ fontSize: 11, color: C.accent, marginTop: 4, fontWeight: 600 }}>Click to edit payment</div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                disabled={posSetupBlocked || isCheckingOut}
-                aria-describedby={posCheckoutAriaDesc}
-                title={posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : "Record payment"}
-                onClick={function () { if (posSetupBlocked || isCheckingOut) return; setPosSplitModal(true); setPayMode("partial"); }}
-                style={{ width: "100%", padding: "10px", borderRadius: 9, border: "2px solid " + (posSetupBlocked || isCheckingOut ? "#9ca3af" : "#1b5e20"), background: posSetupBlocked || isCheckingOut ? "#e5e7eb" : "#1b5e20", color: posSetupBlocked || isCheckingOut ? "#6b7280" : "#fff", fontWeight: 700, fontSize: 13, cursor: posSetupBlocked || isCheckingOut ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-              >
-                {isCheckingOut ? "Processing..." : "Pay"}
-              </button>
-            )}
-          </div>
-          {posCashMethod === "Cheque" && posChequeList.length > 0 && (
-            <div style={{ background: "#f5f3ff", borderRadius: 9, padding: "10px 12px", border: "1px solid #ddd6fe", marginBottom: 8, cursor: "pointer" }} onClick={function () { setPosChqModal(true); }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed" }}>{posChequeList.length} cheque(s) added</span>
-                <span style={{ fontSize: 13, fontWeight: 800, color: "#7c3aed" }}>{getCurrencySymbol()} {fmtNum(posChequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0))}</span>
-              </div>
-              <div style={{ fontSize: 11, color: "#9061f9", marginTop: 3 }}>Click to edit cheques</div>
-            </div>
-          )}
-          {payMode === "partial" && !(posSplitRows && posSplitRows.length > 0) && <div style={{ marginBottom: 8 }}><Input label="Amount Paid" type="number" value={paidAmt} onChange={function (e) { setPaidAmt(e.target.value); }} placeholder="0" /></div>}
 
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span style={{ color: C.muted }}>Paid</span><span style={{ fontWeight: 700, color: C.green }}>{getCurrencySymbol()} {fmtNum(paidNum)}</span></div>
-          {balanceDue > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}><span style={{ color: C.muted }}>Balance Due</span><span style={{ fontWeight: 700, color: C.red }}>{getCurrencySymbol()} {fmtNum(balanceDue)}</span></div>}
-          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: state.settings.warrantyEnabled ? "pointer" : "not-allowed", margin: "10px 0", padding: "9px 12px", borderRadius: 8, border: "1.5px solid " + (includeWarranty && state.settings.warrantyEnabled ? C.accent : C.border), background: includeWarranty && state.settings.warrantyEnabled ? C.accentSoft : "#fafbff", opacity: state.settings.warrantyEnabled ? 1 : 0.5 }}>
-            <input type="checkbox" checked={includeWarranty} disabled={!state.settings.warrantyEnabled} onChange={function (e) { setIncludeWarranty(e.target.checked); }} style={{ width: 15, height: 15, accentColor: C.accent }} />
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: includeWarranty && state.settings.warrantyEnabled ? C.accent : C.textMd }}>Include Warranty Policy</div>
-              {!state.settings.warrantyEnabled && <div style={{ fontSize: 11, color: C.muted }}>Disabled in Settings</div>}
-            </div>
-          </label>
-          <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.borderLight }}>
-            <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Complete sale</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <Btn stack={true} onClick={function () { saveAndFinish(false); }} disabled={!cart.length || posSetupBlocked || isCheckingOut} aria-describedby={posCheckoutAriaDesc} title={posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : undefined} col="blue" full>
-                <PosShortcutBtnContent label="Save Only" busy={isCheckingOut} />
-              </Btn>
-
-              {(function () {
-                var checkoutDisabled = !cart.length || posSetupBlocked || isCheckingOut;
-                var checkoutTitle = posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : undefined;
-                var waTitle = posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : "Save invoice and share as PDF via WhatsApp";
+            <div className="erp-sale-checkout-totals">
+              <div className="erp-pos-total-row"><span>Sub Total</span><span>{getCurrencySymbol()} {fmtNum(subTotal)}</span></div>
+              {discAmt > 0 && <div className="erp-pos-total-row" style={{ color: C.red }}><span>Discount</span><span>- {getCurrencySymbol()} {fmtNum(discAmt)}</span></div>}
+              {state.settings && state.settings.taxEnabled && posTaxLines && posTaxLines.length > 0 && posTaxLines.map(function (tl, ti) {
                 return (
-                  <React.Fragment>
-                    <Btn stack={true} onClick={openPosPrintPicker} disabled={checkoutDisabled} aria-describedby={posCheckoutAriaDesc} title={checkoutTitle} col="gray" full>
-                      <PosShortcutBtnContent label="Print" busy={isCheckingOut} />
-                    </Btn>
-                    {renderPosWhatsAppBtn({
-                      onClick: saveAndWhatsApp,
-                      disabled: checkoutDisabled,
-                      busy: isCheckingOut,
-                      ariaDescribedby: posCheckoutAriaDesc,
-                      title: waTitle,
-                    })}
-                  </React.Fragment>
-                );
-              })()}
-            </div>
-            {(posSetupBlocked || isCheckingOut) && (
-              <div id={posCheckoutHintId} role="status" aria-live="polite" style={{ fontSize: 11, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
-                {isCheckingOut ? "Processing..." : TC_SETUP_DISABLE_TITLE}
-              </div>
-            )}
-          </div>
-          </React.Fragment>
-          )}
-        </Card>
-
-        {/* ?? On Hold — saved sales & quotations ?? */}
-        {heldInvoices.length > 0 && (
-          <Card pad={12}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 16 }}>⏸</span>
-                <span style={{ fontWeight: 800, fontSize: 13, color: C.text }}>On Hold</span>
-                <span style={{ background: "#2979ff", color: "#fff", borderRadius: 10, fontSize: 10, fontWeight: 800, padding: "1px 7px" }}>{heldInvoices.length}</span>
-              </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {heldInvoices.map(function (h) {
-                var hTime = h.heldAt ? new Date(h.heldAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-                var hDate = h.heldAt ? new Date(h.heldAt).toLocaleDateString() : "";
-                var cartCount = (h.cart || []).length + ((h.freeCart || []).length);
-                var cartTotal = (h.cart || []).reduce(function (a, it) { return a + posLineAmount(it); }, 0) - (parseFloat(h.discount) || 0);
-                var custLabel = h.label || h.custSearch || (h.custMode === "walkin" ? "Walk-in" : h.newCust && h.newCust.name ? h.newCust.name : "Walk-in");
-                var isQuotHold = h.holdKind === "quotation" || h.posPageTab === "quotation";
-                var docNo = isQuotHold ? (h.quotationNo || "") : (h.invoiceNo || "");
-                return (
-                  <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", background: "#f0f4ff", borderRadius: 9, border: "1.5px solid #c7d4f8" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexWrap: "wrap" }}>
-                        <span style={{ fontWeight: 700, fontSize: 13, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{custLabel}</span>
-                        <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 999, background: isQuotHold ? "#fef3c7" : "#e0f2fe", color: isQuotHold ? "#92400e" : "#0369a1" }}>{isQuotHold ? "Quotation" : "Sale"}</span>
-                        {activeHeldId === h.id ? <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 999, background: "#dcfce7", color: "#166534" }}>Active</span> : null}
-                      </div>
-                      <div style={{ fontSize: 11, color: C.muted }}>
-                        {docNo ? <span style={{ fontFamily: "monospace", marginRight: 6 }}>{docNo}</span> : null}
-                        {cartCount} item{cartCount !== 1 ? "s" : ""} · {getCurrencySymbol()} {fmtNum(cartTotal)} · {hDate} {hTime}
-                      </div>
-                    </div>
-                    <Btn sm col="blue" onClick={function () {
-                      if (cart.length > 0 || freeCart.length > 0) {
-                        showConfirm("Loading this held " + (isQuotHold ? "quotation" : "invoice") + " will replace your current cart. Continue?", function () {
-                          loadHeldInvoice(h);
-                        });
-                      } else {
-                        loadHeldInvoice(h);
-                      }
-                    }}>Continue</Btn>
-                    <button onClick={function () {
-                      showConfirm("Delete this held " + (isQuotHold ? "quotation" : "invoice") + "?", function () { deleteHeldInvoice(h.id); });
-                    }} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 16, lineHeight: 1, padding: "2px 4px" }} title="Delete">✕</button>
+                  <div key={"ptx-" + ti + "-" + (tl.name || "")} className="erp-pos-total-row" style={{ fontSize: 11, color: C.muted }}>
+                    <span>{tl.name} ({fmtNum(tl.rate)}%)</span>
+                    <span>{getCurrencySymbol()} {fmtNum(tl.amount)}</span>
                   </div>
                 );
               })}
+              {state.settings && state.settings.taxEnabled && posTotalTax > 0 && (
+                <div className="erp-pos-total-row" style={{ fontWeight: 700 }}><span>Tax</span><span>{getCurrencySymbol()} {fmtNum(posTotalTax)}</span></div>
+              )}
+              <div className="erp-pos-total-row grand"><span>Grand Total</span><span>{getCurrencySymbol()} {fmtNum(total)}</span></div>
             </div>
-          </Card>
-        )}
+
+            {isQuotationMode ? (
+              <React.Fragment>
+                <div className="erp-sale-action-stack">
+                  <button type="button" className="erp-sale-action-btn print" disabled={!cart.length || isSavingQuotation || !canEditInvoices} onClick={openQuotationPrintPicker} title="Save & Print (F5)">
+                    {isSavingQuotation ? "Saving..." : (<><span>Save & Print</span><kbd>F5</kbd></>)}
+                  </button>
+                  <button type="button" className="erp-sale-action-btn save" disabled={!cart.length || isSavingQuotation || !canEditInvoices} onClick={function () { saveQuotation(false); }} title={editingQuotationId ? "Update Quotation (F6)" : "Save Only (F6)"}>
+                    {isSavingQuotation ? "Saving..." : (<><span>{editingQuotationId ? "Update" : "Save Only"}</span><kbd>F6</kbd></>)}
+                  </button>
+                  <button type="button" className="erp-sale-action-btn preview" disabled={!cart.length} onClick={openQuotationPreviewPicker} title="Print View (F7)">
+                    <span>Print View</span><kbd>F7</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    className="erp-sale-action-btn wa"
+                    disabled={!cart.length || isSavingQuotation || !canEditInvoices}
+                    onClick={openQuotationWhatsApp}
+                    title="WhatsApp / Share (F8)"
+                  >
+                    {isSavingQuotation ? "Saving..." : (<><span>WhatsApp</span><kbd>F8</kbd></>)}
+                  </button>
+                  <button
+                    type="button"
+                    className="erp-sale-action-btn hold"
+                    disabled={!cart.length}
+                    onClick={holdCurrentCart}
+                    title="Hold Quotation (F9)"
+                  >
+                    <span>Hold</span><kbd>F9</kbd>
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+                  Saved quotations appear under <strong>Invoices → Quotations</strong>.
+                </div>
+              </React.Fragment>
+            ) : (
+              <React.Fragment>
+                <div className="erp-pos-pay-meta">
+                  <div className="erp-pos-field-label">Payment mode</div>
+                  <div className={"erp-pos-pay-status " + (payStatus === "Paid" ? "paid" : payStatus === "Partial" ? "partial" : "unpaid")}>
+                    {payStatus === "Paid" ? "Fully Paid" : payStatus === "Partial" ? "Partial" : "Unpaid"}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="erp-pos-field-label" style={{ marginBottom: 4 }}>Receive via</div>
+                  <div className="erp-sale-pay-methods">
+                    {[["Cash", "Cash"], ["Card", "Card"], ["Cheque", "Cheque"], ["Bank", "Bank Transfer"]].map(function (row) {
+                      var method = row[0];
+                      var label = row[1];
+                      var active = posCashMethod === method && !(posSplitRows && posSplitRows.length > 0);
+                      return (
+                        <button
+                          key={method}
+                          type="button"
+                          className={"erp-sale-pay-method" + (active ? " active" : "")}
+                          disabled={posSetupBlocked || isCheckingOut}
+                          onClick={function () { selectPosPayMethod(method); }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                <div className="erp-sale-split-wrap">
+                  <button
+                    type="button"
+                    className="erp-sale-split-btn"
+                    disabled={posSetupBlocked || isCheckingOut || !cart.length}
+                    title={posSplitRows && posSplitRows.length > 0 ? "Edit Split Payment (F4)" : "Split Payment (F4)"}
+                    onClick={function () { if (posSetupBlocked || isCheckingOut || !cart.length) return; setPosSplitModal(true); setPayMode("partial"); }}
+                  >
+                    <span>{posSplitRows && posSplitRows.length > 0 ? "Edit Split" : "Split Payment"}</span>
+                    <kbd>F4</kbd>
+                  </button>
+                </div>
+                </div>
+
+                {posSplitRows && posSplitRows.length > 0 ? (
+                  <div className="erp-pos-split-panel" style={{ opacity: posSetupBlocked || isCheckingOut ? 0.55 : 1, cursor: posSetupBlocked || isCheckingOut ? "not-allowed" : "default" }} onClick={function () { if (posSetupBlocked || isCheckingOut) return; setPosSplitModal(true); }}>
+                    {posSplitRows.map(function (r, i) {
+                      return <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}><span style={{ color: C.textMd }}>{r.method}</span><strong style={{ color: r.method === "Cheque" ? "#d97706" : C.green }}>{getCurrencySymbol()} {fmtNum(parseFloat(r.amount) || 0)}</strong></div>;
+                    })}
+                  </div>
+                ) : null}
+
+                {posCashMethod === "Cheque" && posChequeList.length > 0 && (
+                  <div className="erp-pos-cheque-panel" onClick={function () { setPosChqModal(true); }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed" }}>{posChequeList.length} cheque(s) added</span>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: "#7c3aed" }}>{getCurrencySymbol()} {fmtNum(posChequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0))}</span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="erp-sale-paid-grid">
+                  <div className="erp-sale-field">
+                    <label>Paid Amount</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={posSplitRows && posSplitRows.length > 0 ? paidNum : (payMode === "full" ? total : paidAmt)}
+                      disabled={!!(posSplitRows && posSplitRows.length > 0) || posSetupBlocked || isCheckingOut}
+                      onChange={function (e) {
+                        setPayMode("partial");
+                        setPaidAmt(e.target.value);
+                      }}
+                      onFocus={function () {
+                        if (payMode === "full") {
+                          setPayMode("partial");
+                          setPaidAmt(String(total));
+                        }
+                      }}
+                    />
+                  </div>
+                  <div className="erp-sale-field">
+                    <label>Balance</label>
+                    <input type="text" value={getCurrencySymbol() + " " + fmtNum(Math.max(0, balanceDue))} disabled />
+                  </div>
+                </div>
+
+                <label
+                  className={
+                    "erp-pos-warranty-label"
+                    + (includeWarranty && state.settings.warrantyEnabled ? " active" : "")
+                    + (!state.settings.warrantyEnabled ? " is-disabled" : "")
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={includeWarranty}
+                    disabled={!state.settings.warrantyEnabled}
+                    onChange={function (e) { setIncludeWarranty(e.target.checked); }}
+                  />
+                  <span className="erp-pos-warranty-text">
+                    <span className="erp-pos-warranty-title">Include Warranty Policy</span>
+                    {!state.settings.warrantyEnabled ? (
+                      <span className="erp-pos-warranty-hint">Disabled in Settings</span>
+                    ) : null}
+                  </span>
+                </label>
+
+                {(function () {
+                  var checkoutDisabled = !cart.length || posSetupBlocked || isCheckingOut;
+                  var checkoutTitle = posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : undefined;
+                  var waTitle = posSetupBlocked ? TC_SETUP_DISABLE_TITLE : isCheckingOut ? "Processing..." : "WhatsApp / Share (F8)";
+                  return (
+                    <div className="erp-sale-action-stack">
+                      <button type="button" className="erp-sale-action-btn print" disabled={checkoutDisabled} aria-describedby={posCheckoutAriaDesc} title={checkoutTitle || "Save & Print (F5)"} onClick={openPosPrintPicker}>
+                        {isCheckingOut ? "Processing..." : (<><span>Save & Print</span><kbd>F5</kbd></>)}
+                      </button>
+                      <button type="button" className="erp-sale-action-btn save" disabled={checkoutDisabled} aria-describedby={posCheckoutAriaDesc} title={checkoutTitle || "Save Only (F6)"} onClick={function () { saveAndFinish(false); }}>
+                        {isCheckingOut ? "Processing..." : (<><span>Save Only</span><kbd>F6</kbd></>)}
+                      </button>
+                      <button type="button" className="erp-sale-action-btn preview" disabled={!cart.length} onClick={openPosPreviewPicker} title="Print View (F7) — view layout without saving">
+                        <span>Print View</span><kbd>F7</kbd>
+                      </button>
+                      <button
+                        type="button"
+                        className="erp-sale-action-btn wa"
+                        disabled={checkoutDisabled}
+                        aria-describedby={posCheckoutAriaDesc}
+                        title={waTitle}
+                        onClick={saveAndWhatsApp}
+                      >
+                        {isCheckingOut ? "Processing..." : (<><span>WhatsApp</span><kbd>F8</kbd></>)}
+                      </button>
+                      <button
+                        type="button"
+                        className="erp-sale-action-btn hold"
+                        disabled={!cart.length}
+                        onClick={holdCurrentCart}
+                        title="Hold Invoice (F9)"
+                      >
+                        <span>Hold</span><kbd>F9</kbd>
+                      </button>
+                    </div>
+                  );
+                })()}
+                {(posSetupBlocked || isCheckingOut) && (
+                  <div id={posCheckoutHintId} role="status" aria-live="polite" style={{ fontSize: 11, color: C.muted, lineHeight: 1.4 }}>
+                    {isCheckingOut ? "Processing..." : TC_SETUP_DISABLE_TITLE}
+                  </div>
+                )}
+              </React.Fragment>
+            )}
+          </div>
+        </div>
+
+        {/* On Hold — count only; full list opens in modal */}
+        {heldInvoices.length > 0 ? (
+          <button
+            type="button"
+            className="erp-sale-hold-trigger"
+            onClick={function () { setShowHoldModal(true); }}
+            title="View all on-hold sales and quotations"
+          >
+            <span className="erp-sale-hold-trigger-ico" aria-hidden="true">⏸</span>
+            <span className="erp-sale-hold-trigger-text">
+              <span className="erp-sale-hold-trigger-label">On Hold</span>
+              <span className="erp-sale-hold-trigger-sub">{heldInvoices.length} saved — click to view</span>
+            </span>
+            <span className="erp-pos-held-count" aria-label={heldInvoices.length + " on hold"}>{heldInvoices.length}</span>
+          </button>
+        ) : null}
+        </div>
       </div>
+
+    </form>
+    </div>
+
+      {showHoldModal ? (
+        <Modal
+          className="erp-hold-list-modal"
+          title={"On Hold (" + heldInvoices.length + ")"}
+          medium
+          closeRound
+          onClose={function () { setShowHoldModal(false); }}
+        >
+          <p className="erp-hold-list-modal-hint">These sales and quotations are saved on hold. Continue to load one into the cart, or delete to remove it.</p>
+          <div className="erp-hold-list-modal-body">
+            {heldInvoices.length === 0 ? (
+              <div className="erp-hold-list-empty">No held sales or quotations.</div>
+            ) : heldInvoices.map(function (h) {
+              var hTime = h.heldAt ? new Date(h.heldAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+              var hDate = h.heldAt ? new Date(h.heldAt).toLocaleDateString() : "";
+              var cartCount = (h.cart || []).length + ((h.freeCart || []).length);
+              var cartTotal = (h.cart || []).reduce(function (a, it) { return a + posLineAmount(it); }, 0) - (parseFloat(h.discount) || 0);
+              var custLabel = h.label || h.custSearch || (h.custMode === "walkin" ? "Walk-in" : h.newCust && h.newCust.name ? h.newCust.name : "Walk-in");
+              var isQuotHold = h.holdKind === "quotation" || h.posPageTab === "quotation";
+              var docNo = isQuotHold ? (h.quotationNo || "") : (h.invoiceNo || "");
+              return (
+                <div key={h.id} className="erp-pos-held-row erp-hold-list-row">
+                  <div className="erp-sale-hold-info">
+                    <div className="erp-sale-hold-name-row">
+                      <span className="erp-sale-hold-name">{custLabel}</span>
+                      <span className={"erp-pos-held-pill " + (isQuotHold ? "quot" : "sale")}>{isQuotHold ? "Quotation" : "Sale"}</span>
+                      {activeHeldId === h.id ? <span className="erp-pos-held-pill active">Active</span> : null}
+                    </div>
+                    <div className="erp-sale-hold-meta">
+                      {docNo ? <span className="erp-sale-hold-doc">{docNo}</span> : null}
+                      {cartCount} item{cartCount !== 1 ? "s" : ""} · {getCurrencySymbol()} {fmtNum(cartTotal)} · {hDate} {hTime}
+                    </div>
+                  </div>
+                  <div className="erp-sale-hold-actions">
+                    <button
+                      type="button"
+                      className="erp-sale-hold-btn continue"
+                      onClick={function () {
+                        var go = function () {
+                          loadHeldInvoice(h);
+                          setShowHoldModal(false);
+                        };
+                        if (cart.length > 0 || freeCart.length > 0) {
+                          showConfirm("Loading this held " + (isQuotHold ? "quotation" : "invoice") + " will replace your current cart. Continue?", go);
+                        } else {
+                          go();
+                        }
+                      }}
+                    >
+                      Continue
+                    </button>
+                    <button
+                      type="button"
+                      className="erp-sale-hold-btn delete"
+                      title="Delete"
+                      onClick={function () {
+                        showConfirm("Delete this held " + (isQuotHold ? "quotation" : "invoice") + "?", function () {
+                          var remaining = heldInvoices.length - 1;
+                          deleteHeldInvoice(h.id);
+                          if (remaining <= 0) setShowHoldModal(false);
+                        });
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="erp-hold-list-modal-footer">
+            <Btn col="gray" onClick={function () { setShowHoldModal(false); }}>Close</Btn>
+          </div>
+        </Modal>
+      ) : null}
 
       {/* ?? POS Split Payment Modal ?? */}
       {posSplitModal && cart.length > 0 && (
@@ -4321,65 +4786,80 @@ var POS = React.memo(function (props) {
         />
       )}
 
-      {/* ?? POS Cheque Modal ?? */}
+      {/* POS Cheque Modal — compact rounded (matches Sales / split-pay UI) */}
       {posChqModal && (
-        <Modal title="Cheques to Receive - Add Payment Cheques" onClose={function () { setPosChequeList([]); setPosChqForm({ no: "", bank: "", amount: "", due: today() }); setPosCashMethod("Cash"); setPosChqModal(false); }} medium>
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>
+        <Modal
+          className="erp-pos-chq-modal"
+          title="Cheques to Receive — Add Payment Cheques"
+          onClose={function () { setPosChequeList([]); setPosChqForm({ no: "", bank: "", amount: "", due: today() }); setPosCashMethod("Cash"); setPosChqModal(false); }}
+          medium
+          closeRound
+        >
+          <div className="erp-pos-chq">
+            <p className="erp-pos-chq-hint">
               Add one or more cheques. Each cheque will be tracked separately in the Cheque Register and marked Cleared when received.
-            </div>
-            {/* Add row */}
-            <div style={{ background: "#f5f3ff", borderRadius: 10, padding: "16px", border: "1px solid #ddd6fe", marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 800, color: "#7c3aed", marginBottom: 12 }}>Add Cheque</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1.4fr 1fr 1fr auto", gap: 10, alignItems: "flex-end" }}>
-                <Input label="Cheque No *" value={posChqForm.no} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { no: e.target.value }); }); }} placeholder="e.g. 001234" />
-                <Input label="Bank Name" value={posChqForm.bank} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { bank: e.target.value }); }); }} placeholder="e.g. HNB" />
-                <Input label="Amount (Rs) *" type="number" value={posChqForm.amount} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }} placeholder="0" />
-                <Input label="Due Date *" type="date" value={posChqForm.due} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { due: e.target.value }); }); }} />
-                <button onClick={function () {
+            </p>
+            <div className="erp-pos-chq-panel">
+              <div className="erp-pos-chq-panel-title">Add Cheque</div>
+              <div className="erp-pos-chq-form-row">
+                <Input compact label="Cheque No *" value={posChqForm.no} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { no: e.target.value }); }); }} placeholder="e.g. 001234" />
+                <Input compact label="Bank Name" value={posChqForm.bank} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { bank: e.target.value }); }); }} placeholder="e.g. HNB" />
+                <Input compact label="Amount (Rs) *" type="number" value={posChqForm.amount} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }} placeholder="0" />
+                <Input compact label="Due Date *" type="date" value={posChqForm.due} onChange={function (e) { setPosChqForm(function (x) { return Object.assign({}, x, { due: e.target.value }); }); }} />
+              </div>
+              <button
+                type="button"
+                className="erp-pos-chq-add-btn"
+                onClick={function () {
                   if (!posChqForm.no.trim() || !parseFloat(posChqForm.amount)) { showAlert("Enter cheque number and amount."); return; }
                   setPosChequeList(function (l) { return l.concat([Object.assign({}, posChqForm, { id: uid() })]); });
                   setPosChqForm({ no: "", bank: "", amount: "", due: today() });
-                }} style={{ padding: "10px 20px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}>Add Cheque</button>
-              </div>
+                }}
+              >
+                + Add Cheque
+              </button>
             </div>
-            {/* Cheque list */}
             {posChequeList.length > 0 ? (
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 8 }}>Added Cheques</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+              <div className="erp-pos-chq-list-wrap">
+                <div className="erp-pos-chq-list-label">Added Cheques</div>
+                <div className="erp-pos-chq-list">
                   {posChequeList.map(function (c, i) {
                     return (
-                      <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", borderRadius: 9, padding: "12px 16px", border: "1px solid #ddd6fe" }}>
-                        <span style={{ fontSize: 20 }}>{UI.cheque}</span>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 700, fontSize: 14, color: "#7c3aed" }}>#{c.no}</div>
-                          {c.bank && <div style={{ fontSize: 12, color: C.muted }}>{c.bank}</div>}
+                      <div key={c.id} className="erp-pos-chq-row">
+                        <span className="erp-pos-chq-row-ico" aria-hidden="true">{UI.cheque}</span>
+                        <div className="erp-pos-chq-row-main">
+                          <div className="erp-pos-chq-row-no">#{c.no}</div>
+                          {c.bank ? <div className="erp-pos-chq-row-bank">{c.bank}</div> : null}
                         </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontWeight: 800, fontSize: 15, color: C.green }}>{getCurrencySymbol()} {fmtNum(parseFloat(c.amount) || 0)}</div>
-                          <div style={{ fontSize: 12, color: C.muted }}>Due: {c.due}</div>
+                        <div className="erp-pos-chq-row-amt">
+                          <div className="erp-pos-chq-row-val">{getCurrencySymbol()} {fmtNum(parseFloat(c.amount) || 0)}</div>
+                          <div className="erp-pos-chq-row-due">Due: {c.due}</div>
                         </div>
-                        <button onClick={function () { setPosChequeList(function (l) { return l.filter(function (_, j) { return j !== i; }); }); }}
-                          style={{ background: "#fde8ed", color: C.red, border: "none", borderRadius: 7, padding: "6px 12px", cursor: "pointer", fontWeight: 700, fontSize: 13 }}>Remove</button>
+                        <button
+                          type="button"
+                          className="erp-pos-chq-remove"
+                          onClick={function () { setPosChequeList(function (l) { return l.filter(function (_, j) { return j !== i; }); }); }}
+                        >
+                          Remove
+                        </button>
                       </div>
                     );
                   })}
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#ede9fe", borderRadius: 10, fontWeight: 800, fontSize: 14 }}>
-                  <span style={{ color: "#7c3aed" }}>{posChequeList.length} cheque(s) total</span>
-                  <span style={{ color: "#7c3aed", fontSize: 18 }}>{getCurrencySymbol()} {fmtNum(posChequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0))}</span>
+                <div className="erp-pos-chq-total">
+                  <span>{posChequeList.length} cheque(s) total</span>
+                  <strong>{getCurrencySymbol()} {fmtNum(posChequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0))}</strong>
                 </div>
               </div>
             ) : (
-              <div style={{ textAlign: "center", padding: "24px 0", color: C.muted, fontSize: 13, background: "#fafbff", borderRadius: 10, border: "1.5px dashed " + C.border }}>
+              <div className="erp-pos-chq-empty">
                 No cheques added yet. Use the form above to add cheques.
               </div>
             )}
-          </div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <Btn col="gray" onClick={function () { setPosChequeList([]); setPosCashMethod("Cash"); setPosChqModal(false); }}>Cancel</Btn>
-            <Btn col="blue" onClick={function () { setPosChqModal(false); }} disabled={posChequeList.length === 0}>Done - {posChequeList.length} cheque(s) saved</Btn>
+            <div className="erp-pos-chq-footer">
+              <Btn col="gray" onClick={function () { setPosChequeList([]); setPosCashMethod("Cash"); setPosChqModal(false); }}>Cancel</Btn>
+              <Btn col="blue" onClick={function () { setPosChqModal(false); }} disabled={posChequeList.length === 0}>Done — {posChequeList.length} cheque(s) saved</Btn>
+            </div>
           </div>
         </Modal>
       )}
@@ -4403,17 +4883,31 @@ var POS = React.memo(function (props) {
             var thermalLabel = thermalSize === "thermal58" ? "Thermal 58mm PDF" : "Thermal 80mm PDF";
             var docWord = waSharePickerKind === "quotation" ? "quotation" : "invoice";
             return (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>Choose which {docWord} format to share on WhatsApp. Press <strong>A</strong> for A4 or <strong>T</strong> for thermal.</div>
-                <Btn col="blue" onClick={function () {
-                  if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(paperSize);
-                  else saveAndWhatsAppWithMode(paperSize);
-                }}>{paperLabel} (A)</Btn>
-                <Btn col="cyan" onClick={function () {
-                  if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(thermalSize);
-                  else saveAndWhatsAppWithMode(thermalSize);
-                }}>{thermalLabel} (T)</Btn>
-                <Btn col="gray" onClick={function () { setWaSharePicker(false); }}>Cancel (Esc)</Btn>
+              <div className="erp-sale-picker">
+                <div className="erp-sale-picker-hint">Choose which {docWord} format to share on WhatsApp. Press <strong>A</strong> for A4 or <strong>T</strong> for thermal.</div>
+                <button
+                  type="button"
+                  className="erp-sale-picker-btn primary"
+                  onClick={function () {
+                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(paperSize);
+                    else saveAndWhatsAppWithMode(paperSize);
+                  }}
+                >
+                  <span>{paperLabel}</span><kbd>A</kbd>
+                </button>
+                <button
+                  type="button"
+                  className="erp-sale-picker-btn secondary"
+                  onClick={function () {
+                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(thermalSize);
+                    else saveAndWhatsAppWithMode(thermalSize);
+                  }}
+                >
+                  <span>{thermalLabel}</span><kbd>T</kbd>
+                </button>
+                <button type="button" className="erp-sale-picker-btn cancel" onClick={function () { setWaSharePicker(false); }}>
+                  <span>Cancel</span><kbd>Esc</kbd>
+                </button>
               </div>
             );
           })()}
@@ -4421,110 +4915,127 @@ var POS = React.memo(function (props) {
       )}
 
       {posPrintPicker && (
-        <Modal title={posPrintPickerKind === "quotation" ? "Print Quotation" : "Print Invoice"} onClose={function () { setPosPrintPicker(false); }}>
+        <Modal
+          title={posPrintPickerIntent === "preview"
+            ? (posPrintPickerKind === "quotation" ? "Preview Quotation" : "Preview Invoice")
+            : (posPrintPickerKind === "quotation" ? "Print Quotation" : "Print Invoice")}
+          onClose={function () { setPosPrintPicker(false); }}
+        >
           {(function () {
             var paperSize = state.settings.invoiceDefaultSize || "a4";
             var thermalSize = state.settings.invoiceThermalSize || "thermal80";
-            var paperLabel = paperSize === "a5" ? "A5 Print" : "A4 Print";
-            var thermalLabel = thermalSize === "thermal58" ? "Thermal 58mm Print" : "Thermal 80mm Print";
+            var isPreview = posPrintPickerIntent === "preview";
+            var paperLabel = paperSize === "a5" ? (isPreview ? "A5 Preview" : "A5 Print") : (isPreview ? "A4 Preview" : "A4 Print");
+            var thermalLabel = thermalSize === "thermal58"
+              ? (isPreview ? "Thermal 58mm Preview" : "Thermal 58mm Print")
+              : (isPreview ? "Thermal 80mm Preview" : "Thermal 80mm Print");
             return (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>Choose print format. Press <strong>A</strong> for A4 or <strong>T</strong> for thermal.</div>
-                <Btn col="blue" onClick={function () { saveAndPrintWithMode(paperSize); }}>{paperLabel} (A)</Btn>
-                <Btn col="cyan" onClick={function () { saveAndPrintWithMode(thermalSize); }}>{thermalLabel} (T)</Btn>
-                <Btn col="gray" onClick={function () { setPosPrintPicker(false); }}>Cancel (Esc)</Btn>
+              <div className="erp-sale-picker">
+                <div className="erp-sale-picker-hint">
+                  {isPreview
+                    ? "View only — nothing will be saved. Press A for A4 or T for thermal."
+                    : "Choose print format. Press A for A4 or T for thermal."}
+                </div>
+                <button type="button" className="erp-sale-picker-btn primary" onClick={function () { saveAndPrintWithMode(paperSize); }}>
+                  <span>{paperLabel}</span><kbd>A</kbd>
+                </button>
+                <button type="button" className="erp-sale-picker-btn secondary" onClick={function () { saveAndPrintWithMode(thermalSize); }}>
+                  <span>{thermalLabel}</span><kbd>T</kbd>
+                </button>
+                <button type="button" className="erp-sale-picker-btn cancel" onClick={function () { setPosPrintPicker(false); }}>
+                  <span>Cancel</span><kbd>Esc</kbd>
+                </button>
               </div>
             );
           })()}
         </Modal>
       )}
-    </form>
     {isRestaurant && selectedRestaurantOrderDetail && (
       <Modal title={"Order Details - " + (selectedRestaurantOrderDetail.tableId ? getRestaurantTableDisplayName(selectedRestaurantOrderDetail.tableId) : (selectedRestaurantOrderDetail.type === "takeaway" ? "Takeaway" : (selectedRestaurantOrderDetail.type === "delivery" ? "Delivery" : "Dine-in")))} onClose={function () { setRestaurantOrderDetailId(""); }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: C.text }}>
+          <div className="erp-pos-order-detail-hdr">
+            <div className="erp-pos-order-detail-title">
               {(selectedRestaurantOrderDetail.type === "takeaway" ? "Takeaway" : (selectedRestaurantOrderDetail.type === "delivery" ? "Delivery" : "Dine-in"))}
               {selectedRestaurantOrderDetail.createdBy ? (" - By: " + selectedRestaurantOrderDetail.createdBy) : ""}
             </div>
-            <span style={{ fontSize: 10.5, fontWeight: 800, padding: "4px 8px", borderRadius: 999, background: restaurantStatusStyle(selectedRestaurantOrderDetail.status).bg, color: restaurantStatusStyle(selectedRestaurantOrderDetail.status).fg }}>
+            <span className={"erp-pos-status-pill " + restaurantStatusClass(selectedRestaurantOrderDetail.status)}>
               {restaurantStatusLabel(selectedRestaurantOrderDetail.status)}
             </span>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "28vh", overflowY: "auto", border: "1px solid " + C.borderLight, borderRadius: 10, padding: "10px 11px", background: "#fcfdff" }}>
+          <div className="erp-pos-order-detail-list">
             {(selectedRestaurantOrderDetail.items || []).map(function (it, idx) {
               return (
-                <div key={"detail-item-" + idx} style={{ borderBottom: idx === (selectedRestaurantOrderDetail.items || []).length - 1 ? "none" : "1px solid " + C.borderLight, paddingBottom: idx === (selectedRestaurantOrderDetail.items || []).length - 1 ? 0 : 8 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, color: C.text }}>{it.name}</div>
-                  <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                <div key={"detail-item-" + idx} className="erp-pos-order-detail-item">
+                  <div className="erp-pos-order-detail-item-name">{it.name}</div>
+                  <div className="erp-pos-order-detail-item-meta">
                     Qty: {it.qty} {it.saleUnit || "Pcs"} - Price: {getCurrencySymbol()} {fmtNum(Number(it.price) || 0)}
                   </div>
-                  {it.note && <div style={{ fontSize: 11, color: C.textMd, marginTop: 3 }}>Note: {it.note}</div>}
+                  {it.note && <div className="erp-pos-order-detail-item-note">Note: {it.note}</div>}
                 </div>
               );
             })}
           </div>
           {selectedRestaurantOrderDetail.note && (
-            <div style={{ fontSize: 11.5, color: C.textMd, border: "1px solid " + C.borderLight, borderRadius: 8, padding: "8px 10px", background: "#f8fafc" }}>
+            <div className="erp-panel-box-muted">
               Note: {selectedRestaurantOrderDetail.note}
             </div>
           )}
           {selectedRestaurantOrderDetail.type === "delivery" && selectedRestaurantOrderDetail.deliveryDetails && (
-            <div style={{ fontSize: 11.5, color: C.textMd, border: "1px solid " + C.borderLight, borderRadius: 8, padding: "8px 10px", background: "#f8fafc" }}>
+            <div className="erp-panel-box-muted">
               {selectedRestaurantOrderDetail.deliveryDetails.name && <div>Name: {selectedRestaurantOrderDetail.deliveryDetails.name}</div>}
               {selectedRestaurantOrderDetail.deliveryDetails.phone && <div>Phone: {selectedRestaurantOrderDetail.deliveryDetails.phone}</div>}
               {selectedRestaurantOrderDetail.deliveryDetails.address && <div>Address: {selectedRestaurantOrderDetail.deliveryDetails.address}</div>}
             </div>
           )}
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <button type="button" disabled={isOrderFullyBilled(selectedRestaurantOrderDetail)} onClick={function () { setRestaurantOrderStatus(selectedRestaurantOrderDetail.id, "preparing"); }} style={{ fontSize: 11, border: "1px solid " + C.border, borderRadius: 6, padding: "5px 8px", background: "#fff", cursor: isOrderFullyBilled(selectedRestaurantOrderDetail) ? "not-allowed" : "pointer", opacity: isOrderFullyBilled(selectedRestaurantOrderDetail) ? 0.5 : 1, fontFamily: "inherit" }}>Preparing</button>
-            <button type="button" disabled={isOrderFullyBilled(selectedRestaurantOrderDetail)} onClick={function () { setRestaurantOrderStatus(selectedRestaurantOrderDetail.id, "ready"); }} style={{ fontSize: 11, border: "1px solid " + C.border, borderRadius: 6, padding: "5px 8px", background: "#fff", cursor: isOrderFullyBilled(selectedRestaurantOrderDetail) ? "not-allowed" : "pointer", opacity: isOrderFullyBilled(selectedRestaurantOrderDetail) ? 0.5 : 1, fontFamily: "inherit" }}>Ready</button>
-            <button type="button" disabled={isOrderFullyBilled(selectedRestaurantOrderDetail)} onClick={function () { setRestaurantOrderStatus(selectedRestaurantOrderDetail.id, "served"); }} style={{ fontSize: 11, border: "1px solid " + C.border, borderRadius: 6, padding: "5px 8px", background: "#fff", cursor: isOrderFullyBilled(selectedRestaurantOrderDetail) ? "not-allowed" : "pointer", opacity: isOrderFullyBilled(selectedRestaurantOrderDetail) ? 0.5 : 1, fontFamily: "inherit" }}>Served</button>
+          <div className="erp-pos-order-detail-actions">
+            <button type="button" className="erp-pos-order-action-btn" disabled={isOrderFullyBilled(selectedRestaurantOrderDetail)} onClick={function () { setRestaurantOrderStatus(selectedRestaurantOrderDetail.id, "preparing"); }}>Preparing</button>
+            <button type="button" className="erp-pos-order-action-btn" disabled={isOrderFullyBilled(selectedRestaurantOrderDetail)} onClick={function () { setRestaurantOrderStatus(selectedRestaurantOrderDetail.id, "ready"); }}>Ready</button>
+            <button type="button" className="erp-pos-order-action-btn" disabled={isOrderFullyBilled(selectedRestaurantOrderDetail)} onClick={function () { setRestaurantOrderStatus(selectedRestaurantOrderDetail.id, "served"); }}>Served</button>
             {!isOrderFullyBilled(selectedRestaurantOrderDetail) && restaurantBillingAllowed && (
-              <button type="button" onClick={function () { billRestaurantOrder(selectedRestaurantOrderDetail.id); }} disabled={isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id} style={{ fontSize: 11, border: "none", borderRadius: 6, padding: "5px 9px", background: "#1d4ed8", color: "#fff", cursor: isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id ? "not-allowed" : "pointer", opacity: isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id ? 0.65 : 1, fontFamily: "inherit", fontWeight: 800 }}>
+              <button type="button" className="erp-pos-order-action-btn primary" onClick={function () { billRestaurantOrder(selectedRestaurantOrderDetail.id); }} disabled={isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id}>
                 {billingOrderId === selectedRestaurantOrderDetail.id ? "Billing..." : ((selectedRestaurantOrderDetail.splitBills && selectedRestaurantOrderDetail.splitBills.length > 0) ? "Bill Remaining" : "Bill Order")}
               </button>
             )}
             {!isOrderFullyBilled(selectedRestaurantOrderDetail) && restaurantBillingAllowed && (
-              <button type="button" onClick={function () { setSplitOrderId(splitOrderId === selectedRestaurantOrderDetail.id ? "" : selectedRestaurantOrderDetail.id); setItemSplitPick({}); }} style={{ fontSize: 11, border: "1px solid " + C.border, borderRadius: 6, padding: "5px 8px", background: "#fff", cursor: "pointer", fontFamily: "inherit", fontWeight: 700 }}>
+              <button type="button" className="erp-pos-order-action-btn" onClick={function () { setSplitOrderId(splitOrderId === selectedRestaurantOrderDetail.id ? "" : selectedRestaurantOrderDetail.id); setItemSplitPick({}); }}>
                 Split Bill
               </button>
             )}
           </div>
           {!isOrderFullyBilled(selectedRestaurantOrderDetail) && !restaurantBillingAllowed && (
-            <div style={{ fontSize: 11.5, color: C.muted, fontWeight: 700 }}>
+            <div className="erp-pos-rest-status-msg muted">
               Billing available at counter
             </div>
           )}
           {splitOrderId === selectedRestaurantOrderDetail.id && !isOrderFullyBilled(selectedRestaurantOrderDetail) && (
-            <div style={{ borderTop: "1px dashed " + C.border, paddingTop: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Equal Split</div>
-              <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            <div className="erp-pos-order-split-section">
+              <div className="erp-pos-order-split-hdr">Equal Split</div>
+              <div className="erp-pos-order-detail-actions" style={{ marginBottom: 10 }}>
                 {[2, 3, 4].map(function (n) {
-                  return <button key={"detail-split-" + selectedRestaurantOrderDetail.id + "-" + n} type="button" onClick={function () { billRestaurantEqualSplit(selectedRestaurantOrderDetail.id, n); }} disabled={isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id} style={{ fontSize: 11, border: "1px solid " + C.border, borderRadius: 6, padding: "4px 9px", background: "#fff", cursor: isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id ? "not-allowed" : "pointer", fontFamily: "inherit" }}>{n + " ways"}</button>;
+                  return <button key={"detail-split-" + selectedRestaurantOrderDetail.id + "-" + n} type="button" className="erp-pos-order-action-btn" onClick={function () { billRestaurantEqualSplit(selectedRestaurantOrderDetail.id, n); }} disabled={isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id}>{n + " ways"}</button>;
                 })}
               </div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", marginBottom: 6 }}>Item-based Split</div>
+              <div className="erp-pos-order-split-hdr">Item-based Split</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8, maxHeight: "20vh", overflowY: "auto" }}>
                 {getOrderRemainingItems(selectedRestaurantOrderDetail).map(function (ri, idx) {
                   var pickKey = selectedRestaurantOrderDetail.id + "::" + idx;
                   return (
-                    <label key={"detail-pick-" + pickKey} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: C.textMd }}>
+                    <label key={"detail-pick-" + pickKey} className="erp-pos-order-split-pick">
                       <input type="checkbox" checked={!!itemSplitPick[pickKey]} onChange={function () { toggleItemSplitPick(selectedRestaurantOrderDetail.id, idx); }} />
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <span>
                         {ri.name} x {ri.qty} {ri.saleUnit || "Pcs"}
                       </span>
                     </label>
                   );
                 })}
               </div>
-              <button type="button" onClick={function () { billRestaurantItemSplit(selectedRestaurantOrderDetail.id); }} disabled={isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id} style={{ fontSize: 11, border: "none", borderRadius: 6, padding: "5px 9px", background: "#0f766e", color: "#fff", cursor: isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id ? "not-allowed" : "pointer", opacity: isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id ? 0.65 : 1, fontFamily: "inherit", fontWeight: 800 }}>
+              <button type="button" className="erp-pos-order-action-btn teal" onClick={function () { billRestaurantItemSplit(selectedRestaurantOrderDetail.id); }} disabled={isCheckingOut || billingOrderId === selectedRestaurantOrderDetail.id}>
                 Bill Selected Items
               </button>
             </div>
           )}
           {isOrderFullyBilled(selectedRestaurantOrderDetail) && (
-            <div style={{ fontSize: 11.5, color: "#166534", fontWeight: 700 }}>
+            <div className="erp-pos-rest-status-msg ok">
               Fully billed
             </div>
           )}
@@ -4556,11 +5067,13 @@ var POS = React.memo(function (props) {
             </div>
             <Btn col="blue" onClick={addRestaurantTable}>Add Table</Btn>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" }}>
+          <div className="erp-pos-manage-list">
             {restaurantTables.map(function (t) {
-              var ts = restaurantTableStatusUi(getRestaurantTableComputedStatus(t.id, t.status));
+              var tableState = getRestaurantTableComputedStatus(t.id, t.status);
+              var ts = restaurantTableStatusUi(tableState);
+              var statusCls = tableState === "occupied" ? "occupied" : (tableState === "pending" ? "pending" : "free");
               return (
-                <div key={"manage-root-" + t.id} style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid " + C.borderLight, borderRadius: 10, padding: "9px 10px", background: "#fff" }}>
+                <div key={"manage-root-" + t.id} className="erp-pos-manage-row">
                   <input
                     type="text"
                     defaultValue={t.name || t.id}
@@ -4572,15 +5085,14 @@ var POS = React.memo(function (props) {
                         e.currentTarget.blur();
                       }
                     }}
-                    style={{ flex: 1, border: "1.5px solid " + C.border, borderRadius: 8, padding: "7px 10px", fontSize: 12, fontFamily: "inherit", background: "#fff" }}
                   />
-                  <span style={{ fontSize: 10.5, fontWeight: 800, border: "1px solid " + ts.dot, background: ts.bg, color: ts.fg, borderRadius: 999, padding: "4px 8px", whiteSpace: "nowrap" }}>
+                  <span className={"erp-settings-table-status " + statusCls}>
                     {ts.label}
                   </span>
                   <button
                     type="button"
+                    className="erp-settings-table-del-btn"
                     onClick={function () { deleteRestaurantTable(t.id); }}
-                    style={{ border: "1px solid #fecaca", background: "#fff1f2", color: "#b91c1c", borderRadius: 8, padding: "6px 9px", fontSize: 11, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}
                   >
                     Delete
                   </button>
@@ -4588,7 +5100,7 @@ var POS = React.memo(function (props) {
               );
             })}
           </div>
-          <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
+          <div className="erp-pos-manage-hint">
             Rename table names inline. Only free tables can be deleted.
           </div>
         </div>
@@ -4597,22 +5109,26 @@ var POS = React.memo(function (props) {
     </React.Fragment>
   );
 });
+
+/** Prefill / document line → POS cart line (prefer input qty/unit/price). */
+var mapPrefillItemToCartLine = function (it, makeId) {
+  if (!it) return null;
+  var saleUnit = it.inputUnit || it.saleUnit || it.unit || "Pcs";
+  var qty = it.inputQty != null ? it.inputQty : it.qty;
+  var price = it.inputPrice != null ? it.inputPrice : it.price;
+  var line = Object.assign({}, it, {
+    cartLineId: it.cartLineId || makeId(),
+    qty: qty,
+    saleUnit: saleUnit,
+    unit: saleUnit,
+    price: Number(price) || 0,
+  });
+  if (it.isFree) {
+    line.isFree = true;
+    line.price = 0;
+  }
+  return line;
+};
+
 var Sales = POS;
 export default Sales;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

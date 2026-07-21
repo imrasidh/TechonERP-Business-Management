@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import AddPartyModal from "./AddPartyModal.jsx";
 
 var CustomerPicker = function (props) {
   var customers = Array.isArray(props.customers) ? props.customers : [];
@@ -12,12 +13,45 @@ var CustomerPicker = function (props) {
   var normalizeNameKey = props.normalizeNameKey;
   var C = props.C;
   var Input = props.Input;
+  var Modal = props.Modal;
+  var Btn = props.Btn;
+  var focusKey = props.focusKey;
+  var context = props.context || "sales";
 
+  var inputRef = useRef(null);
+  var rootRef = useRef(null);
   var [dropIdx, setDropIdx] = useState(-1);
-  var [showCreate, setShowCreate] = useState(false);
-  var [createForm, setCreateForm] = useState({ name: "", phone: "" });
+  var [isOpen, setIsOpen] = useState(false);
+  var [showCreateModal, setShowCreateModal] = useState(false);
+  var [createInitial, setCreateInitial] = useState({ name: "", phone: "", address: "" });
 
-  var filteredCustomers = useMemo(function () {
+  useEffect(function () {
+    if (focusKey == null) return;
+    var el = inputRef.current;
+    if (!el) return;
+    try {
+      el.focus();
+      el.select();
+      setIsOpen(true);
+    } catch (e) { /* ignore */ }
+  }, [focusKey]);
+
+  useEffect(function () {
+    if (!isOpen) return;
+    function handlePointerDown(e) {
+      var root = rootRef.current;
+      if (root && !root.contains(e.target)) {
+        setIsOpen(false);
+        setDropIdx(-1);
+      }
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    return function () {
+      document.removeEventListener("mousedown", handlePointerDown);
+    };
+  }, [isOpen]);
+
+  var filteredCustomers = React.useMemo(function () {
     var q = String(value || "").trim().toLowerCase();
     if (!q) return [];
     return customers.filter(function (c) {
@@ -31,116 +65,145 @@ var CustomerPicker = function (props) {
     }
   };
 
+  var openCreate = function (name) {
+    setIsOpen(false);
+    setDropIdx(-1);
+    setCreateInitial({ name: String(name || "").trim(), phone: "", address: "" });
+    setShowCreateModal(true);
+  };
+
+  var closePicker = function () {
+    setIsOpen(false);
+    setDropIdx(-1);
+  };
+
   var handleSelect = function (customer) {
     if (!customer) return;
     onSelectCustomer(customer);
-    setDropIdx(-1);
-    setShowCreate(false);
+    closePicker();
     focusAfterSelect();
   };
 
-  var handleCreate = function () {
-    var name = String(createForm.name || "").trim();
-    if (!name) return;
-    var created = onCreateCustomer({
-      name: name,
-      phone: String(createForm.phone || "").trim(),
-    });
-    if (created) {
-      setCreateForm({ name: "", phone: "" });
-      setShowCreate(false);
-      setDropIdx(-1);
-      focusAfterSelect();
-    }
+  var handleCreated = function () {
+    setShowCreateModal(false);
+    focusAfterSelect();
   };
 
+  var placeholder = props.placeholder || "Search customer by name or phone...";
+  var compact = !!props.compact;
+  var inputStyle = compact
+    ? { width: "100%", outline: "none", fontFamily: "inherit" }
+    : { width: "100%", border: "1px solid " + (selectedCustomerId ? C.green : C.border), borderRadius: 7, padding: "8px 11px", fontSize: 13, outline: "none", fontFamily: "inherit" };
+  var canCreate = String(value || "").trim() && filteredCustomers.length === 0;
+
   return (
-    <div style={{ position: "relative" }}>
-      <input
-        value={value}
-        onChange={function (e) {
-          onValueChange(e.target.value);
-          setDropIdx(-1);
-          setShowCreate(false);
-        }}
-        onKeyDown={function (e) {
-          var list = filteredCustomers;
-          var canCreate = String(value || "").trim() && list.length === 0;
-          if (e.key === "ArrowDown") { e.preventDefault(); setDropIdx(function (i) { return Math.min(i + 1, canCreate ? list.length : Math.max(list.length - 1, 0)); }); return; }
-          if (e.key === "ArrowUp") { e.preventDefault(); setDropIdx(function (i) { return Math.max(i - 1, -1); }); return; }
-          if (e.key === "Enter") {
-            e.preventDefault();
-            if (selectedCustomerId) {
-              focusAfterSelect();
-              return;
-            }
-            if (dropIdx >= 0 && list[dropIdx]) {
-              handleSelect(list[dropIdx]);
-              return;
-            }
-            if (list.length > 0) {
-              handleSelect(list[0]);
-              return;
-            }
-            if (canCreate && dropIdx === list.length) {
-              setShowCreate(true);
-              setCreateForm({ name: String(value || "").trim(), phone: "" });
-            }
-          }
-          if (e.key === "Escape") {
-            onValueChange("");
+    <>
+      <div
+        ref={rootRef}
+        className={
+          "erp-cust-picker"
+          + (compact ? " erp-cust-picker-compact" : "")
+          + (isOpen ? " is-open" : "")
+        }
+        style={{ position: "relative" }}
+      >
+        <input
+          ref={inputRef}
+          className={compact ? "erp-cust-picker-input" : undefined}
+          value={value}
+          onFocus={function () { setIsOpen(true); }}
+          onChange={function (e) {
+            onValueChange(e.target.value);
             setDropIdx(-1);
-            setShowCreate(false);
-          }
-        }}
-        placeholder="Search customer by name or phone..."
-        style={{ width: "100%", border: "1px solid " + (selectedCustomerId ? C.green : C.border), borderRadius: 7, padding: "8px 11px", fontSize: 13, outline: "none", fontFamily: "inherit" }}
-      />
-      {value && !selectedCustomerId && !showCreate && (
-        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, background: "#fff", border: "1px solid " + C.border, borderRadius: 7, zIndex: 50, maxHeight: 220, overflowY: "auto", boxShadow: "0 4px 12px rgba(0,0,0,.1)" }}>
-          {filteredCustomers.map(function (c, idx) {
-            var dupN = normalizeNameKey ? duplicateNameKeys[normalizeNameKey(c.name)] : false;
-            return (
+            setIsOpen(true);
+          }}
+          onKeyDown={function (e) {
+            var list = filteredCustomers;
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setDropIdx(function (i) { return Math.min(i + 1, canCreate ? list.length : Math.max(list.length - 1, 0)); });
+              return;
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setDropIdx(function (i) { return Math.max(i - 1, -1); });
+              return;
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              if (selectedCustomerId) {
+                focusAfterSelect();
+                return;
+              }
+              if (dropIdx >= 0 && list[dropIdx]) {
+                handleSelect(list[dropIdx]);
+                return;
+              }
+              if (list.length > 0) {
+                handleSelect(list[0]);
+                return;
+              }
+              if (canCreate && dropIdx === list.length) {
+                openCreate(value);
+              }
+            }
+            if (e.key === "Escape") {
+              onValueChange("");
+              closePicker();
+            }
+          }}
+          placeholder={placeholder}
+          style={inputStyle}
+        />
+
+        {isOpen && value && !selectedCustomerId && (
+          <div className="erp-cust-picker-drop">
+            {filteredCustomers.map(function (c, idx) {
+              var dupN = normalizeNameKey ? duplicateNameKeys[normalizeNameKey(c.name)] : false;
+              return (
+                <div
+                  key={c.id}
+                  className={"erp-cust-picker-item" + (dropIdx === idx ? " active" : "")}
+                  onClick={function () { handleSelect(c); }}
+                  onMouseEnter={function () { setDropIdx(idx); }}
+                  onMouseLeave={function () { setDropIdx(-1); }}
+                >
+                  <span className="erp-cust-picker-item-name">
+                    {c.name}{dupN ? <span title="Duplicate name exists"> {" "}⚠️</span> : null}
+                  </span>
+                  <span className="erp-cust-picker-item-phone">{c.phone}</span>
+                </div>
+              );
+            })}
+            {canCreate && (
               <div
-                key={c.id}
-                onClick={function () { handleSelect(c); }}
-                onMouseEnter={function () { setDropIdx(idx); }}
+                className={"erp-cust-picker-item erp-cust-picker-create-opt" + (dropIdx === filteredCustomers.length ? " active" : "")}
+                onClick={function () { openCreate(value); }}
+                onMouseEnter={function () { setDropIdx(filteredCustomers.length); }}
                 onMouseLeave={function () { setDropIdx(-1); }}
-                style={{ padding: "9px 14px", cursor: "pointer", fontSize: 13, borderBottom: "1px solid #f1f5f9", background: dropIdx === idx ? C.accentSoft : "#fff" }}
               >
-                {c.name}{dupN ? <span title="Duplicate name exists"> {" "}⚠️</span> : null} <span style={{ color: C.muted }}>{c.phone}</span>
+                + Add new customer
               </div>
-            );
-          })}
-          {String(value || "").trim() && filteredCustomers.length === 0 && (
-            <div
-              onClick={function () {
-                setShowCreate(true);
-                setCreateForm({ name: String(value || "").trim(), phone: "" });
-              }}
-              onMouseEnter={function () { setDropIdx(filteredCustomers.length); }}
-              onMouseLeave={function () { setDropIdx(-1); }}
-              style={{ padding: "10px 14px", cursor: "pointer", fontSize: 13, background: dropIdx === filteredCustomers.length ? C.accentSoft : "#fff", color: C.accent, fontWeight: 700 }}
-            >
-              + Add new customer
-            </div>
-          )}
-        </div>
-      )}
-      {showCreate && (
-        <div style={{ marginTop: 8, padding: 10, border: "1px solid " + C.border, borderRadius: 8, background: "#f8fafc" }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, marginBottom: 8 }}>Add new customer</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <Input label="Name" value={createForm.name} onChange={function (e) { setCreateForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} placeholder="Customer name" />
-            <Input label="Phone" value={createForm.phone} onChange={function (e) { setCreateForm(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); }} placeholder="Phone number" />
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" onClick={handleCreate} style={{ border: "none", borderRadius: 6, padding: "7px 10px", background: C.accent, color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Save Customer</button>
-              <button type="button" onClick={function () { setShowCreate(false); }} style={{ border: "1px solid " + C.border, borderRadius: 6, padding: "7px 10px", background: "#fff", color: C.textMd, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
-            </div>
+            )}
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+
+      <AddPartyModal
+        open={showCreateModal}
+        onClose={function () { setShowCreateModal(false); }}
+        onCreate={function (draft) { return onCreateCustomer(draft); }}
+        onSaved={handleCreated}
+        customers={customers}
+        context={context}
+        partyKind="customer"
+        initialValues={createInitial}
+        Modal={Modal}
+        Input={Input}
+        Btn={Btn}
+        zIndex={props.zIndex || 1100}
+      />
+    </>
   );
 };
 

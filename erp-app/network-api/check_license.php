@@ -417,6 +417,8 @@ if ($finalStatus === 'trial') {
         'assets'            => 'tc3_assets',
         'manualReceivables' => 'tc3_manualReceivables',
         'manualPayables'    => 'tc3_manualPayables',
+        'codRecords'        => 'tc3_codRecords',
+        'codWithdrawals'    => 'tc3_codWithdrawals',
     ];
     $serverCounts = [];
     foreach ($countKeys as $key => $storeKey) {

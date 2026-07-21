@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
+import { stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 
 var Expenses = function (props) {
   var state = props.state;
@@ -62,7 +63,8 @@ var Expenses = function (props) {
 
   var saveNew = function () {
     if (!f.description || !f.amount) return;
-    var e = { id: uid(), date: f.date || today(), category: f.category, description: f.description, amount: parseFloat(f.amount) || 0, payee: f.payee || "", payMode: f.payMode || "Cash", reference: f.reference || "" };
+    var expTs = new Date().toISOString();
+    var e = stampTransactionIsoDateTime({ id: uid(), date: f.date || today(), category: f.category, description: f.description, amount: parseFloat(f.amount) || 0, payee: f.payee || "", payMode: f.payMode || "Cash", reference: f.reference || "", createdAt: expTs, updatedAt: expTs }, expTs);
     if (!tcTrialGuard(state.expenses, 'expenses')) return;
     var ne = state.expenses.concat([e]);
     S.set("tc3_expenses", ne);
@@ -165,7 +167,7 @@ var Expenses = function (props) {
                   <TD>{e.reference || "—"}</TD>
                   <TD bold color={C.red}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
                   <td style={actBtnCellStyle}>
-                    <ActBtn tone="red" title="Delete expense" onClick={function () { setDeleteId(e.id); }}>✕</ActBtn>
+                    <ActBtn tone="red" title="Delete expense" onClick={function () { setDeleteId(e.id); }} />
                   </td>
                 </TR>
               );

@@ -10,6 +10,7 @@ import { diffTrialBalanceSnapshotVsLive } from "../accounting/snapshotTbDiff.js"
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
 import { DEFAULT_PRODUCT_COMMENT_LABEL } from "../productionConfig.js";
+import { stampProductStock, stampUpdatedAt, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 import GlassSheetInfo from "../components/GlassSheetInfo.jsx";
 import {
   isGlassStockProductForm,
@@ -23,7 +24,8 @@ import {
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { evaluateProductNameMatch, checkProductName } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
-import { activeSales, activePurchases } from "../utils/voidInvoice.js";
+import AddNewProductModal, { blankNewProductForm } from "../components/AddNewProductModal.jsx";
+import { activeSales, activePurchases, activePurchaseReturns } from "../utils/voidInvoice.js";
 import CategorySelect from "../components/CategorySelect.jsx";
 import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
 
@@ -79,31 +81,11 @@ var Accounts = function (props) {
   var S = props.S;
   var shopSettings = hydrateShopSettings(state.settings, S.get("tc3_businessType", null));
   var blankObStockForm = function (extra) {
-    var cat = getDefaultProductCategory(shopSettings);
-    var unit = getDefaultProductUnit(shopSettings, cat);
-    return Object.assign({
-      name: "",
-      barcode: genBarcode(),
-      category: cat,
-      unit: unit,
-      extraUnits: [],
-      description: "",
-      cost: "",
-      price: "",
-      qty: "",
-      require_comment: false,
-      comment_label: DEFAULT_PRODUCT_COMMENT_LABEL,
-    }, extra || {});
-  };
-  var onObStockCategoryChange = function (cat) {
-    var units = getUnitsForSubCategory(cat, shopSettings);
-    setObStockForm(function (x) {
-      var nextUnit = units.indexOf(x.unit) >= 0 ? x.unit : (units[0] || "Pcs");
-      return Object.assign({}, x, { category: cat, unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit));
-    });
+    return blankNewProductForm(shopSettings, genBarcode, Object.assign({ type: "stock" }, extra || {}));
   };
   var today = props.today;
   var uid = props.uid;
+  var tcTrialGuard = props.tcTrialGuard;
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var getCurrencySymbol = props.getCurrencySymbol;
@@ -206,14 +188,17 @@ var Accounts = function (props) {
   var totalRepairRevenue = state.repairs.reduce(function (a, r) {
     if (r.status !== "Delivered") return a;
     /* If this repair has a corresponding sale (fromRepairId on the sale), skip it */
-    var alreadyInvoiced = liveSalesAc.some(function (s) { return s.fromRepairId === r.id; });
+    var alreadyInvoiced = liveSalesAc.some(function (s) {
+      if (s.fromRepairId === r.id) return true;
+      return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
+    });
     return alreadyInvoiced ? a : a + (r.estimatedCost || r.cost || 0);
   }, 0);
   /* Theoretical stock reconciliation — catches direct edits, damage, deletions and WAC rounding in one formula */
   var acObSnap = S.get("tc3_openBal", null);
   var acObStockVal = (acObSnap && acObSnap.completed) ? (acObSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
   var acTotalPurchasesVal = livePurchasesAc.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
-  var acTotalPurchaseReturnsVal = (state.purchaseReturns || []).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
+  var acTotalPurchaseReturnsVal = activePurchaseReturns(state.purchases, state.purchaseReturns).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
   var acTotalDamageVal = (state.damageLog || []).reduce(function (a, d) {
     var prod = (state.products || []).find(function (p) { return p.id === d.productId; });
     var uc = (d.cost != null ? d.cost : (prod && prod.cost)) || 0;
@@ -238,21 +223,32 @@ var Accounts = function (props) {
   /* Sub-item modals */
   var [obRecvModal, setObRecvModal] = useState(false);
   var [obPayModal, setObPayModal] = useState(false);
-  /* Ctrl++ shortcut in Opening Balance — open Add New Product (only on stock step 4) */
+  /* Ctrl++ / F12 (via App) in Opening Balance — open Add New Product (only on stock step 4) */
   useEffect(function () {
+    var openObNewProduct = function () {
+      if (obStep !== 4) return;
+      setShowObStockDrop(false);
+      setObStockSearch("");
+      setObNewProdKey(function (k) { return k + 1; });
+      setObStockModal(true);
+      setObStockForm(blankObStockForm({ qty: "1" }));
+    };
+    var onAddProduct = function () { openObNewProduct(); };
     var handler = function (e) {
       if (e.ctrlKey && (e.key === "=" || e.key === "+" || e.keyCode === 187 || e.keyCode === 107)) {
         e.preventDefault();
-        setShowObStockDrop(false);
-        setObStockSearch("");
-        setObStockModal(true);
-        setObStockForm(blankObStockForm({ qty: "1" }));
+        openObNewProduct();
       }
     };
     window.addEventListener("keydown", handler);
-    return function () { window.removeEventListener("keydown", handler); };
-  }, []);
+    window.addEventListener("tc3-add-product", onAddProduct);
+    return function () {
+      window.removeEventListener("keydown", handler);
+      window.removeEventListener("tc3-add-product", onAddProduct);
+    };
+  }, [obStep]);
   var [obStockModal, setObStockModal] = useState(false);
+  var [obNewProdKey, setObNewProdKey] = useState(0);
   var [obStockExistModal, setObStockExistModal] = useState(false);
   var [obStockExistSearch, setObStockExistSearch] = useState("");
   /* Excel-style opening stock grid */
@@ -263,7 +259,6 @@ var Accounts = function (props) {
   var [obStockCost, setObStockCost] = useState("");
   var [obStockSell, setObStockSell] = useState("");
   var obStockSearchRef = useRef(null);
-  var obNewProd = typeof newProd !== "undefined" ? newProd : null;
 
   var filtObProds = (state.products || []).filter(function (p) {
     if (p.status === "inactive") return false;
@@ -274,39 +269,47 @@ var Accounts = function (props) {
   var [obAssetModal, setObAssetModal] = useState(false);
   var [obRecvForm, setObRecvForm] = useState({ person: "", amount: "", note: "" });
   var [obPayForm, setObPayForm] = useState({ source: "", amount: "", note: "" });
-  var [obStockForm, setObStockForm] = useState({ name: "", category: "General", unit: "Pcs", extraUnits: [], cost: "", price: "", qty: "", require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL });
-  var obNewProdSelectEnterState = useRef({ main: false, sub: false, unit: false });
-  var focusById = function (id) {
-    setTimeout(function () {
-      var el = document.getElementById(id);
-      if (el && typeof el.focus === "function") el.focus();
-    }, 0);
+  var [obStockForm, setObStockForm] = useState(function () {
+    return { name: "", category: "General", unit: "Pcs", type: "stock", extraUnits: [], cost: "", price: "", qty: "", require_comment: false, comment_label: DEFAULT_PRODUCT_COMMENT_LABEL };
+  });
+
+  var saveObNewProduct = function (form) {
+    if (!form) return;
+    var nameStr = String(form.name || "").trim();
+    if (!nameStr) return;
+    var unitFieldsOb = buildUnitsPersistFields({
+      unit: form.unit,
+      cost: form.cost,
+      price: form.price,
+      extraUnits: form.extraUnits || [],
+    });
+    var obQtyToUse = isGlassSheetProductForm(form, shopSettings)
+      ? (parseFloat(obStockQty) || 1)
+      : (parseInt(obStockQty, 10) || 1);
+    var bc = (form.barcode || "").trim() || genBarcode();
+    var glassRowFields = glassFieldsFromProductForm(form);
+    var row = Object.assign({
+      name: nameStr,
+      barcode: bc,
+      category: form.category,
+      description: (form.description || "").trim(),
+      cost: parseFloat(form.cost),
+      price: parseFloat(form.price) || parseFloat(form.cost),
+      qty: obQtyToUse,
+      _isNew: true,
+      require_comment: false,
+      comment_label: String(form.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
+    }, unitFieldsOb, glassRowFields);
+    setObDraft(function (prev) {
+      var base = Object.assign({}, prev || obData || {});
+      return Object.assign({}, base, { stock: (base.stock || []).concat([row]) });
+    });
+    setObStockModal(false);
+    setObStockForm(blankObStockForm());
+    setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
   };
-  var openSelectById = function (id) {
-    setTimeout(function () {
-      var el = document.getElementById(id);
-      if (!el) return;
-      if (typeof el.focus === "function") el.focus();
-      if (typeof el.click === "function") el.click();
-    }, 0);
-  };
-  var markSelectEnterStage = function (key, val) { obNewProdSelectEnterState.current[key] = !!val; };
-  var handleSelectEnter = function (key, id, onSecondEnter) {
-    if (!obNewProdSelectEnterState.current[key]) {
-      markSelectEnterStage(key, true);
-      openSelectById(id);
-      return;
-    }
-    markSelectEnterStage(key, false);
-    if (typeof onSecondEnter === "function") onSecondEnter();
-  };
+
   var [obAssetForm, setObAssetForm] = useState({ name: "", category: "Equipment / Machinery", value: "", note: "" });
-  var obProductNameMatch = useMemo(function () {
-    if (!String(obStockForm.name || "").trim()) return null;
-    return evaluateProductNameMatch(obStockForm.name, state.products, null);
-  }, [obStockForm.name, state.products]);
-  var obProductNameExactDup = !!(obProductNameMatch && obProductNameMatch.type === "exact");
-  var obNameHint = useProductNameHintControls(obStockForm.name);
 
   var obCalcCapital = function (d) {
     var totalRecv = (d.receivables || []).reduce(function (a, r) { return a + r.amount; }, 0);
@@ -326,12 +329,13 @@ var Accounts = function (props) {
        made against the opening balance are NOT wiped on re-edit */
     var existRec = S.get("tc3_manualReceivables", []).filter(function (r) { return !r._isOpening; });
     var oldOpenRec = S.get("tc3_manualReceivables", []).filter(function (r) { return r._isOpening; });
+    var obTs = new Date().toISOString();
     var newRec = (draft.receivables || []).map(function (r) {
       /* Try to find an existing opening entry for the same person to preserve payment history */
       var existing = oldOpenRec.find(function (o) { return o.person === r.person && Math.abs((o.amount || 0) - r.amount) < 0.01; });
       return existing
         ? Object.assign({}, existing, { amount: r.amount, note: r.note || existing.note || "" })
-        : { id: uid(), date: draft.date || today(), person: r.person, type: "Opening Receivable", amount: r.amount, paymentMethod: "Cash", reference: "Opening Balance", note: r.note || "", paymentHistory: [], _isOpening: true, createdAt: new Date().toISOString() };
+        : stampTransactionIsoDateTime({ id: uid(), date: draft.date || today(), person: r.person, type: "Opening Receivable", amount: r.amount, paymentMethod: "Cash", reference: "Opening Balance", note: r.note || "", paymentHistory: [], _isOpening: true, createdAt: obTs, updatedAt: obTs }, obTs);
     });
     S.set("tc3_manualReceivables", existRec.concat(newRec));
 
@@ -343,7 +347,7 @@ var Accounts = function (props) {
       var existing = oldOpenPay.find(function (o) { return o.source === p.source && Math.abs((o.amount || 0) - p.amount) < 0.01; });
       return existing
         ? Object.assign({}, existing, { amount: p.amount, note: p.note || existing.note || "" })
-        : { id: uid(), date: draft.date || today(), source: p.source, type: "Opening Payable", amount: p.amount, paymentMethod: "Cash", reference: "Opening Balance", note: p.note || "", paymentHistory: [], _isOpening: true, createdAt: new Date().toISOString() };
+        : stampTransactionIsoDateTime({ id: uid(), date: draft.date || today(), source: p.source, type: "Opening Payable", amount: p.amount, paymentMethod: "Cash", reference: "Opening Balance", note: p.note || "", paymentHistory: [], _isOpening: true, createdAt: obTs, updatedAt: obTs }, obTs);
     });
     S.set("tc3_manualPayables", existPay.concat(newPay));
 
@@ -356,7 +360,8 @@ var Accounts = function (props) {
         // Existing product - update stock quantity only
         var idx = existProds.findIndex(function(p) { return p.id === s._srcProdId; });
         if (idx >= 0) {
-          existProds[idx] = Object.assign({}, existProds[idx], { stock: s.qty, _isOpening: true });
+          var prevOb = existProds[idx];
+          existProds[idx] = stampProductStock(Object.assign({}, prevOb, { stock: s.qty, _isOpening: true }), null, prevOb);
           newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: existProds[idx].id, productName: existProds[idx].name, qty: s.qty, reason: "Opening Balance (Existing)" });
         }
       } else {
@@ -365,7 +370,7 @@ var Accounts = function (props) {
         var np = Array.isArray(s.units) && s.units.length > 0
           ? Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", units: s.units, bulkEnabled: false, bulkUnit: "", bulkConversion: 0, bulkPrice: 0, bulkCost: 0 })
           : Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", bulkEnabled: !!(s.bulkUnit && (parseFloat(s.bulkConversion) || 0) > 0), bulkUnit: s.bulkUnit || "", bulkConversion: parseFloat(s.bulkConversion) || 0, bulkCost: parseFloat(s.bulkCost) || 0, bulkPrice: parseFloat(s.bulkPrice) || 0 });
-        np = Object.assign(np, glassPersistFieldsFromRow(s));
+        np = stampUpdatedAt(Object.assign(np, glassPersistFieldsFromRow(s)));
         newProds.push(np);
         newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: np.id, productName: np.name, qty: np.stock, reason: "Opening Balance (New)" });
       }
@@ -408,6 +413,10 @@ var Accounts = function (props) {
   var [glSelAcct, setGlSelAcct] = useState("1100");
   var [glAcctLinesVisible, setGlAcctLinesVisible] = useState(80);
   var [glDebugOpen, setGlDebugOpen] = useState(false);
+  var [glReconOpen, setGlReconOpen] = useState(true);
+  var [glActivityOpen, setGlActivityOpen] = useState(false);
+  var [glSnapshotsOpen, setGlSnapshotsOpen] = useState(false);
+  var [glAuditOpen, setGlAuditOpen] = useState(false);
   var [glDebugGroupLimit, setGlDebugGroupLimit] = useState(50);
 
   useEffect(function () {
@@ -503,7 +512,9 @@ var Accounts = function (props) {
   var [assetPwMsg, setAssetPwMsg] = useState("");
   var saveAsset = function () {
     if (!newAsset || !newAsset.name || !newAsset.amount) return;
-    var a = { id: uid(), date: newAsset.date || today(), name: newAsset.name, category: newAsset.category || "Equipment", amount: parseFloat(newAsset.amount) || 0, note: newAsset.note || "", cashMethod: newAsset.cashMethod || "Cash" };
+    if (!tcTrialGuard(state.assets || [], "assets")) return;
+    var astTs = new Date().toISOString();
+    var a = stampTransactionIsoDateTime({ id: uid(), date: newAsset.date || today(), name: newAsset.name, category: newAsset.category || "Equipment", amount: parseFloat(newAsset.amount) || 0, note: newAsset.note || "", cashMethod: newAsset.cashMethod || "Cash", createdAt: astTs, updatedAt: astTs }, astTs);
     var na = (state.assets || []).concat([a]);
     S.set("tc3_assets", na);
     setState(function (st) { return Object.assign({}, st, { assets: na }); });
@@ -531,70 +542,270 @@ var Accounts = function (props) {
     });
   };
 
-  var ATABS = [["overview", "📊 Overview"], ["capital", "💼 Capital"], ["opening", "🏁 Opening Balance"], ["ledger", "📒 Cash Ledger"], ["gledger", "⚖ GL / Trial Balance"], ["recon", "🔍 Reconciliation"], ["assets", "🏢 Assets"], ["profit", "💸 Profit Distribution"]];
+  var ATAB_GROUPS = [
+    { label: "", tabs: [["overview", "Overview", "Business snapshot & health"]] },
+    { label: "Setup", tabs: [
+      ["opening", "Opening", "Opening balance wizard"],
+      ["capital", "Capital", "Owner investments & withdrawals"],
+      ["assets", "Assets", "Fixed assets register"],
+      ["profit", "Profit", "Partner profit distribution"],
+    ]},
+    { label: "Books", tabs: [
+      ["ledger", "Cash Book", "Cash & bank movement ledger"],
+      ["gledger", "GL / Trial", "General ledger, trial balance & reconciliation"],
+    ]},
+  ];
+
+  var totalLiquid = balances.cash + balances.bank;
+  var totalFixedAssets = (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
+  var obDone = !!(acObSnap && acObSnap.completed);
+  var tbOverview = typeof getTrialBalanceSnapshot === "function" ? getTrialBalanceSnapshot() : { balanced: true };
+  var glErrOverview = isMeaningfulGlLastError(S.get("tc3_gl_last_error", null));
+
+  var AccTabHead = function (headProps) {
+    var hp = headProps;
+    return (
+      <div className={"erp-acc-tab-head tone-" + (hp.tone || "blue")}>
+        <span className="erp-acc-tab-head-icon" aria-hidden="true">{hp.icon}</span>
+        <div className="erp-acc-tab-head-text">
+          <div className="erp-acc-tab-head-title">{hp.title}</div>
+          {hp.sub ? <div className="erp-acc-tab-head-sub">{hp.sub}</div> : null}
+        </div>
+        {hp.extra ? <div className="erp-acc-tab-head-extra">{hp.extra}</div> : null}
+      </div>
+    );
+  };
+
+  var AccChoiceRow = function (choiceProps) {
+    var cp = choiceProps;
+    return (
+      <div>
+        {cp.label ? <div className="erp-acc-field-label">{cp.label}</div> : null}
+        <div className="erp-acc-choice-row">
+          {(cp.options || []).map(function (opt) {
+            var id = opt[0];
+            var label = opt[1];
+            var tone = opt[2] || "blue";
+            var active = cp.value === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                className={"erp-acc-choice-btn tone-" + tone + (active ? " is-active" : "")}
+                onClick={function () { cp.onChange(id); }}
+              >{label}</button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  var glAccountTypeClass = function (type) {
+    var t = String(type || "").toLowerCase();
+    if (t.indexOf("asset") >= 0) return "is-asset";
+    if (t.indexOf("liab") >= 0) return "is-liab";
+    if (t.indexOf("equity") >= 0) return "is-equity";
+    if (t.indexOf("income") >= 0 || t.indexOf("revenue") >= 0) return "is-income";
+    if (t.indexOf("expense") >= 0 || t.indexOf("cogs") >= 0) return "is-expense";
+    return "is-neutral";
+  };
+
+  var AccFold = function (foldProps) {
+    var fp = foldProps;
+    return (
+      <Card pad={0} className={"erp-acc-fold-card" + (fp.tone ? " tone-" + fp.tone : "")}>
+        <button type="button" className="erp-acc-fold-head" onClick={fp.onToggle} aria-expanded={!!fp.open}>
+          <div className="erp-acc-fold-text">
+            <div className="erp-acc-fold-title">{fp.title}</div>
+            {fp.sub ? <div className="erp-acc-fold-sub">{fp.sub}</div> : null}
+          </div>
+          <div className="erp-acc-fold-meta">
+            {fp.badge || null}
+            <span className={"erp-acc-fold-chevron" + (fp.open ? " is-open" : "")} aria-hidden="true">›</span>
+          </div>
+        </button>
+        {fp.open ? <div className="erp-acc-fold-body">{fp.children}</div> : null}
+      </Card>
+    );
+  };
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* Tab bar */}
-      <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border }}>
-        {ATABS.map(function (t) {
-          return <button key={t[0]} onClick={function () { setAtab(t[0]); }} style={{ padding: "10px 18px", borderRadius: "10px 10px 0 0", border: "1.5px solid " + (atab === t[0] ? C.border : "transparent"), borderBottom: atab === t[0] ? "2px solid #fff" : "none", background: atab === t[0] ? "#fff" : "transparent", color: atab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: atab === t[0] ? -2 : 0 }}>{t[1]}</button>;
-        })}
-      </div>
-
-      {/* ── OVERVIEW ── */}
-      {atab === "overview" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(170px,1fr))", gap: 10 }}>
-            <StatCard label="Cash in Hand" value={balances.cash} accent={C.green} icon="💵" sub="Physical cash balance" />
-            <StatCard label="Bank Balance" value={balances.bank} accent={C.blue} icon="🏦" sub="Bank account balance" />
-            <StatCard label="Total Receivable" value={totalReceivable} accent={C.cyan} icon="📥" sub="Owed to business" />
-            <StatCard label="Total Payable" value={totalPayable} accent={C.red} icon="📤" sub="Business owes others" />
-            <StatCard label="Net Capital" value={netCapital} accent={C.purple} icon="💼" sub="Invested − Withdrawn" />
-            <StatCard label="Net Profit (Total)" value={netProfit} accent={netProfit >= 0 ? C.green : C.red} icon="📈" sub={"Distributed: " + getCurrencySymbol() + " " + fmtNum(totalProfitDist)} />
+    <div className="erp-page erp-accounts-scope erp-acc-modern">
+      <div className="erp-acc-chrome">
+        <div className="erp-acc-topbar erp-acc-topbar-pro">
+          <div className="erp-acc-topbar-brand">
+            <div className="erp-acc-head-title">Accounts</div>
+            <div className="erp-acc-head-sub">{getCurrencySymbol()} {fmtNum(totalLiquid)} liquid · {obDone ? "Opening set" : "Opening pending"}</div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            <Card>
-              <CardTitle sub="Business financial position">Balance Summary</CardTitle>
-              {[
-                { label: "Total Revenue", val: totalRevenue, color: C.blue, icon: "💰" },
-                { label: "Cost of Goods Sold", val: totalCOGS, color: C.orange, icon: "🛒" },
-                { label: "Gross Profit", val: grossProfit, color: grossProfit >= 0 ? C.green : C.red, icon: "📊" },
-                { label: "Total Expenses", val: totalExpenses, color: C.red, icon: "💸" },
-                { label: "Net Profit", val: netProfit, color: netProfit >= 0 ? C.green : C.red, icon: "📈" },
-                { label: "Profit Distributed", val: totalProfitDist, color: C.purple, icon: "🤝" },
-                { label: "Available Profit", val: availableProfit, color: availableProfit >= 0 ? C.green : C.red, icon: "✅" },
-              ].map(function (r) {
-                return (
-                  <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: "1px solid " + C.borderLight }}>
-                    <span style={{ fontSize: 13, color: C.textMd }}>{r.icon} {r.label}</span>
-                    <span style={{ fontWeight: 800, fontSize: 14, color: r.color }}>{getCurrencySymbol()} {fmtNum(r.val)}</span>
-                  </div>
-                );
-              })}
-            </Card>
-            <Card>
-              <CardTitle sub="Cash & bank position">Liquidity Overview</CardTitle>
-              {[
-                { label: "Cash in Hand", val: balances.cash, color: balances.cash >= 0 ? C.green : C.red, icon: "💵" },
-                { label: "Bank Balance", val: balances.bank, color: balances.bank >= 0 ? C.blue : C.red, icon: "🏦" },
-                { label: "Total Liquid", val: balances.cash + balances.bank, color: (balances.cash + balances.bank) >= 0 ? C.accent : C.red, icon: "💎", bold: true },
-                { label: "Total Assets (Fixed)", val: (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0), color: C.purple, icon: "🏢" },
-                { label: "Net Capital Invested", val: netCapital, color: C.purple, icon: "💼" },
-                { label: "Total Receivable", val: totalReceivable, color: C.cyan, icon: "📥" },
-                { label: "Total Payable", val: totalPayable, color: C.red, icon: "📤" },
-              ].map(function (r) {
-                return (
-                  <div key={r.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: "1px solid " + C.borderLight }}>
-                    <span style={{ fontSize: 13, color: C.textMd }}>{r.icon} {r.label}</span>
-                    <span style={{ fontWeight: r.bold ? 900 : 800, fontSize: r.bold ? 15 : 14, color: r.color }}>{getCurrencySymbol()} {fmtNum(r.val)}</span>
-                  </div>
-                );
-              })}
-            </Card>
+          <div className="erp-acc-health">
+            <span className={"erp-acc-health-pill" + (obDone ? " is-ok" : " is-warn")} title="Opening balance setup">
+              {obDone ? "✓ Opening" : "⚠ Opening"}
+            </span>
+            <span className={"erp-acc-health-pill" + (tbOverview.balanced && !glErrOverview ? " is-ok" : " is-warn")} title="Trial balance status">
+              {tbOverview.balanced && !glErrOverview ? "✓ Balanced" : "⚠ GL"}
+            </span>
           </div>
         </div>
-      )}
+        <div className="erp-acc-tabbar" role="tablist" aria-label="Accounts sections">
+          {ATAB_GROUPS.map(function (grp, gi) {
+            return (
+              <React.Fragment key={grp.label || "overview-grp"}>
+                {gi > 0 ? <span className="erp-acc-tab-divider" aria-hidden="true" /> : null}
+                {grp.label ? <span className="erp-acc-tab-grp-label">{grp.label}</span> : null}
+                {grp.tabs.map(function (t) {
+                  return (
+                    <button
+                      key={t[0]}
+                      type="button"
+                      role="tab"
+                      aria-selected={atab === t[0]}
+                      title={t[2]}
+                      className={"erp-acc-tab" + (atab === t[0] ? " is-active" : "")}
+                      onClick={function () { setAtab(t[0]); }}
+                    >{t[1]}</button>
+                  );
+                })}
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="erp-acc-body">
+      {/* ── OVERVIEW ── */}
+      {atab === "overview" && (function () {
+        var marginPct = totalRevenue > 0 ? Math.round((grossProfit / totalRevenue) * 1000) / 10 : 0;
+        var distPct = netProfit > 0 ? Math.min(100, Math.round((totalProfitDist / netProfit) * 1000) / 10) : 0;
+        var ovKpis = [
+          { id: "liquid", label: "Liquid", tone: "blue", icon: "💧", val: totalLiquid, sub: "Cash " + fmtNum(balances.cash) + " · Bank " + fmtNum(balances.bank) },
+          { id: "recv", label: "Receivable", tone: "cyan", icon: "📥", val: totalReceivable, sub: "Owed to you" },
+          { id: "pay", label: "Payable", tone: "orange", icon: "📤", val: totalPayable, sub: "You owe suppliers & loans" },
+          { id: "profit", label: "Available Profit", tone: availableProfit >= 0 ? "green" : "red", icon: availableProfit >= 0 ? "📈" : "📉", val: availableProfit, sub: "After " + getCurrencySymbol() + " " + fmtNum(totalProfitDist) + " distributed" },
+        ];
+        var pnlRows = [
+          { label: "Revenue", val: totalRevenue, tone: "blue", bar: totalRevenue },
+          { label: "Cost of Goods Sold", val: totalCOGS, tone: "orange", bar: totalRevenue },
+          { label: "Gross Profit", val: grossProfit, tone: grossProfit >= 0 ? "green" : "red", bar: totalRevenue, pct: marginPct },
+          { label: "Operating Expenses", val: totalExpenses, tone: "red", bar: totalRevenue },
+          { label: "Net Profit", val: netProfit, tone: netProfit >= 0 ? "green" : "red", total: true, bar: totalRevenue },
+        ];
+        var posRows = [
+          { label: "Cash in Hand", val: balances.cash, tone: "green" },
+          { label: "Bank Balance", val: balances.bank, tone: "blue" },
+          { label: "Fixed Assets", val: totalFixedAssets, tone: "purple" },
+          { label: "Net Capital", val: netCapital, tone: "navy" },
+          { label: "Receivable", val: totalReceivable, tone: "cyan" },
+          { label: "Payable", val: totalPayable, tone: "red", total: true },
+        ];
+        return (
+        <div className="erp-tab-content erp-acc-overview-fill erp-acc-ov-modern erp-acc-tab-pro erp-acc-tab-pro--overview">
+          <div className={"erp-acc-ov-hero" + (netProfit >= 0 ? " is-profit" : " is-loss")}>
+            <div className="erp-acc-ov-hero-glow" aria-hidden="true" />
+            <div className="erp-acc-ov-hero-main">
+              <div className="erp-acc-ov-hero-eyebrow">Financial snapshot</div>
+              <div className="erp-acc-ov-hero-title">Net profit</div>
+              <div className="erp-acc-ov-hero-val">{getCurrencySymbol()} {fmtNum(netProfit)}</div>
+              <div className="erp-acc-ov-hero-sub">
+                Gross margin {marginPct}% · Liquid {getCurrencySymbol()} {fmtNum(totalLiquid)}
+              </div>
+            </div>
+            <div className="erp-acc-ov-hero-chips">
+              <span className={"erp-acc-ov-chip" + (obDone ? " is-ok" : " is-warn")}>{obDone ? "✓ Opening set" : "⚠ Opening pending"}</span>
+              <span className={"erp-acc-ov-chip" + (tbOverview.balanced && !glErrOverview ? " is-ok" : " is-warn")}>
+                {tbOverview.balanced && !glErrOverview ? "✓ Books balanced" : "⚠ Check GL"}
+              </span>
+              <span className="erp-acc-ov-chip is-neutral">Dist. {distPct}% of profit</span>
+            </div>
+          </div>
+
+          <div className="erp-acc-ov-kpi-strip erp-acc-stat-row">
+            {ovKpis.map(function (k) {
+              var accent = k.tone === "green" ? C.green
+                : k.tone === "red" ? C.red
+                : k.tone === "orange" ? C.orange
+                : k.tone === "purple" || k.tone === "indigo" ? C.purple
+                : k.tone === "cyan" || k.tone === "teal" ? C.cyan
+                : C.blue;
+              return (
+                <StatCard
+                  key={k.id}
+                  label={k.label}
+                  value={k.val}
+                  accent={accent}
+                  valueColor={accent}
+                  icon={k.icon}
+                  sub={k.sub}
+                />
+              );
+            })}
+          </div>
+
+          <div className="erp-acc-panels erp-acc-panels--fill erp-acc-ov-panels">
+            <div className="erp-acc-panel">
+              <div className="erp-acc-ov-panel erp-acc-ov-panel--pnl">
+                <div className="erp-acc-ov-panel-head">
+                  <span className="erp-acc-ov-panel-icon" aria-hidden="true">📊</span>
+                  <div>
+                    <div className="erp-acc-ov-panel-title">P&amp;L Summary</div>
+                    <div className="erp-acc-ov-panel-sub">All-time sales, purchases &amp; expenses</div>
+                  </div>
+                </div>
+                <div className="erp-acc-ov-panel-body">
+                  {pnlRows.map(function (r) {
+                    var barW = r.bar > 0 ? Math.min(100, Math.round((Math.abs(r.val) / r.bar) * 100)) : 0;
+                    return (
+                      <div key={r.label} className={"erp-acc-ov-row tone-" + r.tone + (r.total ? " is-total" : "")}>
+                        <div className="erp-acc-ov-row-main">
+                          <span className="erp-acc-ov-row-dot" aria-hidden="true" />
+                          <span className="erp-acc-ov-row-label">{r.label}</span>
+                          <span className="erp-acc-ov-row-val">{getCurrencySymbol()} {fmtNum(r.val)}</span>
+                        </div>
+                        {!r.total && r.bar > 0 ? (
+                          <div className="erp-acc-ov-row-bar"><span style={{ width: barW + "%" }} /></div>
+                        ) : null}
+                        {r.pct != null ? <div className="erp-acc-ov-row-hint">{r.pct}% of revenue</div> : null}
+                      </div>
+                    );
+                  })}
+                  <div className="erp-acc-ov-row tone-purple">
+                    <div className="erp-acc-ov-row-main">
+                      <span className="erp-acc-ov-row-dot" aria-hidden="true" />
+                      <span className="erp-acc-ov-row-label">Profit distributed</span>
+                      <span className="erp-acc-ov-row-val">{getCurrencySymbol()} {fmtNum(totalProfitDist)}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="erp-acc-panel">
+              <div className="erp-acc-ov-panel erp-acc-ov-panel--pos">
+                <div className="erp-acc-ov-panel-head">
+                  <span className="erp-acc-ov-panel-icon" aria-hidden="true">🏦</span>
+                  <div>
+                    <div className="erp-acc-ov-panel-title">Position</div>
+                    <div className="erp-acc-ov-panel-sub">Cash, assets, capital &amp; balances</div>
+                  </div>
+                </div>
+                <div className="erp-acc-ov-panel-body">
+                  {posRows.map(function (r) {
+                    return (
+                      <div key={r.label} className={"erp-acc-ov-row tone-" + r.tone + (r.total ? " is-total" : "")}>
+                        <div className="erp-acc-ov-row-main">
+                          <span className="erp-acc-ov-row-dot" aria-hidden="true" />
+                          <span className="erp-acc-ov-row-label">{r.label}</span>
+                          <span className="erp-acc-ov-row-val">{getCurrencySymbol()} {fmtNum(r.val)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
 
       {/* ── LEDGER ── */}
       {atab === "ledger" && (function () {
@@ -873,73 +1084,54 @@ var Accounts = function (props) {
         var ledgerThNum = { textAlign: "right", padding: "10px 14px", fontWeight: 700, color: C.th, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "2px solid " + C.border, whiteSpace: "nowrap", background: "#f7f9ff" };
 
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-            {/* Summary stat cards */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-              <div style={{ background: "linear-gradient(135deg,#0d47a1,#1976d2)", color: "#fff", borderRadius: 14, padding: "16px 18px" }}>
-                <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.75, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Opening Balance</div>
-                <div style={{ fontSize: 22, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(openingBal)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>Start of period</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#1b5e20,#2e7d32)", color: "#fff", borderRadius: 14, padding: "16px 18px" }}>
-                <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.75, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Total Money In</div>
-                <div style={{ fontSize: 22, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(filteredIn)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>All inflows</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#b71c1c,#c62828)", color: "#fff", borderRadius: 14, padding: "16px 18px" }}>
-                <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.75, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Total Money Out</div>
-                <div style={{ fontSize: 22, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(filteredOut)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>All outflows</div>
-              </div>
-              <div style={{ background: closingBal >= 0 ? "linear-gradient(135deg,#004d40,#00695c)" : "linear-gradient(135deg,#b71c1c,#c62828)", color: "#fff", borderRadius: 14, padding: "16px 18px" }}>
-                <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.75, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Closing Balance</div>
-                <div style={{ fontSize: 22, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(closingBal)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>{filtered.length} transactions</div>
-              </div>
+          <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--ledger erp-acc-ledger-layout">
+            <AccTabHead icon="💵" tone="blue" title="Cash Book" sub="Cash & bank movement ledger — filter, print & share" />
+            <div className="erp-acc-stat-row">
+              <StatCard label="Opening Balance" value={openingBal} accent={C.blue} valueColor={C.blue} icon="🏁" sub="Start of period" />
+              <StatCard label="Total Money In" value={filteredIn} accent={C.green} valueColor={C.green} icon="📥" />
+              <StatCard label="Total Money Out" value={filteredOut} accent={C.red} valueColor={C.red} icon="📤" />
+              <StatCard label="Closing Balance" value={closingBal} accent={closingBal >= 0 ? C.green : C.red} valueColor={closingBal >= 0 ? C.green : C.red} icon="📒" sub={filtered.length + " transactions"} />
             </div>
 
-            {/* Filters */}
-            <Card>
-              <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>From</div>
-                  <input type="date" value={ledgerFrom} onChange={function (e) { setLedgerFrom(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none" }} />
+            <Card pad={10} className="erp-acc-toolbar-card">
+              <div className="erp-acc-toolbar">
+                <div className="erp-acc-toolbar-field">
+                  <label>From</label>
+                  <input type="date" value={ledgerFrom} onChange={function (e) { setLedgerFrom(e.target.value); }} />
                 </div>
-                <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>To</div>
-                  <input type="date" value={ledgerTo} onChange={function (e) { setLedgerTo(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none" }} />
+                <div className="erp-acc-toolbar-field">
+                  <label>To</label>
+                  <input type="date" value={ledgerTo} onChange={function (e) { setLedgerTo(e.target.value); }} />
                 </div>
-                <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Type</div>
-                  <select value={ledgerType} onChange={function (e) { setLedgerType(e.target.value); }} style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: C.text, background: "#fff", outline: "none", cursor: "pointer" }}>
+                <div className="erp-acc-toolbar-field">
+                  <label>Type</label>
+                  <select value={ledgerType} onChange={function (e) { setLedgerType(e.target.value); }}>
                     {TYPE_OPTIONS.map(function (o) { return <option key={o[0]} value={o[0]}>{o[1]}</option>; })}
                   </select>
                 </div>
-                <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>Account</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {[["all", "All"], ["Cash", "💵 Cash"], ["Bank", "🏦 Bank"]].map(function (opt) {
+                <div className="erp-acc-toolbar-field">
+                  <label>Account</label>
+                  <div className="erp-acc-pill-group">
+                    {[["all", "All"], ["Cash", "Cash"], ["Bank", "Bank"]].map(function (opt) {
                       var isA = ledgerAcct === opt[0];
-                      return <button key={opt[0]} onClick={function () { setLedgerAcct(opt[0]); }} style={{ padding: "8px 14px", borderRadius: 8, border: "1.5px solid " + (isA ? C.accent : C.border), background: isA ? "linear-gradient(135deg,#2979ff,#5591ff)" : "#fff", color: isA ? "#fff" : C.textMd, fontWeight: 700, fontSize: 12.5, cursor: "pointer", boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.25)" : "none" }}>{opt[1]}</button>;
+                      return <button key={opt[0]} type="button" className={"erp-acc-pill" + (isA ? " is-active" : "")} onClick={function () { setLedgerAcct(opt[0]); }}>{opt[1]}</button>;
                     })}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
-                  <button onClick={function () { setLedgerFrom(today().slice(0, 4) + "-01-01"); setLedgerTo(today()); setLedgerType("all"); setLedgerAcct("all"); }} style={{ padding: "8px 14px", borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", color: C.textMd, fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Reset</button>
-                  <Btn col="blue" onClick={printLedger}>🖨 Print Ledger</Btn>
+                <div className="erp-acc-toolbar-actions">
+                  <button type="button" className="erp-acc-pill" onClick={function () { setLedgerFrom(today().slice(0, 4) + "-01-01"); setLedgerTo(today()); setLedgerType("all"); setLedgerAcct("all"); }}>Reset</button>
+                  <Btn col="blue" onClick={printLedger}>Print</Btn>
                   <WABtn title="Share Ledger via WhatsApp" onClick={function () { shareAnyReport(printLedger, "Accounts-Ledger"); }} />
                 </div>
               </div>
-              <div style={{ marginTop: 10, fontSize: 12, color: C.muted, fontWeight: 600, background: "#f7f9ff", padding: "6px 12px", borderRadius: 8, display: "inline-block" }}>
-                Showing {filtered.length} of {entries.length} transactions
-              </div>
+              <div className="erp-acc-count-badge">Showing {filtered.length} of {entries.length} transactions</div>
             </Card>
 
             {/* Ledger table */}
-            <Card pad={0}>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, tableLayout: "fixed" }}>
+            <div className="erp-acc-table-fill">
+            <Card pad={0} className="erp-acc-data-card">
+              <div className="erp-acc-table-scroll">
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
                   <colgroup>
                     <col style={{ width: "48px" }} />
                     <col style={{ width: "10%" }} />
@@ -1008,6 +1200,7 @@ var Accounts = function (props) {
                 </table>
               </div>
             </Card>
+            </div>
 
           </div>
         );
@@ -1045,149 +1238,254 @@ var Accounts = function (props) {
         var acctOpts = tb.rows && tb.rows.length ? tb.rows : [];
         var bsEqBal = bs.balancedWithEarnings !== undefined ? bs.balancedWithEarnings : bs.balanced;
         var bsEqDiffAmt = Math.abs(bs.differenceWithEarnings != null ? bs.differenceWithEarnings : bs.difference != null ? bs.difference : 0);
+        var invDerRecon = deriveInventoryEconomics(state, S);
+        invDerRecon.reconciliation = reconcileInventoryToLedger(journalLinesAll, invDerRecon, S.get("tc3_gl_accounts", DEFAULT_GL_CHART));
+        var reconRep = buildReconciliationReport({
+          lines: journalLinesAll,
+          chart: S.get("tc3_gl_accounts", DEFAULT_GL_CHART),
+          invDer: invDerRecon,
+          validateJournalBalanced: validateJournalBalanced,
+          settings: state.settings || {},
+        });
+        var glHealthy = tb.balanced && bsEqBal && reconRep.summaryOk && !glErrText;
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <Card>
-              <CardTitle sub="Live mode posts on each transaction; repair mode uses scheduled/manual rebuild. Source: canonical ERP records.">Double-entry engine</CardTitle>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 10 }}>
-                <span style={{ fontSize: 11, color: C.muted }}>Engine: <strong>{glMode === "rebuild" ? "Repair (rebuild)" : "Live"}</strong></span>
-                <span title="Debits equal credits across all GL accounts" style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, border: "1px solid " + (tb.balanced ? "#86efac" : "#fecaca"), background: tb.balanced ? "#f0fdf4" : "#fef2f2", color: tb.balanced ? "#166534" : "#991b1b" }}>
-                  {tb.balanced ? "✓ Trial balance balanced" : "⚠ Trial balance mismatch"}
-                </span>
-                <span title="Assets = Liabilities + Equity (book) + cumulative ledger net income through date — display only" style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999, border: "1px solid " + (bsEqBal ? "#86efac" : "#fdba74"), background: bsEqBal ? "#f0fdf4" : "#fffbeb", color: bsEqBal ? "#166534" : "#9a3412" }}>
-                  {bsEqBal ? "✓ Ledger balanced (A = L + E + NI)" : "⚠ Balance sheet equation off by " + getCurrencySymbol() + fmtNum(bsEqDiffAmt)}
-                </span>
-              </div>
-              {glErrText && (
-                <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#991b1b", marginBottom: 10 }}>
-                  Last journal error: {glErrText}
+          <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--gledger erp-acc-gledger-layout">
+            <AccTabHead icon="📒" tone="navy" title="GL / Trial Balance" sub="General ledger health, trial balance & reconciliation" />
+
+            <div className={"erp-acc-gl-hero" + (glHealthy ? " is-ok" : " is-warn")}>
+              <div className="erp-acc-gl-hero-glow" aria-hidden="true" />
+              <div className="erp-acc-gl-hero-main">
+                <div className="erp-acc-gl-hero-eyebrow">Ledger snapshot</div>
+                <div className="erp-acc-gl-hero-title">Trial balance totals</div>
+                <div className="erp-acc-gl-hero-val">
+                  Dr {getCurrencySymbol()} {fmtNum(tb.totalDebit)} · Cr {getCurrencySymbol()} {fmtNum(tb.totalCredit)}
                 </div>
-              )}
-              {invRec && !isInventoryReconcileOk(invRec, state.settings || {}) && (
-                <div style={{ background: "#fffbeb", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 12px", fontSize: 12, color: "#92400e", marginBottom: 10 }}>
-                  <strong>Inventory vs ledger:</strong> GL inventory balance {getCurrencySymbol()} {fmtNum(invRec.glInventoryBalance)} vs layer valuation {getCurrencySymbol()} {fmtNum(invRec.physicalValue)}
-                  {typeof invRec.difference === "number" ? <span> — off by {getCurrencySymbol()} {fmtNum(Math.abs(invRec.difference))}</span> : null}
-                </div>
-              )}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 12 }}>
-                <Btn col="cyan" onClick={function () {
-                  if (typeof rebuildGeneralLedger === "function") rebuildGeneralLedger();
-                }}>↻ Rebuild journal now</Btn>
-                <span style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>
-                  Totals: Dr {getCurrencySymbol()} {fmtNum(tb.totalDebit)} · Cr {getCurrencySymbol()} {fmtNum(tb.totalCredit)}
-                </span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10, marginBottom: 14 }}>
-                <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10, padding: "12px 14px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                    <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase" }}>P&amp;L (ledger)</div>
-                  </div>
-                  <div style={{ fontSize: 13, marginTop: 4 }}>Net {getCurrencySymbol()} {fmtNum(pl.net)}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>Income {fmtNum(pl.income)} · Exp {fmtNum(pl.expenses)}</div>
-                </div>
-                <div style={{ background: bsEqBal ? "#fefce8" : "#fff7ed", border: "1px solid " + (bsEqBal ? "#fde047" : "#fdba74"), borderRadius: 10, padding: "12px 14px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
-                    <div style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase" }}>Balance sheet (ledger)</div>
-                    {bsEqBal ? (
-                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#dcfce7", color: "#166534", border: "1px solid #86efac" }}>✓ A = L + E + NI</span>
-                    ) : (
-                      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "#ffedd5", color: "#9a3412", border: "1px solid #fdba74" }}>⚠ Δ {getCurrencySymbol()}{fmtNum(bsEqDiffAmt)}</span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 13, marginTop: 4 }}>Assets {getCurrencySymbol()} {fmtNum(bs.assets)}</div>
-                  <div style={{ fontSize: 11, color: C.muted }}>
-                    Liab {fmtNum(bs.liabilities)} · Equity {fmtNum(bs.equity)} · NI {fmtNum(bs.currentEarnings != null ? bs.currentEarnings : 0)}
-                    {!bsEqBal && <span style={{ color: "#c2410c", fontWeight: 700 }}> — check rounding / opening balance</span>}
-                  </div>
+                <div className="erp-acc-gl-hero-sub">
+                  {tb.rows.length} accounts · Engine {glMode === "rebuild" ? "Repair" : "Live"} · {journalLinesAll.length} journal lines
                 </div>
               </div>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <thead><tr style={{ background: C.th }}>
-                    <TH>Code</TH><TH>Account</TH><TH>Type</TH><TH style={{ textAlign: "right" }}>Debit</TH><TH style={{ textAlign: "right" }}>Credit</TH>
-                  </tr></thead>
+              <div className="erp-acc-gl-hero-chips">
+                <span className={"erp-acc-ov-chip" + (tb.balanced ? " is-ok" : " is-warn")}>
+                  {tb.balanced ? "✓ Trial balanced" : "⚠ Trial mismatch"}
+                </span>
+                <span className={"erp-acc-ov-chip" + (bsEqBal ? " is-ok" : " is-warn")}>
+                  {bsEqBal ? "✓ A = L + E + NI" : "⚠ BS off " + getCurrencySymbol() + fmtNum(bsEqDiffAmt)}
+                </span>
+                <span className={"erp-acc-ov-chip" + (reconRep.summaryOk ? " is-ok" : " is-warn")}>
+                  {reconRep.summaryOk ? "✓ Recon OK" : "⚠ Recon review"}
+                </span>
+              </div>
+            </div>
+
+            <div className="erp-acc-stat-row erp-acc-gl-stat-row">
+              <StatCard
+                label="Net P&L"
+                value={pl.net}
+                accent={pl.net >= 0 ? C.green : C.red}
+                valueColor={pl.net >= 0 ? C.green : C.red}
+                icon={pl.net >= 0 ? "📈" : "📉"}
+                sub="From ledger accounts"
+              />
+              <StatCard
+                label="Income"
+                value={pl.income}
+                accent={C.blue}
+                valueColor={C.blue}
+                icon="💰"
+                sub="Revenue accounts"
+              />
+              <StatCard
+                label="Expenses"
+                value={pl.expenses}
+                accent={C.orange}
+                valueColor={C.orange}
+                icon="💸"
+                sub="Cost & operating"
+              />
+              <StatCard
+                label="Balance sheet"
+                value={bs.assets}
+                accent={bsEqBal ? C.green : C.red}
+                valueColor={bsEqBal ? C.green : C.red}
+                icon="📒"
+                sub={"Liab " + fmtNum(bs.liabilities) + " · Eq " + fmtNum(bs.equity) + " · NI " + fmtNum(bs.currentEarnings != null ? bs.currentEarnings : 0)}
+              />
+            </div>
+
+            {glErrText ? (
+              <div className="erp-acc-alert is-error">{glErrText}</div>
+            ) : null}
+            {invRec && !isInventoryReconcileOk(invRec, state.settings || {}) ? (
+              <div className="erp-acc-alert is-warn">
+                <strong>Inventory vs ledger:</strong> GL {getCurrencySymbol()} {fmtNum(invRec.glInventoryBalance)} vs layers {getCurrencySymbol()} {fmtNum(invRec.physicalValue)}
+                {typeof invRec.difference === "number" ? <span> — Δ {getCurrencySymbol()} {fmtNum(Math.abs(invRec.difference))}</span> : null}
+              </div>
+            ) : null}
+
+            <div className="erp-acc-gl-primary">
+            <Card pad={0} className="erp-acc-gl-main-card erp-acc-data-card">
+              <div className="erp-acc-gl-tb-head">
+                <div className="erp-acc-gl-tb-head-text">
+                  <div className="erp-acc-gl-tb-title">Trial balance</div>
+                  <div className="erp-acc-gl-tb-sub">{tb.rows.length} accounts · Dr/Cr must match for a balanced book</div>
+                </div>
+                <div className="erp-acc-gl-tb-actions">
+                  <span className="erp-acc-gl-totals">
+                    Δ {getCurrencySymbol()} {fmtNum(Math.abs((tb.totalDebit || 0) - (tb.totalCredit || 0)))}
+                  </span>
+                  <Btn col="cyan" onClick={function () {
+                    if (typeof rebuildGeneralLedger === "function") rebuildGeneralLedger();
+                  }}>↻ Rebuild journal</Btn>
+                </div>
+              </div>
+              <div className="erp-acc-table-scroll erp-acc-table-scroll--tb">
+                <table className="erp-acc-gl-table">
+                  <thead>
+                    <tr>
+                      <TH>Code</TH>
+                      <TH>Account</TH>
+                      <TH>Type</TH>
+                      <TH className="is-num">Debit</TH>
+                      <TH className="is-num">Credit</TH>
+                    </tr>
+                  </thead>
                   <tbody>
-                    {tb.rows.map(function (r, i) {
+                    {tb.rows.map(function (r) {
                       return (
-                        <tr key={r.accountId} style={{ background: i % 2 ? "#f8fafc" : "#fff" }}>
-                          <TD>{r.code}</TD><TD bold>{r.name}</TD><TD color={C.muted}>{r.type}</TD>
-                          <TD style={{ textAlign: "right" }}>{r.debit > 0 ? getCurrencySymbol() + " " + fmtNum(r.debit) : "—"}</TD>
-                          <TD style={{ textAlign: "right" }}>{r.credit > 0 ? getCurrencySymbol() + " " + fmtNum(r.credit) : "—"}</TD>
+                        <tr key={r.accountId}>
+                          <TD><span className="erp-acc-gl-code">{r.code}</span></TD>
+                          <TD bold>{r.name}</TD>
+                          <TD><span className={"erp-acc-gl-type " + glAccountTypeClass(r.type)}>{r.type}</span></TD>
+                          <TD className="is-num is-debit">{r.debit > 0 ? getCurrencySymbol() + " " + fmtNum(r.debit) : "—"}</TD>
+                          <TD className="is-num is-credit">{r.credit > 0 ? getCurrencySymbol() + " " + fmtNum(r.credit) : "—"}</TD>
                         </tr>
                       );
                     })}
-                    {tb.rows.length === 0 && <tr><td colSpan={5} style={{ padding: 16, textAlign: "center", color: C.muted }}>No journal lines yet — use Rebuild or post a transaction.</td></tr>}
-                    <tr style={{ background: "#e8eeff", fontWeight: 800 }}>
-                      <td colSpan={3} style={{ padding: 10 }}>TOTAL</td>
-                      <td style={{ textAlign: "right", padding: 10 }}>{getCurrencySymbol()} {fmtNum(tb.totalDebit)}</td>
-                      <td style={{ textAlign: "right", padding: 10 }}>{getCurrencySymbol()} {fmtNum(tb.totalCredit)}</td>
+                    {tb.rows.length === 0 && (
+                      <tr><td colSpan={5} className="erp-acc-gl-empty">No journal lines yet — use Rebuild or post a transaction.</td></tr>
+                    )}
+                    <tr className="erp-acc-gl-total-row">
+                      <td colSpan={3}>TOTAL</td>
+                      <td className="is-num">{getCurrencySymbol()} {fmtNum(tb.totalDebit)}</td>
+                      <td className="is-num">{getCurrencySymbol()} {fmtNum(tb.totalCredit)}</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
             </Card>
-            <Card>
-              <CardTitle sub="Running balance by GL account — loads in pages for performance">Account activity</CardTitle>
-              <div style={{ marginBottom: 12 }}>
-                <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd }}>Account </label>
-                <select value={glSelAcct} onChange={function (e) { setGlSelAcct(e.target.value); }} style={{ marginLeft: 8, border: "1.5px solid " + C.border, borderRadius: 8, padding: "6px 10px", fontSize: 13 }}>
-                  {acctOpts.map(function (r) {
-                    return <option key={r.accountId} value={r.accountId}>{r.code} — {r.name}</option>;
-                  })}
-                  {acctOpts.length === 0 && ["1000", "1010", "1100", "1200", "2000", "3000", "4000", "5000", "6000"].map(function (id) {
-                    return <option key={id} value={id}>{id}</option>;
-                  })}
-                </select>
-                <span style={{ marginLeft: 10, fontSize: 11, color: C.muted }}>Showing {runRowsPage.length} of {runRows.length} lines</span>
+            </div>
+
+            <AccFold
+              tone="green"
+              title="Reconciliation checks"
+              sub="GL vs inventory · AR/AP · journal balance"
+              open={glReconOpen}
+              onToggle={function () { setGlReconOpen(function (v) { return !v; }); }}
+              badge={
+                <span className={"erp-acc-health-pill" + (reconRep.summaryOk ? " is-ok" : " is-warn")}>
+                  {reconRep.summaryOk ? "OK" : "Review"}
+                </span>
+              }
+            >
+              <div className="erp-acc-recon-list">
+                {reconRep.rows.map(function (row) {
+                  var cls = row.ok === false ? " is-bad" : row.ok === null ? " is-neutral" : " is-ok";
+                  return (
+                    <div key={row.id} className={"erp-acc-recon-row" + cls}>
+                      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 6, width: "100%" }}>
+                        <span className="erp-acc-recon-row-label">{row.label}</span>
+                        <span className="erp-acc-recon-row-detail">{row.detail}</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <thead><tr style={{ background: C.th }}>
-                    <TH>Date</TH><TH>Ref</TH><TH>Memo</TH><TH style={{ textAlign: "right" }}>Debit</TH><TH style={{ textAlign: "right" }}>Credit</TH><TH style={{ textAlign: "right" }}>Run bal</TH>
-                  </tr></thead>
+            </AccFold>
+
+            <AccFold
+              tone="blue"
+              title="Account activity"
+              sub={runRows.length + " lines · " + (acctOpts[0] ? acctOpts.length + " accounts" : "select account")}
+              open={glActivityOpen}
+              onToggle={function () { setGlActivityOpen(function (v) { return !v; }); }}
+            >
+              <div className="erp-acc-gl-activity-toolbar">
+                <div className="erp-acc-toolbar-field erp-acc-gl-acct-field">
+                  <label>Account</label>
+                  <select value={glSelAcct} onChange={function (e) { setGlSelAcct(e.target.value); }}>
+                    {acctOpts.map(function (r) {
+                      return <option key={r.accountId} value={r.accountId}>{r.code} — {r.name}</option>;
+                    })}
+                    {acctOpts.length === 0 && ["1000", "1010", "1100", "1200", "2000", "3000", "4000", "5000", "6000"].map(function (id) {
+                      return <option key={id} value={id}>{id}</option>;
+                    })}
+                  </select>
+                </div>
+                <span className="erp-acc-count-badge">{runRowsPage.length} of {runRows.length} lines shown</span>
+              </div>
+              <div className="erp-acc-table-scroll erp-acc-table-scroll--activity">
+                <table className="erp-acc-gl-table erp-acc-gl-activity-table">
+                  <thead>
+                    <tr>
+                      <TH>Date</TH>
+                      <TH>Ref</TH>
+                      <TH>Memo</TH>
+                      <TH className="is-num">Debit</TH>
+                      <TH className="is-num">Credit</TH>
+                      <TH className="is-num">Run bal</TH>
+                    </tr>
+                  </thead>
                   <tbody>
                     {runRowsPage.map(function (rr, i) {
                       var ln = rr.line;
                       return (
-                        <tr key={ln.id || i} style={{ background: i % 2 ? "#fff" : "#f8faff" }}>
+                        <tr key={ln.id || i}>
                           <TD>{ln.date || "—"}</TD>
-                          <TD><span style={{ fontSize: 10 }}>{ln.referenceType}</span></TD>
-                          <TD style={{ maxWidth: 200, fontSize: 11 }}>{(ln.memo || "").slice(0, 80)}</TD>
-                          <TD style={{ textAlign: "right" }}>{ln.debit > 0 ? fmtNum(ln.debit) : "—"}</TD>
-                          <TD style={{ textAlign: "right" }}>{ln.credit > 0 ? fmtNum(ln.credit) : "—"}</TD>
-                          <TD style={{ textAlign: "right", fontWeight: 800 }}>{fmtNum(rr.running)}</TD>
+                          <TD><span className="erp-acc-gl-ref">{ln.referenceType}</span></TD>
+                          <TD className="erp-acc-gl-memo">{(ln.memo || "").slice(0, 80)}</TD>
+                          <TD className="is-num is-debit">{ln.debit > 0 ? fmtNum(ln.debit) : "—"}</TD>
+                          <TD className="is-num is-credit">{ln.credit > 0 ? fmtNum(ln.credit) : "—"}</TD>
+                          <TD className="is-num is-runbal">{fmtNum(rr.running)}</TD>
                         </tr>
                       );
                     })}
-                    {runRows.length === 0 && <tr><td colSpan={6} style={{ padding: 16, textAlign: "center", color: C.muted }}>No lines for this account.</td></tr>}
+                    {runRows.length === 0 && (
+                      <tr><td colSpan={6} className="erp-acc-gl-empty">No lines for this account.</td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
-              {runRows.length > runRowsPage.length && (
-                <div style={{ marginTop: 10 }}>
-                  <Btn col="gray" onClick={function () { setGlAcctLinesVisible(function (n) { return n + 80; }); }}>Load more ({runRows.length - runRowsPage.length} remaining)</Btn>
+              {runRows.length > runRowsPage.length ? (
+                <div className="erp-acc-gl-load-more">
+                  <Btn col="gray" onClick={function () { setGlAcctLinesVisible(function (n) { return n + 80; }); }}>Load more ({runRows.length - runRowsPage.length})</Btn>
                 </div>
-              )}
-            </Card>
+              ) : null}
+            </AccFold>
 
-            <Card>
-              <CardTitle sub="Saved from Accounts or Settings — hash-sealed for integrity">Financial snapshots</CardTitle>
+            <AccFold
+              tone="purple"
+              title="Financial snapshots"
+              sub="Hash-sealed integrity records from Settings"
+              open={glSnapshotsOpen}
+              onToggle={function () { setGlSnapshotsOpen(function (v) { return !v; }); }}
+              badge={<span className="erp-acc-health-pill is-neutral">{snapsRecent.length} saved</span>}
+            >
               {snapsRecent.length === 0 ? (
-                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 12, color: C.muted, padding: 8 }}>
+                <div className="erp-acc-gl-snap-empty">
                   <span>No snapshots yet. Save from Settings → Accounting; new saves appear as</span>
                   <SnapshotIntegrityBadge variant="sealed" />
                   <span>when sealed.</span>
                 </div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 280, overflowY: "auto" }}>
+                <div className="erp-acc-gl-snap-list">
                   {snapsRecent.map(function (s) {
                     var tampered = !!(s && s.tampered);
                     var sealed = !tampered && !!(s && s.contentHash && validateSnapshotIntegrity(s));
                     var legacy = s && !s.contentHash;
                     return (
-                      <div key={s.id || s.createdAt} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "1px solid " + C.border, background: "#fafbff", fontSize: 12, minWidth: 0 }}>
-                        <span style={{ fontWeight: 700, color: C.text }}>{fmtDateFull(s.createdAt || "").slice(0, 16) || "—"}</span>
-                        <span style={{ color: C.muted, flex: "1 1 140px", minWidth: 0 }}>{s.label || s.id || ""}</span>
+                      <div key={s.id || s.createdAt} className={"erp-acc-gl-snap-row" + (tampered ? " is-bad" : sealed ? " is-ok" : "")}>
+                        <span className="erp-acc-gl-snap-date">{fmtDateFull(s.createdAt || "").slice(0, 16) || "—"}</span>
+                        <span className="erp-acc-gl-snap-label">{s.label || s.id || ""}</span>
                         {tampered ? (
                           <SnapshotIntegrityBadge variant="failed" liveStatus />
                         ) : sealed ? (
@@ -1197,20 +1495,20 @@ var Accounts = function (props) {
                         ) : (
                           <SnapshotIntegrityBadge variant="failed" liveStatus />
                         )}
-                        {s.contentHash && <span style={{ fontSize: 10, color: C.muted, fontFamily: "monospace" }} title="Content hash">{String(s.contentHash).slice(0, 18)}…</span>}
+                        {s.contentHash ? <span className="erp-acc-gl-snap-hash" title="Content hash">{String(s.contentHash).slice(0, 18)}…</span> : null}
                       </div>
                     );
                   })}
                 </div>
               )}
               {glDeveloperTools && snapsRecent.length > 0 && typeof getTrialBalanceSnapshot === "function" && (
-                <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid " + C.border }}>
-                  <div style={{ fontWeight: 800, marginBottom: 8, fontSize: 12, color: C.textMd }}>Trial balance vs live (support)</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <div className="erp-acc-gl-dev-block">
+                  <div className="erp-acc-gl-dev-title">Trial balance vs live (support)</div>
+                  <div className="erp-acc-gl-dev-tools">
                     <select
+                      className="erp-acc-gl-dev-select"
                       value={Math.min(snapTbDiffIdx, snapsRecent.length - 1)}
                       onChange={function (e) { setSnapTbDiffIdx(parseInt(e.target.value, 10) || 0); setSnapTbDiffRes(null); }}
-                      style={{ fontSize: 12, padding: "6px 10px", borderRadius: 8, border: "1px solid " + C.border }}
                     >
                       {snapsRecent.map(function (s, i) {
                         return (
@@ -1235,15 +1533,15 @@ var Accounts = function (props) {
                     </Btn>
                   </div>
                   {snapTbDiffRes && snapTbDiffRes.message ? (
-                    <div style={{ fontSize: 11, color: C.muted }}>{snapTbDiffRes.message}</div>
+                    <div className="erp-acc-gl-dev-msg">{snapTbDiffRes.message}</div>
                   ) : null}
                   {snapTbDiffRes && snapTbDiffRes.rows && snapTbDiffRes.rows.length > 0 ? (
-                    <div style={{ overflowX: "auto" }}>
-                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <div className="erp-acc-table-scroll erp-acc-table-scroll--mini">
+                      <table className="erp-acc-gl-table">
                         <thead>
-                          <tr style={{ background: "#fff8e1" }}>
+                          <tr>
                             <TH>Account</TH>
-                            <TH style={{ textAlign: "right" }}>Δ signed</TH>
+                            <TH className="is-num">Δ signed</TH>
                           </tr>
                         </thead>
                         <tbody>
@@ -1251,7 +1549,7 @@ var Accounts = function (props) {
                             return (
                               <TR key={(rw.accountId || "") + "_" + ri} i={ri}>
                                 <TD>{rw.code} — {rw.name}</TD>
-                                <TD style={{ textAlign: "right", fontWeight: 800 }}>{fmtNum(rw.deltaSigned)}</TD>
+                                <TD className="is-num is-runbal">{fmtNum(rw.deltaSigned)}</TD>
                               </TR>
                             );
                           })}
@@ -1259,49 +1557,49 @@ var Accounts = function (props) {
                       </table>
                     </div>
                   ) : snapTbDiffRes && !snapTbDiffRes.legacy ? (
-                    <div style={{ fontSize: 11, color: "#166534", fontWeight: 700 }}>No material per-account drift vs live TB.</div>
+                    <div className="erp-acc-gl-dev-ok">No material per-account drift vs live TB.</div>
                   ) : null}
                 </div>
               )}
-            </Card>
+            </AccFold>
 
             {glDeveloperTools && (
-              <Card>
+              <Card className="erp-acc-gl-dev-card">
                 <CardTitle sub="Admin / dev only — does not change data">Developer tools</CardTitle>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
-                    <input type="checkbox" checked={glDebugOpen} onChange={function (e) { setGlDebugOpen(e.target.checked); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
+                <div className="erp-acc-gl-dev-toggle">
+                  <label className="erp-acc-gl-dev-check">
+                    <input type="checkbox" checked={glDebugOpen} onChange={function (e) { setGlDebugOpen(e.target.checked); }} />
                     Show journal debug (grouped by transaction)
                   </label>
                 </div>
                 {glDebugOpen && (
-                  <div style={{ fontSize: 11, color: C.textMd, display: "flex", flexDirection: "column", gap: 12 }}>
-                    <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 8, padding: 10 }}>
-                      <div style={{ fontWeight: 800, marginBottom: 6 }}>Inventory reconciliation (stored)</div>
+                  <div className="erp-acc-gl-dev-panel">
+                    <div className="erp-acc-gl-dev-box">
+                      <div className="erp-acc-gl-dev-box-title">Inventory reconciliation (stored)</div>
                       {invRec ? (
-                        <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 11, fontFamily: "ui-monospace,monospace" }}>{JSON.stringify(invRec, null, 2)}</pre>
+                        <pre className="erp-acc-gl-dev-pre">{JSON.stringify(invRec, null, 2)}</pre>
                       ) : (
-                        <span style={{ color: C.muted }}>No tc3_inv_reconciliation in storage.</span>
+                        <span className="erp-acc-gl-dev-muted">No tc3_inv_reconciliation in storage.</span>
                       )}
                     </div>
                     <div>
-                      <div style={{ fontWeight: 800, marginBottom: 6 }}>Journal entries by transactionId (first {glDebugGroupLimit} of {groupedJournal.length} groups)</div>
-                      <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid " + C.border, borderRadius: 8, padding: 8 }}>
+                      <div className="erp-acc-gl-dev-box-title">Journal entries by transactionId (first {glDebugGroupLimit} of {groupedJournal.length} groups)</div>
+                      <div className="erp-acc-gl-dev-groups">
                         {groupedJournalSlice.map(function (g) {
                           var bal = round2(g.dr - g.cr);
                           return (
-                            <div key={g.tid} style={{ marginBottom: 10, paddingBottom: 8, borderBottom: "1px dashed " + C.border }}>
-                              <div style={{ fontWeight: 700, fontSize: 11, color: C.accent }}>{g.tid}</div>
-                              <div style={{ fontSize: 10, color: C.muted }}>Dr {fmtNum(g.dr)} · Cr {fmtNum(g.cr)} · Net Dr−Cr {fmtNum(bal)}</div>
-                              <table style={{ width: "100%", fontSize: 10, marginTop: 4 }}>
+                            <div key={g.tid} className="erp-acc-gl-dev-group">
+                              <div className="erp-acc-gl-dev-group-id">{g.tid}</div>
+                              <div className="erp-acc-gl-dev-group-meta">Dr {fmtNum(g.dr)} · Cr {fmtNum(g.cr)} · Net Dr−Cr {fmtNum(bal)}</div>
+                              <table className="erp-acc-gl-dev-group-table">
                                 <tbody>
                                   {g.lines.map(function (ln, li) {
                                     return (
                                       <tr key={li}>
-                                        <td style={{ padding: "2px 4px" }}>{ln.accountId}</td>
-                                        <td style={{ padding: "2px 4px" }}>{(ln.memo || "").slice(0, 40)}</td>
-                                        <td style={{ textAlign: "right", padding: "2px 4px" }}>{ln.debit > 0 ? fmtNum(ln.debit) : "—"}</td>
-                                        <td style={{ textAlign: "right", padding: "2px 4px" }}>{ln.credit > 0 ? fmtNum(ln.credit) : "—"}</td>
+                                        <td>{ln.accountId}</td>
+                                        <td>{(ln.memo || "").slice(0, 40)}</td>
+                                        <td className="is-num">{ln.debit > 0 ? fmtNum(ln.debit) : "—"}</td>
+                                        <td className="is-num">{ln.credit > 0 ? fmtNum(ln.credit) : "—"}</td>
                                       </tr>
                                     );
                                   })}
@@ -1320,61 +1618,26 @@ var Accounts = function (props) {
               </Card>
             )}
 
-            <Card>
-              <CardTitle sub="Creates, repairs, validation, and sync events">GL audit trail</CardTitle>
-              <div style={{ fontSize: 11, maxHeight: 220, overflowY: "auto" }}>
-                {(!glAudit || !glAudit.length) && <div style={{ color: C.muted, padding: 8 }}>No audit entries yet.</div>}
+            <AccFold
+              tone="slate"
+              title="GL audit trail"
+              sub="Journal rebuilds, validation &amp; sync events"
+              open={glAuditOpen}
+              onToggle={function () { setGlAuditOpen(function (v) { return !v; }); }}
+              badge={<span className="erp-acc-health-pill is-neutral">{(glAudit || []).length} entries</span>}
+            >
+              <div className="erp-acc-gl-audit-list">
+                {(!glAudit || !glAudit.length) && <div className="erp-acc-gl-audit-empty">No audit entries yet.</div>}
                 {(glAudit || []).slice(-20).reverse().map(function (row, i) {
                   return (
-                    <div key={row.id || i} style={{ borderBottom: "1px solid " + C.border, padding: "8px 0" }}>
-                      <div style={{ fontWeight: 800, color: C.text }}>{row.action || "—"}</div>
-                      <div style={{ color: C.muted, fontSize: 10 }}>{row.ts || ""}</div>
+                    <div key={row.id || i} className="erp-acc-gl-audit-row">
+                      <div className="erp-acc-gl-audit-action">{row.action || "—"}</div>
+                      <div className="erp-acc-gl-audit-ts">{row.ts || ""}</div>
                     </div>
                   );
                 })}
               </div>
-            </Card>
-          </div>
-        );
-      })()}
-
-      {atab === "recon" && (function () {
-        var lines = S.get("tc3_journal_lines", []);
-        var chart = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
-        var invDer = deriveInventoryEconomics(state, S);
-        invDer.reconciliation = reconcileInventoryToLedger(lines, invDer, chart);
-        var rep = buildReconciliationReport({
-          lines: lines,
-          chart: chart,
-          invDer: invDer,
-          validateJournalBalanced: validateJournalBalanced,
-          settings: state.settings || {},
-        });
-        return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <Card>
-              <CardTitle sub="GL vs inventory — AR/AP sanity — journal balance">Reconciliation report</CardTitle>
-              <div style={{ fontSize: 12, color: C.muted, marginBottom: 10 }}>
-                {rep.summaryOk ? <span style={{ color: C.green, fontWeight: 700 }}>✔ OK</span> : <span style={{ color: C.red, fontWeight: 700 }}>❌ Mismatch or warning</span>}
-                <span style={{ marginLeft: 12 }}>· {fmtDateFull(rep.generatedAt || "")}</span>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {rep.rows.map(function (row) {
-                  var bg = row.ok === false ? "#fef2f2" : row.ok === null ? "#f8fafc" : "#f0fdf4";
-                  return (
-                    <div key={row.id} style={{ display: "flex", flexDirection: "column", gap: 4, padding: "10px 12px", borderRadius: 8, border: "1px solid " + C.border, background: bg }}>
-                      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8 }}>
-                        <span style={{ fontWeight: 700, color: C.text }}>{row.label}</span>
-                        <span style={{ fontSize: 12 }}>{row.detail}</span>
-                      </div>
-                      {row.amounts ? (
-                        <div style={{ fontSize: 10, color: C.muted, fontFamily: "ui-monospace,monospace", wordBreak: "break-all" }}>{JSON.stringify(row.amounts)}</div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
+            </AccFold>
           </div>
         );
       })()}
@@ -1386,58 +1649,40 @@ var Accounts = function (props) {
         var totalWithdrawn = ledger.filter(function (e) { return e.type === "withdraw"; }).reduce(function (a, e) { return a + e.amount; }, 0);
         var net = totalInvested - totalWithdrawn;
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(175px,1fr))", gap: 10 }}>
-              <div style={{ background: "linear-gradient(135deg,#1a237e,#283593)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Net Capital</div>
-                <div style={{ fontSize: 26, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(net)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>Active capital in business</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#1b5e20,#2e7d32)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Total Invested</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(totalInvested)}</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#b71c1c,#c62828)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Total Withdrawn</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(totalWithdrawn)}</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#4a148c,#6a1b9a)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Transactions</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{ledger.length}</div>
-              </div>
+          <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--capital erp-acc-split-layout">
+            <AccTabHead icon="💼" tone="green" title="Capital" sub="Owner investments, withdrawals & running balance" />
+            <div className="erp-acc-stat-row">
+              <StatCard label="Net Capital" value={net} accent={C.blue} valueColor={C.blue} icon="💼" sub="Active in business" />
+              <StatCard label="Total Invested" value={totalInvested} accent={C.green} valueColor={C.green} icon="⬆" />
+              <StatCard label="Total Withdrawn" value={totalWithdrawn} accent={C.red} valueColor={C.red} icon="⬇" />
+              <StatCard money={false} label="Transactions" value={ledger.length} accent={C.purple} valueColor={C.purple} icon="📋" />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "380px 1fr", gap: 14, alignItems: "start" }}>
-              <Card>
-                <CardTitle sub="Record a new investment or withdrawal">New Capital Entry</CardTitle>
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 6 }}>Transaction Type</div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {[["invest", "⬆ Invest Capital", "#1b5e20", "#e8f5e9"], ["withdraw", "⬇ Withdraw Capital", "#b71c1c", "#fde8ed"]].map(function (opt) {
-                        var active = capForm.type === opt[0];
-                        return <button key={opt[0]} onClick={function () { setCapForm(function (x) { return Object.assign({}, x, { type: opt[0] }); }); }} style={{ flex: 1, padding: "12px 8px", borderRadius: 10, border: "2px solid " + (active ? opt[2] : C.border), background: active ? opt[3] : "#fff", color: active ? opt[2] : C.textMd, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{opt[1]}</button>;
-                      })}
-                    </div>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div className="erp-acc-split erp-acc-split--fill">
+              <Card pad={10} className="erp-acc-form-card">
+                <CardTitle sub="Record a new investment or withdrawal">New Entry</CardTitle>
+                <div className="erp-acc-form-stack">
+                  <AccChoiceRow
+                    label="Transaction Type"
+                    value={capForm.type}
+                    onChange={function (v) { setCapForm(function (x) { return Object.assign({}, x, { type: v }); }); }}
+                    options={[["invest", "⬆ Invest Capital", "green"], ["withdraw", "⬇ Withdraw Capital", "red"]]}
+                  />
+                  <div className="erp-acc-form-grid-2">
                     <Input label="Amount (Rs) *" type="number" value={capForm.amount} onChange={function (e) { setCapForm(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }} />
                     <Input label="Date *" type="date" value={capForm.date} onChange={function (e) { setCapForm(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
                   </div>
                   <Input label="Reference / Source" value={capForm.ref} onChange={function (e) { setCapForm(function (x) { return Object.assign({}, x, { ref: e.target.value }); }); }} />
                   <Input label="Note / Description" value={capForm.note} onChange={function (e) { setCapForm(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} />
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>{capForm.type === "invest" ? "Receive To" : "Withdraw From"}</div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {[["Cash", "💵 Cash", "#1b5e20", "#f0f9f4"], ["Bank", "🏦 Bank", "#1565c0", "#e8f0fe"]].map(function (opt) {
-                        var active = (capForm.cashMethod || "Cash") === opt[0];
-                        return <button key={opt[0]} onClick={function () { setCapForm(function (x) { return Object.assign({}, x, { cashMethod: opt[0] }); }); }} style={{ flex: 1, padding: "9px 8px", borderRadius: 9, border: "2px solid " + (active ? opt[2] : C.border), background: active ? opt[3] : "#fff", color: active ? opt[2] : C.textMd, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{opt[1]}</button>;
-                      })}
-                    </div>
-                  </div>
+                  <AccChoiceRow
+                    label={capForm.type === "invest" ? "Receive To" : "Withdraw From"}
+                    value={capForm.cashMethod || "Cash"}
+                    onChange={function (v) { setCapForm(function (x) { return Object.assign({}, x, { cashMethod: v }); }); }}
+                    options={[["Cash", "💵 Cash", "green"], ["Bank", "🏦 Bank", "blue"]]}
+                  />
                   <Btn col={capForm.type === "invest" ? "green" : "red"} onClick={saveCapEntry}>{capForm.type === "invest" ? "Record Investment" : "Record Withdrawal"}</Btn>
                 </div>
               </Card>
-              <Card>
+              <Card className="erp-acc-data-card">
                 <CardTitle sub={ledger.length + " capital transactions"}>Capital Ledger</CardTitle>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -1461,8 +1706,8 @@ var Accounts = function (props) {
                               <td style={{ padding: "10px 12px", fontWeight: 700, color: row.run >= 0 ? C.blue : C.red }}>{getCurrencySymbol()} {fmtNum(row.run)}</td>
                               <td style={actBtnCellStyle}>
                                 <ActBtnGroup>
-                                  <ActBtn tone="blue" title="Edit capital entry" onClick={function () { setCapEditForm(Object.assign({}, e)); setCapEditModal("edit"); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }}>✎</ActBtn>
-                                  <ActBtn tone="red" title="Delete capital entry" onClick={function () { setCapDeleteTarget(Object.assign({}, e)); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }}>✕</ActBtn>
+                                  <ActBtn tone="blue" title="Edit capital entry" onClick={function () { setCapEditForm(Object.assign({}, e)); setCapEditModal("edit"); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }} />
+                                  <ActBtn tone="red" title="Delete capital entry" onClick={function () { setCapDeleteTarget(Object.assign({}, e)); setCapActionPw(""); setCapActionReason(""); setCapActionMsg(""); }} />
                                 </ActBtnGroup>
                               </td>
                             </TR>
@@ -1513,69 +1758,53 @@ var Accounts = function (props) {
         var byPartner = {};
         distList.forEach(function (e) { byPartner[e.partner] = (byPartner[e.partner] || 0) + e.amount; });
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(175px,1fr))", gap: 10 }}>
-              <div style={{ background: "linear-gradient(135deg,#4a148c,#7b1fa2)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Total Distributed</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(totalDist)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>{distList.length} entries</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#1a237e,#283593)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Net Profit</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(netProfit)}</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#1b5e20,#2e7d32)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Available Profit</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(availableProfit)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>After distribution</div>
-              </div>
-              <div style={{ background: "linear-gradient(135deg,#e65100,#ef6c00)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Partners</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{Object.keys(byPartner).length}</div>
-              </div>
+          <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--profit erp-acc-split-layout">
+            <AccTabHead icon="🤝" tone="purple" title="Profit Distribution" sub="Partner profit sharing — does not affect capital" />
+            <div className="erp-acc-stat-row">
+              <StatCard label="Total Distributed" value={totalDist} accent={C.purple} valueColor={C.purple} icon="🤝" sub={distList.length + " entries"} />
+              <StatCard label="Net Profit" value={netProfit} accent={netProfit >= 0 ? C.green : C.red} valueColor={netProfit >= 0 ? C.green : C.red} icon="📈" />
+              <StatCard label="Available Profit" value={availableProfit} accent={C.blue} valueColor={C.blue} icon="💰" sub="After distribution" />
+              <StatCard money={false} label="Partners" value={Object.keys(byPartner).length} accent={C.orange} valueColor={C.orange} icon="👥" />
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 14, alignItems: "start" }}>
-              <Card>
+            <div className="erp-acc-split erp-acc-split--fill">
+              <Card pad={10} className="erp-acc-form-card">
                 <CardTitle sub="Record profit sharing">New Distribution</CardTitle>
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div className="erp-acc-form-stack">
                   <Input label="Date *" type="date" value={pdForm.date} onChange={function (e) { setPdForm(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
                   <Input label="Partner / Person *" value={pdForm.partner} onChange={function (e) { setPdForm(function (x) { return Object.assign({}, x, { partner: e.target.value }); }); }} placeholder="e.g. John (Partner)" />
                   <Input label="Amount (Rs) *" type="number" value={pdForm.amount} onChange={function (e) { setPdForm(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }} />
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Payment Method</div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      {[["Cash", "💵 Cash", "#1b5e20", "#f0f9f4"], ["Bank", "🏦 Bank", "#1565c0", "#e8f0fe"]].map(function (opt) {
-                        var active = (pdForm.paymentMethod || "Cash") === opt[0];
-                        return <button key={opt[0]} onClick={function () { setPdForm(function (x) { return Object.assign({}, x, { paymentMethod: opt[0] }); }); }} style={{ flex: 1, padding: "9px 8px", borderRadius: 9, border: "2px solid " + (active ? opt[2] : C.border), background: active ? opt[3] : "#fff", color: active ? opt[2] : C.textMd, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{opt[1]}</button>;
-                      })}
-                    </div>
-                  </div>
+                  <AccChoiceRow
+                    label="Payment Method"
+                    value={pdForm.paymentMethod || "Cash"}
+                    onChange={function (v) { setPdForm(function (x) { return Object.assign({}, x, { paymentMethod: v }); }); }}
+                    options={[["Cash", "💵 Cash", "green"], ["Bank", "🏦 Bank", "blue"]]}
+                  />
                   <Input label="Note" value={pdForm.note} onChange={function (e) { setPdForm(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} placeholder="Optional note" />
-                  <div style={{ background: C.warnSoft, border: "1px solid #fcd34d", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: C.amber }}>⚠ This reduces profit balance. It does NOT affect capital.</div>
+                  <div className="erp-acc-hint erp-acc-hint--warn">⚠ This reduces profit balance. It does NOT affect capital.</div>
                   <Btn col="purple" onClick={saveProfitDist}>Record Distribution</Btn>
                 </div>
               </Card>
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div className="erp-acc-split-col">
                 {Object.keys(byPartner).length > 0 && (
-                  <Card>
-                    <CardTitle sub="Per-partner summary">Distribution by Partner</CardTitle>
+                  <Card pad={10} className="erp-acc-partner-card">
+                    <CardTitle sub="Per-partner summary">By Partner</CardTitle>
                     {Object.keys(byPartner).map(function (p) {
                       var pct = totalDist > 0 ? Math.round(byPartner[p] / totalDist * 100) : 0;
                       return (
-                        <div key={p} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 0", borderBottom: "1px solid " + C.borderLight }}>
-                          <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.accentSoft, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 13, color: C.accent, flexShrink: 0 }}>{p.charAt(0).toUpperCase()}</div>
-                          <div style={{ flex: 1 }}>
-                            <div style={{ fontWeight: 700, fontSize: 13 }}>{p}</div>
-                            <div style={{ height: 5, background: C.border, borderRadius: 3, marginTop: 4 }}><div style={{ width: pct + "%", height: "100%", background: C.purple, borderRadius: 3 }}></div></div>
+                        <div key={p} className="erp-acc-partner-row">
+                          <div className="erp-acc-partner-avatar">{p.charAt(0).toUpperCase()}</div>
+                          <div className="erp-acc-partner-main">
+                            <div className="erp-acc-partner-name">{p}</div>
+                            <div className="erp-acc-partner-bar"><span style={{ width: pct + "%" }} /></div>
                           </div>
-                          <div style={{ fontWeight: 800, color: C.purple, fontSize: 14 }}>{getCurrencySymbol()} {fmtNum(byPartner[p])}</div>
-                          <div style={{ fontSize: 11, color: C.muted }}>{pct}%</div>
+                          <div className="erp-acc-partner-amt">{getCurrencySymbol()} {fmtNum(byPartner[p])}</div>
+                          <div className="erp-acc-partner-pct">{pct}%</div>
                         </div>
                       );
                     })}
                   </Card>
                 )}
-                <Card>
+                <Card className="erp-acc-data-card">
                   <CardTitle sub={distList.length + " entries"}>Distribution History</CardTitle>
                   {distList.length === 0 && <div style={{ textAlign: "center", padding: "20px 0", color: C.muted }}>No distributions recorded yet.</div>}
                   <div style={{ overflowX: "auto" }}>
@@ -1592,8 +1821,8 @@ var Accounts = function (props) {
                               <TD>{e.note || "—"}</TD>
                               <td style={actBtnCellStyle}>
                                 <ActBtnGroup>
-                                  <ActBtn tone="blue" title="Edit distribution" onClick={function () { setPdEdit(Object.assign({}, e)); }}>✎</ActBtn>
-                                  <ActBtn tone="red" title="Delete distribution" onClick={function () { deletePd(e.id); }}>✕</ActBtn>
+                                  <ActBtn tone="blue" title="Edit distribution" onClick={function () { setPdEdit(Object.assign({}, e)); }} />
+                                  <ActBtn tone="red" title="Delete distribution" onClick={function () { deletePd(e.id); }} />
                                 </ActBtnGroup>
                               </td>
                             </TR>
@@ -1628,51 +1857,51 @@ var Accounts = function (props) {
         var catTotals = {};
         assets.forEach(function (a) { catTotals[a.category] = (catTotals[a.category] || 0) + a.amount; });
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(175px,1fr))", gap: 10 }}>
-              <div style={{ background: "linear-gradient(135deg,#1a237e,#283593)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Total Assets Value</div>
-                <div style={{ fontSize: 24, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(totalAssetVal)}</div>
-                <div style={{ fontSize: 11, opacity: 0.65, marginTop: 4 }}>{assets.length} asset{assets.length !== 1 ? "s" : ""}</div>
-              </div>
-              {Object.keys(catTotals).slice(0, 3).map(function (cat) {
+          <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--assets erp-acc-split-layout">
+            <AccTabHead icon="🏢" tone="teal" title="Fixed Assets" sub="Business asset register — equipment, vehicles & property" />
+            <div className="erp-acc-stat-row">
+              <StatCard label="Total Assets" value={totalAssetVal} accent={C.blue} valueColor={C.blue} icon="🏢" sub={assets.length + " asset" + (assets.length !== 1 ? "s" : "")} />
+              {Object.keys(catTotals).slice(0, 3).map(function (cat, idx) {
+                var accents = [C.green, C.cyan, C.orange];
+                var accent = accents[idx] || C.purple;
                 return (
-                  <div key={cat} style={{ background: "linear-gradient(135deg,#004d40,#00695c)", borderRadius: 14, padding: "18px 20px", color: "#fff" }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{cat.length > 18 ? cat.slice(0, 18) + "…" : cat}</div>
-                    <div style={{ fontSize: 22, fontWeight: 900 }}>{getCurrencySymbol()} {fmtNum(catTotals[cat])}</div>
-                  </div>
+                  <StatCard
+                    key={cat}
+                    label={cat.length > 20 ? cat.slice(0, 20) + "…" : cat}
+                    value={catTotals[cat]}
+                    accent={accent}
+                    valueColor={accent}
+                    icon="📦"
+                  />
                 );
               })}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 14, alignItems: "start" }}>
-              <Card>
+            <div className="erp-acc-split erp-acc-split--fill">
+              <Card pad={10} className="erp-acc-form-card">
                 <CardTitle sub="Add a new business asset">{newAsset ? "New Asset" : "Add Asset"}</CardTitle>
                 {!newAsset ? (
                   <Btn col="blue" onClick={function () { setNewAsset({ date: today(), name: "", category: "Equipment / Machinery", amount: "", note: "", cashMethod: "Cash" }); }}>+ Add New Asset</Btn>
                 ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div className="erp-acc-form-stack">
                     <Input label="Asset Name *" value={newAsset.name} onChange={function (e) { setNewAsset(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
                     <Input label="Date *" type="date" value={newAsset.date} onChange={function (e) { setNewAsset(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
-                    <Sel label="Category" value={newAsset.category} onChange={function (e) { setNewAsset(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>{AgetCats().map(function (c) { return <option key={c}>{c}</option>; })}</Sel>
+                    <Sel label="Category" value={newAsset.category} onChange={function (e) { setNewAsset(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>{ACATS.map(function (c) { return <option key={c}>{c}</option>; })}</Sel>
                     <Input label="Amount Paid (Rs) *" type="number" value={newAsset.amount} onChange={function (e) { setNewAsset(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }} />
-                    <div>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Paid Via</div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        {[["Cash", "💵 Cash", "#1b5e20", "#f0f9f4"], ["Bank", "🏦 Bank", "#1565c0", "#e8f0fe"]].map(function (opt) {
-                          var active = (newAsset.cashMethod || "Cash") === opt[0];
-                          return <button key={opt[0]} onClick={function () { setNewAsset(function (x) { return Object.assign({}, x, { cashMethod: opt[0] }); }); }} style={{ flex: 1, padding: "9px 8px", borderRadius: 9, border: "2px solid " + (active ? opt[2] : C.border), background: active ? opt[3] : "#fff", color: active ? opt[2] : C.textMd, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{opt[1]}</button>;
-                        })}
-                      </div>
-                    </div>
+                    <AccChoiceRow
+                      label="Paid Via"
+                      value={newAsset.cashMethod || "Cash"}
+                      onChange={function (v) { setNewAsset(function (x) { return Object.assign({}, x, { cashMethod: v }); }); }}
+                      options={[["Cash", "💵 Cash", "green"], ["Bank", "🏦 Bank", "blue"]]}
+                    />
                     <Input label="Note" value={newAsset.note} onChange={function (e) { setNewAsset(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} />
-                    <div style={{ display: "flex", gap: 8 }}>
+                    <div className="erp-acc-form-actions">
                       <Btn col="green" onClick={saveAsset}>Save Asset</Btn>
                       <Btn col="gray" onClick={function () { setNewAsset(null); }}>Cancel</Btn>
                     </div>
                   </div>
                 )}
               </Card>
-              <Card>
+              <Card className="erp-acc-data-card">
                 <CardTitle sub={assets.length + " assets"}>Assets Register</CardTitle>
                 {assets.length === 0 && <div style={{ textAlign: "center", padding: "24px 0", color: C.muted }}>No assets recorded yet.</div>}
                 <div style={{ overflowX: "auto" }}>
@@ -1690,8 +1919,8 @@ var Accounts = function (props) {
                             <TD>{a.note || "—"}</TD>
                             <td style={actBtnCellStyle}>
                               <ActBtnGroup>
-                                <ActBtn tone="blue" title="Edit asset" onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("edit"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }}>✎</ActBtn>
-                                <ActBtn tone="red" title="Delete asset" onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("delete"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }}>✕</ActBtn>
+                                <ActBtn tone="blue" title="Edit asset" onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("edit"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }} />
+                                <ActBtn tone="red" title="Delete asset" onClick={function () { setEditAsset(Object.assign({}, a)); setAssetActionModal("delete"); setAssetPw(""); setAssetReason(""); setAssetPwMsg(""); }} />
                               </ActBtnGroup>
                             </td>
                           </TR>
@@ -1710,7 +1939,7 @@ var Accounts = function (props) {
                     <React.Fragment>
                       <Input label="Asset Name" value={editAsset.name} onChange={function (e) { setEditAsset(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} />
                       <Input label="Amount" type="number" value={editAsset.amount} onChange={function (e) { setEditAsset(function (x) { return Object.assign({}, x, { amount: parseFloat(e.target.value) || 0 }); }); }} />
-                      <Sel label="Category" value={editAsset.category || ""} onChange={function (e) { setEditAsset(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>{AgetCats().map(function (c) { return <option key={c}>{c}</option>; })}</Sel>
+                      <Sel label="Category" value={editAsset.category || ""} onChange={function (e) { setEditAsset(function (x) { return Object.assign({}, x, { category: e.target.value }); }); }}>{ACATS.map(function (c) { return <option key={c}>{c}</option>; })}</Sel>
                       <Input label="Note" value={editAsset.note || ""} onChange={function (e) { setEditAsset(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} />
                     </React.Fragment>
                   )}
@@ -1762,15 +1991,24 @@ var Accounts = function (props) {
         var STEPS = [["1", "Cash & Bank"], ["2", "Receivables"], ["3", "Payables"], ["4", "Stock"], ["5", "Assets"], ["6", "Review & Save"]];
 
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
+          <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--opening erp-acc-scroll-pane">
+            <AccTabHead
+              icon="🚀"
+              tone="amber"
+              title="Opening Balance"
+              sub={obData.completed ? "Financial position on ERP start date" : "Initial setup — enter your business position before go-live"}
+              extra={obData.completed && !obEditMode ? <Btn col="white" onClick={function () { setObPwModal(true); }}>Edit</Btn> : null}
+            />
             {obPwModal && (
               <Modal title="Admin Password Required" onClose={function () { setObPwModal(false); setObPw(""); setObPwMsg(""); }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <div style={{ background: "#fff8e8", borderRadius: 9, padding: "10px 14px", fontSize: 12.5, color: "#92400e", fontWeight: 600 }}>Opening Balance can only be edited by an admin. Changes will replace all existing opening entries.</div>
-                  <Input label="Admin Password" type="password" value={obPw} onChange={function (e) { setObPw(e.target.value); }} onKeyDown={function (e) { if (e.key === "Enter") doUnlock(); }} />
+                  <Input label="Admin Password" type="password" value={obPw} onChange={function (e) { setObPw(e.target.value); }} onKeyDown={function (e) { if (e.key === "Enter") doUnlock(); if (e.key === "Escape") { setObPwModal(false); setObPw(""); setObPwMsg(""); } }} />
                   {obPwMsg && <div style={{ color: C.red, fontSize: 12, fontWeight: 600 }}>{obPwMsg}</div>}
-                  <Btn col="blue" onClick={doUnlock}>Unlock and Edit</Btn>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <Btn col="gray" onClick={function () { setObPwModal(false); setObPw(""); setObPwMsg(""); }}>Cancel</Btn>
+                    <Btn col="blue" onClick={doUnlock}>Unlock and Edit</Btn>
+                  </div>
                 </div>
               </Modal>
             )}
@@ -1819,146 +2057,31 @@ var Accounts = function (props) {
               </Modal>
             )}
 
-            {obStockModal && (function () {
-              var existNonOB = (state.products || []).filter(function (p) { return !p._isOpening; });
-              var obNextId = nextProductId(existNonOB);
-              return (
-                <Modal title={"Add New Product — ID: " + obNextId} onClose={function () { setObStockModal(false); setObStockForm(blankObStockForm()); }} wide>
-                  <div style={{ background: C.accentSoft, borderRadius: 8, padding: "9px 14px", fontSize: 12, color: C.accent, marginBottom: 12 }}>New product will be added to your Inventory with opening stock quantity.</div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    <Input id="ob-new-name" label="Product Name *" value={obStockForm.name} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { name: e.target.value }); }); }} onFocus={obNameHint.onNameFocus} onBlur={obNameHint.onNameBlur} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-barcode"); } }} />
-                    <ProductNameDuplicateHint name={obStockForm.name} products={state.products} C={C} visible={obNameHint.visible} onDismiss={obNameHint.onDismiss} />
-                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
-                      <div>
-                        <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Product ID</label>
-                        <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, background: "#f3f4f6", color: C.accent, fontWeight: 800, fontFamily: "monospace", letterSpacing: "0.05em" }}>{obNextId}</div>
-                      </div>
-                      <Input id="ob-new-barcode" label="Barcode" value={obStockForm.barcode || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { barcode: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-main-category"); } }} />
-                    </div>
-                    <CategorySelect
-                      Sel={Sel}
-                      value={obStockForm.category || getDefaultProductCategory(shopSettings)}
-                      settings={shopSettings}
-                      onChange={function (e) { onObStockCategoryChange(e.target.value); }}
-                      focusSubAfterGroupChange={false}
-                      mainSelectProps={{
-                        id: "ob-new-main-category",
-                        onFocus: function () { markSelectEnterStage("main", false); },
-                        onBlur: function () { markSelectEnterStage("main", false); },
-                        onKeyDown: function (e) {
-                          if (e.key === "Enter") { e.preventDefault(); handleSelectEnter("main", "ob-new-main-category", function () { focusById("ob-new-sub-category"); }); }
-                          if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("main", true);
-                        },
-                        onKeyUp: function (e) {
-                          if (e.key === "Enter" && obNewProdSelectEnterState.current.main) { markSelectEnterStage("main", false); focusById("ob-new-sub-category"); }
-                        }
-                      }}
-                      subSelectProps={{
-                        id: "ob-new-sub-category",
-                        onFocus: function () { markSelectEnterStage("sub", false); },
-                        onBlur: function () { markSelectEnterStage("sub", false); },
-                        onKeyDown: function (e) {
-                          if (e.key === "Enter") { e.preventDefault(); handleSelectEnter("sub", "ob-new-sub-category", function () { focusById("ob-new-cost"); }); }
-                          if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("sub", true);
-                        },
-                        onKeyUp: function (e) {
-                          if (e.key === "Enter" && obNewProdSelectEnterState.current.sub) { markSelectEnterStage("sub", false); focusById("ob-new-cost"); }
-                        }
-                      }}
-                    />
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                      <Input id="ob-new-cost" label={glassCostPriceLabels(obStockForm, shopSettings).cost} type="number" value={obStockForm.cost || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { cost: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-sell"); } }} />
-                      <Input id="ob-new-sell" label={glassCostPriceLabels(obStockForm, shopSettings).sell} type="number" value={obStockForm.price || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { price: e.target.value }); }); }} onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); focusById("ob-new-unit"); } }} />
-                      <Sel id="ob-new-unit" label="Base Unit" value={obStockForm.unit || getDefaultProductUnit(shopSettings, obStockForm.category)} onChange={function (e) {
-                        var nextUnit = e.target.value;
-                        setObStockForm(function (x) { return Object.assign({}, x, { unit: nextUnit }, glassFormFieldsOnUnitChange(nextUnit)); });
-                      }} onFocus={function () { markSelectEnterStage("unit", false); }} onBlur={function () { markSelectEnterStage("unit", false); }} onKeyDown={function (e) {
-                        if (e.key === "Enter") { e.preventDefault(); handleSelectEnter("unit", "ob-new-unit", function () { focusById("ob-new-desc"); }); }
-                        if (e.key === "ArrowDown" || e.key === "ArrowUp") markSelectEnterStage("unit", true);
-                      }} onKeyUp={function (e) {
-                        if (e.key === "Enter" && obNewProdSelectEnterState.current.unit) { markSelectEnterStage("unit", false); focusById("ob-new-desc"); }
-                      }}>
-                        {getUnitsForSubCategory(obStockForm.category, shopSettings).map(function (u) { return <option key={u}>{u}</option>; })}
-                      </Sel>
-                    </div>
-                    {isGlassStockProductForm(obStockForm, shopSettings) && (
-                      <GlassSheetInfo form={obStockForm} setForm={setObStockForm} C={C} Input={Input} Sel={Sel} />
-                    )}
-                    <div style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 12px", background: "#f8fafc" }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Additional units (optional)</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Each <strong>factor</strong> is how many <strong>{obStockForm.unit || "Pcs"}</strong> (base) are in one of that unit.</div>
-                      {(obStockForm.extraUnits || []).map(function (row, idx) {
-                        return (
-                          <div key={idx} style={{ display: "grid", gridTemplateColumns: "minmax(80px,1fr) 88px minmax(72px,1fr) minmax(72px,1fr) 34px", gap: 8, marginBottom: 8, alignItems: "end" }}>
-                            <Input label="Unit name" value={row.name || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { name: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="Strip / Box" />
-                            <Input label="Factor" type="number" value={row.factor || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { factor: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="e.g. 12" />
-                            <Input label="Sell (opt.)" type="number" value={row.sellPrice || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { sellPrice: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
-                            <Input label="Cost (opt.)" type="number" value={row.cost || ""} onChange={function (e) { var v = e.target.value; setObStockForm(function (x) { var next = (x.extraUnits || []).slice(); next[idx] = Object.assign({}, next[idx], { cost: v }); return Object.assign({}, x, { extraUnits: next }); }); }} placeholder="auto if empty" />
-                            <button type="button" onClick={function () { setObStockForm(function (x) { var next = (x.extraUnits || []).filter(function (_, j) { return j !== idx; }); return Object.assign({}, x, { extraUnits: next }); }); }} style={{ height: 36, borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", cursor: "pointer", fontSize: 14, color: C.red }} title="Remove">✕</button>
-                          </div>
-                        );
-                      })}
-                      <button type="button" onClick={function () { setObStockForm(function (x) { return Object.assign({}, x, { extraUnits: (x.extraUnits || []).concat([{ name: "", factor: "", sellPrice: "", cost: "" }]) }); }); }} style={{ marginTop: 4, padding: "6px 12px", borderRadius: 8, border: "1.5px dashed " + C.accent, background: C.accentSoft, color: C.accent, fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>+ Add Unit</button>
-                    </div>
-                    <div style={{ background: "#e0f2fe", borderRadius: 8, padding: "8px 14px", fontSize: 12, color: "#0369a1", fontWeight: 600 }}>
-                      💡 Qty will be set from the opening stock grid row
-                    </div>
-                    {obStockForm.cost && obStockForm.price && (
-                      <div style={{ background: C.accentSoft, borderRadius: 8, padding: "10px 14px", fontSize: 13, display: "flex", gap: 16 }}>
-                        <span>Profit/unit: <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum((parseFloat(obStockForm.price) || 0) - (parseFloat(obStockForm.cost) || 0))}</strong></span>
-                        <span>Margin: <strong style={{ color: C.accent }}>{(parseFloat(obStockForm.price) || 0) > 0 ? Math.round(((parseFloat(obStockForm.price) || 0) - (parseFloat(obStockForm.cost) || 0)) / (parseFloat(obStockForm.price) || 1) * 100) : 0}%</strong></span>
-                      </div>
-                    )}
-                    <div>
-                      <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 4 }}>Description / Notes (optional)</label>
-                      <textarea id="ob-new-desc" value={obStockForm.description || ""} onChange={function (e) { setObStockForm(function (x) { return Object.assign({}, x, { description: e.target.value }); }); }} rows={2} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} placeholder="Product specs, features, notes..." />
-                    </div>
-                    <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                      <Btn col="cyan" onClick={function () {
-                        if (!obStockForm.name.trim()) { showAlert("Please enter a product name."); return; }
-                        var obNameCheck = checkProductName(obStockForm.name.trim(), state.products, null);
-                        if (obNameCheck && obNameCheck.type === "exact") {
-                          showAlert("A product named \"" + obNameCheck.match + "\" already exists.\nPlease use a different name.");
-                          return;
-                        }
-                        if (!obStockForm.cost || parseFloat(obStockForm.cost) <= 0) { showAlert("Please enter a valid cost price."); return; }
-                        var glassErrOb = validateGlassProductForm(obStockForm, shopSettings);
-                        if (glassErrOb) { showAlert(glassErrOb); return; }
-                        var unitErrOb = validateExtraUnits(obStockForm.unit, obStockForm.extraUnits || []);
-                        if (unitErrOb) { showAlert(unitErrOb); return; }
-                        var unitFieldsOb = buildUnitsPersistFields({
-                          unit: obStockForm.unit,
-                          cost: obStockForm.cost,
-                          price: obStockForm.price,
-                          extraUnits: obStockForm.extraUnits || [],
-                        });
-                        /* Use qty from the grid input row — avoids double-counting */
-                        var obQtyToUse = isGlassSheetProductForm(obStockForm, shopSettings)
-                          ? (parseFloat(obStockQty) || 1)
-                          : (parseInt(obStockQty, 10) || 1);
-                        var bc = (obStockForm.barcode || "").trim() || genBarcode();
-                        var glassRowFields = glassFieldsFromProductForm(obStockForm);
-                        setD({ stock: (d.stock || []).concat([Object.assign({
-                          name: obStockForm.name.trim(),
-                          barcode: bc,
-                          category: obStockForm.category,
-                          description: (obStockForm.description || "").trim(),
-                          cost: parseFloat(obStockForm.cost),
-                          price: parseFloat(obStockForm.price) || parseFloat(obStockForm.cost),
-                          qty: obQtyToUse,
-                          _isNew: true,
-                          require_comment: false,
-                          comment_label: String(obStockForm.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
-                        }, unitFieldsOb, glassRowFields)]) });
-                        setObStockModal(false); setObStockForm(blankObStockForm());
-                        setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
-                      }} disabled={!obStockForm.name || !obStockForm.price || !obStockForm.cost || obProductNameExactDup}>Save Product</Btn>
-                      <Btn col="gray" onClick={function () { setObStockModal(false); }}>Cancel</Btn>
-                    </div>
-                  </div>
-                </Modal>
-              );
-            })()}
+            {obStockModal && (
+              <AddNewProductModal
+                mode="opening"
+                remountKey={obNewProdKey}
+                initial={obStockForm}
+                productIdLabel={nextProductId((state.products || []).filter(function (p) { return !p._isOpening; }))}
+                shopSettings={shopSettings}
+                products={state.products}
+                Modal={Modal}
+                Input={Input}
+                Sel={Sel}
+                Btn={Btn}
+                C={C}
+                genBarcode={genBarcode}
+                getBusinessProfile={getBusinessProfile}
+                getCurrencySymbol={getCurrencySymbol}
+                fmtNum={fmtNum}
+                showAlert={showAlert}
+                showConfirm={showConfirm}
+                checkProductName={checkProductName}
+                tipBanner="Qty will be set from the opening stock grid row"
+                onClose={function () { setObStockModal(false); setObStockForm(blankObStockForm()); }}
+                onSubmit={function (form) { saveObNewProduct(form); }}
+              />
+            )}
 
             {obStockExistModal && (function () {
               var alreadyAdded = (d.stock || []).map(function (s) { return s._srcProdId || s.name; });
@@ -2037,19 +2160,18 @@ var Accounts = function (props) {
             )}
 
             {obData.completed && !obEditMode ? (
-              <div style={{ background: "linear-gradient(135deg,#1b5e20,#2e7d32)", color: "#fff", borderRadius: 14, padding: "18px 22px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div className="erp-acc-ob-banner is-done">
                 <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.75, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Opening Balance</div>
-                  <div style={{ fontSize: 22, fontWeight: 900 }}>Setup Complete</div>
-                  <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>Date: {obData.date}  -  Capital: {getCurrencySymbol()} {fmtNum(obData.capital)}</div>
+                  <div className="erp-acc-cap-kpi-label">Opening Balance</div>
+                  <div className="erp-acc-ob-banner-title">Setup Complete</div>
+                  <div className="erp-acc-cap-kpi-sub">Date: {obData.date} · Capital: {getCurrencySymbol()} {fmtNum(obData.capital)}</div>
                 </div>
-                <Btn col="white" onClick={function () { setObPwModal(true); }}>Edit Opening Balance</Btn>
               </div>
             ) : (
-              <div style={{ background: "linear-gradient(135deg,#e65100,#f57c00)", color: "#fff", borderRadius: 14, padding: "20px 24px" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.75, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Opening Balance Setup</div>
-                <div style={{ fontSize: 20, fontWeight: 900 }}>{obData.completed ? "Editing Opening Balance" : "Initial Setup"}</div>
-                <div style={{ fontSize: 12, opacity: 0.85, marginTop: 6 }}>Enter your business financial position on the day you started using this ERP.</div>
+              <div className="erp-acc-ob-banner is-setup">
+                <div className="erp-acc-cap-kpi-label">Opening Balance Setup</div>
+                <div className="erp-acc-ob-banner-title">{obData.completed ? "Editing Opening Balance" : "Initial Setup"}</div>
+                <div className="erp-acc-cap-kpi-sub">Enter your business financial position on the day you started using this ERP.</div>
               </div>
             )}
 
@@ -2060,8 +2182,8 @@ var Accounts = function (props) {
               var totalStockOB = (ob.stock       || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0);
               var totalAstOB   = (ob.assets      || []).reduce(function (a, x) { return a + x.value; }, 0);
               return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div className="erp-acc-kpi-strip">
                     {[
                       { label: "Cash in Hand",   val: ob.cash || 0,   color: C.green   },
                       { label: "Bank Balance",    val: ob.bank || 0,   color: C.blue    },
@@ -2072,16 +2194,16 @@ var Accounts = function (props) {
                       { label: "Opening Capital", val: ob.capital||0,  color: C.accent  },
                     ].map(function (item) {
                       return (
-                        <div key={item.label} style={{ background: "#fff", borderRadius: 12, padding: "14px 16px", border: "1.5px solid " + C.border, boxShadow: C.shadowCard }}>
-                          <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>{item.label}</div>
-                          <div style={{ fontSize: 17, fontWeight: 900, color: item.color }}>{getCurrencySymbol()} {fmtNum(item.val)}</div>
+                        <div key={item.label} className="erp-acc-kpi" style={{ borderLeftColor: item.color }}>
+                          <div className="erp-acc-kpi-label">{item.label}</div>
+                          <div className="erp-acc-kpi-val" style={{ color: item.color }}>{getCurrencySymbol()} {fmtNum(item.val)}</div>
                         </div>
                       );
                     })}
                   </div>
                   {(ob.receivables || []).length > 0 && (
-                    <Card pad={0}>
-                      <div style={{ padding: "12px 16px", borderBottom: "1.5px solid " + C.border, fontWeight: 800, fontSize: 13 }}>Opening Receivables ({(ob.receivables || []).length})</div>
+                    <Card pad={0} className="erp-acc-data-card">
+                      <div className="erp-acc-section-title">Opening Receivables ({(ob.receivables || []).length})</div>
                       <div style={{ overflowX: "auto" }}>
                         <table style={{ width: "100%", borderCollapse: "collapse" }}>
                           <thead><tr><TH>Person</TH><TH>Phone</TH><TH>Amount</TH><TH>Due Date</TH><TH>Note</TH></tr></thead>
@@ -2091,8 +2213,8 @@ var Accounts = function (props) {
                     </Card>
                   )}
                   {(ob.payables || []).length > 0 && (
-                    <Card pad={0}>
-                      <div style={{ padding: "12px 16px", borderBottom: "1.5px solid " + C.border, fontWeight: 800, fontSize: 13 }}>Opening Payables ({(ob.payables || []).length})</div>
+                    <Card pad={0} className="erp-acc-data-card">
+                      <div className="erp-acc-section-title">Opening Payables ({(ob.payables || []).length})</div>
                       <div style={{ overflowX: "auto" }}>
                         <table style={{ width: "100%", borderCollapse: "collapse" }}>
                           <thead><tr><TH>Supplier / Person</TH><TH>Phone</TH><TH>Amount</TH><TH>Due Date</TH><TH>Note</TH></tr></thead>
@@ -2102,8 +2224,8 @@ var Accounts = function (props) {
                     </Card>
                   )}
                   {(ob.stock || []).length > 0 && (
-                    <Card pad={0}>
-                      <div style={{ padding: "12px 16px", borderBottom: "1.5px solid " + C.border, fontWeight: 800, fontSize: 13 }}>Opening Stock ({(ob.stock || []).length} products)</div>
+                    <Card pad={0} className="erp-acc-data-card">
+                      <div className="erp-acc-section-title">Opening Stock ({(ob.stock || []).length} products)</div>
                       <div style={{ overflowX: "auto" }}>
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                           <thead><tr><TH>#</TH><TH>Product Name</TH><TH>Product ID</TH><TH>Barcode</TH><TH>Category</TH><TH>Qty</TH><TH>Cost</TH><TH>Price</TH><TH>Value</TH></tr></thead>
@@ -2128,8 +2250,8 @@ var Accounts = function (props) {
                     </Card>
                   )}
                   {(ob.assets || []).length > 0 && (
-                    <Card pad={0}>
-                      <div style={{ padding: "12px 16px", borderBottom: "1.5px solid " + C.border, fontWeight: 800, fontSize: 13 }}>Opening Assets ({(ob.assets || []).length})</div>
+                    <Card pad={0} className="erp-acc-data-card">
+                      <div className="erp-acc-section-title">Opening Assets ({(ob.assets || []).length})</div>
                       <div style={{ overflowX: "auto" }}>
                         <table style={{ width: "100%", borderCollapse: "collapse" }}>
                           <thead><tr><TH>Asset Name</TH><TH>Category</TH><TH>Purchase Date</TH><TH>Value</TH><TH>Note</TH></tr></thead>
@@ -2143,16 +2265,16 @@ var Accounts = function (props) {
             })()}
 
             {isEditing && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div style={{ display: "flex", gap: 4, overflowX: "auto" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div className="erp-acc-steps">
                   {STEPS.map(function (st, idx) {
                     var n = idx + 1;
                     var isActive = obStep === n;
                     var isDone   = obStep > n;
                     return (
-                      <button key={n} onClick={function () { setObStep(n); }} style={{ flex: 1, minWidth: 88, padding: "10px 6px", borderRadius: 10, border: "1.5px solid " + (isActive ? C.accent : isDone ? "#9ee8ce" : C.border), background: isActive ? "linear-gradient(135deg,#2979ff,#5591ff)" : isDone ? "#e8f5e9" : "#fff", color: isActive ? "#fff" : isDone ? "#1b5e20" : C.textMd, fontWeight: 700, fontSize: 11, cursor: "pointer", transition: "all .15s", textAlign: "center" }}>
-                        <div style={{ fontSize: 15, fontWeight: 900 }}>{n}</div>
-                        <div style={{ marginTop: 2, opacity: isActive ? 1 : 0.8, fontSize: 10.5 }}>{st[1]}</div>
+                      <button key={n} type="button" className={"erp-acc-step" + (isActive ? " is-active" : isDone ? " is-done" : "")} onClick={function () { setObStep(n); }}>
+                        <div className="erp-acc-step-num">{n}</div>
+                        <div>{st[1]}</div>
                       </button>
                     );
                   })}
@@ -2372,6 +2494,7 @@ var Accounts = function (props) {
                                 })}
                                 {obStockSearch.trim() && (
                                   <div onClick={function () {
+                                    setObNewProdKey(function (k) { return k + 1; });
                                     setObStockModal(true);
                                     setObStockForm(blankObStockForm({ name: obStockSearch, cost: obStockCost, price: obStockSell, qty: obStockQty }));
                                     setShowObStockDrop(false);
@@ -2539,8 +2662,7 @@ var Accounts = function (props) {
         );
       })()}
 
-              
-
+      </div>
     </div>
   );
 };

@@ -1,6 +1,19 @@
 import React, { useState } from "react";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
+import { stampUpdatedAt, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import {
+  buildInvoiceEditLockIdentity,
+  checkForeignInvoiceEditLock,
+  formatInvoiceEditLockMessage,
+} from "../utils/invoiceEditLocks.js";
+import {
+  assertPaymentFitsPurchaseBalance,
+  assertPaymentFitsSaleBalance,
+  loadFreshPurchaseForPayment,
+  loadFreshSaleForPayment,
+  pushKeysNow,
+} from "../utils/concurrencyGuards.js";
 
 /* ─── CHEQUE REGISTER PAGE ────────────────────────────────────────────────── */
 var Cheques = React.memo(function (props) {
@@ -11,6 +24,7 @@ var Cheques = React.memo(function (props) {
   var S = props.S;
   var today = props.today;
   var uid = props.uid;
+  var tcTrialGuard = props.tcTrialGuard;
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var addAudit = props.addAudit;
@@ -27,6 +41,7 @@ var Cheques = React.memo(function (props) {
   var TD = props.TD;
   var usePager = props.usePager;
   var Pager = props.Pager;
+  var checkPeriodClose = props.checkPeriodClose;
 
   var [tab, setTab] = useState("all");
   var [search, setSearch] = useState("");
@@ -73,108 +88,161 @@ var Cheques = React.memo(function (props) {
   /* ── Mark Cleared ── */
   var markCleared = function (ch) {
     if (ch.status === "Voided") { showAlert("This cheque has been voided and cannot be cleared."); return; }
-    showConfirm(
-      (ch.type === "outgoing" ? "Mark this cheque as CLEARED?\n\n" + getCurrencySymbol() + " " + fmtNum(ch.amount) + " will be deducted from your bank balance." : "Mark this cheque as CLEARED?\n\n" + getCurrencySymbol() + " " + fmtNum(ch.amount) + " will be added to your bank balance."),
-      function () {
-        var nch = (state.cheques || []).map(function (c) {
-          return c.id === ch.id ? Object.assign({}, c, { status: "Cleared", clearedDate: today() }) : c;
-        });
-        /* When a cheque is re-issued, the NEW cheque's id differs from the paymentHistory entry
-           which was created with the ORIGINAL cheque id. Look for EITHER id to find the ph entry. */
-        var chqIds = [ch.id];
-        if (ch.replacesChequeid) chqIds.push(ch.replacesChequeid);
-        var matchesPh = function (ph) { return chqIds.indexOf(ph.chequeId) >= 0; };
-
-        /* Update linked purchase/sale balance */
-        var np = state.purchases.slice();
-        var ns = state.sales.slice();
-        var nc = state.customers.slice();
-        if (ch.type === "outgoing" && ch.purchaseId) {
-          np = np.map(function (p) {
-            if (p.id !== ch.purchaseId) return p;
-            var newPaid = (p.paidAmount || 0) + ch.amount;
-            var newBal = p.total - newPaid;
-            var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-            var updPh = (p.paymentHistory || []).map(function (ph) {
-              return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, note: ph.note.replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
+    var lockId = buildInvoiceEditLockIdentity({
+      currentUser: props.currentUser || null,
+      clientMachineLabel: String(props.clientMachineLabel || "").trim(),
+    });
+    var proceedClear = function () {
+      showConfirm(
+        (ch.type === "outgoing" ? "Mark this cheque as CLEARED?\n\n" + getCurrencySymbol() + " " + fmtNum(ch.amount) + " will be deducted from your bank balance." : "Mark this cheque as CLEARED?\n\n" + getCurrencySymbol() + " " + fmtNum(ch.amount) + " will be added to your bank balance."),
+        function () {
+          var applyClear = function (salesBase, purchasesBase) {
+            var nch = (state.cheques || []).map(function (c) {
+              return c.id === ch.id ? stampUpdatedAt(Object.assign({}, c, { status: "Cleared", clearedDate: today() })) : c;
             });
-            return Object.assign({}, p, { paidAmount: newPaid, balance: newBal, status: newStatus, paymentHistory: updPh });
-          });
-        }
-        /* FIX 8 (DeepSeek): Update manual payable when cheque clears */
-        if (ch.type === "outgoing" && (ch.manualPayableId || ch.thirdPartyRepairId)) {
-          var manPays = S.get("tc3_manualPayables", []);
-          var updManPays = manPays.map(function (mp) {
-            if (ch.manualPayableId && mp.id !== ch.manualPayableId) return mp;
-            if (!ch.manualPayableId && ch.thirdPartyRepairId && mp.thirdPartyRepairId !== ch.thirdPartyRepairId) return mp;
-            if (!ch.manualPayableId && ch.thirdPartyRepairId) {
-              var linkedPh = (mp.paymentHistory || []).some(function (ph) { return ph.chequeId === ch.id; });
-              if (!linkedPh) return mp;
-            }
-            var updPh = (mp.paymentHistory || []).map(function (ph) {
-              return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", note: ph.note.replace("(Pending", "(Cleared " + today() + "") }) : ph;
-            });
-            return Object.assign({}, mp, { paymentHistory: updPh });
-          });
-          S.set("tc3_manualPayables", updManPays);
-        }
-        if (ch.type === "incoming" && ch.saleId) {
-          ns = ns.map(function (s) {
-            if (s.id !== ch.saleId) return s;
-            var newPaid = (s.paid || 0) + ch.amount;
-            var newBal = s.total - newPaid;
-            var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-            var updPh = (s.paymentHistory || []).map(function (ph) {
-              return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, note: ph.note.replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
-            });
-            return Object.assign({}, s, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: updPh });
-          });
-          /* Update customer credit: use cheque customerId, else linked sale.customerId, else name match */
-          var saleForCr = ns.find(function (s) { return s.id === ch.saleId; }) || state.sales.find(function (s) { return s.id === ch.saleId; });
-          var creditTargetId = ch.customerId || (saleForCr && saleForCr.customerId) || "";
-          if (creditTargetId) {
-            nc = nc.map(function (c) {
-              return c.id === creditTargetId ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - ch.amount) }) : c;
-            });
-          } else if (saleForCr && saleForCr.customerName) {
-            var nameKey = String(saleForCr.customerName).trim().toLowerCase();
-            var nameMatches = nc.filter(function (c) { return String(c.name || "").trim().toLowerCase() === nameKey; });
-            if (nameMatches.length === 1) {
-              nc = nc.map(function (c) {
-                return c.id === nameMatches[0].id ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - ch.amount) }) : c;
+            var chqIds = [ch.id];
+            if (ch.replacesChequeid) chqIds.push(ch.replacesChequeid);
+            var matchesPh = function (ph) { return chqIds.indexOf(ph.chequeId) >= 0; };
+            var np = (purchasesBase || state.purchases || []).slice();
+            var ns = (salesBase || state.sales || []).slice();
+            var nc = state.customers.slice();
+            if (ch.type === "outgoing" && ch.purchaseId) {
+              var pur = np.find(function (p) { return p.id === ch.purchaseId; });
+              if (pur) {
+                var fitP = assertPaymentFitsPurchaseBalance(pur, ch.amount);
+                if (!fitP.ok) { showAlert(fitP.message); return; }
+              }
+              np = np.map(function (p) {
+                if (p.id !== ch.purchaseId) return p;
+                var newPaid = (p.paidAmount || 0) + ch.amount;
+                var newBal = p.total - newPaid;
+                var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+                var updPh = (p.paymentHistory || []).map(function (ph) {
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, note: ph.note.replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
+                });
+                return stampUpdatedAt(Object.assign({}, p, { paidAmount: newPaid, balance: newBal, status: newStatus, paymentHistory: updPh }));
               });
             }
-          }
-        }
-        /* FIX 8 (DeepSeek): Update manual receivable when cheque clears */
-        if (ch.type === "incoming" && ch.manualReceivableId) {
-          var manRecs = S.get("tc3_manualReceivables", []);
-          var updManRecs = manRecs.map(function (mr) {
-            if (mr.id !== ch.manualReceivableId) return mr;
-            var updPh = (mr.paymentHistory || []).map(function (ph) {
-              return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", note: ph.note.replace("(Pending", "(Cleared " + today() + "") }) : ph;
+            if (ch.type === "outgoing" && (ch.manualPayableId || ch.thirdPartyRepairId)) {
+              var manPays = S.get("tc3_manualPayables", []);
+              var updManPays = manPays.map(function (mp) {
+                if (ch.manualPayableId && mp.id !== ch.manualPayableId) return mp;
+                if (!ch.manualPayableId && ch.thirdPartyRepairId && mp.thirdPartyRepairId !== ch.thirdPartyRepairId) return mp;
+                if (!ch.manualPayableId && ch.thirdPartyRepairId) {
+                  var linkedPh = (mp.paymentHistory || []).some(function (ph) { return ph.chequeId === ch.id; });
+                  if (!linkedPh) return mp;
+                }
+                var updPh = (mp.paymentHistory || []).map(function (ph) {
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", note: ph.note.replace("(Pending", "(Cleared " + today() + "") }) : ph;
+                });
+                return stampUpdatedAt(Object.assign({}, mp, { paymentHistory: updPh }));
+              });
+              S.set("tc3_manualPayables", updManPays);
+            }
+            if (ch.type === "incoming" && ch.saleId) {
+              var saleRow = ns.find(function (s) { return s.id === ch.saleId; });
+              if (saleRow) {
+                var fitS = assertPaymentFitsSaleBalance(saleRow, ch.amount);
+                if (!fitS.ok) { showAlert(fitS.message); return; }
+              }
+              ns = ns.map(function (s) {
+                if (s.id !== ch.saleId) return s;
+                var newPaid = (s.paid || 0) + ch.amount;
+                var newBal = s.total - newPaid;
+                var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+                var updPh = (s.paymentHistory || []).map(function (ph) {
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, note: ph.note.replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
+                });
+                return stampUpdatedAt(Object.assign({}, s, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: updPh }));
+              });
+              var saleForCr = ns.find(function (s) { return s.id === ch.saleId; }) || state.sales.find(function (s) { return s.id === ch.saleId; });
+              var creditTargetId = ch.customerId || (saleForCr && saleForCr.customerId) || "";
+              if (creditTargetId) {
+                nc = nc.map(function (c) {
+                  return c.id === creditTargetId ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - ch.amount) }), null, c) : c;
+                });
+              } else if (saleForCr && saleForCr.customerName) {
+                var nameKey = String(saleForCr.customerName).trim().toLowerCase();
+                var nameMatches = nc.filter(function (c) { return String(c.name || "").trim().toLowerCase() === nameKey; });
+                if (nameMatches.length === 1) {
+                  nc = nc.map(function (c) {
+                    return c.id === nameMatches[0].id ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - ch.amount) }), null, c) : c;
+                  });
+                }
+              }
+            }
+            if (ch.type === "incoming" && ch.manualReceivableId) {
+              var manRecs = S.get("tc3_manualReceivables", []);
+              var updManRecs = manRecs.map(function (mr) {
+                if (mr.id !== ch.manualReceivableId) return mr;
+                var updPh = (mr.paymentHistory || []).map(function (ph) {
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", note: ph.note.replace("(Pending", "(Cleared " + today() + "") }) : ph;
+                });
+                return stampUpdatedAt(Object.assign({}, mr, { paymentHistory: updPh }));
+              });
+              S.set("tc3_manualReceivables", updManRecs);
+            }
+            S.set("tc3_cheques", nch);
+            if (ch.type === "outgoing" && ch.purchaseId) S.set("tc3_purchases", np);
+            if (ch.type === "incoming" && ch.saleId) {
+              S.set("tc3_sales", ns);
+              S.set("tc3_customers", nc);
+            }
+            var pushPairs = [["tc3_cheques", nch]];
+            if (ch.type === "outgoing" && ch.purchaseId) pushPairs.push(["tc3_purchases", np]);
+            if (ch.type === "incoming" && ch.saleId) {
+              pushPairs.push(["tc3_sales", ns]);
+              pushPairs.push(["tc3_customers", nc]);
+            }
+            try { pushKeysNow(pushPairs); } catch (_e) { /* ignore */ }
+            setState(function (st) {
+              return Object.assign({}, st, {
+                cheques: nch,
+                purchases: (ch.type === "outgoing" && ch.purchaseId) ? np : st.purchases,
+                sales: (ch.type === "incoming" && ch.saleId) ? ns : st.sales,
+                customers: (ch.type === "incoming" && ch.saleId) ? nc : st.customers,
+              });
             });
-            return Object.assign({}, mr, { paymentHistory: updPh });
-          });
-          S.set("tc3_manualReceivables", updManRecs);
+            addAudit("Cheque Cleared", "#" + (ch.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(ch.amount));
+            setActionModal(null);
+          };
+
+          var refreshThenClear = function () {
+            if (ch.type === "incoming" && ch.saleId) {
+              loadFreshSaleForPayment(S, ch.saleId).then(function (fresh) {
+                applyClear(fresh.sales || state.sales, state.purchases);
+              }).catch(function () { applyClear(state.sales, state.purchases); });
+            } else if (ch.type === "outgoing" && ch.purchaseId) {
+              loadFreshPurchaseForPayment(S, ch.purchaseId).then(function (fresh) {
+                applyClear(state.sales, fresh.purchases || state.purchases);
+              }).catch(function () { applyClear(state.sales, state.purchases); });
+            } else {
+              applyClear(state.sales, state.purchases);
+            }
+          };
+          refreshThenClear();
         }
-        S.set("tc3_cheques", nch); S.set("tc3_purchases", np); S.set("tc3_sales", ns); S.set("tc3_customers", nc);
-        addAudit("Cheque Cleared #" + ch.chequeNo, getCurrencySymbol() + " " + fmtNum(ch.amount));
-        /* Bump timestamps so EnhancedReceivables/Payables re-render immediately */
-        var tsUpdate = {};
-        if (ch.manualPayableId) tsUpdate._payTs = Date.now();
-        if (ch.manualReceivableId) tsUpdate._recTs = Date.now();
-        setState(function (st) { return Object.assign({}, st, { cheques: nch, purchases: np, sales: ns, customers: nc }, tsUpdate); });
-        setActionModal(null);
-      }
-    );
+      );
+    };
+
+    if (ch.type === "incoming" && ch.saleId) {
+      checkForeignInvoiceEditLock(S, ch.saleId, lockId).then(function (fl) {
+        if (fl) {
+          showAlert(formatInvoiceEditLockMessage(fl) + " Cannot clear cheque until they finish.");
+          return;
+        }
+        proceedClear();
+      }).catch(function () { proceedClear(); });
+    } else {
+      proceedClear();
+    }
   };
 
   /* ── Mark Bounced ── */
   var markBounced = function (ch) {
     showConfirm("Mark this cheque as BOUNCED?\n\nThe linked invoice balance will remain unpaid.", function () {
       var nch = (state.cheques || []).map(function (c) {
-        return c.id === ch.id ? Object.assign({}, c, { status: "Bounced", bouncedDate: today() }) : c;
+        return c.id === ch.id ? stampUpdatedAt(Object.assign({}, c, { status: "Bounced", bouncedDate: today() })) : c;
       });
       S.set("tc3_cheques", nch);
       addAudit("Cheque Bounced #" + ch.chequeNo, getCurrencySymbol() + " " + fmtNum(ch.amount));
@@ -186,7 +254,8 @@ var Cheques = React.memo(function (props) {
   /* ── Re-issue cheque ── */
   var reissueCheque = function (ch) {
     if (!reissueForm.chequeNo || !reissueForm.dueDate) { showAlert("Enter new cheque number and due date."); return; }
-    var newCheque = Object.assign({}, ch, {
+    var reissueTs = new Date().toISOString();
+    var newCheque = stampTransactionIsoDateTime(Object.assign({}, ch, {
       id: uid(),
       chequeNo: reissueForm.chequeNo,
       bankName: reissueForm.bankName || ch.bankName,
@@ -196,10 +265,11 @@ var Cheques = React.memo(function (props) {
       replacesChequeid: ch.replacesChequeid || ch.id,
       bouncedDate: undefined,
       clearedDate: undefined,
-      createdAt: today()
-    });
+      createdAt: reissueTs,
+      updatedAt: reissueTs
+    }), reissueTs);
     var nch = (state.cheques || []).map(function (c) {
-      return c.id === ch.id ? Object.assign({}, c, { replacedByChequeid: newCheque.id }) : c;
+      return c.id === ch.id ? stampUpdatedAt(Object.assign({}, c, { replacedByChequeid: newCheque.id })) : c;
     }).concat([newCheque]);
     S.set("tc3_cheques", nch);
     addAudit("Cheque Re-issued #" + newCheque.chequeNo + " (replaces #" + ch.chequeNo + ")", getCurrencySymbol() + " " + fmtNum(ch.amount));
@@ -213,21 +283,30 @@ var Cheques = React.memo(function (props) {
   var addStandaloneCheque = function () {
     var amt = parseFloat(addForm.amount);
     if (!addForm.chequeNo || !amt || !addForm.partyName) { showAlert("Enter cheque number, amount and party name."); return; }
-    var newCheque = {
-      id: uid(), type: addModal, status: "Pending",
-      chequeNo: addForm.chequeNo, bankName: addForm.bankName,
-      amount: amt, dueDate: addForm.dueDate || today(), issuedDate: today(),
-      supplierName: addModal === "outgoing" ? addForm.partyName : "",
-      customerName: addModal === "incoming" ? addForm.partyName : "",
-      purchaseId: "", purchaseNo: "", saleId: "", invoiceNo: "",
-      note: addForm.note, createdAt: today()
+    if (!tcTrialGuard(state.cheques || [], "cheques")) return;
+    var proceed = function () {
+      var chTs = new Date().toISOString();
+      var newCheque = stampTransactionIsoDateTime({
+        id: uid(), type: addModal, status: "Pending",
+        chequeNo: addForm.chequeNo, bankName: addForm.bankName,
+        amount: amt, dueDate: addForm.dueDate || today(), issuedDate: today(),
+        supplierName: addModal === "outgoing" ? addForm.partyName : "",
+        customerName: addModal === "incoming" ? addForm.partyName : "",
+        purchaseId: "", purchaseNo: "", saleId: "", invoiceNo: "",
+        note: addForm.note, createdAt: chTs, updatedAt: chTs
+      }, chTs);
+      var nch = (state.cheques || []).concat([newCheque]);
+      S.set("tc3_cheques", nch);
+      addAudit("Cheque Added #" + newCheque.chequeNo, getCurrencySymbol() + " " + fmtNum(amt));
+      setState(function (st) { return Object.assign({}, st, { cheques: nch }); });
+      setAddModal(null);
+      setAddForm({ chequeNo: "", bankName: "", amount: "", dueDate: today(), partyName: "", note: "" });
     };
-    var nch = (state.cheques || []).concat([newCheque]);
-    S.set("tc3_cheques", nch);
-    addAudit("Cheque Added #" + newCheque.chequeNo, getCurrencySymbol() + " " + fmtNum(amt));
-    setState(function (st) { return Object.assign({}, st, { cheques: nch }); });
-    setAddModal(null);
-    setAddForm({ chequeNo: "", bankName: "", amount: "", dueDate: today(), partyName: "", note: "" });
+    if (typeof checkPeriodClose === "function") {
+      checkPeriodClose(today(), state.settings, proceed);
+    } else {
+      proceed();
+    }
   };
 
   var deleteStandalone = function (id) {
@@ -310,18 +389,18 @@ var Cheques = React.memo(function (props) {
                       <ActBtnGroup>
                         {ch.status === "Pending" ? (
                           <React.Fragment>
-                            <ActBtn tone="green" title="Clear cheque" onClick={function () { setActionModal({ cheque: ch, action: "clear" }); }}>✓</ActBtn>
-                            <ActBtn tone="red" title="Mark bounced" onClick={function () { markBounced(ch); }}>↩</ActBtn>
+                            <ActBtn tone="green" icon="clear" title="Clear cheque" onClick={function () { setActionModal({ cheque: ch, action: "clear" }); }} />
+                            <ActBtn tone="red" icon="return" title="Mark bounced" onClick={function () { markBounced(ch); }} />
                           </React.Fragment>
                         ) : null}
                         {ch.status === "Bounced" && !ch.replacedByChequeid ? (
-                          <ActBtn tone="blue" title="Re-issue cheque" onClick={function () { setActionModal({ cheque: ch, action: "reissue_prompt" }); }}>🔄</ActBtn>
+                          <ActBtn tone="blue" icon="refresh" title="Re-issue cheque" onClick={function () { setActionModal({ cheque: ch, action: "reissue_prompt" }); }} />
                         ) : null}
                         {ch.status === "Bounced" && ch.replacedByChequeid ? (
                           <span style={{ fontSize: 11, color: C.muted }}>Re-issued</span>
                         ) : null}
                         {!ch.purchaseId && !ch.saleId ? (
-                          <ActBtn tone="red" title="Delete standalone cheque" onClick={function () { deleteStandalone(ch.id); }}>✕</ActBtn>
+                          <ActBtn tone="red" title="Delete standalone cheque" onClick={function () { deleteStandalone(ch.id); }} />
                         ) : null}
                       </ActBtnGroup>
                     </td>

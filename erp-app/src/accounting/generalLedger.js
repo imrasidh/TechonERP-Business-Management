@@ -7,6 +7,7 @@
 import { getOrCreateDeviceId, stableJournalTransactionId } from "./ids.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 import { computeReturnLineTax, computePurchaseReturnTax, computePurchaseInventoryPosting } from "../tax/taxCompute.js";
+import { isVoidedTxn } from "../utils/voidInvoice.js";
 
 export var GL = {
   CASH: "1000",
@@ -572,6 +573,8 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
 
   /* ── Sales returns (contra revenue + output VAT reversal + AR/cash; COGS reversal) ── */
   (state.salesReturns || []).forEach(function (r) {
+    var parentSale = r.invoiceId != null ? salesById[r.invoiceId] : null;
+    if (parentSale && isVoidedTxn(parentSale)) return;
     var dt = r.date || "";
     var rowNet = round2(r.amount || 0);
     var rf = round2(r.refundAmount || 0);
@@ -613,6 +616,8 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
   /* ── Purchase returns — inventory credit uses (qty × line unit cost) stored on the return row
      (captured from the purchase line; policy: settings.purchaseReturnCostMode, current_wac = that line / WAC snapshot) ── */
   (state.purchaseReturns || []).forEach(function (r) {
+    var parentPurchase = r.purchaseId != null ? purchasesById[r.purchaseId] : null;
+    if (parentPurchase && isVoidedTxn(parentPurchase)) return;
     var dt = r.date || "";
     var cost = round2((r.cost || 0) * (r.qty || 0));
     if (cost > 0) {

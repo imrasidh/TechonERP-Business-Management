@@ -1,14 +1,55 @@
 import React, { useState, useEffect, useRef } from "react";
 import { computeSaleTax } from "../tax/taxCompute.js";
 import { saleReturnUiStatus, displayStatusForSale } from "../utils/returnDisplay.js";
-import { buildVoidSaleUpdates, isVoidedTxn, VOID_REASON_OPTIONS, voidSaleBlockReason } from "../utils/voidInvoice.js";
+import { buildVoidSaleUpdates, isVoidedTxn, VOID_REASON_OPTIONS, voidSaleBlockReason, computeVoidSaleRefundHint } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import CustomerPicker from "../components/CustomerPicker.jsx";
+import { createAndPersistCustomer } from "../utils/customerCreate.js";
 import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
-import { formatInvoiceLinePrice, formatInvoiceLineTotal } from "../utils/posFreeItems.js";
+import { formatInvoiceLinePrice, formatInvoiceLineTotal, splitSaleItemsByFree } from "../utils/posFreeItems.js";
 import { quotationToPrintInv } from "../utils/quotationDocument.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
+import {
+  buildInvoiceEditLockIdentity,
+  findActiveInvoiceEditLock,
+  formatInvoiceEditLockMessage,
+  readInvoiceEditLocks,
+  refreshInvoiceEditLocksFromServer,
+  releaseInvoiceEditLock,
+} from "../utils/invoiceEditLocks.js";
+import { stampUpdatedAt, stampCustomerBalance, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import { rollbackRepairDevicesOnVoidSale } from "../utils/repairVoidRollback.js";
+import {
+  assertPaymentFitsSaleBalance,
+  loadFreshSaleForPayment,
+  pushKeysNow,
+} from "../utils/concurrencyGuards.js";
+
+/** Map stored sale/quotation lines into POS cart shape (prefer input qty/unit/price). */
+var mapDocItemToPosCartLine = function (it) {
+  if (!it) return null;
+  var saleUnit = it.inputUnit || it.saleUnit || it.unit || "Pcs";
+  var qty = it.inputQty != null ? it.inputQty : it.qty;
+  var price = it.inputPrice != null ? it.inputPrice : it.price;
+  return Object.assign({}, it, {
+    qty: qty,
+    saleUnit: saleUnit,
+    unit: saleUnit,
+    price: Number(price) || 0,
+  });
+};
+
+function saleStatusMeta(status) {
+  var s = String(status || "");
+  if (s === "Paid") return { icon: "✓", tone: "paid", label: "Paid" };
+  if (s === "Partial") return { icon: "◐", tone: "partial", label: "Partial" };
+  if (s === "Unpaid") return { icon: "✕", tone: "unpaid", label: "Unpaid" };
+  if (s === "Partially Returned") return { icon: "↩", tone: "return", label: "Part. Return" };
+  if (s === "Returned") return { icon: "↻", tone: "returned", label: "Returned" };
+  if (s === "Voided") return { icon: "—", tone: "void", label: "Voided" };
+  return { icon: "•", tone: "other", label: s || "—" };
+}
 
 /* ─── QUOTATION FORM (top-level to prevent cursor loss on re-render) ──────── */
 var QuotationForm = function (props) {
@@ -20,6 +61,7 @@ var QuotationForm = function (props) {
   var showAlert = props.showAlert;
   var C = props.C;
   var Input = props.Input;
+  var Modal = props.Modal;
   var TH = props.TH;
   var TR = props.TR;
   var TD = props.TD;
@@ -55,14 +97,16 @@ var QuotationForm = function (props) {
     ? getDuplicateNormalizedNameKeys(state.customers || [])
     : {};
   var saveInlineCustomer = function (draft) {
-    var name = String(draft && draft.name || "").trim();
-    var phone = String(draft && draft.phone || "").trim();
-    if (!name) return null;
-    if (!tcTrialGuard(state.customers || [], "customers")) return null;
-    var created = { id: uid(), name: name, phone: phone, address: "", credit: 0, totalSpent: 0 };
-    var nextCustomers = (state.customers || []).concat([created]);
-    S.set("tc3_customers", nextCustomers);
-    setState(function (st) { return Object.assign({}, st, { customers: nextCustomers }); });
+    var result = createAndPersistCustomer({
+      customers: state.customers || [],
+      setState: setState,
+      S: S,
+      uid: uid,
+      tcTrialGuard: tcTrialGuard,
+      draft: draft,
+    });
+    if (!result.ok) return null;
+    var created = result.customer;
     setCustSearch(created.name);
     setFq(Object.assign({}, fq, { customer: created.name, customerId: created.id, customerPhone: created.phone || "" }));
     return created;
@@ -113,10 +157,13 @@ var QuotationForm = function (props) {
               setFq(Object.assign({}, fq, { customer: c.name, customerId: c.id, customerPhone: c.phone || "" }));
             }}
             onCreateCustomer={saveInlineCustomer}
+            context="invoices"
             duplicateNameKeys={posDupNameKeys}
             normalizeNameKey={normalizePaymentCustomerName}
             C={C}
             Input={Input}
+            Modal={Modal}
+            Btn={Btn}
           />
         </div>
 
@@ -271,6 +318,7 @@ var Quotations = function (props) {
     : function () { showAlert("You do not have permission for this action."); };
   var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
   var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
+  var fmtDate = props.fmtDate || function (d) { return d || ""; };
   /* setSiTab switches the SalesInvoices tab from "quotations" → "invoices" */
   /* eslint-disable-next-line no-unused-vars */
 
@@ -293,16 +341,29 @@ var Quotations = function (props) {
   var BLANK_Q = { customer: "", customerId: "", customerPhone: "", items: [], notes: "", status: "Draft", date: today(), quotationNo: genInvNo("QT") };
   var [show, setShow] = useState(false);
   var [f, setF] = useState(BLANK_Q);
-  var [editQ, setEditQ] = useState(null);
-  var [viewQ, setViewQ] = useState(null);
+  var [fullViewQ, setFullViewQ] = useState(null);
+  var [fqFormat, setFqFormat] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
   var [search, setSearch] = useState("");
   var [filterStatus, setFilterStatus] = useState("All");
   var [pendingQuotPrint, setPendingQuotPrint] = useState(null);
   var quotWaPendingRef = useRef(false);
 
+  var openFullViewQ = function (q) {
+    setFqFormat((state.settings && state.settings.invoiceDefaultSize) || "a4");
+    setFullViewQ(q);
+  };
+
   var quotations = state.quotations || [];
-  var STATUSES = ["All", "Draft", "Sent", "Converted", "Expired"];
-  var STATUS_COLORS = { Draft: C.textMd, Sent: C.blue, Converted: C.green, Expired: C.red };
+  var STATUSES = ["All", "Draft", "Sent", "Accepted", "Converted", "Expired"];
+  var STATUS_COLORS = { Draft: C.textMd, Sent: C.blue, Accepted: C.green, Converted: C.green, Expired: C.red };
+  var quotStatusMeta = function (status) {
+    var s = String(status || "Draft");
+    if (s === "Sent") return { icon: "↗", tone: "sent", label: "Sent" };
+    if (s === "Accepted") return { icon: "✓", tone: "accepted", label: "Accepted" };
+    if (s === "Converted") return { icon: "✔", tone: "converted", label: "Converted" };
+    if (s === "Expired") return { icon: "✕", tone: "expired", label: "Expired" };
+    return { icon: "•", tone: "draft", label: s || "Draft" };
+  };
   var formTotal = function (items) { return (items || []).reduce(function (a, it) { return a + it.qty * it.price; }, 0); };
   var quotationGrand = function (q) {
     if (!q) return 0;
@@ -329,7 +390,11 @@ var Quotations = function (props) {
     } else {
       taxExtra = { subTotal: sub, total: sub, totalTax: 0, selectedTaxes: [] };
     }
-    var newQ = Object.assign({}, f, { id: uid(), createdAt: today() }, taxExtra);
+    var newQ = stampTransactionIsoDateTime(Object.assign({}, f, {
+      id: uid(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, taxExtra), new Date().toISOString());
     if (!tcTrialGuard(quotations, 'quotations')) return;
     var nq = quotations.concat([newQ]);
     S.set("tc3_quotations", nq);
@@ -339,23 +404,25 @@ var Quotations = function (props) {
     setShow(false);
   };
 
-  var saveEdit = function () {
+  var openEditQuotationOnPos = function (q) {
     if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; }
-    if (!editQ || !editQ.items.length) { showAlert("Add at least one product."); return; }
-    var sub = formTotal(editQ.items);
-    var qtc = computeSaleTax(state.settings, sub);
-    var taxExtra = {};
-    if (state.settings && state.settings.taxEnabled) {
-      taxExtra = { subTotal: sub, taxMode: qtc.taxMode, totalTax: qtc.totalTax, selectedTaxes: (qtc.selectedTaxes || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; }), total: qtc.grandTotal };
-    } else {
-      taxExtra = { subTotal: sub, total: sub, totalTax: 0, selectedTaxes: [] };
-    }
-    var mergedEdit = Object.assign({}, editQ, taxExtra);
-    var nq = quotations.map(function (q) { return q.id === mergedEdit.id ? mergedEdit : q; });
-    S.set("tc3_quotations", nq);
-    addAudit("Updated Quotation", editQ.quotationNo);
-    setState(function (st) { return Object.assign({}, st, { quotations: nq }); });
-    setEditQ(null);
+    if (!q) return;
+    var prefill = {
+      posPageTab: "quotation",
+      editingQuotationId: q.id,
+      quotationNo: q.quotationNo || "",
+      quotationNotes: q.notes || "",
+      customerName: q.customer || "",
+      customerPhone: q.customerPhone || "",
+      customerId: q.customerId || "",
+      items: (q.items || []).map(function (it) { return mapDocItemToPosCartLine(it); }).filter(Boolean),
+      discount: q.discount ? String(q.discount) : "",
+      recordDate: q.date || today(),
+    };
+    S.set("tc3_repair_prefill", prefill);
+    setFullViewQ(null);
+    addAudit("Opening POS to edit Quotation " + (q.quotationNo || q.id.slice(0, 8)), q.quotationNo || "");
+    if (setActive) setActive("pos");
   };
 
   var deleteQ = function (id) {
@@ -367,15 +434,17 @@ var Quotations = function (props) {
       S.set("tc3_quotations", nq);
       addAudit("Deleted Quotation", q.quotationNo || id.slice(0, 8));
       setState(function (st) { return Object.assign({}, st, { quotations: nq }); });
-      if (viewQ && viewQ.id === id) setViewQ(null);
+      if (fullViewQ && fullViewQ.id === id) setFullViewQ(null);
     });
   };
 
   var updateStatus = function (id, newStatus) {
-    var nq = quotations.map(function (q) { return q.id === id ? Object.assign({}, q, { status: newStatus }) : q; });
+    var nq = quotations.map(function (q) {
+      return q.id === id ? Object.assign({}, q, { status: newStatus, updatedAt: new Date().toISOString() }) : q;
+    });
     S.set("tc3_quotations", nq);
     setState(function (st) { return Object.assign({}, st, { quotations: nq }); });
-    if (viewQ && viewQ.id === id) setViewQ(Object.assign({}, viewQ, { status: newStatus }));
+    if (fullViewQ && fullViewQ.id === id) setFullViewQ(Object.assign({}, fullViewQ, { status: newStatus }));
   };
 
   var convertToSale = function (q) {
@@ -390,11 +459,45 @@ var Quotations = function (props) {
         fromQuotationId: q.id
       };
       S.set("tc3_repair_prefill", prefill);
-      setViewQ(null);
+      setFullViewQ(null);
       addAudit("Opening POS from Quotation " + q.quotationNo, q.quotationNo);
       /* Navigate to POS — it will mount fresh, read prefill and populate cart */
       if (setActive) setActive("pos");
     });
+  };
+
+  var printFullQuotation = function (q, fmt) {
+    var el = document.getElementById("si-quot-preview-" + q.id);
+    if (!el) return;
+    var isA5 = fmt === "a5";
+    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
+    var thermalBodyW = fmt === "thermal58" ? "218px" : "302px";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : "8mm";
+    var bodyW = isThermal ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}" : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pageSize + " portrait;margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var w = window.open("", "_blank", "width=900,height=760");
+    if (!w) {
+      showAlert("Popup blocked. Please allow popups for this window and try again.");
+      return;
+    }
+    w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>Quotation " + escapeHtml(q.quotationNo || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
+    w.document.close();
+    setTimeout(function () { w.focus(); w.print(); }, 500);
+  };
+
+  var whatsappFullQuotation = function (q, fmt) {
+    var el = document.getElementById("si-quot-preview-" + q.id);
+    if (!el) { showAlert("Quotation preview not ready. Please try again."); return; }
+    var isA5 = fmt === "a5";
+    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
+    var thermalBodyW = fmt === "thermal58" ? "218px" : "302px";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : "8mm";
+    var bodyW = isThermal ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}" : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pageSize + (isThermal ? "" : " portrait") + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var pageFormat = isThermal ? (fmt === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
+    shareViaWhatsApp(el.innerHTML, "Quotation-" + (q.quotationNo || q.id.slice(0, 8)), q.customerPhone || "", { headStyles: css, pageFormat: pageFormat });
   };
 
   var printQuotation = function (q, lang, waShare) {
@@ -448,110 +551,207 @@ var Quotations = function (props) {
   }, [pendingQuotPrint]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-        <StatCard label="Total Quotations" money={false} value={quotations.length} accent={C.blue} icon="📋" sub={quotations.filter(function (q) { return q.status === "Draft"; }).length + " drafts"} />
-        <StatCard label="Converted" money={false} value={quotations.filter(function (q) { return q.status === "Converted"; }).length} accent={C.green} icon="✅" sub="to invoices" />
-        <StatCard label="Pending (Sent)" money={false} value={quotations.filter(function (q) { return q.status === "Sent"; }).length} accent={C.orange} icon="📤" sub="awaiting response" />
-        <StatCard label="Pipeline Value" value={quotations.filter(function (q) { return q.status !== "Converted" && q.status !== "Expired"; }).reduce(function (a, q) { return a + quotationGrand(q); }, 0)} accent={C.purple} icon="💰" sub="unconverted value" />
+    <React.Fragment>
+      <div className="erp-si-panel is-quotations" style={{ height: "100%" }}>
+      <div className="erp-si-panel-head">
+        <div className="erp-si-panel-head-left">
+          <span className="erp-si-panel-ico" aria-hidden="true">📋</span>
+          <div>
+            <div className="erp-si-panel-title">Quotation register</div>
+            <div className="erp-si-panel-count">{filteredQ.length.toLocaleString()} shown · {quotations.length.toLocaleString()} total</div>
+          </div>
+        </div>
+        <div className="erp-si-panel-head-right">
+          <span className="erp-si-status-legend" aria-label="Status icon meanings">
+            <span className="erp-si-legend-item"><span className="erp-si-status-ico draft" aria-hidden="true">•</span> Draft</span>
+            <span className="erp-si-legend-item"><span className="erp-si-status-ico sent" aria-hidden="true">↗</span> Sent</span>
+            <span className="erp-si-legend-item"><span className="erp-si-status-ico accepted" aria-hidden="true">✓</span> Accepted</span>
+            <span className="erp-si-legend-item"><span className="erp-si-status-ico converted" aria-hidden="true">✔</span> Converted</span>
+            <span className="erp-si-legend-item"><span className="erp-si-status-ico expired" aria-hidden="true">✕</span> Expired</span>
+          </span>
+        </div>
       </div>
-
-      <Card>
-        <CardTitle sub={filteredQ.length + " quotations — create new from Sales → Quotation"}>Quotations</CardTitle>
-        <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: 1, minWidth: 220 }}>
-            <Input placeholder="Search customer or quotation number..." value={search} onChange={function (e) { setSearch(e.target.value); }} />
-          </div>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {STATUSES.map(function (s) {
-              var isA = filterStatus === s;
-              return <button key={s} onClick={function () { setFilterStatus(s); }} style={{ padding: "7px 14px", borderRadius: 8, border: "1.5px solid " + (isA ? C.blue : C.border), background: isA ? C.accentSoft : "#fff", fontWeight: 700, fontSize: 12, color: isA ? C.blue : C.textMd, cursor: "pointer" }}>{s}</button>;
+      <div className="erp-si-toolbar">
+        <div className="erp-si-search-wrap">
+          <input className="erp-si-field" value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search customer or quotation #…" aria-label="Search quotations" />
+        </div>
+        <div className="erp-si-status-chips">
+          {STATUSES.map(function (s) {
+            var isA = filterStatus === s;
+            return <button key={s} type="button" className={"erp-si-chip" + (isA ? " is-active" : "")} onClick={function () { setFilterStatus(s); }}>{s}</button>;
+          })}
+        </div>
+        <button type="button" className="erp-si-btn-clear" onClick={function () { setSearch(""); setFilterStatus("All"); }}>Clear</button>
+      </div>
+      <div className="erp-si-table-wrap">
+        <table className="erp-si-table">
+          <thead>
+            <tr>
+              <th style={{ width: "16%" }}>Quotation #</th>
+              <th style={{ width: "22%" }}>Customer</th>
+              <th style={{ width: "11%" }}>Date</th>
+              <th className="ctr" style={{ width: "7%" }}>Items</th>
+              <th className="num" style={{ width: "14%" }}>Total</th>
+              <th className="ctr" style={{ width: "12%" }}>Status</th>
+              <th className="num" style={{ width: "18%" }}>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {quotPager.slice.map(function (q) {
+              var qMeta = quotStatusMeta(q.status);
+              return (
+                <tr key={q.id} onClick={function () { openFullViewQ(q); }} style={{ cursor: "pointer" }}>
+                  <td>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      className="erp-si-inv-link"
+                      onClick={function (e) { e.stopPropagation(); openFullViewQ(q); }}
+                      onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); openFullViewQ(q); } }}
+                      title={(q.quotationNo || q.id.slice(0, 8)) + " — View & print"}
+                    >
+                      {q.quotationNo || q.id.slice(0, 8)}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="erp-si-cust" title={q.customer || "Walk-in"}>{q.customer || "Walk-in"}</span>
+                    {q.customerPhone ? <div className="erp-si-muted">{q.customerPhone}</div> : null}
+                  </td>
+                  <td className="erp-si-muted">{q.date}</td>
+                  <td className="ctr erp-si-muted">{(q.items || []).length}</td>
+                  <td className="num"><span className="erp-si-money is-total">{getCurrencySymbol()} {fmtNum(quotationGrand(q))}</span></td>
+                  <td className="ctr">
+                    <span className="erp-si-status-cell" title={qMeta.label}>
+                      <span className={"erp-si-status-ico " + qMeta.tone} title={qMeta.label} aria-label={qMeta.label}>{qMeta.icon}</span>
+                    </span>
+                  </td>
+                  <td className="num erp-si-actions-cell" onClick={function (e) { e.stopPropagation(); }}>
+                    <ActBtnGroup>
+                      <ActBtn tone="cyan" title="View & print" onClick={function () { openFullViewQ(q); }} />
+                      {q.status !== "Converted" ? (
+                        <ActBtn tone="blue" title="Edit quotation" onClick={function () { openEditQuotationOnPos(q); }} />
+                      ) : null}
+                      {q.status !== "Converted" ? (
+                        <ActBtn tone="green" icon="restore" title="Convert to invoice" onClick={function () { convertToSale(q); }} />
+                      ) : null}
+                      <ActBtn tone="red" title="Delete quotation" onClick={function () { deleteQ(q.id); }} disabled={!canDeleteInvoices} />
+                    </ActBtnGroup>
+                  </td>
+                </tr>
+              );
             })}
-          </div>
+            {filteredQ.length === 0 && (
+              <tr>
+                <td colSpan={7} className="erp-si-empty">
+                  No quotations match your filters. Create quotations from Sales.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="erp-si-footer">
+        <div className="erp-si-footer-pager">
+          <Pager pager={quotPager} />
         </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><TH>Quotation #</TH><TH>Customer</TH><TH>Date</TH><TH>Items</TH><TH>Total</TH><TH>Status</TH><TH>Actions</TH></tr></thead>
-            <tbody>
-              {quotPager.slice.map(function (q, i) {
-                return (
-                  <TR key={q.id} i={i} onClick={function () { setViewQ(q); }}>
-                    <TD bold><span style={{ color: C.blue, fontFamily: "monospace" }}>{q.quotationNo || q.id.slice(0, 8)}</span></TD>
-                    <TD>{q.customer || "Walk-in"}</TD>
-                    <TD color={C.muted}>{q.date}</TD>
-                    <TD center color={C.muted}>{(q.items || []).length}</TD>
-                    <TD bold>{getCurrencySymbol()} {fmtNum(quotationGrand(q))}</TD>
-                    <TD><span style={{ fontWeight: 700, fontSize: 12, color: STATUS_COLORS[q.status] || C.textMd }}>{q.status}</span></TD>
-                    <td style={actBtnCellStyle} onClick={function (e) { e.stopPropagation(); }}>
-                      <ActBtnGroup>
-                        <ActBtn tone="cyan" title="View quotation" onClick={function () { setViewQ(q); }}>🧾</ActBtn>
-                        {q.status !== "Converted" ? (
-                          <ActBtn tone="blue" title="Edit quotation" onClick={function () { if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; } setEditQ(q); }}>✎</ActBtn>
-                        ) : null}
-                        {q.status !== "Converted" ? (
-                          <ActBtn tone="green" title="Convert to invoice" wide onClick={function () { convertToSale(q); }}>Invoice</ActBtn>
-                        ) : null}
-                        <ActBtn tone="red" title="Delete quotation" onClick={function () { deleteQ(q.id); }} disabled={!canDeleteInvoices}>✕</ActBtn>
-                      </ActBtnGroup>
-                    </td>
-                  </TR>
-                );
-              })}
-              {filteredQ.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: 24, color: C.muted }}>No quotations yet. Create one from <strong>Sales → Quotation</strong>.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-        <Pager pager={quotPager} />
-      </Card>
+      </div>
 
       {/* New Quotation Modal */}
       {show && (
         <Modal title="New Quotation" onClose={function () { setShow(false); }} wide>
-          <QuotationForm fq={f} setFq={setF} onSave={saveNew} title="💾 Save Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
+          <QuotationForm fq={f} setFq={setF} onSave={saveNew} title="💾 Save Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} Modal={Modal} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
         </Modal>
       )}
+      </div>
 
-      {/* Edit Quotation Modal */}
-      {editQ && (
-        <Modal title={"Edit — " + (editQ.quotationNo || "")} onClose={function () { setEditQ(null); }} wide>
-          <QuotationForm fq={editQ} setFq={setEditQ} onSave={saveEdit} title="💾 Update Quotation" state={state} setState={setState} S={S} uid={uid} tcTrialGuard={tcTrialGuard} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} showAlert={showAlert} C={C} Input={Input} TH={TH} TR={TR} TD={TD} Btn={Btn} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} today={today} />
-        </Modal>
-      )}
+      {/* View & Print Quotation (same chrome as invoices) */}
+      {fullViewQ && (
+        <div className="erp-si-fv is-quot" role="dialog" aria-modal="true" aria-label="View and print quotation">
+          <div className="erp-si-fv-bar">
+            <div className="erp-si-fv-bar-left">
+              <span className="erp-si-fv-badge" aria-hidden="true">QT</span>
+              <div className="erp-si-fv-meta">
+                <span className="erp-si-fv-kicker">View &amp; Print</span>
+                <div className="erp-si-fv-meta-main">
+                  <span className="erp-si-fv-inv">{fullViewQ.quotationNo || fullViewQ.id.slice(0, 8)}</span>
+                  <span className="erp-si-fv-sub">{fullViewQ.customer || "Walk-in"} · {fmtDate(fullViewQ.date)}</span>
+                </div>
+              </div>
+            </div>
 
-      {/* View Modal */}
-      {viewQ && (
-        <Modal title={"Quotation — " + (viewQ.quotationNo || "")} onClose={function () { setViewQ(null); }} wide>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 16, padding: "12px 16px", background: "#f7f9ff", borderRadius: 10, border: "1px solid " + C.border }}>
-            <div><div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Customer</div><div style={{ fontWeight: 700 }}>{viewQ.customer || "Walk-in"}</div>{viewQ.customerPhone && <div style={{ fontSize: 12, color: C.muted }}>{viewQ.customerPhone}</div>}</div>
-            <div><div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Date</div><div style={{ fontWeight: 700 }}>{viewQ.date}</div></div>
-            <div><div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Status</div><span style={{ fontWeight: 800, color: STATUS_COLORS[viewQ.status] || C.textMd }}>{viewQ.status}</span></div>
-            <div><div style={{ fontSize: 11, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Total</div><div style={{ fontWeight: 800, fontSize: 18, color: C.blue }}>{getCurrencySymbol()} {fmtNum(quotationGrand(viewQ))}</div></div>
+            <div className="erp-si-fv-tools">
+              <span className="erp-si-fv-tool-label">Format</span>
+              <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                {(function () {
+                  var paperSize   = state.settings.invoiceDefaultSize  || "a4";
+                  var thermalSize = state.settings.invoiceThermalSize   || "thermal80";
+                  var opts = [
+                    [paperSize,   paperSize   === "a5"        ? "A5"    : "A4"   ],
+                    [thermalSize, thermalSize === "thermal58"  ? "58mm"  : "80mm" ],
+                  ];
+                  return opts.map(function (item) {
+                    var v = item[0]; var lbl = item[1];
+                    var active = fqFormat === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
+                        onClick={function () { setFqFormat(v); }}
+                      >{lbl}</button>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+
+            <div className="erp-si-fv-actions">
+              {fullViewQ.status !== "Converted" ? (
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () { convertToSale(fullViewQ); }}
+                >→ Invoice</button>
+              ) : null}
+              <button
+                type="button"
+                className="erp-si-fv-btn is-print"
+                onClick={function () { printFullQuotation(fullViewQ, fqFormat); }}
+              >Print</button>
+              <WABtn title="Share Quotation via WhatsApp" onClick={function () { whatsappFullQuotation(fullViewQ, fqFormat); }} />
+              <button
+                type="button"
+                className="erp-si-fv-btn is-close"
+                onClick={function () { setFullViewQ(null); }}
+                aria-label="Close"
+              >✕</button>
+            </div>
           </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 14 }}>
-            <thead><tr><TH>#</TH><TH>Product</TH><TH>Qty</TH><TH>Price</TH><TH>Amount</TH></tr></thead>
-            <tbody>
-              {(viewQ.items || []).map(function (it, i) {
-                return <TR key={it.id || i} i={i}><TD color={C.muted}>{i + 1}</TD><TD bold>{it.name}</TD><TD center>{it.qty}</TD><TD>{getCurrencySymbol()} {fmtNum(it.price)}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(it.qty * it.price)}</TD></TR>;
-              })}
-            </tbody>
-          </table>
-          {viewQ.notes && <div style={{ background: "#f7f9ff", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: C.textMd, borderLeft: "3px solid " + C.blue }}><strong>Notes:</strong> {viewQ.notes}</div>}
-          {viewQ.convertedInvoiceId && <div style={{ background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: C.green }}>✅ Converted to Invoice: <strong>{viewQ.convertedInvoiceId}</strong> on {viewQ.convertedAt}</div>}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <Btn col="gray" onClick={function () { printQuotation(viewQ); }}>🖨 Print</Btn>
-            <WABtn title="Share Quotation via WhatsApp" onClick={function () { printQuotation(viewQ, null, true); }} />
-            {viewQ.status !== "Converted" && (
-              <React.Fragment>
-                {["Draft","Sent","Expired"].filter(function (s) { return s !== viewQ.status; }).map(function (s) {
-                  return <Btn key={s} sm col="gray" onClick={function () { updateStatus(viewQ.id, s); }}>Mark {s}</Btn>;
-                })}
-                <Btn col="blue" onClick={function () { if (!canEditInvoices) { showPermissionDenied("edit quotations"); return; } setViewQ(null); setEditQ(viewQ); }} disabled={!canEditInvoices}>✏ Edit</Btn>
-                <Btn col="green" onClick={function () { convertToSale(viewQ); }}>→ Convert to Invoice</Btn>
-              </React.Fragment>
-            )}
-            <Btn col="red" onClick={function () { deleteQ(viewQ.id); setViewQ(null); }} disabled={!canDeleteInvoices}>🗑 Delete</Btn>
+
+          <div className="erp-si-fv-stage">
+            <div
+              id={"si-quot-preview-" + fullViewQ.id}
+              className={"erp-si-fv-sheet" + ((fqFormat === "thermal58" || fqFormat === "thermal80") ? " is-thermal" : " is-paper")}
+            >
+              {(fqFormat === "thermal58" || fqFormat === "thermal80")
+                ? <InvoiceThermal
+                    inv={quotationToPrintInv(fullViewQ)}
+                    settings={state.settings}
+                    invoiceLang="en"
+                    width={fqFormat === "thermal58" ? 218 : 302}
+                    documentKind="quotation"
+                  />
+                : <InvoiceA4
+                    inv={quotationToPrintInv(fullViewQ)}
+                    settings={state.settings}
+                    invoiceLang="en"
+                    size={fqFormat}
+                    documentKind="quotation"
+                  />
+              }
+            </div>
           </div>
-        </Modal>
+        </div>
       )}
 
       {pendingQuotPrint && InvoiceA4 && (
@@ -562,7 +762,7 @@ var Quotations = function (props) {
           }
         </div>
       )}
-    </div>
+    </React.Fragment>
   );
 };
 var SalesInvoices = React.memo(function (props) {
@@ -620,13 +820,19 @@ var SalesInvoices = React.memo(function (props) {
     : function () { showAlert("You do not have permission for this action."); };
   var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
   var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
+  var currentUser = props.currentUser || null;
+  var clientMachineLabel = String(props.clientMachineLabel || "").trim();
+  var lockIdentity = buildInvoiceEditLockIdentity({
+    currentUser: currentUser,
+    clientMachineLabel: clientMachineLabel,
+  });
   var [siTab, setSiTab] = useState("invoices");
   var [search, setSearch] = useState("");
   var [dateFrom, setDateFrom] = useState("");
   var [dateTo, setDateTo] = useState("");
   var [filterStatus, setFilterStatus] = useState("Active");
   var [viewSale, setViewSale] = useState(null);
-  var [editSale, setEditSale] = useState(null);
+  var [lockTick, setLockTick] = useState(0);
   var [voidSaleTarget, setVoidSaleTarget] = useState(null);
   var [voidReason, setVoidReason] = useState("");
   var [payModal, setPayModal] = useState(null);
@@ -638,6 +844,19 @@ var SalesInvoices = React.memo(function (props) {
   var [fullViewSale, setFullViewSale] = useState(null);
   var [fvFormat, setFvFormat] = useState(function () { return state.settings.invoiceDefaultSize || "a4"; });
   var [fvWarranty, setFvWarranty] = useState(false);
+
+  var quotationsAll = state.quotations || [];
+  var qDraftCount = quotationsAll.filter(function (q) { return q.status === "Draft"; }).length;
+  var qSentCount = quotationsAll.filter(function (q) { return q.status === "Sent"; }).length;
+  var qConvertedCount = quotationsAll.filter(function (q) { return q.status === "Converted"; }).length;
+  var qPipelineValue = quotationsAll.filter(function (q) {
+    return q.status !== "Converted" && q.status !== "Expired";
+  }).reduce(function (a, q) {
+    var t = q && q.total != null && !isNaN(q.total)
+      ? Number(q.total)
+      : (q.items || []).reduce(function (sum, it) { return sum + (it.qty || 0) * (it.price || 0); }, 0);
+    return a + t;
+  }, 0);
 
   var filtered = sortNewestFirst(state.sales).filter(function (s) {
     var q = search.toLowerCase();
@@ -659,29 +878,6 @@ var SalesInvoices = React.memo(function (props) {
   var paidShown = filtered.reduce(function (a, s) { return a + (s.paid || 0); }, 0);
   var outstandingShown = totalShown - paidShown;
 
-  var invThStyle = function (align) {
-    return {
-      textAlign: align || "left",
-      padding: "10px 12px",
-      fontWeight: 700,
-      color: C.th,
-      fontSize: 10.5,
-      textTransform: "uppercase",
-      letterSpacing: "0.07em",
-      borderBottom: "2px solid " + C.border,
-      whiteSpace: "nowrap",
-      background: "#f8fafc",
-    };
-  };
-
-  var invMoneyTd = function (children, color, bold) {
-    return (
-      <td style={{ padding: "10px 12px", textAlign: "right", color: color || C.text, fontWeight: bold ? 700 : 500, whiteSpace: "nowrap", fontSize: 13, fontVariantNumeric: "tabular-nums" }}>
-        {children}
-      </td>
-    );
-  };
-
   var goSalesReturn = function () {
     try { sessionStorage.setItem("tc3_returns_tab", "salesreturn"); } catch (e) { /* ignore */ }
     if (typeof setActive === "function") setActive("returns");
@@ -692,7 +888,13 @@ var SalesInvoices = React.memo(function (props) {
       showPermissionDenied("void invoices");
       return;
     }
-    var result = buildVoidSaleUpdates(state, saleId, reason);
+    var fl = foreignEditLockFor(saleId);
+    if (fl) {
+      showAlert(formatInvoiceEditLockMessage(fl) + " Cannot void until they finish.");
+      return;
+    }
+    var voidState = Object.assign({}, state, { codRecords: S.get("tc3_codRecords", []) });
+    var result = buildVoidSaleUpdates(voidState, saleId, reason);
     if (!result.ok) {
       showAlert(result.error);
       return;
@@ -701,24 +903,37 @@ var SalesInvoices = React.memo(function (props) {
     S.set("tc3_customers", result.customers);
     S.set("tc3_sales", result.sales);
     S.set("tc3_cheques", result.cheques);
+    if (result.codRecords) S.set("tc3_codRecords", result.codRecords);
+    var repairs = rollbackRepairDevicesOnVoidSale(state.repairs || [], result.voidedSale, today());
+    if (repairs !== (state.repairs || [])) S.set("tc3_repairs", repairs);
     setState(function (st) {
       return Object.assign({}, st, {
         products: result.products,
         customers: result.customers,
         sales: result.sales,
         cheques: result.cheques,
+        repairs: repairs,
       });
     });
     addAudit("Voided Sale Invoice", (result.voidedSale.invoiceNo || saleId.slice(0, 8)) + (reason ? " — " + reason : ""));
+    releaseInvoiceEditLock(S, saleId, lockIdentity, { force: true });
     setVoidSaleTarget(null);
     setVoidReason("");
     if (viewSale && viewSale.id === saleId) setViewSale(null);
     if (fullViewSale && fullViewSale.id === saleId) setFullViewSale(null);
+    if (result.refundHint && result.refundHint.message) {
+      showAlert("Invoice voided.\n\n" + result.refundHint.message);
+    }
   };
 
   var promptVoidSale = function (sale) {
     if (!canDeleteInvoices) {
       showPermissionDenied("void invoices");
+      return;
+    }
+    var fl = foreignEditLockFor(sale && sale.id);
+    if (fl) {
+      showAlert(formatInvoiceEditLockMessage(fl) + " Cannot void until they finish.");
       return;
     }
     var block = voidSaleBlockReason(sale, state);
@@ -730,146 +945,223 @@ var SalesInvoices = React.memo(function (props) {
     setVoidSaleTarget(sale);
   };
 
+  var assertInvoiceUnlockedForMoney = function (saleId, actionLabel) {
+    var fl = foreignEditLockFor(saleId);
+    if (fl) {
+      showAlert(formatInvoiceEditLockMessage(fl) + " Cannot " + actionLabel + " until they finish.");
+      return false;
+    }
+    return true;
+  };
+
   var saleInvoiceEditAllowed = function (s) {
     if (!s || isVoidedTxn(s)) return false;
     return true;
   };
 
-  /* Invoice edit: metadata only — no line items, totals, or stock (use Sales Return for quantity/amount corrections). */
-  var saveEdit = function () {
-    if (!canEditInvoices) {
-      showPermissionDenied("edit invoices");
-      return;
-    }
-    if (!editSale) return;
-    if (isVoidedTxn(editSale)) {
-      showAlert("Voided invoices cannot be edited.");
-      return;
-    }
-    var orig = state.sales.find(function (s) { return s.id === editSale.id; });
-    if (!orig) return;
-    var editSaleAmtErr = validateTxnAmounts("Edited sale invoice", orig.total || 0, orig.paid || 0, orig.balance || 0);
-    if (editSaleAmtErr) { showAlert("❌ " + editSaleAmtErr); return; }
-    checkPeriodClose(orig.date, state.settings, function () {
-      checkPeriodClose(editSale.date, state.settings, function () {
-      var merged = Object.assign({}, orig, {
-        invoiceNo: editSale.invoiceNo,
-        date: editSale.date,
-        customerName: editSale.customerName,
-        customerPhone: editSale.customerPhone,
-        saleNote: editSale.saleNote !== undefined ? editSale.saleNote : orig.saleNote,
-      });
-      var ns = state.sales.map(function (s) { return s.id === merged.id ? merged : s; });
-      S.set("tc3_sales", ns);
-      addAudit("Edited Sale Invoice (details)", merged.invoiceNo || merged.id.slice(0, 8));
-      setState(function (st) { return Object.assign({}, st, { sales: ns }); });
-      setEditSale(null);
-      });
-    });
+  var foreignEditLockFor = function (saleId) {
+    var lock = findActiveInvoiceEditLock(readInvoiceEditLocks(S), saleId);
+    if (!lock) return null;
+    if (String(lock.deviceId || "") === String(lockIdentity.deviceId || "")) return null;
+    return lock;
   };
 
-  var recordPayment = function (saleId, amount, note, mode, __forcedId, __legacyAll) {
-    var sale = state.sales.find(function (s) { return s.id === saleId; });
-    if (!sale) return;
-    if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return; }
-    /* Cheque: create cheque record — receivable stays open until cleared */
-    if (mode === "Cheque") {
-      var chequeNo = payModal.chequeNo || "";
-      var chequeDueDate = payModal.chequeDueDate || today();
-      var chequeBankName = payModal.chequeBankName || "";
-      if (!chequeNo) { showAlert("Enter a cheque number."); return; }
-      var newCheque = {
-        id: uid(), type: "incoming", status: "Pending",
-        chequeNo: chequeNo, bankName: chequeBankName,
-        amount: amount, dueDate: chequeDueDate, issuedDate: today(),
-        customerId: sale.customerId || "", customerName: sale.customerName || "Walk-in",
-        saleId: saleId, invoiceNo: sale.invoiceNo || "",
-        note: note || "", createdAt: today()
-      };
-      var nch = (state.cheques || []).concat([newCheque]);
-      var ph = (sale.paymentHistory || []).concat([{ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + chequeNo + " (Pending — due " + chequeDueDate + ")" + (note ? " | " + note : ""), chequeId: newCheque.id }]);
-      var updSale = Object.assign({}, sale, { paymentHistory: ph });
-      var ns = state.sales.map(function (s) { return s.id === saleId ? updSale : s; });
-      S.set("tc3_sales", ns); S.set("tc3_cheques", nch);
-      addAudit("Cheque Received " + getCurrencySymbol() + " " + fmtNum(amount) + " #" + chequeNo, sale.invoiceNo || saleId.slice(0, 8));
-      setState(function (st) { return Object.assign({}, st, { sales: ns, cheques: nch }); });
-      if (viewSale && viewSale.id === saleId) setViewSale(updSale);
-      setPayModal(null); setPayNote(""); setPayMode("Cash");
-      showAlert("✅ Cheque #" + chequeNo + " (" + getCurrencySymbol() + " " + fmtNum(amount) + ") recorded. Go to Cheque Register to mark it cleared when received.");
+  var tryOpenInvoiceEdit = function (sale) {
+    if (!saleInvoiceEditAllowed(sale)) return;
+    if (!canEditInvoices) { showPermissionDenied("edit invoices"); return; }
+    var fl = foreignEditLockFor(sale.id);
+    if (fl) {
+      showAlert(formatInvoiceEditLockMessage(fl));
       return;
     }
-    var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: __forcedId, legacyApplyAllNameMatches: __legacyAll });
-    if (res.needPicker && res.candidates.length) {
-      maybeShowPaymentMatchToasts(sale, res);
-      showPaymentDupPick({
-        candidates: res.candidates,
-        onSelect: function (id) { recordPayment(saleId, amount, note, mode, id, false); },
-        onSkip: function () { recordPayment(saleId, amount, note, mode, null, true); }
+    var split = splitSaleItemsByFree(sale.items || []);
+    var paid = Number(sale.paid) || 0;
+    var bal = Number(sale.balance);
+    if (!isFinite(bal)) bal = Math.max(0, (Number(sale.total) || 0) - paid);
+    var prefill = {
+      posPageTab: "sale",
+      editingSaleId: sale.id,
+      invoiceNo: sale.invoiceNo || "",
+      customerName: sale.customerName || sale.customer || "",
+      customerPhone: sale.customerPhone || "",
+      customerId: sale.customerId || "",
+      items: (split.paid || []).map(function (it) { return mapDocItemToPosCartLine(it); }).filter(Boolean),
+      freeItems: (split.free || []).map(function (it) { return mapDocItemToPosCartLine(it); }).filter(Boolean),
+      discount: sale.discount ? String(sale.discount) : "",
+      includeWarranty: !!sale.includeWarranty,
+      saleNotes: sale.saleNote || "",
+      recordDate: sale.date || today(),
+      paidAmt: paid ? String(paid) : "",
+      payMode: bal <= 0.005 ? "full" : (paid > 0.005 ? "partial" : "full"),
+      fromRepairId: sale.fromRepairId || "",
+      fromRepairDeviceIndexes: Array.isArray(sale.fromRepairDeviceIndexes) ? sale.fromRepairDeviceIndexes.slice() : [],
+      fromQuotationId: sale.fromQuotationId || "",
+    };
+    S.set("tc3_repair_prefill", prefill);
+    setViewSale(null);
+    setFullViewSale(null);
+    addAudit("Opening POS to edit Invoice " + (sale.invoiceNo || sale.id.slice(0, 8)), sale.invoiceNo || "");
+    if (setActive) setActive("pos");
+  };
+
+  useEffect(function () {
+    var t = setInterval(function () {
+      refreshInvoiceEditLocksFromServer(S).finally(function () {
+        setLockTick(function (n) { return n + 1; });
       });
-      return;
-    }
-    var newPaid = (sale.paid || 0) + amount;
-    var newBal = sale.total - newPaid;
-    var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-    var ph = (sale.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amount, cashMethod: (mode === "Bank Transfer" || mode === "Online" || mode === "Cheque" || mode === "Card" ? "Bank" : "Cash"), note: (mode || "Cash") + (note ? ": " + note : "") }]);
-    var updSale = Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: ph });
-    warnPaymentCustomerMatchSafety(state.customers, sale, "SalesInvoices.recordPayment");
-    maybeShowPaymentMatchToasts(sale, res);
-    var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - amount) }) : c; });
-    var ns = state.sales.map(function (s) { return s.id === saleId ? updSale : s; });
-    S.set("tc3_sales", ns); S.set("tc3_customers", nc);
-    setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc }); });
-    if (viewSale && viewSale.id === saleId) setViewSale(updSale);
-    setPayModal(null); setPayNote(""); setPayMode("Cash");
-    toastAfterCustomerPaymentApplied(state.customers, res);
+    }, 5000);
+    return function () { clearInterval(t); };
+  }, []);
+
+  var recordPayment = function (saleId, amount, note, mode, __forcedId, __legacyAll) {
+    var applyPay = function (sale, salesBase) {
+      if (!sale) return;
+      if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); return; }
+      if (!assertInvoiceUnlockedForMoney(saleId, "record payment")) return;
+      /* Cheque: create cheque record — receivable stays open until cleared */
+      if (mode === "Cheque") {
+        var chequeNo = payModal.chequeNo || "";
+        var chequeDueDate = payModal.chequeDueDate || today();
+        var chequeBankName = payModal.chequeBankName || "";
+        if (!chequeNo) { showAlert("Enter a cheque number."); return; }
+        var chTs = new Date().toISOString();
+        var newCheque = stampTransactionIsoDateTime({
+          id: uid(), type: "incoming", status: "Pending",
+          chequeNo: chequeNo, bankName: chequeBankName,
+          amount: amount, dueDate: chequeDueDate, issuedDate: today(),
+          customerId: sale.customerId || "", customerName: sale.customerName || "Walk-in",
+          saleId: saleId, invoiceNo: sale.invoiceNo || "",
+          note: note || "", createdAt: chTs, updatedAt: chTs
+        }, chTs);
+        var nch = (state.cheques || []).concat([newCheque]);
+        var ph = (sale.paymentHistory || []).concat([{ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + chequeNo + " (Pending — due " + chequeDueDate + ")" + (note ? " | " + note : ""), chequeId: newCheque.id }]);
+        var updSale = stampUpdatedAt(Object.assign({}, sale, { paymentHistory: ph }));
+        var ns = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale : s; });
+      S.set("tc3_sales", ns); S.set("tc3_cheques", nch);
+      try { pushKeysNow([["tc3_sales", ns], ["tc3_cheques", nch]]); } catch (_e) { /* ignore */ }
+      addAudit("Cheque Received " + getCurrencySymbol() + " " + fmtNum(amount) + " #" + chequeNo, sale.invoiceNo || saleId.slice(0, 8));
+        setState(function (st) { return Object.assign({}, st, { sales: ns, cheques: nch }); });
+        if (viewSale && viewSale.id === saleId) setViewSale(updSale);
+        setPayModal(null); setPayNote(""); setPayMode("Cash");
+        showAlert("✅ Cheque #" + chequeNo + " (" + getCurrencySymbol() + " " + fmtNum(amount) + ") recorded. Go to Cheque Register to mark it cleared when received.");
+        return;
+      }
+      var fit = assertPaymentFitsSaleBalance(sale, amount);
+      if (!fit.ok) { showAlert(fit.message); return; }
+      var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: __forcedId, legacyApplyAllNameMatches: __legacyAll });
+      if (res.needPicker && res.candidates.length) {
+        maybeShowPaymentMatchToasts(sale, res);
+        showPaymentDupPick({
+          candidates: res.candidates,
+          onSelect: function (id) { recordPayment(saleId, amount, note, mode, id, false); },
+          onSkip: function () { recordPayment(saleId, amount, note, mode, null, true); }
+        });
+        return;
+      }
+      var newPaid = (sale.paid || 0) + amount;
+      var newBal = sale.total - newPaid;
+      var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+      var ph2 = (sale.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amount, cashMethod: (mode === "Bank Transfer" || mode === "Online" || mode === "Cheque" || mode === "Card" ? "Bank" : "Cash"), note: (mode || "Cash") + (note ? ": " + note : "") }]);
+      var updSale2 = stampUpdatedAt(Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: ph2 }));
+      warnPaymentCustomerMatchSafety(state.customers, sale, "SalesInvoices.recordPayment");
+      maybeShowPaymentMatchToasts(sale, res);
+      var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - amount) }), null, c) : c; });
+      var ns2 = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale2 : s; });
+      S.set("tc3_sales", ns2); S.set("tc3_customers", nc);
+      try { pushKeysNow([["tc3_sales", ns2], ["tc3_customers", nc]]); } catch (_e) { /* ignore */ }
+      setState(function (st) { return Object.assign({}, st, { sales: ns2, customers: nc }); });
+      if (viewSale && viewSale.id === saleId) setViewSale(updSale2);
+      setPayModal(null); setPayNote(""); setPayMode("Cash");
+      toastAfterCustomerPaymentApplied(state.customers, res);
+    };
+
+    loadFreshSaleForPayment(S, saleId)
+      .then(function (fresh) {
+        var sale = fresh.sale || state.sales.find(function (s) { return s.id === saleId; });
+        if (!sale) { showAlert("Invoice not found. Refresh and try again."); return; }
+        if (fresh.sales) setState(function (st) { return Object.assign({}, st, { sales: fresh.sales }); });
+        return checkForeignInvoiceEditLock(S, saleId, lockIdentity).then(function (fl) {
+          if (fl) {
+            showAlert(formatInvoiceEditLockMessage(fl) + " Cannot record payment until they finish.");
+            return;
+          }
+          applyPay(sale, fresh.sales || state.sales);
+        });
+      })
+      .catch(function () {
+        applyPay(state.sales.find(function (s) { return s.id === saleId; }), state.sales);
+      });
   };
 
   /* Split payment handler for SalesInvoices */
   var processSplitSale = function (saleId, splits, __forcedId, __legacyAll) {
-    var sale = state.sales.find(function (s) { return s.id === saleId; });
-    if (!sale) return;
-    var newPh = (sale.paymentHistory || []).slice();
-    var newCheques = (state.cheques || []).slice();
-    var totalAdded = 0;
-    var totalNonCheque = 0;
-    splits.forEach(function (row) {
-      var amt = parseFloat(row.amount) || 0;
-      if (amt <= 0) return;
-      totalAdded += amt;
-      if (row.method === "Cheque") {
-        var newChq = { id: uid(), type: "incoming", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), customerId: sale.customerId || "", customerName: sale.customerName || "", saleId: saleId, invoiceNo: sale.invoiceNo || "", note: row.note || "", createdAt: today() };
-        newCheques.push(newChq);
-        newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + (row.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + (row.chequeDueDate || today()) + ")" + (row.note ? " | " + row.note : ""), chequeId: newChq.id });
-      } else {
-        var cm = (row.method === "Bank" || row.method === "Online" || row.method === "Card") ? "Bank" : "Cash";
-        totalNonCheque += amt;
-        newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
-      }
-    });
-    var newPaid = (sale.paid || 0) + totalNonCheque;
-    var newBal = sale.total - newPaid;
-    var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
-    var updSale = Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: newPh });
-    var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: __forcedId, legacyApplyAllNameMatches: __legacyAll });
-    if (res.needPicker && res.candidates.length) {
-      maybeShowPaymentMatchToasts(sale, res);
-      showPaymentDupPick({
-        candidates: res.candidates,
-        onSelect: function (id) { processSplitSale(saleId, splits, id, false); },
-        onSkip: function () { processSplitSale(saleId, splits, null, true); }
+    var applySplit = function (sale, salesBase) {
+      if (!sale) return;
+      if (!assertInvoiceUnlockedForMoney(saleId, "record payment")) return;
+      var newPh = (sale.paymentHistory || []).slice();
+      var newCheques = (state.cheques || []).slice();
+      var totalAdded = 0;
+      var totalNonCheque = 0;
+      splits.forEach(function (row) {
+        var amt = parseFloat(row.amount) || 0;
+        if (amt <= 0) return;
+        totalAdded += amt;
+        if (row.method === "Cheque") {
+          var splitChTs = new Date().toISOString();
+          var newChq = stampTransactionIsoDateTime({ id: uid(), type: "incoming", status: "Pending", chequeNo: (row.chequeNo || "").trim(), bankName: (row.chequeBankName || "").trim(), amount: amt, dueDate: row.chequeDueDate || today(), issuedDate: today(), customerId: sale.customerId || "", customerName: sale.customerName || "", saleId: saleId, invoiceNo: sale.invoiceNo || "", note: row.note || "", createdAt: splitChTs, updatedAt: splitChTs }, splitChTs);
+          newCheques.push(newChq);
+          newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + (row.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + (row.chequeDueDate || today()) + ")" + (row.note ? " | " + row.note : ""), chequeId: newChq.id });
+        } else {
+          var cm = (row.method === "Bank" || row.method === "Online" || row.method === "Card") ? "Bank" : "Cash";
+          totalNonCheque += amt;
+          newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
+        }
       });
-      return;
-    }
-    warnPaymentCustomerMatchSafety(state.customers, sale, "SalesInvoices.processSplitSale");
-    maybeShowPaymentMatchToasts(sale, res);
-    var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - totalNonCheque) }) : c; });
-    var ns = state.sales.map(function (s) { return s.id === saleId ? updSale : s; });
-    S.set("tc3_sales", ns); S.set("tc3_customers", nc); S.set("tc3_cheques", newCheques);
-    setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc, cheques: newCheques }); });
-    if (viewSale && viewSale.id === saleId) setViewSale(updSale);
-    setSplitPayModal(null);
-    addAudit("Payment " + getCurrencySymbol() + " " + fmtNum(totalAdded), sale.invoiceNo || saleId.slice(0, 8));
-    toastAfterCustomerPaymentApplied(state.customers, res);
+      var fit = assertPaymentFitsSaleBalance(sale, totalNonCheque);
+      if (!fit.ok) { showAlert(fit.message); return; }
+      var newPaid = (sale.paid || 0) + totalNonCheque;
+      var newBal = sale.total - newPaid;
+      var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+      var updSale = stampUpdatedAt(Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: newPh }));
+      var res = resolvePaymentCreditTargetIds(state.customers, sale, { forcedCustomerId: __forcedId, legacyApplyAllNameMatches: __legacyAll });
+      if (res.needPicker && res.candidates.length) {
+        maybeShowPaymentMatchToasts(sale, res);
+        showPaymentDupPick({
+          candidates: res.candidates,
+          onSelect: function (id) { processSplitSale(saleId, splits, id, false); },
+          onSkip: function () { processSplitSale(saleId, splits, null, true); }
+        });
+        return;
+      }
+      warnPaymentCustomerMatchSafety(state.customers, sale, "SalesInvoices.processSplitSale");
+      maybeShowPaymentMatchToasts(sale, res);
+      var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - totalNonCheque) }), null, c) : c; });
+      var ns = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale : s; });
+      S.set("tc3_sales", ns); S.set("tc3_customers", nc); S.set("tc3_cheques", newCheques);
+      try { pushKeysNow([["tc3_sales", ns], ["tc3_customers", nc], ["tc3_cheques", newCheques]]); } catch (_e) { /* ignore */ }
+      setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc, cheques: newCheques }); });
+      if (viewSale && viewSale.id === saleId) setViewSale(updSale);
+      setSplitPayModal(null);
+      addAudit("Payment " + getCurrencySymbol() + " " + fmtNum(totalAdded), sale.invoiceNo || saleId.slice(0, 8));
+      toastAfterCustomerPaymentApplied(state.customers, res);
+    };
+
+    loadFreshSaleForPayment(S, saleId)
+      .then(function (fresh) {
+        var sale = fresh.sale || state.sales.find(function (s) { return s.id === saleId; });
+        if (!sale) { showAlert("Invoice not found. Refresh and try again."); return; }
+        if (fresh.sales) setState(function (st) { return Object.assign({}, st, { sales: fresh.sales }); });
+        return checkForeignInvoiceEditLock(S, saleId, lockIdentity).then(function (fl) {
+          if (fl) {
+            showAlert(formatInvoiceEditLockMessage(fl) + " Cannot record payment until they finish.");
+            return;
+          }
+          applySplit(sale, fresh.sales || state.sales);
+        });
+      })
+      .catch(function () {
+        applySplit(state.sales.find(function (s) { return s.id === saleId; }), state.sales);
+      });
   };
 
   var printInvoice = function (sale, fmt) {
@@ -906,113 +1198,208 @@ var SalesInvoices = React.memo(function (props) {
   };
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* Invoice / Quotation Tab Bar */}
-      <div style={{ display: "flex", gap: 4, background: "#fff", borderRadius: 12, padding: 5, border: "1.5px solid " + C.border, boxShadow: C.shadowCard, alignSelf: "flex-start" }}>
-        {[["invoices", "🧾 Invoices"], ["quotations", "📋 Quotations"]].map(function (t) {
-          var isA = siTab === t[0];
-          return <button key={t[0]} onClick={function () { setSiTab(t[0]); }} style={{ background: isA ? "linear-gradient(135deg,#2979ff,#2255d4)" : "transparent", color: isA ? "#fff" : C.textMd, border: "none", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", transition: "all .15s", fontFamily: "inherit", boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.28)" : "none" }}>{t[1]}</button>;
-        })}
-      </div>
-      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} InvoiceA4={InvoiceA4} InvoiceThermal={InvoiceThermal} C={C} usePager={usePager} Pager={Pager} canEditInvoices={canEditInvoices} canDeleteInvoices={canDeleteInvoices} showPermissionDenied={showPermissionDenied} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} />}
-      {siTab === "invoices" && <React.Fragment>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10 }}>
-        <StatCard money={false} label="Shown" value={filtered.length} accent={C.cyan} icon="🧾" sub="invoices" />
-        <StatCard label="Total Value" value={totalShown} accent={C.blue} icon="💰" />
-        <StatCard label="Collected" value={paidShown} accent={C.green} icon="✅" sub={totalShown > 0 ? Math.round(paidShown / totalShown * 100) + "% collected" : "—"} />
-        <StatCard label="Outstanding" value={outstandingShown} accent={outstandingShown > 0 ? C.red : C.green} icon={outstandingShown > 0 ? "⏳" : "✓"} sub={outstandingShown > 0 ? "due" : "all clear"} />
+    <div className={"erp-page erp-si-modern" + (siTab === "quotations" ? " is-tab-quotations" : " is-tab-invoices")}>
+      <div className="erp-si-chrome">
+        <div className="erp-si-topbar">
+          <div className="erp-si-topbar-brand">
+            <h2 className="erp-si-header-title">{siTab === "quotations" ? "Quotations" : "Invoices"}</h2>
+            <p className="erp-si-header-sub">Sales invoices &amp; quotations</p>
+          </div>
+          <div className="erp-si-tabs" role="tablist" aria-label="Invoice views">
+            <button type="button" role="tab" aria-selected={siTab === "invoices"} className={"erp-si-tab is-invoices" + (siTab === "invoices" ? " is-active" : "")} onClick={function () { setSiTab("invoices"); }}>
+              <span className="erp-si-tab-ico" aria-hidden="true">🧾</span>
+              <span>Invoices</span>
+              <span className="erp-si-tab-count">{filtered.length}</span>
+            </button>
+            <button type="button" role="tab" aria-selected={siTab === "quotations"} className={"erp-si-tab is-quotations" + (siTab === "quotations" ? " is-active" : "")} onClick={function () { setSiTab("quotations"); }}>
+              <span className="erp-si-tab-ico" aria-hidden="true">📋</span>
+              <span>Quotations</span>
+              <span className="erp-si-tab-count">{quotationsAll.length}</span>
+            </button>
+          </div>
+          {siTab === "invoices" ? (
+            <div className="erp-si-health" aria-label="Invoice summary">
+              <span className="erp-si-health-pill is-ok">{filtered.length.toLocaleString()} shown</span>
+              {outstandingShown > 0
+                ? <span className="erp-si-health-pill is-warn">{getCurrencySymbol()} {fmtNum(outstandingShown)} due</span>
+                : <span className="erp-si-health-pill is-good">All clear</span>}
+            </div>
+          ) : (
+            <div className="erp-si-health" aria-label="Quotation summary">
+              <span className="erp-si-health-pill is-ok">{quotationsAll.length.toLocaleString()} total</span>
+              {qSentCount > 0 ? <span className="erp-si-health-pill is-warn">{qSentCount} sent</span> : null}
+              <span className="erp-si-health-pill is-good">{qConvertedCount} converted</span>
+            </div>
+          )}
+        </div>
+        {siTab === "invoices" ? (
+          <div className="erp-si-stat-row">
+            <StatCard money={false} label="Shown" value={filtered.length} accent={C.cyan} icon="🧾" sub="invoices in view" />
+            <StatCard label="Total Value" value={totalShown} accent={C.blue} icon="💰" sub="filtered total" />
+            <StatCard label="Collected" value={paidShown} accent={C.green} icon="✅" sub={totalShown > 0 ? Math.round(paidShown / totalShown * 100) + "% collected" : "—"} />
+            <StatCard label="Outstanding" value={outstandingShown} accent={outstandingShown > 0 ? C.red : C.green} icon={outstandingShown > 0 ? "⏳" : "✓"} sub={outstandingShown > 0 ? "still due" : "all clear"} />
+          </div>
+        ) : (
+          <div className="erp-si-stat-row">
+            <StatCard money={false} label="Total Quotations" value={quotationsAll.length} accent={C.blue} icon="📋" sub={qDraftCount + " drafts"} />
+            <StatCard money={false} label="Converted" value={qConvertedCount} accent={C.green} icon="✅" sub="to invoices" />
+            <StatCard money={false} label="Pending (Sent)" value={qSentCount} accent={C.orange} icon="📤" sub="awaiting response" />
+            <StatCard label="Pipeline Value" value={qPipelineValue} accent={C.purple || "#7c3aed"} icon="💰" sub="unconverted value" />
+          </div>
+        )}
       </div>
 
-      <Card>
-        <CardTitle sub="Search, view, print, and manage customer invoices" action={<Btn sm col="gray" onClick={function () { setSearch(""); setDateFrom(""); setDateTo(""); setFilterStatus("Active"); }}>Clear filters</Btn>}>Sales Invoices</CardTitle>
-        <div style={{ background: "#f8fafc", border: "1px solid " + C.borderLight, borderRadius: 10, padding: "12px 14px", marginBottom: 14 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 2fr) repeat(3, minmax(120px, 1fr))", gap: 10, alignItems: "end" }}>
-            <Input label="Search" value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Customer, invoice #, phone..." />
-            <Input type="date" label="From" value={dateFrom} onChange={function (e) { setDateFrom(e.target.value); }} />
-            <Input type="date" label="To" value={dateTo} onChange={function (e) { setDateTo(e.target.value); }} />
-            <Sel label="Status" value={filterStatus} onChange={function (e) { setFilterStatus(e.target.value); }}>
-              <option>Active</option><option>Voided</option><option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
-            </Sel>
+      <div className="erp-si-body">
+      {siTab === "quotations" && <Quotations state={state} setState={setState} setActive={setActive} setSiTab={setSiTab} S={S} showAlert={showAlert} showConfirm={showConfirm} tcTrialGuard={tcTrialGuard} addAudit={addAudit} uid={uid} today={today} genInvNo={genInvNo} getCurrencySymbol={getCurrencySymbol} fmtNum={fmtNum} fmtDate={fmtDate} fmtStock={fmtStock} fmtSumQty={fmtSumQty} getInvoicePrintLabels={getInvoicePrintLabels} PRINT_FONT_LINK={PRINT_FONT_LINK} escapeHtml={escapeHtml} shareViaWhatsApp={shareViaWhatsApp} StatCard={StatCard} Card={Card} CardTitle={CardTitle} Btn={Btn} Modal={Modal} Input={Input} TH={TH} TR={TR} TD={TD} WABtn={WABtn} InvoiceA4={InvoiceA4} InvoiceThermal={InvoiceThermal} C={C} usePager={usePager} Pager={Pager} canEditInvoices={canEditInvoices} canDeleteInvoices={canDeleteInvoices} showPermissionDenied={showPermissionDenied} getDuplicateNormalizedNameKeys={getDuplicateNormalizedNameKeys} normalizePaymentCustomerName={normalizePaymentCustomerName} />}
+      {siTab === "invoices" && <React.Fragment>
+      <div className="erp-si-panel">
+        <div className="erp-si-panel-head">
+          <div className="erp-si-panel-head-left">
+            <span className="erp-si-panel-ico" aria-hidden="true">🧾</span>
+            <div>
+              <div className="erp-si-panel-title">Sales invoice register</div>
+              <div className="erp-si-panel-count">{filtered.length.toLocaleString()} records</div>
+            </div>
+          </div>
+          <div className="erp-si-panel-head-right">
+            <span className="erp-si-status-legend" aria-label="Status icon meanings">
+              <span className="erp-si-legend-item"><span className="erp-si-status-ico paid" aria-hidden="true">✓</span> Paid</span>
+              <span className="erp-si-legend-item"><span className="erp-si-status-ico partial" aria-hidden="true">◐</span> Partial</span>
+              <span className="erp-si-legend-item"><span className="erp-si-status-ico unpaid" aria-hidden="true">✕</span> Unpaid</span>
+              <span className="erp-si-legend-item"><span className="erp-si-status-ico return" aria-hidden="true">↩</span> Part. Return</span>
+              <span className="erp-si-legend-item"><span className="erp-si-status-ico cheque" aria-hidden="true">🕐</span> Pend. Cheque</span>
+            </span>
           </div>
         </div>
-        <div style={{ overflowX: "auto", border: "1px solid " + C.borderLight, borderRadius: 10 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1040, tableLayout: "fixed" }}>
+        <div className="erp-si-toolbar">
+          <div className="erp-si-search-wrap">
+            <input className="erp-si-field" value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search customer, invoice #, phone…" aria-label="Search invoices" />
+          </div>
+          <select className="erp-si-field" value={filterStatus} onChange={function (e) { setFilterStatus(e.target.value); }} aria-label="Status filter">
+            <option>Active</option><option>Voided</option><option>All</option><option>Paid</option><option>Partial</option><option>Unpaid</option>
+          </select>
+          <div className="erp-si-date-range">
+            <input type="date" className="erp-si-field" value={dateFrom} onChange={function (e) { setDateFrom(e.target.value); }} aria-label="From date" />
+            <span className="erp-si-date-sep">–</span>
+            <input type="date" className="erp-si-field" value={dateTo} onChange={function (e) { setDateTo(e.target.value); }} aria-label="To date" />
+          </div>
+          <button type="button" className="erp-si-btn-clear" onClick={function () { setSearch(""); setDateFrom(""); setDateTo(""); setFilterStatus("Active"); }}>Clear</button>
+        </div>
+        <div className="erp-si-table-wrap">
+          <table className="erp-si-table">
             <thead>
               <tr>
-                <th style={Object.assign({}, invThStyle(), { width: "14%" })}>Invoice #</th>
-                <th style={Object.assign({}, invThStyle(), { width: "7%" })}>Date</th>
-                <th style={Object.assign({}, invThStyle(), { width: "11%" })}>Customer</th>
-                <th style={Object.assign({}, invThStyle("center"), { width: "5%" })}>Items</th>
-                <th style={Object.assign({}, invThStyle("right"), { width: "9%" })}>Total</th>
-                <th style={Object.assign({}, invThStyle("right"), { width: "9%" })}>Paid</th>
-                <th style={Object.assign({}, invThStyle(), { width: "10%" })}>Status</th>
-                <th style={Object.assign({}, invThStyle("right"), { width: "12%" })}>Last payment</th>
-                <th style={Object.assign({}, invThStyle("right"), { width: "23%", paddingRight: 14 })}>Actions</th>
+                <th style={{ width: "13%" }}>Invoice #</th>
+                <th style={{ width: "8%" }}>Date</th>
+                <th style={{ width: "13%" }}>Customer</th>
+                <th className="ctr" style={{ width: "5%" }}>Items</th>
+                <th className="num" style={{ width: "10%" }}>Total</th>
+                <th className="num" style={{ width: "10%" }}>Paid</th>
+                <th className="ctr" style={{ width: "14%" }}>Status</th>
+                <th className="num" style={{ width: "11%" }}>Last payment</th>
+                <th className="num" style={{ width: "16%" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={9} style={{ padding: 32, textAlign: "center", color: C.muted, fontSize: 13 }}>
-                    <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.5 }}>🧾</div>
-                    No invoices match your filters
-                  </td>
+                  <td colSpan={9} className="erp-si-empty">No invoices match your filters</td>
                 </tr>
               )}
-              {siPager.slice.map(function (s, i) {
+              {siPager.slice.map(function (s) {
                 var bal = Math.max(0, s.total - (s.paid || 0));
                 var lastPay = (s.paymentHistory || []).slice(-1)[0];
                 var hasPendingChq = (state.cheques || []).some(function (ch) { return ch.saleId === s.id && ch.status === "Pending"; });
                 var saleRet = saleReturnUiStatus(s, state.salesReturns);
                 var saleStatusLabel = displayStatusForSale(s, state.salesReturns);
-                var saleRowBg = isVoidedTxn(s) ? "#fff5f5" : saleRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#fafbff");
+                var statusIcons = [];
+                if (isVoidedTxn(s)) {
+                  statusIcons.push(saleStatusMeta("Voided"));
+                } else {
+                  statusIcons.push(saleStatusMeta(s.payStatus || "Unpaid"));
+                  if (saleRet.hasReturns) statusIcons.push(saleStatusMeta(saleRet.label));
+                }
                 var invNo = s.invoiceNo || s.id.slice(0, 8);
+                var foreignLock = foreignEditLockFor(s.id);
+                void lockTick;
+                var rowClass = isVoidedTxn(s) ? "row-void" : (saleRet.hasReturns ? "row-return" : "");
                 return (
-                  <tr key={s.id} className="table-row-hover" style={{ background: saleRowBg, borderBottom: "1px solid " + C.borderLight }} title={saleRet.hasReturns ? "This invoice has return activity" : undefined}>
-                    <td style={{ padding: "10px 12px", maxWidth: 0 }}>
-                      <button
-                        type="button"
+                  <tr key={s.id} className={rowClass} title={saleRet.hasReturns ? "This invoice has return activity" : undefined}>
+                    <td>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="erp-si-inv-link"
                         onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}
+                        onKeyDown={function (e) {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setFullViewSale(s);
+                            setFvFormat(state.settings.invoiceDefaultSize || "a4");
+                            setFvWarranty(s.includeWarranty || false);
+                          }
+                        }}
                         title={invNo + " — View & print"}
-                        style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, cursor: "pointer", background: "none", border: "none", padding: 0, textAlign: "left", textDecoration: "none", lineHeight: 1.35, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block", width: "100%" }}
-                      >{invNo}</button>
+                      >{invNo}</span>
                     </td>
-                    <TD>{fmtDate(s.date)}</TD>
-                    <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.customerName || s.customer || "Walk-in"}>
-                      {s.customerName || s.customer || "Walk-in"}
+                    <td className="erp-si-muted">{fmtDate(s.date)}</td>
+                    <td><span className="erp-si-cust" title={s.customerName || s.customer || "Walk-in"}>{s.customerName || s.customer || "Walk-in"}</span></td>
+                    <td className="ctr erp-si-muted">{(s.items || []).length}</td>
+                    <td className="num"><span className="erp-si-money is-total">{getCurrencySymbol()} {fmtNum(s.total)}</span></td>
+                    <td className="num"><span className={"erp-si-money " + (bal > 0 ? "is-due" : "is-paid")}>{getCurrencySymbol()} {fmtNum(s.paid || 0)}</span></td>
+                    <td className="ctr">
+                      <span className="erp-si-status-cell" title={saleStatusLabel}>
+                        {statusIcons.map(function (meta, idx) {
+                          return (
+                            <React.Fragment key={meta.tone + "-" + idx}>
+                              {idx > 0 ? <span className="erp-si-status-sep" aria-hidden="true">|</span> : null}
+                              <span className={"erp-si-status-ico " + meta.tone} title={meta.label} aria-label={meta.label}>{meta.icon}</span>
+                            </React.Fragment>
+                          );
+                        })}
+                        {hasPendingChq ? (
+                          <React.Fragment>
+                            <span className="erp-si-status-sep" aria-hidden="true">|</span>
+                            <span className="erp-si-status-ico cheque" title="Pending cheque" aria-label="Pending cheque">🕐</span>
+                          </React.Fragment>
+                        ) : null}
+                        {foreignLock ? (
+                          <React.Fragment>
+                            <span className="erp-si-status-sep" aria-hidden="true">|</span>
+                            <span title={formatInvoiceEditLockMessage(foreignLock)} aria-label="Locked">🔒</span>
+                          </React.Fragment>
+                        ) : null}
+                      </span>
                     </td>
-                    <TD center>{(s.items || []).length}</TD>
-                    {invMoneyTd(getCurrencySymbol() + " " + fmtNum(s.total), C.blue, true)}
-                    {invMoneyTd(getCurrencySymbol() + " " + fmtNum(s.paid || 0), bal > 0 ? C.orange : C.green, false)}
-                    <td style={{ padding: "10px 12px", overflow: "hidden", maxWidth: 0 }}>
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: 5, maxWidth: "100%", minWidth: 0 }}>
-                        <Badge status={saleStatusLabel} />
-                        {hasPendingChq ? <span title="Pending cheque" style={{ fontSize: 11, lineHeight: 1, flexShrink: 0 }}>🕐</span> : null}
-                      </div>
-                    </td>
-                    <td style={{ padding: "10px 12px", textAlign: "right", fontSize: 12, color: C.muted, whiteSpace: "nowrap" }}>
+                    <td className="num erp-si-muted">
                       {lastPay ? (
-                        <span>{fmtDate(lastPay.date)} · <strong style={{ color: C.text, fontWeight: 600 }}>{getCurrencySymbol()} {fmtNum(lastPay.amount)}</strong></span>
+                        <span>{fmtDate(lastPay.date)} · <strong style={{ color: "#0f172a", fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(lastPay.amount)}</strong></span>
                       ) : "—"}
                     </td>
                     <td style={actBtnCellStyle}>
                       <ActBtnGroup>
-                        <ActBtn tone="cyan" title="View & print" onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}>🧾</ActBtn>
-                        {bal > 0 ? <ActBtn tone="green" title="Record payment" wide onClick={function () { setSplitPayModal(s); }}>Pay</ActBtn> : null}
+                        <ActBtn tone="cyan" title="View & print" onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }} />
+                        {bal > 0 ? <ActBtn tone="green" icon="pay" title={foreignLock ? formatInvoiceEditLockMessage(foreignLock) : "Record payment"} wide disabled={!!foreignLock} onClick={function () {
+                          if (!assertInvoiceUnlockedForMoney(s.id, "record payment")) return;
+                          setSplitPayModal(s);
+                        }}>Pay</ActBtn> : null}
                         {!isVoidedTxn(s) ? (
                           <ActBtn
                             tone="blue"
-                            title="Edit invoice"
-                            disabled={!canEditInvoices}
+                            title={foreignLock ? formatInvoiceEditLockMessage(foreignLock) : "Edit invoice on Sales"}
+                            disabled={!canEditInvoices || !!foreignLock}
                             onClick={function () {
                               if (!saleInvoiceEditAllowed(s)) return;
-                              if (!canEditInvoices) { showPermissionDenied("edit invoices"); return; }
-                              setEditSale(Object.assign({}, s));
+                              if (foreignLock) {
+                                showAlert(formatInvoiceEditLockMessage(foreignLock));
+                                return;
+                              }
+                              tryOpenInvoiceEdit(s);
                             }}
-                          >✎</ActBtn>
+                          />
                         ) : null}
-                        {!isVoidedTxn(s) ? <ActBtn tone="orange" title="Sales return" onClick={goSalesReturn}>↩</ActBtn> : null}
-                        {!isVoidedTxn(s) && canDeleteInvoices ? <ActBtn tone="red" title="Void invoice" onClick={function () { promptVoidSale(s); }}>✕</ActBtn> : null}
+                        {!isVoidedTxn(s) ? <ActBtn tone="orange" icon="return" title="Sales return" onClick={goSalesReturn} /> : null}
+                        {!isVoidedTxn(s) && canDeleteInvoices ? <ActBtn tone="red" title={foreignLock ? formatInvoiceEditLockMessage(foreignLock) : "Void invoice"} disabled={!!foreignLock} onClick={function () { promptVoidSale(s); }} /> : null}
                       </ActBtnGroup>
                     </td>
                   </tr>
@@ -1021,130 +1408,85 @@ var SalesInvoices = React.memo(function (props) {
             </tbody>
           </table>
         </div>
-        {filtered.length > 0 && (
-          <div style={{ display: "flex", justifyContent: "flex-end", gap: 20, padding: "12px 14px", borderTop: "1px solid " + C.borderLight, fontSize: 13, fontWeight: 600, background: "#f8fafc", borderRadius: "0 0 10px 10px", marginTop: -1, flexWrap: "wrap" }}>
-            <span style={{ color: C.muted }}>Filtered total: <strong style={{ color: C.blue }}>{getCurrencySymbol()} {fmtNum(totalShown)}</strong></span>
-            <span style={{ color: C.muted }}>Collected: <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(paidShown)}</strong></span>
-            <span style={{ color: C.muted }}>Outstanding: <strong style={{ color: outstandingShown > 0 ? C.red : C.green }}>{getCurrencySymbol()} {fmtNum(outstandingShown)}</strong></span>
+        <div className="erp-si-footer">
+          <div className="erp-si-footer-pager">
+            <Pager pager={siPager} />
           </div>
-        )}
-        <Pager pager={siPager} />
-      </Card>
+        </div>
+      </div>
 
       {/* ── Full Invoice View Modal ── */}
       {fullViewSale && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 3000,
-          background: "rgba(10,15,30,0.82)",
-          backdropFilter: "blur(6px)",
-          display: "flex", flexDirection: "column",
-          alignItems: "center",
-          height: "100vh",
-          overflow: "hidden",
-        }}>
-          {/* Top bar */}
-          <div style={{
-            width: "100%", background: C.navBg,
-            borderBottom: "1px solid rgba(255,255,255,0.1)",
-            padding: "10px 20px",
-            display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
-            flexShrink: 0,
-          }}>
-            {/* Invoice # + customer */}
-            <div>
-              <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 800, color: C.accent }}>
-                {fullViewSale.invoiceNo || fullViewSale.id.slice(0, 8)}
-              </span>
-              <span style={{ color: "rgba(200,220,255,0.6)", fontSize: 12, marginLeft: 10 }}>
-                {fullViewSale.customerName || "Walk-in"} · {fmtDate(fullViewSale.date)}
-              </span>
+        <div className="erp-si-fv" role="dialog" aria-modal="true" aria-label="View and print invoice">
+          <div className="erp-si-fv-bar">
+            <div className="erp-si-fv-bar-left">
+              <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+              <div className="erp-si-fv-meta">
+                <span className="erp-si-fv-kicker">View &amp; Print</span>
+                <div className="erp-si-fv-meta-main">
+                  <span className="erp-si-fv-inv">{fullViewSale.invoiceNo || fullViewSale.id.slice(0, 8)}</span>
+                  <span className="erp-si-fv-sub">{fullViewSale.customerName || "Walk-in"} · {fmtDate(fullViewSale.date)}</span>
+                </div>
+              </div>
             </div>
 
-            {/* Format tabs */}
-            <div style={{ display: "flex", gap: 6, marginLeft: 8 }}>
-              {(function () {
-                var paperSize   = state.settings.invoiceDefaultSize  || "a4";
-                var thermalSize = state.settings.invoiceThermalSize   || "thermal80";
-                var opts = [
-                  [paperSize,   paperSize   === "a5"        ? "📋 A5"           : "📄 A4"          ],
-                  [thermalSize, thermalSize === "thermal58"  ? "🖨 58mm"         : "🖨 80mm"         ],
-                ];
-                return opts.map(function (item) {
-                  var v = item[0]; var lbl = item[1];
-                  var active = fvFormat === v;
-                  return (
-                    <button key={v} onClick={function () { setFvFormat(v); }}
-                      style={{
-                        padding: "5px 14px", borderRadius: 7,
-                        border: "1.5px solid " + (active ? C.accent : "rgba(255,255,255,0.15)"),
-                        background: active ? C.accentSoft : "transparent",
-                        color: active ? C.accent : "rgba(200,220,255,0.7)",
-                        fontSize: 12, fontWeight: active ? 800 : 600,
-                        cursor: "pointer",
-                      }}
-                    >{active ? "✓ " : ""}{lbl}</button>
-                  );
-                });
-              })()}
+            <div className="erp-si-fv-tools">
+              <span className="erp-si-fv-tool-label">Format</span>
+              <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                {(function () {
+                  var paperSize   = state.settings.invoiceDefaultSize  || "a4";
+                  var thermalSize = state.settings.invoiceThermalSize   || "thermal80";
+                  var opts = [
+                    [paperSize,   paperSize   === "a5"        ? "A5"    : "A4"   ],
+                    [thermalSize, thermalSize === "thermal58"  ? "58mm"  : "80mm" ],
+                  ];
+                  return opts.map(function (item) {
+                    var v = item[0]; var lbl = item[1];
+                    var active = fvFormat === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
+                        onClick={function () { setFvFormat(v); }}
+                      >{lbl}</button>
+                    );
+                  });
+                })()}
+              </div>
+              <label className="erp-si-fv-warranty">
+                <input type="checkbox" checked={fvWarranty} onChange={function (e) { setFvWarranty(e.target.checked); }} />
+                <span>Warranty</span>
+              </label>
             </div>
 
-            {/* Warranty toggle */}
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, color: "rgba(200,220,255,0.75)", fontWeight: 600, userSelect: "none" }}>
-              <input type="checkbox" checked={fvWarranty} onChange={function (e) { setFvWarranty(e.target.checked); }}
-                style={{ width: 14, height: 14, cursor: "pointer", accentColor: C.accent }} />
-              Warranty
-            </label>
-
-            <div style={{ flex: 1 }} />
-
-            {/* Print + WhatsApp buttons */}
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <div className="erp-si-fv-actions">
               <button
+                type="button"
+                className="erp-si-fv-btn is-print"
                 onClick={function () { printInvoice(Object.assign({}, fullViewSale, { includeWarranty: fvWarranty }), fvFormat); }}
-                style={{
-                  padding: "7px 18px", borderRadius: 8,
-                  background: "linear-gradient(135deg," + C.accent + ",#4f9eff)",
-                  color: "#fff", border: "none",
-                  fontSize: 13, fontWeight: 800, cursor: "pointer",
-                }}
-              >🖨 Print</button>
+              >Print</button>
               <WABtn title="Share as PDF via WhatsApp" onClick={function () { whatsappInvoice(Object.assign({}, fullViewSale, { includeWarranty: fvWarranty }), fvFormat); }} />
+              <button
+                type="button"
+                className="erp-si-fv-btn is-close"
+                onClick={function () { setFullViewSale(null); }}
+                aria-label="Close"
+              >✕</button>
             </div>
-
-            {/* Close button */}
-            <button
-              onClick={function () { setFullViewSale(null); }}
-              style={{
-                padding: "7px 16px", borderRadius: 8,
-                background: "rgba(255,255,255,0.08)",
-                color: "rgba(200,220,255,0.85)",
-                border: "1px solid rgba(255,255,255,0.15)",
-                fontSize: 13, fontWeight: 700, cursor: "pointer",
-              }}
-            >✕ Close</button>
           </div>
 
           {saleReturnUiStatus(fullViewSale, state.salesReturns).hasReturns ? (
-            <div style={{ flexShrink: 0, padding: "8px 20px", background: "#fff7ed", borderBottom: "1px solid #fed7aa", fontSize: 12, color: "#9a3412", fontWeight: 600 }}>
-              <span title="This invoice has return activity">↩ This invoice has sales return activity.</span>
+            <div className="erp-si-fv-return">
+              <span title="This invoice has return activity">↩ Returns linked to this invoice</span>
             </div>
           ) : null}
 
-          {/* Invoice document — scrollable area */}
-          <div style={{
-            flex: 1, overflow: "auto", width: "100%",
-            minHeight: 0,
-            padding: "28px 16px",
-            background: "#e8ecf5",
-          }}>
-            <div id={"si-inv-preview-" + fullViewSale.id} style={{
-              background: "#fff",
-              boxShadow: "0 8px 40px rgba(0,0,0,0.25)",
-              borderRadius: (fvFormat === "thermal58" || fvFormat === "thermal80") ? 8 : 4,
-              overflow: "visible",
-              width: "fit-content",
-              margin: "0 auto",
-            }}>
+          <div className="erp-si-fv-stage">
+            <div
+              id={"si-inv-preview-" + fullViewSale.id}
+              className={"erp-si-fv-sheet" + ((fvFormat === "thermal58" || fvFormat === "thermal80") ? " is-thermal" : " is-paper")}
+            >
               {(fvFormat === "thermal58" || fvFormat === "thermal80")
                 ? <InvoiceThermal
                     inv={Object.assign({}, fullViewSale, { includeWarranty: fvWarranty })}
@@ -1292,21 +1634,38 @@ var SalesInvoices = React.memo(function (props) {
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {Math.max(0, viewSale.total - (viewSale.paid || 0)) > 0 && (
-              <Btn col="cyan" onClick={function () { setSplitPayModal(viewSale); }}>+ Record Payment</Btn>
+              <Btn
+                col="cyan"
+                disabled={!!foreignEditLockFor(viewSale.id)}
+                title={foreignEditLockFor(viewSale.id) ? formatInvoiceEditLockMessage(foreignEditLockFor(viewSale.id)) : undefined}
+                onClick={function () {
+                  if (!assertInvoiceUnlockedForMoney(viewSale.id, "record payment")) return;
+                  setSplitPayModal(viewSale);
+                }}
+              >+ Record Payment</Btn>
             )}
             <Btn
               col="blue"
-              disabled={!canEditInvoices}
+              disabled={!canEditInvoices || !!foreignEditLockFor(viewSale.id)}
+              title={foreignEditLockFor(viewSale.id) ? formatInvoiceEditLockMessage(foreignEditLockFor(viewSale.id)) : "Edit invoice on Sales"}
               onClick={function () {
                 if (!saleInvoiceEditAllowed(viewSale)) return;
-                if (!canEditInvoices) { showPermissionDenied("edit invoices"); return; }
-                setEditSale(Object.assign({}, viewSale));
+                var fl = foreignEditLockFor(viewSale.id);
+                if (fl) {
+                  showAlert(formatInvoiceEditLockMessage(fl));
+                  return;
+                }
                 setViewSale(null);
+                tryOpenInvoiceEdit(viewSale);
               }}
             >Edit Invoice</Btn>
             <Btn col="orange" onClick={goSalesReturn}>Sales Return</Btn>
             {!isVoidedTxn(viewSale) && canDeleteInvoices ? (
-              <Btn col="red" onClick={function () { promptVoidSale(viewSale); }}>Void Invoice</Btn>
+              <Btn
+                col="red"
+                disabled={!!foreignEditLockFor(viewSale.id)}
+                onClick={function () { promptVoidSale(viewSale); }}
+              >Void Invoice</Btn>
             ) : null}
             <Btn col="gray" onClick={function () { setViewSale(null); }}>Close</Btn>
           </div>
@@ -1317,7 +1676,12 @@ var SalesInvoices = React.memo(function (props) {
       {voidSaleTarget && (
         <Modal title={"Void Invoice — " + (voidSaleTarget.invoiceNo || voidSaleTarget.id.slice(0, 8))} onClose={function () { setVoidSaleTarget(null); setVoidReason(""); }}>
           <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "12px 14px", marginBottom: 14, fontSize: 13, color: "#991b1b", lineHeight: 1.5 }}>
-            This will reverse stock, customer balance, and payments. The invoice stays on record as <strong>Voided</strong>. This cannot be undone.
+            This will reverse stock and customer balance. The invoice stays on record as <strong>Voided</strong>. This cannot be undone.
+            {(function () {
+              var hint = computeVoidSaleRefundHint(voidSaleTarget, state.cheques || []);
+              if (!hint.message) return null;
+              return <div style={{ marginTop: 8, color: "#7f1d1d" }}>{hint.message}</div>;
+            })()}
           </div>
           <Sel label="Reason" value={voidReason} onChange={function (e) { setVoidReason(e.target.value); }}>
             <option value="">Select reason…</option>
@@ -1341,52 +1705,8 @@ var SalesInvoices = React.memo(function (props) {
         />
       )}
 
-      {editSale && (
-        <Modal title={"Edit Invoice — " + (editSale.invoiceNo || editSale.id.slice(0, 8))} onClose={function () { setEditSale(null); }} wide>
-          <div style={{ background: "#fef3e2", border: "1px solid #fcd34d", borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: "#92400e", lineHeight: 1.5 }}>
-            Only invoice header details can be changed here. To adjust quantities, pricing, or stock, use <strong>Sales Return</strong> (sidebar → Returns).
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, marginBottom: 12 }}>
-            <Input label="Invoice No" value={editSale.invoiceNo || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { invoiceNo: e.target.value }); }); }} />
-            <Input label="Date" type="date" value={editSale.date} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
-            <Input label="Customer" value={editSale.customerName || editSale.customer || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { customerName: e.target.value }); }); }} />
-            <Input label="Phone" value={editSale.customerPhone || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { customerPhone: e.target.value }); }); }} placeholder="Optional" />
-          </div>
-          <Input label="Note (internal)" value={editSale.saleNote || ""} onChange={function (e) { setEditSale(function (x) { return Object.assign({}, x, { saleNote: e.target.value }); }); }} placeholder="Optional — stored on this invoice" />
-          <div style={{ marginTop: 16, marginBottom: 12 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.07em" }}>Line items (read-only)</div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead><tr><TH>Product</TH><TH>Qty</TH><TH>Unit Price</TH><TH>Subtotal</TH></tr></thead>
-              <tbody>
-                {(editSale.items || []).map(function (it, idx) {
-                  return (
-                    <tr key={it.id || idx} style={{ borderBottom: "1px solid " + C.border }}>
-                      <td style={{ padding: "7px 10px", fontWeight: 600 }}>{it.name}</td>
-                      <td style={{ padding: "7px 10px" }}>{fmtStock(it.qty, it.unit)}</td>
-                      <td style={{ padding: "7px 10px" }}>{formatInvoiceLinePrice(it, fmtNum, getCurrencySymbol)}</td>
-                      <td style={{ padding: "7px 10px", fontWeight: 700, color: C.blue }}>{formatInvoiceLineTotal(it, fmtNum, getCurrencySymbol)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#f7f9ff", padding: "12px 14px", borderRadius: 10, marginBottom: 12 }}>
-            <div style={{ fontSize: 13 }}>
-              <span style={{ color: C.muted }}>Sub: </span><strong>{getCurrencySymbol()} {fmtNum((editSale.items || []).reduce(function (a, it) { return a + it.qty * (it.price || 0); }, 0))}</strong>
-              {(editSale.discount || 0) > 0 && <span style={{ color: C.orange, marginLeft: 12 }}>Disc: -{getCurrencySymbol()} {fmtNum(editSale.discount)}</span>}
-              {state.settings && state.settings.taxEnabled && (editSale.totalTax || 0) > 0 && <span style={{ color: C.muted, marginLeft: 12 }}>Tax: {getCurrencySymbol()} {fmtNum(editSale.totalTax)}</span>}
-            </div>
-            <div style={{ fontWeight: 900, fontSize: 16, color: C.blue }}>Total: {getCurrencySymbol()} {fmtNum(editSale.total || 0)}</div>
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Btn col="cyan" onClick={saveEdit} disabled={!canEditInvoices}>Save Changes</Btn>
-            <Btn col="orange" onClick={goSalesReturn}>Open Sales Return</Btn>
-            <Btn col="gray" onClick={function () { setEditSale(null); }}>Cancel</Btn>
-          </div>
-        </Modal>
-      )}
       </React.Fragment>}
+      </div>
     </div>
   );
 });

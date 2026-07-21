@@ -30,6 +30,10 @@ $ALL_KEYS = [
     'tc3_codRecords', 'tc3_codPartners',
     'tc3_codProfitSettings',
     'tc3_codWithdrawals',
+    'tc3_invoice_edit_locks',
+    'tc3_raw_material_usage',
+    'tc3_raw_material_counts',
+    'tc3_users',
 ];
 
 $requested = [];

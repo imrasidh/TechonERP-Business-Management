@@ -27,6 +27,7 @@ const { pathToFileURL } = require('url');
 const lanWsSync = require('./lan-ws-sync.cjs');
 const { buildLanAuthHeaders, stripInternalHeaders } = require('./lan-auth.cjs');
 const { createDeviceStore } = require('./device-store.cjs');
+const appUpdater = require('./updater.cjs');
 
 /* Dev / unpackaged only: erp-app/.env → LICENSE_SECRET / TC_LIC_SERVER_SECRET.
  * Packaged .exe: set OS env LICENSE_SECRET (preferred) or TC_LIC_SERVER_SECRET, or tc_license_secret.txt beside .exe. */
@@ -2039,6 +2040,22 @@ ipcMain.handle('tc-app-version', () => {
   return app.getVersion();
 });
 
+ipcMain.handle('tc-update-check', async () => {
+  return appUpdater.checkForUpdates();
+});
+
+ipcMain.handle('tc-update-download', async () => {
+  return appUpdater.downloadUpdate();
+});
+
+ipcMain.handle('tc-update-install', async () => {
+  return appUpdater.quitAndInstall();
+});
+
+ipcMain.handle('tc-update-install-prompt', async () => {
+  return appUpdater.promptAndInstall();
+});
+
 /** Same secret as license API — for snapshot HMAC-SHA256 v2 (renderer never stores it). */
 ipcMain.handle('tc-snapshot-hmac-secret', () => {
   try {
@@ -2772,6 +2789,7 @@ app.whenReady().then(() => {
     }
   });
   createWindow();
+  try { appUpdater.setupAutoUpdater(); } catch (_e) {}
   setTimeout(function () {
     try { restartLanWebSocket('', undefined); } catch (_e) {}
   }, 1500);

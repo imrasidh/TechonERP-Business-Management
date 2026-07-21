@@ -1,558 +1,698 @@
 import React from "react";
+import "../styles/erpDashboard.css";
 import { round2 } from "../utils/moneyRound.js";
-import { sumRawMaterialKitchenCostInRange } from "../utils/ingredientUsageCost.js";
-import { activeSales } from "../utils/voidInvoice.js";
+import { activeSales, activePurchases } from "../utils/voidInvoice.js";
 import { sortNewestFirst } from "../utils/listPage.js";
-import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
 
-var dashTileStyle = {
-  background: "#fff",
-  borderRadius: 12,
-  padding: "16px 18px",
-  border: "1px solid #e8ecf4",
-  boxShadow: "0 1px 3px rgba(15,23,42,0.04)",
-  cursor: "pointer",
-  transition: "box-shadow .15s, border-color .15s",
-};
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
 
-var dashLabelStyle = {
-  fontSize: 10,
-  fontWeight: 700,
-  color: "#64748b",
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-};
+function shiftDateIso(iso, days) {
+  var d = new Date(String(iso || "") + "T12:00:00");
+  if (isNaN(d.getTime())) return iso;
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+}
 
-var dashValueStyle = {
-  fontSize: 22,
-  fontWeight: 800,
-  color: "#0f172a",
-  marginTop: 8,
-  letterSpacing: "-0.02em",
-  fontVariantNumeric: "tabular-nums",
-};
+function saleNet(s) {
+  return Math.max(0, (Number(s.total) || 0) - (Number(s.totalTax) || 0));
+}
 
-var dashSubStyle = { fontSize: 11, color: "#94a3b8", marginTop: 4, fontWeight: 500 };
+function saleCogs(s) {
+  return (s.items || []).reduce(function (a, it) {
+    var cost = Number(it.cost) || 0;
+    if (it.isGlassLine && it.glassTotalSqFt) return a + cost * (Number(it.glassTotalSqFt) || 0);
+    return a + cost * (Number(it.qty) || 0);
+  }, 0);
+}
 
-var DashTile = function (props) {
+function pctChange(cur, prev) {
+  var c = Number(cur) || 0;
+  var p = Number(prev) || 0;
+  if (p === 0) return c === 0 ? 0 : 100;
+  return ((c - p) / Math.abs(p)) * 100;
+}
+
+function fmtPct(n) {
+  var v = Math.abs(Number(n) || 0);
+  return (v >= 10 ? v.toFixed(1) : v.toFixed(1)) + "%";
+}
+
+function deltaSub(cur, prev) {
+  var d = pctChange(cur, prev);
+  var up = d >= 0;
+  return (up ? "▲ " : "▼ ") + fmtPct(d) + " vs yesterday";
+}
+
+function DashStatWrap(props) {
   return (
     <div
-      className="stat-card-hover"
+      role={props.onClick ? "button" : undefined}
+      tabIndex={props.onClick ? 0 : undefined}
       onClick={props.onClick}
-      style={Object.assign({}, dashTileStyle, props.style || {}, { cursor: props.onClick ? "pointer" : "default" })}
+      onKeyDown={function (e) {
+        if (!props.onClick) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          props.onClick();
+        }
+      }}
+      style={{ cursor: props.onClick ? "pointer" : "default", minWidth: 0 }}
     >
-      <div style={dashLabelStyle}>{props.label}</div>
-      <div style={Object.assign({}, dashValueStyle, props.valueColor ? { color: props.valueColor } : {})}>{props.value}</div>
-      {props.sub ? <div style={dashSubStyle}>{props.sub}</div> : null}
-      {props.footer || null}
+      {props.children}
     </div>
   );
-};
+}
 
-var DashLink = function (props) {
+function IconSvg(props) {
+  var name = props.name;
+  var paths = {
+    sales: "M3 17l6-6 4 4 8-8M14 7h6v6",
+    profit: "M12 3v18M7 10l5-5 5 5M7 14l5 5 5-5",
+    cash: "M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6",
+    bank: "M3 10l9-7 9 7M5 10v10h14V10M9 20v-6h6v6",
+    recv: "M12 8v8M8 12h8M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+    pay: "M12 8v8M8 12h8M3 12a9 9 0 1018 0 9 9 0 00-18 0z",
+    cart: "M6 6h15l-1.5 9h-12zM6 6L5 3H2M9 20a1 1 0 100-2 1 1 0 000 2zm9 0a1 1 0 100-2 1 1 0 000 2z",
+    bag: "M6 8h12l-1 12H7L6 8zm3 0V6a3 3 0 016 0v2",
+    bill: "M14 2H6a2 2 0 00-2 2v16l4-2 4 2 4-2 4 2V8z",
+    users: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zm14 10v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
+    truck: "M1 3h15v13H1zM16 8h4l3 3v5h-7V8zM5.5 21a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm13 0a1.5 1.5 0 100-3 1.5 1.5 0 000 3z",
+    box: "M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z",
+    wrench: "M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z",
+    sync: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
+    db: "M12 2C6.48 2 2 3.79 2 6v12c0 2.21 4.48 4 10 4s10-1.79 10-4V6c0-2.21-4.48-4-10-4zm0 2c4.42 0 8 .9 8 2s-3.58 2-8 2-8-.9-8-2 3.58-2 8-2zm0 16c-4.42 0-8-.9-8-2v-2.07C5.05 16.58 8.17 17 12 17s6.95-.42 8-1.07V18c0 1.1-3.58 2-8 2z",
+    wifi: "M5 12.55a11 11 0 0114.08 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0M12 20h.01",
+    backup: "M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2zM17 21v-8H7v8M7 3v5h8",
+    license: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+    printer: "M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z",
+    refresh: "M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15",
+    order: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+  };
   return (
-    <button
-      type="button"
-      onClick={props.onClick}
-      style={{
-        border: "none",
-        background: "transparent",
-        color: "#64748b",
-        fontSize: 11,
-        fontWeight: 700,
-        cursor: "pointer",
-        padding: "4px 0",
-        fontFamily: "inherit",
-      }}
-    >{props.children}</button>
+    <svg viewBox="0 0 24 24" width={props.size || 18} height={props.size || 18} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={paths[name] || paths.sales} />
+    </svg>
   );
-};
+}
+
+
+function SalesChart(props) {
+  var points = props.points || [];
+  var w = 560;
+  var h = 200;
+  var padL = 44;
+  var padR = 12;
+  var padT = 16;
+  var padB = 28;
+  var plotW = w - padL - padR;
+  var plotH = h - padT - padB;
+  var vals = points.map(function (p) { return p.value; });
+  var max = Math.max.apply(null, vals.concat([1]));
+  var niceMax = Math.ceil(max / 5) * 5 || 1;
+  if (niceMax < max) niceMax = max;
+  var coords = points.map(function (p, i) {
+    var x = padL + (points.length > 1 ? (i / (points.length - 1)) * plotW : plotW / 2);
+    var y = padT + plotH - (p.value / niceMax) * plotH;
+    return { x: x, y: y, label: p.label, value: p.value };
+  });
+  var line = coords.map(function (c, i) {
+    return (i === 0 ? "M" : "L") + c.x.toFixed(1) + " " + c.y.toFixed(1);
+  }).join(" ");
+  var area = coords.length
+    ? line + " L" + coords[coords.length - 1].x.toFixed(1) + " " + (padT + plotH) +
+      " L" + coords[0].x.toFixed(1) + " " + (padT + plotH) + " Z"
+    : "";
+  var yTicks = [0, 0.25, 0.5, 0.75, 1].map(function (f) {
+    return { y: padT + plotH - f * plotH, label: Math.round(niceMax * f) };
+  });
+  var xLabels = coords.filter(function (_, i) {
+    if (coords.length <= 8) return true;
+    var step = Math.ceil(coords.length / 6);
+    return i % step === 0 || i === coords.length - 1;
+  });
+
+  return (
+    <svg className="erp-md-chart-svg" viewBox={"0 0 " + w + " " + h} preserveAspectRatio="none" role="img" aria-label="Sales overview chart">
+      <defs>
+        <linearGradient id="erpDashArea" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#2979ff" stopOpacity="0.22" />
+          <stop offset="100%" stopColor="#2979ff" stopOpacity="0.02" />
+        </linearGradient>
+        <linearGradient id="erpDashLine" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stopColor="#2979ff" />
+          <stop offset="100%" stopColor="#2255d4" />
+        </linearGradient>
+      </defs>
+      {yTicks.map(function (t, i) {
+        return (
+          <g key={"y" + i}>
+            <line x1={padL} y1={t.y} x2={w - padR} y2={t.y} stroke="#e1e8f5" strokeWidth="1" />
+            <text x={padL - 6} y={t.y + 3} textAnchor="end" className="erp-md-chart-axis">{t.label >= 1000 ? Math.round(t.label / 1000) + "K" : t.label}</text>
+          </g>
+        );
+      })}
+      {area ? <path d={area} fill="url(#erpDashArea)" /> : null}
+      {line ? <path d={line} fill="none" stroke="url(#erpDashLine)" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" /> : null}
+      {coords.map(function (c, i) {
+        return <circle key={"c" + i} cx={c.x} cy={c.y} r="3.5" fill="#fff" stroke="#2979ff" strokeWidth="2" />;
+      })}
+      {xLabels.map(function (c, i) {
+        return <text key={"x" + i} x={c.x} y={h - 8} textAnchor="middle" className="erp-md-chart-axis">{c.label}</text>;
+      })}
+    </svg>
+  );
+}
+
 var Dashboard = function (props) {
   var state = props.state;
   var setActive = props.setActive;
-  var S = props.S;
-  var today = props.today;
+  var StatCard = props.StatCard;
+  var Card = props.Card;
+  var CardTitle = props.CardTitle;
+  var C = props.C;
+  var TR = props.TR;
+  var TD = props.TD;
   var getCashBalances = props.getCashBalances;
-  var getTotalSupplierPayable = props.getTotalSupplierPayable;
   var getTotalReceivableDerived = props.getTotalReceivableDerived;
   var getTotalPayableDerived = props.getTotalPayableDerived;
+  var getTotalSupplierPayable = props.getTotalSupplierPayable;
   var getCurrencySymbol = props.getCurrencySymbol;
   var fmtNum = props.fmtNum;
   var fmtDate = props.fmtDate;
-  var C = props.C;
-  var Card = props.Card;
-  var Badge = props.Badge;
-  var getBulkDisplayParts = props.getBulkDisplayParts;
-  var fmtStockDual = props.fmtStockDual;
-  var fmtStock = props.fmtStock;
-  var getBusinessProfile = props.getBusinessProfile;
-  var currentUser = props.currentUser || null;
+  var today = props.today;
+  var licenseInfo = props.licenseInfo;
+  var cur = getCurrencySymbol();
   var t = today();
-  var liveSales = activeSales(state.sales);
-  var todaySales = round2(liveSales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0));
-  var todayInvoicedCost = round2(liveSales.filter(function (s) { return s.date === t; }).reduce(function (a, s) { return a + s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); }, 0));
-  var todayIngredientCost = round2(sumRawMaterialKitchenCostInRange(state, t, t));
-  var todayCost = round2(todayInvoicedCost + todayIngredientCost);
-  var todayProfit = round2(todaySales - todayCost);
-  /* BUG1 FIX: Use getCashBalances() as the single source of truth for cash/bank.
-     The old formula (capital + salesIncome - purchases - expenses - assets) was
-     incomplete — it ignored manual payables, manual receivables, capital ledger
-     entries, profit distributions and opening balance seeds. */
+  var yday = shiftDateIso(t, -1);
+  var monthKey = t.slice(0, 7);
+  var [chartPeriod, setChartPeriod] = React.useState("month");
+
   var balancesRaw = getCashBalances(state);
-  var balances = { total: round2(balancesRaw.total), cash: round2(balancesRaw.cash), bank: round2(balancesRaw.bank) };
-  /* BUG2 FIX: Include manual receivables — GL AR when ledger synced */
+  var cash = round2(balancesRaw.cash);
+  var bank = round2(balancesRaw.bank);
+
+  var liveSales = activeSales(state.sales);
+  var livePurchases = activePurchases(state.purchases || []);
+
+  function salesOn(day) {
+    return liveSales.filter(function (s) { return s.date === day; });
+  }
+  function sumSales(list) {
+    return round2(list.reduce(function (a, s) { return a + saleNet(s); }, 0));
+  }
+  function sumProfit(list) {
+    return round2(list.reduce(function (a, s) { return a + (saleNet(s) - saleCogs(s)); }, 0));
+  }
+
+  var todaySalesList = salesOn(t);
+  var ydaySalesList = salesOn(yday);
+  var todaySales = sumSales(todaySalesList);
+  var ydaySales = sumSales(ydaySalesList);
+  var todayProfit = sumProfit(todaySalesList);
+  var ydayProfit = sumProfit(ydaySalesList);
+
+  var monthSalesList = liveSales.filter(function (s) {
+    return String(s.date || "").slice(0, 7) === monthKey;
+  });
+  var monthSales = sumSales(monthSalesList);
+  var monthPurchases = round2(livePurchases.filter(function (p) {
+    return String(p.date || "").slice(0, 7) === monthKey;
+  }).reduce(function (a, p) { return a + (Number(p.total) || 0); }, 0));
+  var monthExpenses = round2((state.expenses || []).filter(function (e) {
+    return String(e.date || "").slice(0, 7) === monthKey;
+  }).reduce(function (a, e) { return a + (Number(e.amount) || 0); }, 0));
+
   var totalReceivable = typeof getTotalReceivableDerived === "function"
     ? round2(getTotalReceivableDerived(state))
-    : (function () {
-      var fromSales = liveSales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
-      var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
-        var paid = (mr.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
-        return a + Math.max(0, mr.amount - paid);
-      }, 0);
-      return round2(fromSales + fromManual);
-    }());
-  /* BUG3 FIX: manual + supplier payables — GL AP when ledger synced */
+    : 0;
   var totalPayable = typeof getTotalPayableDerived === "function"
     ? round2(getTotalPayableDerived(state))
-    : (function () {
-      var fromSupp = getTotalSupplierPayable(state.purchases);
-      var fromManual = S.get("tc3_manualPayables", []).reduce(function (a, mp) {
-        var paid = (mp.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
-        return a + Math.max(0, mp.amount - paid);
-      }, 0);
-      return round2(fromSupp + fromManual);
-    }());
-  /* FIX 1: Exclude soft-deleted (inactive) products from all stock calculations */
-  var activeProducts = state.products.filter(function (p) { return p.status !== "inactive"; });
-  /* Service products are not stocked like inventory — omit from stock value / low / out-of-stock / reorder (matches Inventory tab). */
-  var stockableProducts = activeProducts.filter(function (p) {
-    if (isRepair3pInternalProduct(p)) return false;
-    return String((p && p.type) || "stock").toLowerCase() !== "service";
+    : (typeof getTotalSupplierPayable === "function"
+      ? round2(getTotalSupplierPayable(state.purchases))
+      : 0);
+
+  var stockProducts = (state.products || []).filter(function (p) {
+    return p && p.status !== "inactive";
   });
-  var stockValue = round2(stockableProducts.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0));
-  var stockRetailValue = round2(stockableProducts.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0));
+  var inventoryValue = round2(stockProducts.reduce(function (a, p) {
+    return a + (Number(p.stock) || 0) * (Number(p.cost) || 0);
+  }, 0));
+  var lowStockAll = stockProducts
+    .filter(function (p) { return (Number(p.stock) || 0) <= 5; })
+    .sort(function (a, b) { return (Number(a.stock) || 0) - (Number(b.stock) || 0); });
+  var lowStock = lowStockAll.slice(0, 5);
+  var lowStockTotal = lowStockAll.length;
+
   var recentSales = sortNewestFirst(liveSales).slice(0, 5);
+  var recentPurchases = sortNewestFirst(livePurchases).slice(0, 5);
   var recentRepairs = sortNewestFirst(state.repairs || []).slice(0, 5);
-  var lowStock = stockableProducts.filter(function (p) { return p.stock > 0 && p.stock <= 5; });
-  var outOfStockProducts = stockableProducts.filter(function (p) { return (p.stock || 0) === 0; });
-  var reorderSuggestions = lowStock.slice(0, 8).map(function (p) {
+
+  var last7 = [];
+  for (var di = 6; di >= 0; di--) {
+    var day = shiftDateIso(t, -di);
+    last7.push(sumSales(salesOn(day)));
+  }
+
+  function buildChartPoints() {
+    var pts = [];
+    if (chartPeriod === "today") {
+      var hours = {};
+      todaySalesList.forEach(function (s) {
+        var hr = 12;
+        var ts = s.createdAt || s.time || s.timestamp || "";
+        var m = String(ts).match(/T(\d{2})/) || String(ts).match(/(\d{1,2}):/);
+        if (m) hr = Math.min(23, parseInt(m[1], 10) || 12);
+        hours[hr] = (hours[hr] || 0) + saleNet(s);
+      });
+      for (var h = 8; h <= 20; h++) {
+        pts.push({ label: pad2(h) + ":00", value: round2(hours[h] || 0) });
+      }
+      if (!todaySalesList.length) {
+        pts = [{ label: "Today", value: 0 }];
+      }
+    } else if (chartPeriod === "week") {
+      for (var wi = 6; wi >= 0; wi--) {
+        var wd = shiftDateIso(t, -wi);
+        var dObj = new Date(wd + "T12:00:00");
+        pts.push({
+          label: dObj.toLocaleDateString("en-GB", { weekday: "short" }),
+          value: sumSales(salesOn(wd)),
+        });
+      }
+    } else if (chartPeriod === "year") {
+      for (var mi = 11; mi >= 0; mi--) {
+        var md = new Date(t + "T12:00:00");
+        md.setMonth(md.getMonth() - mi);
+        var key = md.getFullYear() + "-" + pad2(md.getMonth() + 1);
+        var val = sumSales(liveSales.filter(function (s) {
+          return String(s.date || "").slice(0, 7) === key;
+        }));
+        pts.push({
+          label: md.toLocaleDateString("en-GB", { month: "short" }),
+          value: val,
+        });
+      }
+    } else {
+      for (var i = 29; i >= 0; i--) {
+        var dd = shiftDateIso(t, -i);
+        var dob = new Date(dd + "T12:00:00");
+        pts.push({
+          label: pad2(dob.getDate()) + "/" + pad2(dob.getMonth() + 1),
+          value: sumSales(salesOn(dd)),
+        });
+      }
+    }
+    return pts;
+  }
+
+  var chartPoints = buildChartPoints();
+
+  function go(page) {
+    if (page) setActive(page);
+  }
+
+  function money(n) {
+    return cur + " " + fmtNum(n);
+  }
+
+  function invThStyle(align) {
     return {
-      id: p.id,
-      name: p.name,
-      current: p.stock || 0,
-      suggested: Math.max(6, 12 - (p.stock || 0)),
-      unit: p.unit,
+      textAlign: align || "left",
+      padding: "10px 12px",
+      fontWeight: 700,
+      color: C.th,
+      fontSize: 10.5,
+      textTransform: "uppercase",
+      letterSpacing: "0.07em",
+      borderBottom: "2px solid " + C.border,
+      whiteSpace: "nowrap",
+      background: "#f8fafc",
     };
-  });
-  var weeklyTrend = (function () {
-    var out = [];
-    for (var i = 6; i >= 0; i--) {
-      var dt = new Date();
-      dt.setDate(dt.getDate() - i);
-      var key = dt.toISOString().slice(0, 10);
-      var label = dt.toLocaleDateString("en-US", { weekday: "short" });
-      var total = round2(liveSales.filter(function (s) { return s.date === key; }).reduce(function (a, s) { return a + (s.total || 0); }, 0));
-      out.push({ key: key, label: label, total: total });
-    }
-    return out;
-  })();
-  var weeklyMax = weeklyTrend.reduce(function (m, x) { return Math.max(m, x.total || 0); }, 1);
-  var topProducts = (function () {
-    var map = {};
-    (liveSales || []).forEach(function (s) {
-      (s.items || []).forEach(function (it) {
-        var k = it.id || it.name || "unknown";
-        if (!map[k]) map[k] = { name: it.name || "Unknown", qty: 0, revenue: 0 };
-        map[k].qty += Number(it.qty || 0);
-        map[k].revenue = round2(map[k].revenue + Number((it.price || 0) * (it.qty || 0)));
-      });
-    });
-    return Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return b.qty - a.qty; }).slice(0, 5);
-  })();
+  }
 
-  /* ── Cheque alerts ── */
-  var allCheques = state.cheques || [];
-  var dueAlertCheques = allCheques.filter(function (ch) {
-    if (ch.status !== "Pending") return false;
-    var diffDays = Math.ceil((new Date(ch.dueDate) - new Date(t)) / 86400000);
-    return diffDays <= 7; /* today + 7 days ahead, plus overdue */
-  }).sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
+  function dashMoneyTd(children, color, bold) {
+    return (
+      <td style={{ padding: "5px 8px", textAlign: "right", color: color || C.text, fontWeight: bold ? 700 : 500, whiteSpace: "nowrap", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
+        {children}
+      </td>
+    );
+  }
 
-  /* ── Fix 4: Data Integrity Checks ── */
-  var integrityWarnings = (function () {
-    var warns = [];
-    /* Negative stock */
-    state.products.filter(function (p) { return p.status !== "inactive"; }).forEach(function (p) {
-      if ((p.stock || 0) < 0) warns.push({ type: "inventory", msg: "Negative stock: \"" + p.name + "\" (stock: " + p.stock + ")" });
-    });
-    /* Sales referencing missing/deleted products */
-    /* FIX: Only check against active products — soft-deleted (inactive) products are still in state.products */
-    /* FIX: include ALL products (active + inactive/soft-deleted) in the ID set.
-       Inactive products are soft-deleted by design — historical invoices referencing
-       them are valid records, not integrity errors. Only warn for truly missing IDs. */
-    var productIds = new Set(state.products.map(function (p) { return p.id; }));
-    state.sales.forEach(function (s) {
-      (s.items || []).forEach(function (it) {
-        if (it.id && !productIds.has(it.id)) {
-          warns.push({ type: "invoice", msg: "Invoice " + (s.invoiceNo || s.id.slice(0, 8)) + " references deleted product \"" + (it.name || it.id) + "\"" });
-        }
-      });
-    });
-    /* Manual receivables without a person name */
-    S.get("tc3_manualReceivables", []).forEach(function (mr) {
-      if (!mr.person || !String(mr.person).trim()) {
-        warns.push({ type: "receivable", msg: "Manual receivable (" + getCurrencySymbol() + " " + fmtNum(mr.amount) + ") has no customer name" });
-      }
-    });
-    /* Manual payables without a source */
-    S.get("tc3_manualPayables", []).forEach(function (mp) {
-      if (!mp.source || !String(mp.source).trim()) {
-        warns.push({ type: "payable", msg: "Manual payable (" + getCurrencySymbol() + " " + fmtNum(mp.amount) + ") has no supplier/source name" });
-      }
-    });
-    return warns;
-  }());
-    var WARN_COLORS = { inventory: C.red, invoice: C.orange, receivable: C.cyan, payable: C.purple };
-  var shopName = (state.settings && state.settings.shopName) ? state.settings.shopName : "Your business";
-  var displayDate = (function () {
-    try {
-      return new Date(t + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
-    } catch (e) {
-      return fmtDate(t);
+  function repairDevice(r) {
+    if (r.devices && r.devices[0]) {
+      var d = r.devices[0];
+      return [d.brand, d.modelNo || d.deviceType].filter(Boolean).join(" ") || "Device";
     }
-  }());
+    return [r.brand, r.modelNo || r.deviceType].filter(Boolean).join(" ") || "Device";
+  }
+
+  function stockMeta(p) {
+    var qty = Number(p.stock) || 0;
+    var limit = Math.max(Number(p.reorderLevel) || 5, 5);
+    var pct = Math.max(0, Math.min(100, (qty / limit) * 100));
+    if (qty <= 0) return { label: "Out of Stock", cls: "out", pct: 22 };
+    if (qty <= limit) return { label: "Low Stock", cls: "low", pct: Math.max(18, pct) };
+    return { label: "In Stock", cls: "ok", pct: pct };
+  }
+
+  var summaryRows = [
+    { icon: "🛒", label: "Month sales", value: money(monthSales), page: "invoices", tone: "blue" },
+    { icon: "📦", label: "Purchases", value: money(monthPurchases), page: "purchases", tone: "orange" },
+    { icon: "💸", label: "Expenses", value: money(monthExpenses), page: "expenses", tone: "red" },
+    { icon: "👥", label: "Parties", value: String((state.customers || []).length + (state.suppliers || []).length + (state.others || []).length), page: "parties", tone: "teal" },
+    { icon: "📊", label: "Stock value", value: money(inventoryValue), page: "inventory", tone: "purple" },
+  ];
+
+  var chartPeriodSub = chartPeriod === "today"
+    ? "Today by hour"
+    : chartPeriod === "week"
+      ? "Last 7 days"
+      : chartPeriod === "year"
+        ? "Last 12 months"
+        : "Last 30 days";
+
+  var chartSeg = (
+    <div className="erp-dash-seg">
+      {[["today", "Today"], ["week", "Week"], ["month", "Month"], ["year", "Year"]].map(function (opt) {
+        return (
+          <button
+            key={opt[0]}
+            type="button"
+            className={"erp-dash-seg-btn" + (chartPeriod === opt[0] ? " active" : "")}
+            onClick={function () { setChartPeriod(opt[0]); }}
+          >
+            {opt[1]}
+          </button>
+        );
+      })}
+    </div>
+  );
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {/* ── Header ── */}
-      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>Dashboard</div>
-          <div style={{ fontSize: 26, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.03em", lineHeight: 1.15 }}>{shopName}</div>
-          <div style={{ fontSize: 13, color: "#64748b", marginTop: 6, fontWeight: 500 }}>{displayDate}</div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" onClick={function () { setActive("pos"); }} style={{ border: "none", borderRadius: 9, padding: "9px 16px", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(41,121,255,0.25)" }}>Open POS</button>
-          <button type="button" onClick={function () { setActive("invoices"); }} style={{ border: "1px solid #e2e8f0", borderRadius: 9, padding: "9px 16px", background: "#fff", color: "#334155", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Invoices</button>
-          <button type="button" onClick={function () { setActive("reports"); }} style={{ border: "1px solid #e2e8f0", borderRadius: 9, padding: "9px 16px", background: "#fff", color: "#334155", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>Reports</button>
-        </div>
-      </div>
-
-      {(function () {
-        var welcomeDismissed = !!S.get("tc3_dashboard_welcome_dismissed", false);
-        if (welcomeDismissed) return null;
-        var name = currentUser && (currentUser.name || currentUser.username) ? (currentUser.name || currentUser.username) : "there";
-        return (
-          <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <div style={{ fontSize: 13, color: "#475569" }}>Welcome back, <strong style={{ color: "#0f172a" }}>{name}</strong>. Your key numbers and alerts are below.</div>
-            <button type="button" onClick={function () { S.set("tc3_dashboard_welcome_dismissed", true); props.setState(function (s) { return Object.assign({}, s); }); }} style={{ border: "1px solid #e2e8f0", background: "#fff", color: "#64748b", borderRadius: 7, fontWeight: 600, fontSize: 11, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>Dismiss</button>
-          </div>
-        );
-      })()}
-
-      {props.setupIncomplete && props.onRequestSetupWizard && (
+    <div className="erp-page erp-dash erp-md-dash">
+      {props.setupIncomplete && props.onRequestSetupWizard ? (
         <div
+          className="erp-md-alert warn"
           role="button"
           tabIndex={0}
-          title="Complete setup to use sales, POS, and invoicing"
-          onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); props.onRequestSetupWizard(); } }}
           onClick={props.onRequestSetupWizard}
-          style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "12px 16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}
+          onKeyDown={function (e) {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              props.onRequestSetupWizard();
+            }
+          }}
         >
-          <div style={{ fontSize: 13, color: "#92400e", fontWeight: 600 }}>Add shop name and contact in Settings to unlock sales and POS.</div>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "#b45309", flexShrink: 0 }}>Open Settings →</span>
+          <span>Add shop name and contact in Settings to unlock sales and POS.</span>
+          <strong>Open Settings →</strong>
         </div>
-      )}
+      ) : null}
 
-      {/* ── Primary KPIs ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 12 }}>
-        <DashTile
-          label="Total cash"
-          value={getCurrencySymbol() + " " + fmtNum(balances.total)}
-          sub="Cash + bank balance"
-          onClick={function () { setActive("reports"); }}
-          footer={(
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <div style={{ flex: 1, background: "#f0fdf4", borderRadius: 8, padding: "6px 8px", border: "1px solid #dcfce7" }}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: "#15803d", textTransform: "uppercase" }}>Cash</div>
-                <div style={{ fontSize: 12, fontWeight: 800, color: "#166534", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(balances.cash)}</div>
-              </div>
-              <div style={{ flex: 1, background: "#eff6ff", borderRadius: 8, padding: "6px 8px", border: "1px solid #dbeafe" }}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: "#1d4ed8", textTransform: "uppercase" }}>Bank</div>
-                <div style={{ fontSize: 12, fontWeight: 800, color: "#1e40af", marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(balances.bank)}</div>
-              </div>
-            </div>
-          )}
-        />
-        <DashTile label="Today sales" value={getCurrencySymbol() + " " + fmtNum(todaySales)} sub={fmtDate(t)} valueColor={C.cyan} onClick={function () { setActive("pos"); }} />
-        <DashTile label="Today profit" value={getCurrencySymbol() + " " + fmtNum(todayProfit)} sub={"Cost " + getCurrencySymbol() + " " + fmtNum(todayCost)} valueColor={todayProfit >= 0 ? C.green : C.red} onClick={function () { setActive("reports"); }} />
-        <DashTile label="Stock value" value={getCurrencySymbol() + " " + fmtNum(stockValue)} sub={lowStock.length + " low · " + outOfStockProducts.length + " out"} valueColor={C.purple} onClick={function () { setActive("inventory"); }} />
-      </div>
-
-      {/* ── Receivable / Payable ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 }}>
-        <DashTile label="Receivables" value={getCurrencySymbol() + " " + fmtNum(totalReceivable)} sub="Money owed to you" valueColor={C.cyan} onClick={function () { setActive("receivables"); }} />
-        <DashTile label="Payables" value={getCurrencySymbol() + " " + fmtNum(totalPayable)} sub="Money you owe" valueColor={C.orange} onClick={function () { setActive("payables"); }} />
-        <DashTile label="Retail stock value" value={getCurrencySymbol() + " " + fmtNum(stockRetailValue)} sub="At selling price" onClick={function () { setActive("inventory"); }} />
-      </div>
-
-      {/* ── Trial usage ── */}
-      {(function() {
-        var licenseInfo = props.licenseInfo;
-        if (!licenseInfo || licenseInfo.status !== 'trial') return null;
+      {(function () {
+        if (!licenseInfo || licenseInfo.status !== "trial") return null;
         var MAX = licenseInfo.trialMaxRecords || 20;
-        var allMods = [
-          { label: 'Sales',      count: liveSales.length                  },
-          { label: 'Products',   count: state.products.length               },
-          { label: 'Customers',  count: state.customers.length              },
-          { label: 'Expenses',   count: (state.expenses   || []).length     },
-          { label: 'Purchases',  count: (state.purchases  || []).length     },
-          { label: 'Suppliers',  count: (state.suppliers  || []).length     },
-          { label: 'Quotations', count: (state.quotations || []).length     },
-          { label: 'Repairs',    count: (state.repairs    || []).length     },
+        var counts = [
+          liveSales.length,
+          (state.products || []).length,
+          (state.customers || []).length,
+          (state.purchases || []).length,
         ];
-        var maxCount  = allMods.reduce(function(a, m) { return Math.max(a, m.count); }, 0);
-        var topModule = allMods.reduce(function(a, b)  { return b.count > a.count ? b : a; }, allMods[0]);
+        var maxCount = counts.reduce(function (a, n) { return Math.max(a, n); }, 0);
         var remaining = Math.max(0, MAX - maxCount);
-        var pct       = Math.round((maxCount / MAX) * 100);
-        var isCritical = pct >= 80;
-        var barColor   = pct >= 80 ? '#e03151' : pct >= 60 ? '#d97706' : '#2979ff';
-        var borderCol  = pct >= 80 ? '#fca5a5' : pct >= 60 ? '#fde68a' : '#bfdbfe';
-        var bgCol      = pct >= 80 ? '#fff5f7' : pct >= 60 ? '#fffbeb' : '#f8faff';
-        var primary   = allMods.slice(0, 5);
-        var secondary = allMods.slice(5).filter(function(m) { return m.count > 0; });
-        var SUPPORT_WA_LINK = 'https://wa.me/94701234678?text=' + encodeURIComponent('Hi, I need help with TechonERP license.');
+        var pct = Math.round((maxCount / MAX) * 100);
+        var barColor = pct >= 80 ? "#dc2626" : pct >= 60 ? "#ea580c" : "#2563eb";
         return (
-          <div style={{ background: bgCol, borderRadius: 10, border: "1px solid " + borderCol, padding: "14px 18px" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
-              <span style={dashLabelStyle}>Free trial usage</span>
-              <span style={{ fontSize: 13, fontWeight: 800, color: barColor, fontVariantNumeric: "tabular-nums" }}>
-                {maxCount}/{MAX} · {remaining} left
-              </span>
+          <div className="erp-md-trial">
+            <div className="erp-md-trial-row">
+              <span>Free trial usage</span>
+              <span style={{ color: barColor }}>{maxCount}/{MAX} · {remaining} left</span>
             </div>
-            <div style={{ background: "#e2e8f0", borderRadius: 99, height: 6, overflow: "hidden", marginBottom: 10 }}>
-              <div style={{ height: "100%", borderRadius: 99, width: Math.min(pct, 100) + "%", background: barColor, transition: "width 0.4s ease" }} />
-            </div>
-            <div style={{ fontSize: 11, color: "#64748b", fontWeight: 500, marginBottom: 12, lineHeight: 1.5 }}>
-              Highest: <strong style={{ color: barColor }}>{topModule.label}</strong>
-              {" · "}
-              {primary.map(function (m) { return m.label + " " + m.count; }).join(" · ")}
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" onClick={function () { props.onActivate && props.onActivate(); }} style={{ flex: 1, padding: "9px", border: "none", borderRadius: 8, background: "linear-gradient(135deg,#2255d4,#2979ff)", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", animation: isCritical ? "tcPulse 1.6s ease-in-out infinite" : "none" }}>Activate license</button>
-              <button type="button" onClick={function () { window.open && window.open(SUPPORT_WA_LINK, "_blank"); }} style={{ padding: "9px 14px", border: "none", borderRadius: 8, background: "#25D366", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", fontFamily: "inherit" }}>WhatsApp</button>
+            <div className="erp-md-trial-track">
+              <div className="erp-md-trial-fill" style={{ width: Math.min(pct, 100) + "%", background: barColor }} />
             </div>
           </div>
         );
       })()}
 
-      {integrityWarnings.length > 0 && (
-        <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "14px 18px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, gap: 10 }}>
-            <div style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>Data warnings ({integrityWarnings.length})</div>
-            <DashLink onClick={function () { setActive("auditlog"); }}>Audit log →</DashLink>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {integrityWarnings.slice(0, 4).map(function (w, i) {
-              return (
-                <div key={i} style={{ fontSize: 12, color: WARN_COLORS[w.type] || C.text, fontWeight: 600, padding: "8px 10px", background: "#fff", borderRadius: 8, border: "1px solid #fde68a" }}>{w.msg}</div>
-              );
-            })}
-            {integrityWarnings.length > 4 ? <div style={{ fontSize: 11, color: C.muted, paddingLeft: 4 }}>+{integrityWarnings.length - 4} more</div> : null}
-          </div>
+      <div className="erp-md-dash-body">
+      <div className="erp-md-stat-row">
+        <DashStatWrap onClick={function () { go("pos"); }}>
+          <StatCard label="Today's Sales" value={todaySales} accent={C.blue} valueColor={C.blue} icon="💰" sub={deltaSub(todaySales, ydaySales)} />
+        </DashStatWrap>
+        <DashStatWrap onClick={function () { go("reports"); }}>
+          <StatCard label="Today's Profit" value={todayProfit} accent={todayProfit >= 0 ? C.green : C.red} valueColor={todayProfit >= 0 ? C.green : C.red} icon="📈" sub={deltaSub(todayProfit, ydayProfit)} />
+        </DashStatWrap>
+        <DashStatWrap onClick={function () { go("accounts"); }}>
+          <StatCard label="Cash in Hand" value={cash} accent={C.purple} valueColor={C.purple} icon="💵" sub="Current balance" />
+        </DashStatWrap>
+        <DashStatWrap onClick={function () { go("accounts"); }}>
+          <StatCard label="Bank Balance" value={bank} accent={C.cyan} valueColor={C.cyan} icon="🏦" sub="Current balance" />
+        </DashStatWrap>
+        <DashStatWrap onClick={function () { go("receivables"); }}>
+          <StatCard label="Receivables" value={totalReceivable} accent={C.orange} valueColor={C.orange} icon="💳" sub="Money owed to you" />
+        </DashStatWrap>
+        <DashStatWrap onClick={function () { go("payables"); }}>
+          <StatCard label="Payables" value={totalPayable} accent={totalPayable > 0 ? C.red : C.green} valueColor={totalPayable > 0 ? C.red : C.green} icon={totalPayable > 0 ? "💸" : "✓"} sub="Money you owe" />
+        </DashStatWrap>
+      </div>
+
+      <div className="erp-md-mid">
+        <div className="erp-dash-panel erp-dash-panel-chart">
+          <Card pad={10}>
+            <CardTitle sub={chartPeriodSub} action={chartSeg}>Sales Overview</CardTitle>
+            <div className="erp-dash-chart-panel">
+              <SalesChart points={chartPoints} />
+            </div>
+          </Card>
         </div>
-      )}
 
-      {dueAlertCheques.length > 0 && (
-        <Card pad={18}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 10 }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Cheque alerts</div>
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{dueAlertCheques.length} due within 7 days</div>
-            </div>
-            <DashLink onClick={function () { setActive("cheques"); }}>Open register →</DashLink>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {dueAlertCheques.slice(0, 5).map(function (ch) {
-              var isOut = ch.type === "outgoing";
-              var party = isOut ? (ch.supplierName || ch.partyName || "—") : (ch.customerName || ch.partyName || "—");
-              var diffDays = Math.ceil((new Date(ch.dueDate) - new Date(t)) / 86400000);
-              var overdue = diffDays < 0;
-              return (
-                <div key={ch.id} onClick={function () { setActive("cheques"); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 12px", background: "#f8fafc", borderRadius: 8, border: "1px solid #e8ecf4", cursor: "pointer" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{party} · #{ch.chequeNo}</div>
-                    <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-                      Due {ch.dueDate}
-                      {overdue ? <span style={{ color: C.red, fontWeight: 700 }}> · {Math.abs(diffDays)}d overdue</span> : diffDays === 0 ? <span style={{ color: C.orange, fontWeight: 700 }}> · today</span> : <span> · {diffDays}d left</span>}
-                    </div>
-                  </div>
-                  <div style={{ fontWeight: 800, fontSize: 14, color: isOut ? C.red : C.green, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(ch.amount)}</div>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.5fr) minmax(0,1fr)", gap: 14 }}>
-        <Card pad={18}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Recent sales</div>
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Latest 5 invoices</div>
-            </div>
-            <DashLink onClick={function () { setActive("invoices"); }}>View all →</DashLink>
-          </div>
-          {recentSales.length === 0 ? (
-            <div style={{ color: C.muted, fontSize: 13, padding: "12px 0" }}>No sales yet — open POS to record your first sale.</div>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
-                <thead>
-                  <tr style={{ background: "#f8fafc" }}>
-                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4" }}>Invoice</th>
-                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4" }}>Customer</th>
-                    <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4" }}>Total</th>
-                    <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 10, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid #e8ecf4", width: "22%" }}>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentSales.map(function (s, i) {
-                    return (
-                      <tr key={s.id} onClick={function () { setActive("invoices"); }} className="table-row-hover" style={{ cursor: "pointer", borderBottom: "1px solid #f1f5f9", background: i % 2 === 0 ? "#fff" : "#fafbff" }}>
-                        <td style={{ padding: "9px 10px", fontFamily: "monospace", fontSize: 12, color: C.cyan, whiteSpace: "nowrap" }}>{s.invoiceNo || s.id.slice(0, 8)}</td>
-                        <td style={{ padding: "9px 10px", fontSize: 13, fontWeight: 600, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.customerName || s.customer || "Walk-in"}</td>
-                        <td style={{ padding: "9px 10px", textAlign: "right", fontSize: 13, fontWeight: 700, color: C.blue, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(s.total)}</td>
-                        <td style={{ padding: "9px 10px", whiteSpace: "nowrap" }}><Badge status={s.payStatus || "Paid"} /></td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
-
-        <Card pad={18}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Stock attention</div>
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{lowStock.length} low · {outOfStockProducts.length} out</div>
-            </div>
-            <DashLink onClick={function () { setActive("inventory"); }}>Inventory →</DashLink>
-          </div>
-          {lowStock.length === 0 && outOfStockProducts.length === 0 ? (
-            <div style={{ color: C.green, fontSize: 13, padding: "8px 0" }}>All stock levels look good.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {lowStock.slice(0, 5).map(function (p) {
-                return (
-                  <div key={p.id} onClick={function () { setActive("inventory"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#fffbeb", borderRadius: 8, border: "1px solid #fde68a", fontSize: 12, cursor: "pointer" }}>
-                    <span style={{ fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: 8 }}>{p.name}</span>
-                    <span style={{ fontWeight: 800, color: p.stock <= 2 ? C.red : C.amber, flexShrink: 0 }}>{getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock, p.unit)}</span>
-                  </div>
-                );
-              })}
-              {outOfStockProducts.slice(0, Math.max(0, 5 - lowStock.length)).map(function (p) {
-                return (
-                  <div key={p.id} onClick={function () { setActive("inventory"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", background: "#fef2f2", borderRadius: 8, border: "1px solid #fecaca", fontSize: 12, cursor: "pointer" }}>
-                    <span style={{ fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: 8 }}>{p.name}</span>
-                    <span style={{ fontSize: 10, fontWeight: 800, color: C.red, background: "#fff", border: "1px solid #fecaca", borderRadius: 20, padding: "2px 8px" }}>OUT</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {recentRepairs.length > 0 && getBusinessProfile().modules.repairs && (
-            <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #e8ecf4" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Recent repairs</div>
-                <DashLink onClick={function () { setActive("repairs"); }}>View all →</DashLink>
+        <div className="erp-dash-panel erp-dash-panel-summary">
+          <Card pad={10} className="erp-dash-side-card">
+            <div className="erp-dash-side-head tone-summary">
+              <span className="erp-dash-side-head-ico" aria-hidden="true">📊</span>
+              <div className="erp-dash-side-head-text">
+                <div className="erp-dash-side-head-title">Quick Summary</div>
+                <div className="erp-dash-side-head-sub">This month at a glance</div>
               </div>
-              {recentRepairs.map(function (r) {
+            </div>
+            <div className="erp-dash-summary-grid">
+              {summaryRows.map(function (row) {
                 return (
-                  <div key={r.id} onClick={function () { setActive("repairs"); }} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 12, padding: "7px 0", cursor: "pointer", borderBottom: "1px solid #f1f5f9" }}>
-                    <span style={{ fontWeight: 600, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer}</span>
-                    <Badge status={r.status} />
-                  </div>
+                  <button key={row.label} type="button" className={"erp-dash-sum-tile tone-" + row.tone} onClick={function () { go(row.page); }}>
+                    <span className="erp-dash-sum-tile-ico" aria-hidden="true">{row.icon}</span>
+                    <span className="erp-dash-sum-tile-body">
+                      <span className="erp-dash-sum-tile-label">{row.label}</span>
+                      <span className="erp-dash-sum-tile-val">{row.value}</span>
+                    </span>
+                    <span className="erp-dash-sum-tile-chevron" aria-hidden="true">›</span>
+                  </button>
                 );
               })}
             </div>
-          )}
-        </Card>
-      </div>
+          </Card>
+        </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.2fr) minmax(0,1fr)", gap: 14 }}>
-        <Card pad={18}>
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Sales trend</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Past 7 days</div>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(7,minmax(0,1fr))", gap: 10, alignItems: "end", minHeight: 120 }}>
-            {weeklyTrend.map(function (w) {
-              var h = Math.max(4, Math.round((w.total / weeklyMax) * 96));
-              return (
-                <div key={w.key} style={{ textAlign: "center" }}>
-                  <div title={w.label + ": " + getCurrencySymbol() + " " + fmtNum(w.total)} style={{ margin: "0 auto", width: "100%", maxWidth: 28, height: h, borderRadius: 6, background: w.total > 0 ? "linear-gradient(180deg,#93c5fd,#2563eb)" : "#e2e8f0" }} />
-                  <div style={{ fontSize: 10, color: C.muted, marginTop: 8, fontWeight: 600 }}>{w.label}</div>
-                  <div style={{ fontSize: 10, color: C.textMd, fontWeight: 700, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>{fmtNum(w.total)}</div>
+        <div className="erp-dash-panel erp-dash-panel-stock">
+          <Card pad={10} className="erp-dash-side-card">
+            <div className="erp-dash-side-head tone-stock">
+              <span className="erp-dash-side-head-ico" aria-hidden="true">⚠️</span>
+              <div className="erp-dash-side-head-text">
+                <div className="erp-dash-side-head-title">Low Stock</div>
+                <div className="erp-dash-side-head-sub">
+                  {lowStockTotal === 0
+                    ? "All levels look good"
+                    : lowStockTotal + " item" + (lowStockTotal === 1 ? "" : "s") + " need attention"
+                      + (lowStockTotal > 5 ? " · top 5 shown" : "")}
                 </div>
-              );
-            })}
-          </div>
-        </Card>
-
-        <Card pad={18}>
-          <div style={{ marginBottom: 14 }}>
-            <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Top products</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>By quantity sold</div>
-          </div>
-          {topProducts.length === 0 ? (
-            <div style={{ color: C.muted, fontSize: 13 }}>No sales data yet.</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {topProducts.map(function (tp, idx) {
+              </div>
+              <button type="button" className="erp-dash-side-head-link" onClick={function () { go("inventory"); }}>View all</button>
+            </div>
+            <div className={"erp-dash-stock-grid" + (lowStock.length > 0 ? " is-filled" : "")}>
+              {lowStock.length === 0 ? (
+                <div className="erp-dash-stock-ok">
+                  <span className="erp-dash-stock-ok-ico" aria-hidden="true">✓</span>
+                  <span className="erp-dash-stock-ok-title">Stock healthy</span>
+                  <span className="erp-dash-stock-ok-sub">No low or out-of-stock items</span>
+                </div>
+              ) : lowStock.map(function (p) {
+                var meta = stockMeta(p);
+                var qty = Number(p.stock) || 0;
+                var isOut = qty <= 0;
                 return (
-                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: idx < topProducts.length - 1 ? "1px solid #f1f5f9" : "none" }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, fontSize: 13, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tp.name}</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{tp.qty} sold</div>
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={"erp-dash-stock-tile " + (isOut ? "is-out" : "is-low")}
+                    onClick={function () { go("inventory"); }}
+                  >
+                    <div className="erp-dash-stock-tile-top">
+                      <span className="erp-dash-stock-tile-ico" aria-hidden="true">{isOut ? "🔴" : "🟠"}</span>
+                      <span className="erp-dash-stock-tile-name" title={p.name || "Item"}>{p.name || "Item"}</span>
+                      <span className={"erp-dash-stock-tile-badge " + (isOut ? "out" : "low")}>
+                        {isOut ? "OUT" : qty + " left"}
+                      </span>
                     </div>
-                    <div style={{ fontSize: 12, fontWeight: 800, color: C.blue, flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{getCurrencySymbol()} {fmtNum(tp.revenue)}</div>
-                  </div>
+                    <div className="erp-dash-stock-tile-bar" aria-hidden="true">
+                      <div
+                        className={"erp-dash-stock-tile-bar-fill " + meta.cls}
+                        style={{ width: Math.max(8, Math.min(100, meta.pct)) + "%" }}
+                      />
+                    </div>
+                  </button>
                 );
               })}
             </div>
-          )}
-        </Card>
+          </Card>
+        </div>
       </div>
 
-      {reorderSuggestions.length > 0 && (
-        <Card pad={18}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Reorder suggestions</div>
-              <div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>Suggested quantities to restock</div>
-            </div>
-            <DashLink onClick={function () { setActive("purchases"); }}>New purchase →</DashLink>
+      <div className="erp-md-tables">
+        <div className="erp-dash-panel">
+          <Card pad={10}>
+            <CardTitle
+              sub="Latest 5 invoices"
+              action={<button type="button" className="erp-dash-link" onClick={function () { go("invoices"); }}>View all →</button>}
+            >
+              Recent Sales
+            </CardTitle>
+            <div className="erp-dash-inv-table-wrap">
+            <table className="erp-dash-inv-table" style={{ minWidth: 420 }}>
+              <thead>
+                <tr>
+                  <th style={Object.assign({}, invThStyle(), { width: "26%" })}>Invoice #</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "34%" })}>Customer</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "18%" })}>Date</th>
+                  <th style={Object.assign({}, invThStyle("right"), { width: "22%" })}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentSales.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} style={{ padding: 32, textAlign: "center", color: C.muted, fontSize: 13 }}>
+                      <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.5 }}>🧾</div>
+                      No sales yet.
+                    </td>
+                  </tr>
+                ) : recentSales.map(function (s, i) {
+                  var invNo = s.invoiceNo || String(s.id).slice(0, 8);
+                  return (
+                    <TR key={s.id} i={i} onClick={function () { go("invoices"); }}>
+                      <td style={{ padding: "10px 12px", maxWidth: 0 }}>
+                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{invNo}</span>
+                      </td>
+                      <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.customerName || s.customer || "Walk-in"}>
+                        {s.customerName || s.customer || "Walk-in"}
+                      </td>
+                      <TD color={C.muted}>{fmtDate(s.date)}</TD>
+                      {dashMoneyTd(money(s.total), C.blue, true)}
+                    </TR>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", gap: 8 }}>
-            {reorderSuggestions.map(function (r) {
-              return (
-                <div key={r.id} onClick={function () { setActive("inventory"); }} style={{ cursor: "pointer", border: "1px solid #e8ecf4", background: "#f8fafc", borderRadius: 8, padding: "10px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</div>
-                    <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>On hand: {r.current}</div>
-                  </div>
-                  <div style={{ fontWeight: 800, fontSize: 11, color: "#b45309", flexShrink: 0 }}>+{r.suggested}</div>
-                </div>
-              );
-            })}
+          </Card>
+        </div>
+
+        <div className="erp-dash-panel">
+          <Card pad={10}>
+            <CardTitle
+              sub="Latest purchase bills"
+              action={<button type="button" className="erp-dash-link" onClick={function () { go("purchases"); }}>View all →</button>}
+            >
+              Recent Purchases
+            </CardTitle>
+            <div className="erp-dash-inv-table-wrap">
+            <table className="erp-dash-inv-table" style={{ minWidth: 460 }}>
+              <thead>
+                <tr>
+                  <th style={Object.assign({}, invThStyle(), { width: "24%" })}>Invoice #</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "32%" })}>Supplier</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "18%" })}>Date</th>
+                  <th style={Object.assign({}, invThStyle("right"), { width: "26%" })}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentPurchases.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} style={{ padding: 32, textAlign: "center", color: C.muted, fontSize: 13 }}>
+                      <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.5 }}>📦</div>
+                      No purchases yet.
+                    </td>
+                  </tr>
+                ) : recentPurchases.map(function (p, i) {
+                  var invNo = p.invoiceNo || p.billNo || String(p.id).slice(0, 8);
+                  return (
+                    <TR key={p.id} i={i} onClick={function () { go("purchases"); }}>
+                      <td style={{ padding: "10px 12px", maxWidth: 0 }}>
+                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{invNo}</span>
+                      </td>
+                      <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.supplierName || p.supplier || "—"}>
+                        {p.supplierName || p.supplier || "—"}
+                      </td>
+                      <TD color={C.muted}>{fmtDate(p.date)}</TD>
+                      {dashMoneyTd(money(p.total), C.blue, true)}
+                    </TR>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </Card>
-      )}
+          </Card>
+        </div>
+
+        <div className="erp-dash-panel">
+          <Card pad={10}>
+            <CardTitle
+              sub="Latest repair jobs"
+              action={<button type="button" className="erp-dash-link" onClick={function () { go("repairs"); }}>View all →</button>}
+            >
+              Recent Repairs
+            </CardTitle>
+            <div className="erp-dash-inv-table-wrap">
+            <table className="erp-dash-inv-table" style={{ minWidth: 440 }}>
+              <thead>
+                <tr>
+                  <th style={Object.assign({}, invThStyle(), { width: "22%" })}>Job No.</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "28%" })}>Customer</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "30%" })}>Device</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "20%" })}>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentRepairs.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} style={{ padding: 32, textAlign: "center", color: C.muted, fontSize: 13 }}>
+                      <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.5 }}>🔧</div>
+                      No repairs yet.
+                    </td>
+                  </tr>
+                ) : recentRepairs.map(function (r, i) {
+                  var jobNo = r.jobNo || r.repairNo || String(r.id).slice(0, 8);
+                  return (
+                    <TR key={r.id} i={i} onClick={function () { go("repairs"); }}>
+                      <td style={{ padding: "10px 12px", maxWidth: 0 }}>
+                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{jobNo}</span>
+                      </td>
+                      <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.customer || r.customerName || "—"}>
+                        {r.customer || r.customerName || "—"}
+                      </td>
+                      <TD color={C.textMd}>{repairDevice(r)}</TD>
+                      <TD color={C.muted}>{fmtDate(r.dateIn || r.date)}</TD>
+                    </TR>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          </Card>
+        </div>
+      </div>
+      </div>
     </div>
   );
 };
+
 export default Dashboard;

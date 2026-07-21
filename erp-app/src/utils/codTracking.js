@@ -539,3 +539,18 @@ export function currentMonthKey(dateStr) {
   if (isNaN(d.getTime())) d = new Date();
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
 }
+
+/** Hide COD rows linked to voided/missing sales (main sale void removes COD on void; this catches orphans). */
+export function activeCodRecords(codRecords, sales) {
+  var saleById = {};
+  (sales || []).forEach(function (s) {
+    if (s && s.id != null) saleById[String(s.id)] = s;
+  });
+  return (codRecords || []).filter(function (r) {
+    if (!r || r.saleId == null || r.saleId === "") return true;
+    var sale = saleById[String(r.saleId)];
+    if (!sale) return false;
+    var st = String(sale.status || sale.payStatus || "").toLowerCase();
+    return st !== "voided" && st !== "cancelled";
+  });
+}

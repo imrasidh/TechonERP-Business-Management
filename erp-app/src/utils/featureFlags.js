@@ -16,8 +16,7 @@ export var MODULE_TOGGLE_DEFS = [
   { id: "invoices", label: "Invoices", group: "Main", blurb: "Browse, reprint, and edit saved invoices and receipts." },
   { id: "purchases", label: "Purchases", group: "Stock", blurb: "Record supplier purchases and bring stock into inventory." },
   { id: "inventory", label: "Inventory", group: "Stock", blurb: "Products, stock levels, adjustments, and product master data." },
-  { id: "customers", label: "Customers", group: "People", blurb: "Customer directory, contact details, and running balances." },
-  { id: "suppliers", label: "Suppliers", group: "People", blurb: "Supplier directory and links to purchase history." },
+  { id: "parties", label: "Parties", group: "People", blurb: "Customers, suppliers, and other contacts in one place." },
   { id: "statements", label: "Statements", group: "People", blurb: "Printable customer and supplier account statements." },
   { id: "receivables", label: "Receivables", group: "Finance", blurb: "Money customers owe you — track and collect outstanding amounts." },
   { id: "payables", label: "Payables", group: "Finance", blurb: "Money you owe suppliers — track bills and record payments." },
@@ -50,7 +49,7 @@ function defaultForModule(id, businessType, profile) {
 
 /** Default counter sidebar when no counterModuleToggles saved yet (matches legacy POS allow-list). */
 function defaultCounterModule(id, businessType, profile) {
-  if (id === "invoices" || id === "customers" || id === "returns") return true;
+  if (id === "invoices" || id === "parties" || id === "returns") return true;
   if (id === "repairs") return defaultForModule("repairs", businessType, profile);
   if (id === "freeItems") return defaultForModule("freeItems", businessType, profile);
   if (id === "posLineComments") return defaultForModule("posLineComments", businessType, profile);
@@ -65,7 +64,7 @@ function readLegacyCodCostProfit(stored) {
   return undefined;
 }
 
-function buildToggleMap(stored, businessType, profile, defaultFn) {
+function buildToggleMap(stored, businessType, profile, defaultFn, inheritFrom) {
   var out = {};
   MODULE_TOGGLE_DEFS.forEach(function (m) {
     if (m.id === "codCostProfit") {
@@ -79,12 +78,25 @@ function buildToggleMap(stored, businessType, profile, defaultFn) {
       out[m.id] = stored[m.id];
       return;
     }
+    if (inheritFrom && (inheritFrom[m.id] === true || inheritFrom[m.id] === false)) {
+      out[m.id] = inheritFrom[m.id];
+      return;
+    }
     if (m.id === "freeItems" && stored.freeItems !== undefined) {
       out[m.id] = stored.freeItems === true;
       return;
     }
     out[m.id] = defaultFn ? defaultFn(m.id, businessType, profile) : defaultForModule(m.id, businessType, profile);
   });
+  if (out.parties === undefined) {
+    if (stored.parties === true || stored.parties === false) {
+      out.parties = stored.parties;
+    } else if (stored.customers === false && stored.suppliers === false) {
+      out.parties = false;
+    } else if (stored.customers === true || stored.suppliers === true) {
+      out.parties = true;
+    }
+  }
   return out;
 }
 
@@ -140,11 +152,13 @@ export function getMainModuleToggles(settings, businessType, profile) {
 }
 
 export function getStaffModuleToggles(settings, businessType, profile) {
+  var main = getMainModuleToggles(settings, businessType, profile);
   var stored = readStoredMap(settings, "staffModuleToggles", null);
   if (!storedMapHasValues(stored)) {
-    return getMainModuleToggles(settings, businessType, profile);
+    return main;
   }
-  return buildToggleMap(stored, businessType, profile, null);
+  /* Unset staff keys inherit admin main toggles (fixes COD on POS when only enabled under Admin modules). */
+  return buildToggleMap(stored, businessType, profile, null, main);
 }
 
 export function getCounterModuleToggles(settings, businessType, profile) {
@@ -178,6 +192,7 @@ export function isModuleEnabled(settings, businessType, profile, moduleId, netRo
 
 export function isNavModuleEnabled(settings, businessType, profile, navId, netRole, userRole) {
   if (CORE_NAV_IDS.indexOf(navId) >= 0) return true;
+  if (navId === "customers" || navId === "suppliers") navId = "parties";
   var mod = MODULE_TOGGLE_DEFS.find(function (m) {
     return m.id === navId || m.navId === navId;
   });
@@ -200,7 +215,10 @@ export function isPosLineCommentsEnabled(settings, businessType, netRole, userRo
 }
 
 export function isCodSalesTrackEnabled(settings, businessType, netRole, userRole) {
-  return isModuleEnabled(settings, businessType, null, "codSalesTrack", netRole, userRole);
+  if (isModuleEnabled(settings, businessType, null, "codSalesTrack", netRole, userRole)) return true;
+  /* Enabling COD Database implies POS tracking — users often toggle only the sidebar module. */
+  if (isModuleEnabled(settings, businessType, null, "coddatabase", netRole, userRole)) return true;
+  return false;
 }
 
 export function isCodDatabaseEnabled(settings, businessType, profile, netRole, userRole) {
@@ -249,6 +267,8 @@ function packToggleForm(formToggles) {
   MODULE_TOGGLE_DEFS.forEach(function (m) {
     toggles[m.id] = formToggles[m.id] === true;
   });
+  /* COD Database without POS track is useless — keep both aligned on save. */
+  if (toggles.coddatabase) toggles.codSalesTrack = true;
   return toggles;
 }
 
