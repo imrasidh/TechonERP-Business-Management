@@ -25,6 +25,8 @@ import {
   loadFreshSaleForPayment,
   pushKeysNow,
 } from "../utils/concurrencyGuards.js";
+import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
+import { resolveThermalFormat } from "../utils/printFormat.js";
 
 /** Map stored sale/quotation lines into POS cart shape (prefer input qty/unit/price). */
 var mapDocItemToPosCartLine = function (it) {
@@ -343,6 +345,24 @@ var Quotations = function (props) {
   var [f, setF] = useState(BLANK_Q);
   var [fullViewQ, setFullViewQ] = useState(null);
   var [fqFormat, setFqFormat] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
+  var [qPrintFmtOpen, setQPrintFmtOpen] = useState(false);
+  var [qPendingPrintFmt, setQPendingPrintFmt] = useState(null);
+  var thermalFmt = resolveThermalFormat(state.settings || {});
+  var printFmtOptions = [
+    ["a4", "A4"],
+    ["a5", "A5"],
+    [thermalFmt, thermalFmt === "thermal58" ? "58mm" : "80mm"],
+  ];
+
+  useEffect(function () {
+    if (!qPendingPrintFmt || !fullViewQ) return undefined;
+    var fmt = qPendingPrintFmt;
+    var t = setTimeout(function () {
+      printFullQuotation(fullViewQ, fmt);
+      setQPendingPrintFmt(null);
+    }, 120);
+    return function () { clearTimeout(t); };
+  }, [qPendingPrintFmt, fqFormat, fullViewQ]);
   var [search, setSearch] = useState("");
   var [filterStatus, setFilterStatus] = useState("All");
   var [pendingQuotPrint, setPendingQuotPrint] = useState(null);
@@ -682,26 +702,18 @@ var Quotations = function (props) {
             <div className="erp-si-fv-tools">
               <span className="erp-si-fv-tool-label">Format</span>
               <div className="erp-si-fv-formats" role="group" aria-label="Print format">
-                {(function () {
-                  var paperSize   = state.settings.invoiceDefaultSize  || "a4";
-                  var thermalSize = state.settings.invoiceThermalSize   || "thermal80";
-                  var opts = [
-                    [paperSize,   paperSize   === "a5"        ? "A5"    : "A4"   ],
-                    [thermalSize, thermalSize === "thermal58"  ? "58mm"  : "80mm" ],
-                  ];
-                  return opts.map(function (item) {
-                    var v = item[0]; var lbl = item[1];
-                    var active = fqFormat === v;
-                    return (
-                      <button
-                        key={v}
-                        type="button"
-                        className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
-                        onClick={function () { setFqFormat(v); }}
-                      >{lbl}</button>
-                    );
-                  });
-                })()}
+                {printFmtOptions.map(function (item) {
+                  var v = item[0]; var lbl = item[1];
+                  var active = fqFormat === v;
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
+                      onClick={function () { setFqFormat(v); }}
+                    >{lbl}</button>
+                  );
+                })}
               </div>
             </div>
 
@@ -716,7 +728,7 @@ var Quotations = function (props) {
               <button
                 type="button"
                 className="erp-si-fv-btn is-print"
-                onClick={function () { printFullQuotation(fullViewQ, fqFormat); }}
+                onClick={function () { setQPrintFmtOpen(true); }}
               >Print</button>
               <WABtn title="Share Quotation via WhatsApp" onClick={function () { whatsappFullQuotation(fullViewQ, fqFormat); }} />
               <button
@@ -753,6 +765,21 @@ var Quotations = function (props) {
           </div>
         </div>
       )}
+
+      <PrintFormatChooser
+        open={qPrintFmtOpen}
+        settings={state.settings}
+        thermalId={thermalFmt}
+        title="Print quotation"
+        hint="Choose A4, A5, or Thermal for your printer."
+        onClose={function () { setQPrintFmtOpen(false); }}
+        onSelect={function (fmt) {
+          setQPrintFmtOpen(false);
+          setFqFormat(fmt);
+          setQPendingPrintFmt(fmt);
+        }}
+        zIndex={13000}
+      />
 
       {pendingQuotPrint && InvoiceA4 && (
         <div id="quot-print-preview" style={{ position: "fixed", left: -9999, top: -9999, width: 794, pointerEvents: "none", opacity: 0 }}>
@@ -844,6 +871,24 @@ var SalesInvoices = React.memo(function (props) {
   var [fullViewSale, setFullViewSale] = useState(null);
   var [fvFormat, setFvFormat] = useState(function () { return state.settings.invoiceDefaultSize || "a4"; });
   var [fvWarranty, setFvWarranty] = useState(false);
+  var [printFmtOpen, setPrintFmtOpen] = useState(false);
+  var [pendingPrintFmt, setPendingPrintFmt] = useState(null);
+  var invThermalFmt = resolveThermalFormat(state.settings || {});
+  var invPrintFmtOptions = [
+    ["a4", "A4"],
+    ["a5", "A5"],
+    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
+  ];
+
+  useEffect(function () {
+    if (!pendingPrintFmt || !fullViewSale) return undefined;
+    var fmt = pendingPrintFmt;
+    var t = setTimeout(function () {
+      printInvoice(Object.assign({}, fullViewSale, { includeWarranty: fvWarranty }), fmt);
+      setPendingPrintFmt(null);
+    }, 120);
+    return function () { clearTimeout(t); };
+  }, [pendingPrintFmt, fvFormat, fullViewSale, fvWarranty]);
 
   var quotationsAll = state.quotations || [];
   var qDraftCount = quotationsAll.filter(function (q) { return q.status === "Draft"; }).length;
@@ -1433,26 +1478,18 @@ var SalesInvoices = React.memo(function (props) {
             <div className="erp-si-fv-tools">
               <span className="erp-si-fv-tool-label">Format</span>
               <div className="erp-si-fv-formats" role="group" aria-label="Print format">
-                {(function () {
-                  var paperSize   = state.settings.invoiceDefaultSize  || "a4";
-                  var thermalSize = state.settings.invoiceThermalSize   || "thermal80";
-                  var opts = [
-                    [paperSize,   paperSize   === "a5"        ? "A5"    : "A4"   ],
-                    [thermalSize, thermalSize === "thermal58"  ? "58mm"  : "80mm" ],
-                  ];
-                  return opts.map(function (item) {
-                    var v = item[0]; var lbl = item[1];
-                    var active = fvFormat === v;
-                    return (
-                      <button
-                        key={v}
-                        type="button"
-                        className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
-                        onClick={function () { setFvFormat(v); }}
-                      >{lbl}</button>
-                    );
-                  });
-                })()}
+                {invPrintFmtOptions.map(function (item) {
+                  var v = item[0]; var lbl = item[1];
+                  var active = fvFormat === v;
+                  return (
+                    <button
+                      key={v}
+                      type="button"
+                      className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
+                      onClick={function () { setFvFormat(v); }}
+                    >{lbl}</button>
+                  );
+                })}
               </div>
               <label className="erp-si-fv-warranty">
                 <input type="checkbox" checked={fvWarranty} onChange={function (e) { setFvWarranty(e.target.checked); }} />
@@ -1464,7 +1501,7 @@ var SalesInvoices = React.memo(function (props) {
               <button
                 type="button"
                 className="erp-si-fv-btn is-print"
-                onClick={function () { printInvoice(Object.assign({}, fullViewSale, { includeWarranty: fvWarranty }), fvFormat); }}
+                onClick={function () { setPrintFmtOpen(true); }}
               >Print</button>
               <WABtn title="Share as PDF via WhatsApp" onClick={function () { whatsappInvoice(Object.assign({}, fullViewSale, { includeWarranty: fvWarranty }), fvFormat); }} />
               <button
@@ -1505,6 +1542,21 @@ var SalesInvoices = React.memo(function (props) {
           </div>
         </div>
       )}
+
+      <PrintFormatChooser
+        open={printFmtOpen}
+        settings={state.settings}
+        thermalId={invThermalFmt}
+        title="Print invoice"
+        hint="Choose A4, A5, or Thermal for your printer."
+        onClose={function () { setPrintFmtOpen(false); }}
+        onSelect={function (fmt) {
+          setPrintFmtOpen(false);
+          setFvFormat(fmt);
+          setPendingPrintFmt(fmt);
+        }}
+        zIndex={13000}
+      />
 
       {viewSale && (function () {
         var vr = saleReturnUiStatus(viewSale, state.salesReturns);

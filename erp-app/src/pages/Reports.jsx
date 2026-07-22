@@ -17,6 +17,7 @@ import { deriveInventoryEconomics, isInventoryReconcileOk } from "../accounting/
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 import { activeSales, activePurchases, activeSalesReturns, activePurchaseReturns } from "../utils/voidInvoice.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import ReportsAccountsHub from "./ReportsAccountsHub.jsx";
 
 var Reports = React.memo(function (props) {
   var state = props.state;
@@ -78,6 +79,9 @@ var Reports = React.memo(function (props) {
   var Input = props.Input;
   var WABtn = props.WABtn;
   var [tab, setTab] = useState("overview");
+  var [mainTab, setMainTab] = useState("overview"); /* overview | accounts | integrity | invrecon */
+  var [acctType, setAcctType] = useState("summary"); /* summary|sales|purchases|expenses|assets|repairs|parties|pnl */
+  var [acctPeriod, setAcctPeriod] = useState("monthly"); /* daily|monthly|yearly|range */
   var [reportDate, setReportDate] = useState(today());
   var [reportMonth, setReportMonth] = useState(today().slice(0, 7));
   var [rangeFrom, setRangeFrom] = useState(today().slice(0, 7) + "-01");
@@ -127,15 +131,28 @@ var Reports = React.memo(function (props) {
     }).catch(function () {});
   }, [isNetworkServerRpt, tab]);
 
+  /* Legacy Daily/Monthly deep-links → Report Generate */
   useEffect(function () {
-    if (tab !== "inventory") return;
-    var ap = (state.products || []).filter(function (p) { return p.status !== "inactive"; });
-    var lineVals = ap.map(function (p) { return (p.price || 0) * (p.stock || 0); });
-    warnIfAggregateRoundingDrift("reports_inventory_retail_rows", lineVals, 0.01, { rowCount: lineVals.length });
-  }, [tab, state.products]);
+    if (tab === "daily") {
+      setAcctPeriod("daily");
+      setAcctType("pnl");
+      setMainTab("accounts");
+      setTab("overview");
+    } else if (tab === "monthly") {
+      setAcctPeriod("monthly");
+      if (reportMonth) setPnlMonth(reportMonth);
+      setAcctType("pnl");
+      setMainTab("accounts");
+      setTab("overview");
+    } else if (tab === "integrity") {
+      setMainTab("integrity");
+    } else if (tab === "invrecon") {
+      setMainTab("invrecon");
+    }
+  }, [tab, reportMonth]);
 
   useEffect(function () {
-    if (tab !== "invrecon") return;
+    if (mainTab !== "invrecon" && tab !== "invrecon") return;
     if (!getInventoryReconTimeTravel) return;
     if (invReconTtTimerRef.current) clearTimeout(invReconTtTimerRef.current);
     invReconTtTimerRef.current = setTimeout(function () {
@@ -152,7 +169,7 @@ var Reports = React.memo(function (props) {
     return function () {
       if (invReconTtTimerRef.current) clearTimeout(invReconTtTimerRef.current);
     };
-  }, [tab, invReconTtFrom, invReconTtTo]);
+  }, [mainTab, tab, invReconTtFrom, invReconTtTo]);
 
   /* BUG1 FIX: Use getCashBalances() as authoritative cash figure (replaces stale manual formula) */
   var _rptBalances = getCashBalances(state);
@@ -674,22 +691,18 @@ var Reports = React.memo(function (props) {
     printReport("Customer Balance Report", html);
   };
 
-  var TABS = [
-    ["overview", "Overview", "Overview"],
-    ["pnl", "P&L", "P&L Summary"],
-    ["daily", "Daily", "Daily Report"],
-    ["monthly", "Monthly", "Monthly Report"],
-    ["inventory", "Stock", "Inventory Report"],
-    ["invrecon", "Inv. Recon", "Inventory Reconciliation"],
-    ["rawconsumption", "Raw Mat.", "Raw Material Consumption"],
-    ["customers", "Customers", "Customer Report"],
-    ["expenses", "Expenses", "Expense Report"],
-    ["assets", "Assets", "Assets Report"],
-    ["balancesheet", "Bal. Sheet", "Balance Sheet"],
-    ["integrity", "Integrity", "System Integrity"],
-    ["business", "Full Rpt", "Full Business Report"],
+  var MAIN_TABS = [
+    ["overview", "Overview", "Business overview dashboard", "📊"],
+    ["accounts", "Report Generate", "Select a report, set dates, generate print preview", "📄"],
+    ["integrity", "Health Check", "Data integrity diagnostics", "✅"],
+    ["invrecon", "Recon", "Inventory vs ledger reconciliation", "🔗"],
   ];
-  if (getBusinessProfile().modules.repairs) { TABS.splice(7, 0, ["repairs", "Repairs", "Repairs Report"]); }
+
+  var openAccounts = function (type, period) {
+    if (type) setAcctType(type);
+    if (period) setAcctPeriod(period);
+    setMainTab("accounts");
+  };
 
   var KVRow = function (kvProps) {
     return (
@@ -706,25 +719,72 @@ var Reports = React.memo(function (props) {
 
   return (
     <div className="erp-page erp-reports-scope erp-rpt-modern">
-      <div className="erp-rpt-tabs" role="tablist">
-        {TABS.map(function (item) {
-          var k = item[0]; var l = item[1]; var tip = item[2] || l;
-          var isActive = tab === k;
-          return (
-            <button
-              key={k}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              title={tip}
-              className={"erp-rpt-tab" + (isActive ? " is-active" : "")}
-              onClick={function () { setTab(k); }}
-            >{l}</button>
-          );
-        })}
+      <div className="erp-rpt-chrome">
+        <div className="erp-rpt-topbar">
+          <div className="erp-rpt-topbar-brand">
+            <div className="erp-rpt-header-title">Reports</div>
+            <div className="erp-rpt-header-sub">Overview · report generate · health · recon</div>
+          </div>
+          <div className="erp-rpt-tabs" role="tablist" aria-label="Reports main">
+            {MAIN_TABS.map(function (item) {
+              var k = item[0]; var l = item[1]; var tip = item[2] || l; var ico = item[3] || "";
+              var isActive = mainTab === k;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  title={tip}
+                  className={"erp-rpt-tab" + (isActive ? " is-active" : "")}
+                  onClick={function () { setMainTab(k); }}
+                >
+                  {ico ? <span className="erp-rpt-tab-ico" aria-hidden="true">{ico}</span> : null}
+                  <span>{l}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {tab === "pnl" && (function () {
+      {mainTab === "accounts" && (
+        <ReportsAccountsHub
+          state={state}
+          C={C}
+          getCurrencySymbol={getCurrencySymbol}
+          fmtNum={fmtNum}
+          escapeHtml={escapeHtml}
+          openPrintWindow={openPrintWindow}
+          PRINT_FONT_LINK={PRINT_FONT_LINK}
+          shareViaWhatsApp={shareViaWhatsApp}
+          showAlert={showAlert}
+          WABtn={WABtn}
+          getNetCOGSForRange={getNetCOGSForRange}
+          getCashBalances={getCashBalances}
+          getTotalReceivableDerived={getTotalReceivableDerived}
+          getTotalPayableDerived={getTotalPayableDerived}
+          getTotalSupplierPayable={getTotalSupplierPayable}
+          liveSalesRpt={liveSalesRpt}
+          livePurchasesRpt={livePurchasesRpt}
+          hasRepairs={!!getBusinessProfile().modules.repairs}
+          today={today}
+          acctPeriod={acctPeriod}
+          setAcctPeriod={setAcctPeriod}
+          reportDate={reportDate}
+          setReportDate={setReportDate}
+          pnlMonth={pnlMonth}
+          setPnlMonth={setPnlMonth}
+          pnlYear={pnlYear}
+          setPnlYear={setPnlYear}
+          rangeFrom={rangeFrom}
+          setRangeFrom={setRangeFrom}
+          rangeTo={rangeTo}
+          setRangeTo={setRangeTo}
+        />
+      )}
+
+      {false && mainTab === "hub" && tab === "pnl" && (function () {
         var getRange = function () {
           if (pnlPeriod === "daily") return { from: reportDate, to: reportDate, label: "Daily \u2014 " + reportDate };
           if (pnlPeriod === "monthly") {
@@ -1083,129 +1143,168 @@ var Reports = React.memo(function (props) {
         );
       })()}
 
-      {tab === "overview" && (
-        <div className="erp-tab-content">
-          <div className="erp-rpt-kpi-strip">
-            {(function () {
-              var cb = getCashBalances(state);
-              return [
-                { label: "Total Cash", val: cb.total, color: cb.total >= 0 ? C.blue : C.red, sub: "Cash " + getCurrencySymbol() + " " + fmtNum(cb.cash) + " · Bank " + fmtNum(cb.bank) },
-                { label: "Stock Value", val: stockValue, color: C.purple, sub: "Cost " + getCurrencySymbol() + " " + fmtNum(stockCostValue) },
-                { label: "Receivable", val: totalReceivable, color: C.cyan, sub: "Payable " + getCurrencySymbol() + " " + fmtNum(totalPayable) },
-                { label: "Net Worth", val: netWorth, color: netWorth >= 0 ? C.green : C.red, sub: "Gross margin " + grossMarginPct + "%" },
-              ].map(function (k) {
-                return (
-                  <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
-                    <div className="erp-rpt-kpi-label">{k.label}</div>
-                    <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
-                    {k.sub ? <div className="erp-rpt-kpi-sub">{k.sub}</div> : null}
-                  </div>
-                );
-              });
-            })()}
-          </div>
-          {glPL && glBS && (
-            <Card pad={10}>
-              <CardTitle sub="All activity rolled into journal lines">Double-entry ledger</CardTitle>
-              <div className="erp-rpt-ledger-mini">
-                <div className="erp-rpt-ledger-mini-card">
-                  <div className="lbl">P&amp;L (ledger)</div>
-                  <div className="val" style={{ color: glPL.net >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(glPL.net)}</div>
-                  <div className="sub">Income {fmtNum(glPL.income)} · Exp {fmtNum(glPL.expenses)}</div>
+      {mainTab === "overview" && (function () {
+        var cb = getCashBalances(state);
+        var totalSales = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.total || 0); }, 0));
+        var totalPurchases = round2(livePurchasesRpt.reduce(function (a, p) { return a + (p.total || 0); }, 0));
+        var grossP = totalProfit;
+        var netP = round2(totalProfit + totalRepairRevenue - totalExpenses);
+        var salesDue = round2(Math.max(0, totalSales - totalSalesIncome));
+        var purchDue = round2(Math.max(0, totalPurchases - totalPurchasesPaid));
+        var grossMargin = totalSales > 0 ? round2((grossP / totalSales) * 100) : 0;
+        var netMargin = totalSales > 0 ? round2((netP / totalSales) * 100) : 0;
+        var collectPct = totalSales > 0 ? round2((totalSalesIncome / totalSales) * 100) : 0;
+        var payPct = totalPurchases > 0 ? round2((totalPurchasesPaid / totalPurchases) * 100) : 0;
+        var avgSale = liveSalesRpt.length ? round2(totalSales / liveSalesRpt.length) : 0;
+        var deliveredRepairs = state.repairs.filter(function (r) { return r.status === "Delivered"; }).length;
+        var cashHand = round2(cb.cash || 0);
+        var cashBank = round2(cb.bank || 0);
+        return (
+          <div className="erp-tab-content erp-rpt-overview">
+            <div className="erp-rpt-ov-card">
+              <div className="erp-rpt-ov-head">
+                <div>
+                  <div className="erp-rpt-ov-kicker">Reports · Overview</div>
+                  <div className="erp-rpt-ov-title">Business Summary</div>
+                  <div className="erp-rpt-ov-sub">Live snapshot of sales, profit, cash position and collections</div>
                 </div>
-                <div className="erp-rpt-ledger-mini-card">
-                  <div className="lbl">Balance sheet (ledger)</div>
-                  <div className="val">Assets {getCurrencySymbol()} {fmtNum(glBS.assets)}</div>
-                  <div className="sub">
-                    Liab {fmtNum(glBS.liabilities)} · Equity {fmtNum(glBS.equity)}
-                    {(glBS.balancedWithEarnings !== undefined ? glBS.balancedWithEarnings : glBS.balanced) ? " · Balanced" : ""}
+                <div className="erp-rpt-ov-head-actions">
+                  <span className={"erp-rpt-ov-pill" + (netP >= 0 ? " is-ok" : " is-bad")}>
+                    {netP >= 0 ? "In profit" : "In loss"}
+                  </span>
+                  <button type="button" className="erp-rpt-ov-link" onClick={function () { setMainTab("accounts"); }}>
+                    Generate report →
+                  </button>
+                </div>
+              </div>
+
+              <div className={"erp-rpt-ov-banner" + (netP < 0 ? " is-neg" : "")}>
+                <div className="erp-rpt-ov-banner-left">
+                  <div className="erp-rpt-ov-banner-label">Net result</div>
+                  <div className="erp-rpt-ov-banner-meta">
+                    {liveSalesRpt.length} sales · {livePurchasesRpt.length} purchases · {state.expenses.length} expenses
+                  </div>
+                  <div className="erp-rpt-ov-banner-chips">
+                    <span>Gross margin {grossMargin}%</span>
+                    <span>Net margin {netMargin}%</span>
+                    <span>Collected {collectPct}%</span>
+                  </div>
+                </div>
+                <div className={"erp-rpt-ov-banner-val" + (netP >= 0 ? " is-green" : " is-red")}>
+                  {getCurrencySymbol()} {fmtNum(netP)}
+                </div>
+              </div>
+
+              <div className="erp-rpt-ov-metrics">
+                <div className="erp-rpt-ov-metric is-blue">
+                  <span>Total Sales</span>
+                  <b>{getCurrencySymbol()} {fmtNum(totalSales)}</b>
+                  <em>{liveSalesRpt.length} invoices · avg {getCurrencySymbol()} {fmtNum(avgSale)}</em>
+                </div>
+                <div className="erp-rpt-ov-metric is-navy">
+                  <span>Total Purchases</span>
+                  <b>{getCurrencySymbol()} {fmtNum(totalPurchases)}</b>
+                  <em>{livePurchasesRpt.length} orders · paid {payPct}%</em>
+                </div>
+                <div className="erp-rpt-ov-metric is-red">
+                  <span>Total Expenses</span>
+                  <b>{getCurrencySymbol()} {fmtNum(totalExpenses)}</b>
+                  <em>{state.expenses.length} entries</em>
+                </div>
+                <div className={"erp-rpt-ov-metric" + (grossP >= 0 ? " is-green" : " is-red")}>
+                  <span>Gross Profit</span>
+                  <b>{getCurrencySymbol()} {fmtNum(grossP)}</b>
+                  <em>After COGS · margin {grossMargin}%</em>
+                </div>
+              </div>
+
+              <div className="erp-rpt-ov-body">
+                <div className="erp-rpt-ov-main">
+                  <div className="erp-rpt-ov-stmt-head">Performance statement</div>
+                  <div className="erp-rpt-ov-stmt">
+                    <div className="erp-rpt-ov-row">
+                      <div className="erp-rpt-ov-lbl">Total Sales<small>{liveSalesRpt.length} invoices · avg {getCurrencySymbol()} {fmtNum(avgSale)}</small></div>
+                      <div className="erp-rpt-ov-amt is-blue">{getCurrencySymbol()} {fmtNum(totalSales)}</div>
+                    </div>
+                    <div className="erp-rpt-ov-row is-deduct">
+                      <div className="erp-rpt-ov-lbl">Less: Cost of Goods Sold<small>Stock cost of items sold</small></div>
+                      <div className="erp-rpt-ov-amt is-red">{getCurrencySymbol()} {fmtNum(totalCOGS)}</div>
+                    </div>
+                    <div className="erp-rpt-ov-row is-gross">
+                      <div className="erp-rpt-ov-lbl">Gross Profit<small>Margin {grossMargin}%</small></div>
+                      <div className={"erp-rpt-ov-amt" + (grossP >= 0 ? " is-green" : " is-red")}>{getCurrencySymbol()} {fmtNum(grossP)}</div>
+                    </div>
+                    <div className="erp-rpt-ov-row">
+                      <div className="erp-rpt-ov-lbl">Total Purchases<small>{livePurchasesRpt.length} purchases · stock buying</small></div>
+                      <div className="erp-rpt-ov-amt">{getCurrencySymbol()} {fmtNum(totalPurchases)}</div>
+                    </div>
+                    {totalRepairRevenue > 0 ? (
+                      <div className="erp-rpt-ov-row">
+                        <div className="erp-rpt-ov-lbl">Repair / Service Revenue<small>Not yet invoiced on sales</small></div>
+                        <div className="erp-rpt-ov-amt is-green">{getCurrencySymbol()} {fmtNum(totalRepairRevenue)}</div>
+                      </div>
+                    ) : null}
+                    <div className="erp-rpt-ov-row is-deduct">
+                      <div className="erp-rpt-ov-lbl">Less: Operating Expenses<small>{state.expenses.length} expenses</small></div>
+                      <div className="erp-rpt-ov-amt is-red">{getCurrencySymbol()} {fmtNum(totalExpenses)}</div>
+                    </div>
+                    <div className={"erp-rpt-ov-row is-net" + (netP < 0 ? " is-neg" : "")}>
+                      <div className="erp-rpt-ov-lbl">Net Profit{netP < 0 ? " / (Loss)" : ""}<small>Margin {netMargin}% of sales</small></div>
+                      <div className={"erp-rpt-ov-amt" + (netP >= 0 ? " is-green" : " is-red")}>{getCurrencySymbol()} {fmtNum(netP)}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="erp-rpt-ov-aside">
+                  <div className="erp-rpt-ov-side">
+                    <div className="erp-rpt-ov-side-title">Cash &amp; position</div>
+                    <div className="erp-rpt-ov-side-row"><span>Cash in hand</span><b className="is-green">{getCurrencySymbol()} {fmtNum(cashHand)}</b></div>
+                    <div className="erp-rpt-ov-side-row"><span>Bank</span><b className="is-blue">{getCurrencySymbol()} {fmtNum(cashBank)}</b></div>
+                    <div className="erp-rpt-ov-side-row is-strong"><span>Total cash</span><b className="is-blue">{getCurrencySymbol()} {fmtNum(cb.total)}</b></div>
+                    <div className="erp-rpt-ov-side-row"><span>Stock (cost)</span><b>{getCurrencySymbol()} {fmtNum(stockValue)}</b></div>
+                    <div className="erp-rpt-ov-side-row"><span>Business assets</span><b>{getCurrencySymbol()} {fmtNum(totalAssetsSpent)}</b></div>
+                    <div className="erp-rpt-ov-side-row"><span>Receivable</span><b className="is-blue">{getCurrencySymbol()} {fmtNum(totalReceivable)}</b></div>
+                    <div className="erp-rpt-ov-side-row"><span>Payable</span><b className="is-red">{getCurrencySymbol()} {fmtNum(totalPayable)}</b></div>
+                    <div className="erp-rpt-ov-side-row is-strong"><span>Net Worth</span><b className={netWorth >= 0 ? "is-green" : "is-red"}>{getCurrencySymbol()} {fmtNum(netWorth)}</b></div>
+                  </div>
+
+                  <div className="erp-rpt-ov-side">
+                    <div className="erp-rpt-ov-side-title">Collections</div>
+                    <div className="erp-rpt-ov-side-row"><span>Sales collected</span><b className="is-green">{getCurrencySymbol()} {fmtNum(totalSalesIncome)}</b></div>
+                    <div className="erp-rpt-ov-side-row"><span>Sales outstanding</span><b className="is-red">{getCurrencySymbol()} {fmtNum(salesDue)}</b></div>
+                    <div className="erp-rpt-ov-bar-wrap">
+                      <div className="erp-rpt-ov-bar-meta"><span>Collection rate</span><b>{collectPct}%</b></div>
+                      <div className="erp-rpt-ov-bar"><i style={{ width: Math.min(100, Math.max(0, collectPct)) + "%" }} /></div>
+                    </div>
+                    <div className="erp-rpt-ov-side-row"><span>Purchases paid</span><b className="is-green">{getCurrencySymbol()} {fmtNum(totalPurchasesPaid)}</b></div>
+                    <div className="erp-rpt-ov-side-row"><span>Still payable</span><b className="is-red">{getCurrencySymbol()} {fmtNum(purchDue)}</b></div>
+                    <div className="erp-rpt-ov-bar-wrap">
+                      <div className="erp-rpt-ov-bar-meta"><span>Purchase paid rate</span><b>{payPct}%</b></div>
+                      <div className="erp-rpt-ov-bar is-navy"><i style={{ width: Math.min(100, Math.max(0, payPct)) + "%" }} /></div>
+                    </div>
                   </div>
                 </div>
               </div>
-            </Card>
-          )}
-          <div className="erp-rpt-panels">
-            <Card pad={0}>
-              <SectionHead label="Income & Cash Flow" />
-              <KVRow label="Capital Invested" value={capital} color={C.blue} />
-              <KVRow label="Sales Income (Collected)" value={totalSalesIncome} color={C.green} />
-              <KVRow label="Repair Revenue" value={totalRepairRevenue} color={C.green} />
-              <KVRow label="Purchases Paid" value={totalPurchasesPaid} color={C.red} />
-              <KVRow label="Operating Expenses" value={totalExpenses} color={C.red} />
-              <KVRow label="Assets Purchased" value={totalAssetsSpent} color={C.orange} />
-              <div className="erp-rpt-row-total"><span>Cash in Hand</span><span style={{ color: cashInHand >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(cashInHand)}</span></div>
-            </Card>
-            <Card pad={0}>
-              <SectionHead label="Profit & Loss" />
-              <KVRow label="Total Revenue (Invoiced)" value={totalRevenue} color={C.blue} />
-              <KVRow label="Tax on invoices (sum)" value={totalTaxOnInvoices} color={C.textMd} />
-              {ingredientUsageCOGS > 0 ? (
-                <React.Fragment>
-                  <KVRow label="COGS — sale invoice lines" value={invoicedCOGS} color={C.red} />
-                  <KVRow label="Kitchen consumption (raw materials)" value={ingredientUsageCOGS} color={C.orange} />
-                  <KVRow label="Total cost of goods sold" value={totalCOGS} color={C.red} />
-                </React.Fragment>
-              ) : (
-                <KVRow label="Cost of Goods Sold" value={totalCOGS} color={C.red} />
-              )}
-              <KVRow label="Gross Profit" value={totalProfit} color={totalProfit >= 0 ? C.green : C.red} />
-              <KVRow label="Repair / Service Revenue" value={totalRepairRevenue} color={C.green} />
-              <KVRow label="Operating Expenses" value={totalExpenses} color={C.red} />
-              <div className="erp-rpt-row-total"><span>Net Profit</span><span style={{ color: (totalProfit + totalRepairRevenue - totalExpenses) >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(totalProfit + totalRepairRevenue - totalExpenses)}</span></div>
-            </Card>
-            <Card pad={0}>
-              <SectionHead label="Business Summary" />
-              <KVRow label="Total Invoices" value={state.sales.length} color={C.blue} />
-              <KVRow label="Total Products" value={state.products.length} color={C.purple} />
-              <KVRow label="Total Customers" value={state.customers.length} color={C.cyan} />
-              <KVRow label="Repair Jobs Done" value={state.repairs.filter(function(r){return r.status==="Delivered";}).length} color={C.green} />
-              <div className="erp-rpt-row-total"><span>Active Repairs</span><span style={{ color: activeRepairs > 0 ? C.orange : C.green }}>{activeRepairs} jobs</span></div>
-            </Card>
-          </div>
-          {isNetworkServerRpt && (function () {
-            var by = {};
-            state.sales.forEach(function (s) {
-              var k = s.originDeviceId ? String(s.originDeviceId) : "__local__";
-              if (!by[k]) by[k] = { count: 0, revenue: 0, label: s.originTerminalLabel || "" };
-              by[k].count += 1;
-              by[k].revenue += Number(s.total) || 0;
-              if (!by[k].label && s.originTerminalLabel) by[k].label = s.originTerminalLabel;
-            });
-            var keys = Object.keys(by).sort(function (a, b) { return by[b].revenue - by[a].revenue; });
-            return (
-              <Card>
-                <CardTitle sub="Invoices tagged with origin device (client POS)">Sales by terminal</CardTitle>
-                <div style={{ fontSize: 12, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
-                  Compares revenue per terminal. Invoices created on this server PC appear as &quot;Server / main PC&quot;. Older invoices may be untagged until clients update.
-                </div>
-                <div style={{ border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                    <thead><tr style={{ background: "#f8faff" }}><th style={{ textAlign: "left", padding: "8px 10px" }}>Terminal</th><th style={{ textAlign: "right", padding: "8px 10px" }}>Invoices</th><th style={{ textAlign: "right", padding: "8px 10px" }}>Revenue</th></tr></thead>
-                    <tbody>
-                      {keys.map(function (k, idx) {
-                        var b = by[k];
-                        var name = b.label || terminalNameMap[k] || (k === "__local__" ? "Server / main PC" : (k.length > 14 ? k.slice(0, 10) + "…" : k));
-                        return (
-                          <tr key={k + "-" + idx} style={{ borderTop: "1px solid " + C.borderLight }}>
-                            <td style={{ padding: "8px 10px", fontWeight: 700 }}>{name}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right" }}>{b.count}</td>
-                            <td style={{ padding: "8px 10px", textAlign: "right", fontWeight: 800, color: C.blue }}>{getCurrencySymbol()} {fmtNum(b.revenue)}</td>
-                          </tr>
-                        );
-                      })}
-                      {keys.length === 0 && (
-                        <tr><td colSpan={3} style={{ padding: 14, color: C.muted, textAlign: "center" }}>No sales invoices yet.</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            );
-          })()}
-        </div>
-      )}
 
-      {tab === "daily" && (
+              <div className="erp-rpt-ov-counts">
+                <div className="erp-rpt-ov-count"><span>Invoices</span><b>{liveSalesRpt.length}</b></div>
+                <div className="erp-rpt-ov-count"><span>Products</span><b>{state.products.length}</b></div>
+                <div className="erp-rpt-ov-count"><span>Customers</span><b>{state.customers.length}</b></div>
+                <div className="erp-rpt-ov-count"><span>Suppliers</span><b>{(state.suppliers || []).length}</b></div>
+                <div className="erp-rpt-ov-count"><span>Repairs done</span><b>{deliveredRepairs}</b></div>
+                <div className="erp-rpt-ov-count"><span>Active repairs</span><b className={activeRepairs > 0 ? "is-orange" : ""}>{activeRepairs}</b></div>
+              </div>
+
+              <p className="erp-rpt-ov-note">
+                Gross profit = sales − cost of goods sold. Net profit = gross profit{totalRepairRevenue > 0 ? " + repair revenue" : ""} − expenses.
+                Purchases are stock buying and are separate from COGS.
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
+      {false && mainTab === "hub" && tab === "daily" && (
         <div className="erp-tab-content">
           <Card pad={10}>
             <div className="erp-rpt-page-hdr">
@@ -1256,7 +1355,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "monthly" && (
+      {false && mainTab === "hub" && tab === "monthly" && (
         <div className="erp-tab-content">
           <Card pad={10}>
             <div className="erp-rpt-page-hdr">
@@ -1328,7 +1427,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "inventory" && (
+      {false && mainTab === "hub" && tab === "inventory" && (
         <div className="erp-tab-content">
           <div className="erp-rpt-page-hdr" style={{ marginBottom: 4 }}>
             <div className="erp-rpt-page-hdr-actions" style={{ marginLeft: 0, width: "100%", justifyContent: "flex-end" }}>
@@ -1382,7 +1481,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "invrecon" && (function () {
+      {mainTab === "invrecon" && (function () {
         var bundle = getInventoryReconciliation ? getInventoryReconciliation() : null;
         var rec = bundle && bundle.reconciliation ? bundle.reconciliation : null;
         var recent = bundle && bundle.recentGlInvLines ? bundle.recentGlInvLines : [];
@@ -1495,130 +1594,148 @@ var Reports = React.memo(function (props) {
         var glDisp = rec ? round2(rec.glInventoryBalance) : 0;
         var diffDisp = rec ? round2(rec.difference) : 0;
         return (
-          <div className="erp-tab-content">
-            <Card>
-              <CardTitle sub={"Inventory account " + GL.INV + " vs replay engine"}>Inventory Reconciliation</CardTitle>
+          <div className="erp-tab-content erp-rpt-recon">
+            <Card pad={12}>
+              <div className="erp-rpt-recon-head">
+                <div>
+                  <div className="erp-rpt-recon-title">Inventory Reconciliation</div>
+                  <div className="erp-rpt-recon-sub">Account {GL.INV} · engine vs general ledger</div>
+                </div>
+                {rec ? (
+                  <span className={"erp-rpt-recon-status-pill" + (mismatch ? " is-bad" : " is-ok")}>
+                    {mismatch ? "Mismatch" : "Aligned"}
+                  </span>
+                ) : null}
+              </div>
               {!bundle || !rec ? (
-                <div style={{ padding: 16, color: C.muted, fontSize: 13 }}>Live journal data is not available.</div>
+                <div className="erp-rpt-recon-empty">Live journal data is not available.</div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div className="erp-rpt-kpi-strip">
+                <div className="erp-rpt-recon-body">
+                  <div className="erp-rpt-recon-kpis">
                     {[
-                      { label: "Inventory (engine)", val: physDisp, color: C.blue },
-                      { label: "GL inventory", val: glDisp, color: C.purple },
-                      { label: "Difference", val: diffDisp, color: mismatch ? C.red : C.green },
+                      { label: "Inventory (engine)", val: physDisp, tone: "blue" },
+                      { label: "GL inventory", val: glDisp, tone: "purple" },
+                      { label: "Difference", val: diffDisp, tone: mismatch ? "red" : "green" },
                     ].map(function (k) {
                       return (
-                        <div key={k.label} className="erp-rpt-kpi" style={{ borderTopColor: k.color }}>
-                          <div className="erp-rpt-kpi-label">{k.label}</div>
-                          <div className="erp-rpt-kpi-val" style={{ color: k.color }}>{getCurrencySymbol()} {fmtNum(k.val)}</div>
+                        <div key={k.label} className={"erp-rpt-recon-kpi is-" + k.tone}>
+                          <div className="erp-rpt-recon-kpi-label">{k.label}</div>
+                          <div className="erp-rpt-recon-kpi-val">{getCurrencySymbol()} {fmtNum(k.val)}</div>
                         </div>
                       );
                     })}
                   </div>
-                  <div style={{ border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", background: "#fafbff" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
-                      <span style={{ fontWeight: 800, fontSize: 13, color: C.textMd }}>Kitchen ingredients (replay vs GL)</span>
+
+                  <div className="erp-rpt-recon-panel">
+                    <div className="erp-rpt-recon-panel-head">
+                      <span className="erp-rpt-recon-panel-title">Kitchen ingredients</span>
                       {kitchenMismatchR ? (
-                        <span style={{ background: "#fde8ed", color: "#c0152e", border: "1px solid #f9a8ba", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700 }}>Δ {getCurrencySymbol()} {fmtNum(Math.abs(kitchenDiffR))}</span>
+                        <span className="erp-rpt-recon-chip is-bad">Δ {getCurrencySymbol()} {fmtNum(Math.abs(kitchenDiffR))}</span>
                       ) : (
-                        <span style={{ background: "#e6f7f2", color: "#0a7a53", border: "1px solid #9ee8ce", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 700 }}>Aligned</span>
+                        <span className="erp-rpt-recon-chip is-ok">Aligned</span>
                       )}
-                      <span style={{ fontSize: 11, color: C.muted }}>Range: {invReconTtFrom} → {invReconTtTo} · Account {GL.COGS_KITCHEN}</span>
+                      <span className="erp-rpt-recon-panel-meta">{invReconTtFrom} → {invReconTtTo} · Acct {GL.COGS_KITCHEN}</span>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 8, fontSize: 12 }}>
-                      <div><span style={{ color: C.muted }}>Replay kitchen COGS</span><br /><strong>{getCurrencySymbol()} {fmtNum(kitchenReplayR)}</strong></div>
-                      <div><span style={{ color: C.muted }}>GL kitchen consumption</span><br /><strong>{getCurrencySymbol()} {fmtNum(kitchenGlR)}</strong></div>
-                      <div><span style={{ color: C.muted }}>Difference (replay − GL)</span><br /><strong style={{ color: kitchenMismatchR ? C.red : C.green }}>{getCurrencySymbol()} {fmtNum(kitchenDiffR)}</strong></div>
-                      <div><span style={{ color: C.muted }}>Legacy estimate (latest purchase)</span><br /><strong>{getCurrencySymbol()} {fmtNum(kitchenLegacyEstR)}</strong></div>
+                    <div className="erp-rpt-recon-mini-grid">
+                      <div className="erp-rpt-recon-mini"><span>Replay kitchen COGS</span><b>{getCurrencySymbol()} {fmtNum(kitchenReplayR)}</b></div>
+                      <div className="erp-rpt-recon-mini"><span>GL kitchen consumption</span><b>{getCurrencySymbol()} {fmtNum(kitchenGlR)}</b></div>
+                      <div className="erp-rpt-recon-mini"><span>Difference</span><b className={kitchenMismatchR ? "is-red" : "is-green"}>{getCurrencySymbol()} {fmtNum(kitchenDiffR)}</b></div>
+                      <div className="erp-rpt-recon-mini"><span>Legacy estimate</span><b>{getCurrencySymbol()} {fmtNum(kitchenLegacyEstR)}</b></div>
                     </div>
                     {kitchenMismatchR ? (
-                      <div style={{ marginTop: 10, fontSize: 11, color: "#92400e", fontWeight: 600 }}>
-                        Journal may be rebuilding, or immutable GL history differs from current replay — use Rebuild journal in developer tools if needed.
-                      </div>
+                      <div className="erp-rpt-recon-warn">Journal may be rebuilding, or immutable GL history differs from current replay — use Rebuild journal in developer tools if needed.</div>
                     ) : null}
                   </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                    <Btn sm col="cyan" onClick={function () { setInvExplainOpen(function (x) { return !x; }); }}>{invExplainOpen ? "Hide explanation" : "Explain difference"}</Btn>
+
+                  <div className="erp-rpt-recon-actions">
+                    <button
+                      type="button"
+                      className={"erp-rpt-recon-btn" + (invExplainOpen ? " is-active" : "")}
+                      onClick={function () { setInvExplainOpen(function (x) { return !x; }); }}
+                    >{invExplainOpen ? "Hide explanation" : "Explain difference"}</button>
                   </div>
+
                   {invExplainOpen && drilldown ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Grouped GL inventory activity (absolute amounts — for tracing)</div>
+                    <div className="erp-rpt-recon-explain">
+                      <div className="erp-rpt-recon-sec-label">Grouped GL inventory activity</div>
                       {["purchases", "sales_cogs", "returns_sales", "returns_purchase", "adjustments", "other_gl"].map(function (bk) {
                         var B = drilldown.buckets[bk];
                         if (!B || !B.rows.length) return null;
                         return (
-                          <div key={bk} style={{ border: "1px solid " + C.border, borderRadius: 10, overflow: "hidden" }}>
-                            <div style={{ padding: "8px 12px", background: "#f7f9ff", fontWeight: 700, fontSize: 12 }}>{B.label} · subtotal abs {getCurrencySymbol()} {fmtNum(B.subtotal)}</div>
-                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                              <thead><tr style={{ background: "#fafbff" }}><TH>Date</TH><TH>Impact</TH><TH>Debit</TH><TH>Credit</TH><TH>Ref</TH></tr></thead>
+                          <div key={bk} className="erp-rpt-recon-bucket">
+                            <div className="erp-rpt-recon-bucket-head">{B.label} · abs {getCurrencySymbol()} {fmtNum(B.subtotal)}</div>
+                            <div className="erp-rpt-recon-table-wrap">
+                              <table className="erp-rpt-recon-table">
+                                <thead><tr><TH>Date</TH><TH>Impact</TH><TH>Debit</TH><TH>Credit</TH><TH>Ref</TH></tr></thead>
+                                <tbody>
+                                  {B.rows.map(function (rw, ri) {
+                                    return (
+                                      <TR key={bk + "_" + ri} i={ri}>
+                                        <TD>{rw.date}</TD>
+                                        <TD style={{ fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(rw.signedImpact)}</TD>
+                                        <TD>{getCurrencySymbol()} {fmtNum(rw.debit)}</TD>
+                                        <TD>{getCurrencySymbol()} {fmtNum(rw.credit)}</TD>
+                                        <TD>{(rw.referenceType || "") + " · " + String(rw.referenceId || "").slice(0, 14)}</TD>
+                                      </TR>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {(drilldown.topContributors || []).length > 0 ? (
+                        <div>
+                          <div className="erp-rpt-recon-sec-label">Largest movements</div>
+                          <div className="erp-rpt-recon-table-wrap">
+                            <table className="erp-rpt-recon-table">
+                              <thead><tr><TH>Date</TH><TH>Signed impact</TH><TH>Type</TH></tr></thead>
                               <tbody>
-                                {B.rows.map(function (rw, ri) {
+                                {drilldown.topContributors.map(function (rw, ti) {
                                   return (
-                                    <TR key={bk + "_" + ri} i={ri}>
+                                    <TR key={"tc_" + ti} i={ti}>
                                       <TD>{rw.date}</TD>
-                                      <TD style={{ fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(rw.signedImpact)}</TD>
-                                      <TD>{getCurrencySymbol()} {fmtNum(rw.debit)}</TD>
-                                      <TD>{getCurrencySymbol()} {fmtNum(rw.credit)}</TD>
-                                      <TD>{(rw.referenceType || "") + " · " + String(rw.referenceId || "").slice(0, 14)}</TD>
+                                      <TD style={{ fontWeight: 800, color: Math.abs(rw.signedImpact || 0) > 0.01 ? C.red : C.muted }}>{getCurrencySymbol()} {fmtNum(rw.signedImpact)}</TD>
+                                      <TD>{rw.referenceType}</TD>
                                     </TR>
                                   );
                                 })}
                               </tbody>
                             </table>
                           </div>
-                        );
-                      })}
-                      {(drilldown.topContributors || []).length > 0 ? (
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd, marginBottom: 6 }}>Largest movements (signed)</div>
-                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, border: "1px solid " + C.border, borderRadius: 8 }}>
-                            <thead><tr style={{ background: "#fff8e1" }}><TH>Date</TH><TH>Signed impact</TH><TH>Type</TH></tr></thead>
-                            <tbody>
-                              {drilldown.topContributors.map(function (rw, ti) {
-                                return (
-                                  <TR key={"tc_" + ti} i={ti}>
-                                    <TD>{rw.date}</TD>
-                                    <TD style={{ fontWeight: 800, color: Math.abs(rw.signedImpact || 0) > 0.01 ? C.red : C.muted }}>{getCurrencySymbol()} {fmtNum(rw.signedImpact)}</TD>
-                                    <TD>{rw.referenceType}</TD>
-                                  </TR>
-                                );
-                              })}
-                            </tbody>
-                          </table>
                         </div>
                       ) : null}
                     </div>
                   ) : null}
-                  {mismatch ? (
-                    <div style={{ padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + C.red, background: "#fde8ed", color: "#7f1d1d", fontSize: 13, fontWeight: 600 }}>
-                      Mismatch detected — investigate journal rebuild, inventory costing, or manual edits. Recent GL inventory lines are listed below.
-                    </div>
-                  ) : (
-                    <div style={{ padding: "10px 14px", borderRadius: 10, border: "1.5px solid #a7f3d0", background: "#ecfdf5", color: "#065f46", fontSize: 13 }}>
-                      {wacToleranceOnly
-                        ? "Inventory valuation agrees with the general ledger (within WAC rounding tolerance — difference " + getCurrencySymbol() + " " + fmtNum(Math.abs(diffDisp)) + ")."
-                        : "Inventory valuation agrees with the general ledger (within tolerance)."}
-                    </div>
-                  )}
+
+                  <div className={"erp-rpt-recon-banner" + (mismatch ? " is-bad" : " is-ok")}>
+                    {mismatch
+                      ? "Mismatch detected — investigate journal rebuild, inventory costing, or manual edits."
+                      : (wacToleranceOnly
+                        ? "Inventory valuation agrees with GL (within WAC tolerance — Δ " + getCurrencySymbol() + " " + fmtNum(Math.abs(diffDisp)) + ")."
+                        : "Inventory valuation agrees with the general ledger (within tolerance).")}
+                  </div>
+
                   {autoS && mismatch && Math.abs(diffDisp) > 0.01 ? (
-                    <div style={{ padding: "12px 14px", borderRadius: 10, border: "1px solid " + C.border, background: "#fafbff", fontSize: 12 }}>
-                      <div style={{ fontWeight: 800, marginBottom: 8, color: C.textMd }}>Suggested checks (informational — nothing is posted)</div>
-                      <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
+                    <div className="erp-rpt-recon-panel">
+                      <div className="erp-rpt-recon-panel-title" style={{ marginBottom: 6 }}>Suggested checks</div>
+                      <ul className="erp-rpt-recon-list">
                         {(autoS.checks || []).map(function (c) {
-                          return <li key={c.key} style={{ color: c.severity === "warn" ? C.red : C.text }}>{c.label}: {c.detail}</li>;
+                          return <li key={c.key} className={c.severity === "warn" ? "is-warn" : ""}>{c.label}: {c.detail}</li>;
                         })}
                       </ul>
                       {autoS.displayOnlyClosingAdjustment ? (
-                        <div style={{ marginTop: 8, fontSize: 11, color: C.muted, fontStyle: "italic" }}>{autoS.closingAdjustmentNote}</div>
+                        <div className="erp-rpt-recon-note">{autoS.closingAdjustmentNote}</div>
                       ) : null}
                     </div>
                   ) : null}
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.th, textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 4 }}>Recent GL lines — account {GL.INV}</div>
-                  <div style={{ overflowX: "auto", border: "1px solid " + C.border, borderRadius: 10 }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+
+                  <div className="erp-rpt-recon-sec-label">Recent GL lines — account {GL.INV}</div>
+                  <div className="erp-rpt-recon-table-wrap">
+                    <table className="erp-rpt-recon-table">
                       <thead>
-                        <tr style={{ background: "#f7f9ff" }}>
+                        <tr>
                           <TH>Date</TH>
                           <TH>Debit</TH>
                           <TH>Credit</TH>
@@ -1628,7 +1745,7 @@ var Reports = React.memo(function (props) {
                       </thead>
                       <tbody>
                         {recent.length === 0 ? (
-                          <tr><td colSpan={5} style={{ padding: 12, color: C.muted }}>No posted inventory lines.</td></tr>
+                          <tr><td colSpan={5} className="erp-rpt-recon-empty-cell">No posted inventory lines.</td></tr>
                         ) : recent.map(function (ln, ix) {
                           return (
                             <TR key={(ln.id || ln.memo || "") + "_" + ix} i={ix}>
@@ -1636,7 +1753,7 @@ var Reports = React.memo(function (props) {
                               <TD>{getCurrencySymbol()} {fmtNum(ln.debit || 0)}</TD>
                               <TD>{getCurrencySymbol()} {fmtNum(ln.credit || 0)}</TD>
                               <TD>{(ln.referenceType || "") + " · " + String(ln.referenceId || "").slice(0, 12)}</TD>
-                              <TD style={{ maxWidth: 240, wordBreak: "break-word" }}>{ln.memo || ""}</TD>
+                              <TD style={{ maxWidth: 220, wordBreak: "break-word" }}>{ln.memo || ""}</TD>
                             </TR>
                           );
                         })}
@@ -1646,26 +1763,31 @@ var Reports = React.memo(function (props) {
                 </div>
               )}
             </Card>
-            <Card>
-              <CardTitle sub={"Daily comparison — debounced recomputation"}>Inventory reconciliation — time travel</CardTitle>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10, alignItems: "flex-end" }}>
+            <Card pad={12}>
+              <div className="erp-rpt-recon-head is-compact">
+                <div>
+                  <div className="erp-rpt-recon-title">Time travel</div>
+                  <div className="erp-rpt-recon-sub">Daily engine vs GL comparison</div>
+                </div>
+              </div>
+              <div className="erp-rpt-recon-tt-bar">
                 <Input type="date" label="From" value={invReconTtFrom} onChange={function (e) { setInvReconTtFrom(e.target.value); }} />
                 <Input type="date" label="To" value={invReconTtTo} onChange={function (e) { setInvReconTtTo(e.target.value); }} />
               </div>
               {ttSpark ? (
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, color: C.muted, marginBottom: 4 }}>Daily delta magnitude (GL − physical) — sparkline</div>
-                  <svg width={ttSpark.w} height={ttSpark.h} style={{ display: "block", background: "#fafbff", borderRadius: 6, border: "1px solid " + C.border }} aria-hidden>
+                <div className="erp-rpt-recon-spark">
+                  <div className="erp-rpt-recon-spark-label">Daily delta magnitude (GL − physical)</div>
+                  <svg width={ttSpark.w} height={ttSpark.h} className="erp-rpt-recon-spark-svg" aria-hidden>
                     <polyline fill="none" stroke="#ea580c" strokeWidth="1.5" points={ttSpark.points} />
                   </svg>
                 </div>
               ) : null}
-              <div style={{ overflowX: "auto", maxHeight: 260, border: "1px solid " + C.border, borderRadius: 8 }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                  <thead><tr style={{ background: "#f7f9ff" }}><TH>Date</TH><TH>Engine value</TH><TH>GL {GL.INV}</TH><TH>Δ</TH></tr></thead>
+              <div className="erp-rpt-recon-table-wrap is-scroll">
+                <table className="erp-rpt-recon-table">
+                  <thead><tr><TH>Date</TH><TH>Engine value</TH><TH>GL {GL.INV}</TH><TH>Δ</TH></tr></thead>
                   <tbody>
                     {ttSeries.length === 0 ? (
-                      <tr><td colSpan={4} style={{ padding: 10, color: C.muted }}>{getInventoryReconTimeTravel ? "Adjust range or wait for debounced load…" : "Time travel unavailable."}</td></tr>
+                      <tr><td colSpan={4} className="erp-rpt-recon-empty-cell">{getInventoryReconTimeTravel ? "Adjust range or wait for debounced load…" : "Time travel unavailable."}</td></tr>
                     ) : (
                       ttSeries.map(function (row, ri) {
                         return (
@@ -1750,7 +1872,7 @@ var Reports = React.memo(function (props) {
         );
       })()}
 
-      {tab === "rawconsumption" && (
+      {false && mainTab === "hub" && tab === "rawconsumption" && (
         <div className="erp-tab-content">
           <Card>
             <CardTitle
@@ -1825,7 +1947,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "customers" && (
+      {false && mainTab === "hub" && tab === "customers" && (
         <div className="erp-tab-content">
         <Card>
           <CardTitle sub={state.customers.length + " customers"} action={<div style={{ display: "flex", gap: 6, alignItems: "center" }}><Btn sm col="cyan" onClick={printCustomerBalanceReport}>🖨 Print Balance Report</Btn><WABtn title="Share via WhatsApp" onClick={function () { shareAnyReport(printCustomerBalanceReport, "Customer-Balance-Report"); }} /></div>}>Customer Report</CardTitle>
@@ -1859,7 +1981,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "expenses" && (
+      {false && mainTab === "hub" && tab === "expenses" && (
         <div className="erp-tab-content">
           <div className="erp-rpt-kpi-strip">
             {[
@@ -1914,7 +2036,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "repairs" && (
+      {false && mainTab === "hub" && tab === "repairs" && (
         <div className="erp-tab-content">
           <div className="erp-rpt-kpi-strip">
             {["Pending", "Repairing", "Ready", "Delivered", "Cancelled"].map(function (s) {
@@ -1944,7 +2066,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "assets" && (
+      {false && mainTab === "hub" && tab === "assets" && (
         <div className="erp-tab-content">
 
           <div className="erp-rpt-kpi-strip">
@@ -2211,7 +2333,7 @@ var Reports = React.memo(function (props) {
         </div>
       )}
 
-      {tab === "balancesheet" && (function () {
+      {false && mainTab === "hub" && tab === "balancesheet" && (function () {
         var cur = getCurrencySymbol();
         var shopName = state.settings.shopName || "Techon ERP";
         var addr = state.settings.address || "";
@@ -2461,7 +2583,7 @@ var Reports = React.memo(function (props) {
         );
       })()}
 
-      {tab === "integrity" && (function () {
+      {mainTab === "integrity" && (function () {
         var cur = getCurrencySymbol();
         var issues = [];
         var warnings = [];
@@ -2814,10 +2936,10 @@ var Reports = React.memo(function (props) {
         );
       })()}
 
-      {tab === "business" && (
+      {false && mainTab === "hub" && tab === "business" && (
         <div className="erp-tab-content">
           <Card pad={10}>
-            <CardTitle sub="Filter and print a complete business summary">Business Report</CardTitle>
+            <CardTitle sub="Pick a date range and print a complete multi-section business pack">Full Business Print</CardTitle>
             <div className="erp-rpt-toolbar">
               <div className="erp-rpt-toolbar-field">
                 <label>From</label>

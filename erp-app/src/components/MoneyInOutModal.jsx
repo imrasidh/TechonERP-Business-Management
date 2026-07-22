@@ -4,6 +4,8 @@ import MoneyPartyPicker, { findExactParty } from "./MoneyPartyPicker.jsx";
 
 import { stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 
+import { generateDocumentNumber } from "../utils/docNumbers.js";
+
 
 
 var MONEY_IN_TYPES = [
@@ -176,6 +178,8 @@ export function MoneyInOutModal(props) {
 
       var payTs = new Date().toISOString();
 
+      var receiptNo = generateDocumentNumber("RCP");
+
       var payEntry = stampTransactionIsoDateTime({
 
         id: uid(),
@@ -197,6 +201,10 @@ export function MoneyInOutModal(props) {
         reference: form.reference || "",
 
         note: form.note || "",
+
+        receiptNo: receiptNo,
+
+        receiptKind: "in",
 
         paymentHistory: [],
 
@@ -222,7 +230,7 @@ export function MoneyInOutModal(props) {
 
       }
 
-      showAlert("Money In recorded! Cash/Bank balance updated.");
+      showAlert("Money In recorded! Receipt " + receiptNo + " saved.");
 
     } else {
 
@@ -231,6 +239,8 @@ export function MoneyInOutModal(props) {
       if (!tcTrialGuard(manualRecs, "manualReceivables")) return;
 
       var recTs = new Date().toISOString();
+
+      var receiptNoOut = generateDocumentNumber("RCP");
 
       var recEntry = stampTransactionIsoDateTime({
 
@@ -253,6 +263,10 @@ export function MoneyInOutModal(props) {
         reference: form.reference || "",
 
         note: form.note || "",
+
+        receiptNo: receiptNoOut,
+
+        receiptKind: "out",
 
         paymentHistory: [],
 
@@ -278,7 +292,7 @@ export function MoneyInOutModal(props) {
 
       }
 
-      showAlert("Money Out recorded! Cash/Bank balance updated.");
+      showAlert("Money Out recorded! Receipt " + receiptNoOut + " saved.");
 
     }
 

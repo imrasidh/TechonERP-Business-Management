@@ -269,13 +269,13 @@
 }
 
 /* ?? Buttons (kill green glass ? dashboard navy/white) ??????? */
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn,
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue,
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-cyan,
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green,
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange,
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red,
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-gray {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-blue,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-cyan,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-green,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-orange,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-red,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-gray {
   border: 1px solid var(--erp-core-border-strong) !important;
   background: var(--erp-core-surface) !important;
   background-image: none !important;
@@ -288,16 +288,16 @@
   cursor: pointer !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue,
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-blue,
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-green {
   background: var(--erp-core-navy) !important;
   background-image: none !important;
   border-color: var(--erp-core-navy) !important;
   color: #ffffff !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn:hover:not(:disabled),
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-gray:hover:not(:disabled) {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn:hover:not(:disabled),
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-gray:hover:not(:disabled) {
   background: #f8fafc !important;
   background-image: none !important;
   border-color: var(--erp-core-border-strong) !important;
@@ -305,40 +305,40 @@
   box-shadow: none !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue:hover:not(:disabled),
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green:hover:not(:disabled) {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-blue:hover:not(:disabled),
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-green:hover:not(:disabled) {
   background: #16304f !important;
   background-image: none !important;
   border-color: #16304f !important;
   color: #ffffff !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-red {
   background: #fef2f2 !important;
   border-color: #fecaca !important;
   color: #b91c1c !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red:hover:not(:disabled) {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-red:hover:not(:disabled) {
   background: #fee2e2 !important;
   border-color: #fca5a5 !important;
   color: #991b1b !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-orange {
   background: #fff7ed !important;
   border-color: #fed7aa !important;
   color: #c2410c !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange:hover:not(:disabled) {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-orange:hover:not(:disabled) {
   background: #ffedd5 !important;
   border-color: #fdba74 !important;
   color: #9a3412 !important;
 }
 
 /* Unstyled page buttons */
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-pin-key):not(.erp-dialog-btn):not(.erp-act-btn):not(.erp-acc-tab) {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-pin-key):not(.erp-dialog-btn):not(.erp-act-btn):not(.erp-acc-tab):not(.erp-si-fv-btn):not(.erp-rpt-tab):not(.erp-rpt-period):not(.erp-rpt-gen-btn):not(:is(.erp-si-fv *)):not(:is(.erp-rpt-fv *)) {
   border: 1px solid var(--erp-core-border-strong) !important;
   background: var(--erp-core-surface) !important;
   background-image: none !important;
@@ -351,7 +351,7 @@
   cursor: pointer !important;
 }
 
-.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-acc-tab):hover:not(:disabled) {
+.erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-acc-tab):not(.erp-si-fv-btn):not(.erp-rpt-tab):not(.erp-rpt-period):not(.erp-rpt-gen-btn):not(:is(.erp-si-fv *)):not(:is(.erp-rpt-fv *)):hover:not(:disabled) {
   background: #f8fafc !important;
   background-image: none !important;
   border-color: var(--erp-core-border-strong) !important;
@@ -460,13 +460,13 @@
 }
 
 /* ?? Beat Phase7 green-glass hover on module pages ???????????? */
-.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn:hover:not(:disabled),
-.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-blue:hover:not(:disabled),
-.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-cyan:hover:not(:disabled),
-.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-green:hover:not(:disabled),
-.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-orange:hover:not(:disabled),
-.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-red:hover:not(:disabled),
-.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-btn-gray:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-blue:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-cyan:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-green:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-orange:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-red:hover:not(:disabled),
+.erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern):not(.erp-rpt-modern) .erp-btn-gray:hover:not(:disabled),
 .erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-tab-btn:hover:not(:disabled),
 .erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-folder-tab:hover:not(:disabled),
 .erp-app-root .erp-core-scope .erp-page:not(.erp-md-dash):not(.erp-pos-modern):not(.erp-pur-modern):not(.erp-inv-modern):not(.erp-si-modern) .erp-pager-btn:hover:not(:disabled),
@@ -746,7 +746,7 @@
 /* Table action buttons — styled globally in erpModules.css */
 
 /* Generic unclassed buttons in workspace */
-.erp-app-root .erp-core-scope button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-md-refresh):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-cust-toggle):not(.erp-sale-split-btn):not(.erp-sale-picker-btn):not(.erp-sale-hold-btn):not(.erp-sale-hold-trigger):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-pos-chip-btn):not(.erp-pos-cart-remove-btn):not(.erp-pos-cart-dup-btn):not(.erp-btn-hold):not(.erp-dialog-btn):not(.erp-pur-btn-primary):not(.erp-pur-btn-apply):not(.erp-pur-btn-clear):not(.erp-pur-act):not(.erp-pur-quick):not(.erp-pur-inv):not(.erp-pur-icon-btn):not(.erp-pur-pager-btn):not(.erp-pur-date-refresh):not(.erp-pur-search-clear):not([class*="erp-inv-"]):not([class*="erp-pur-"]):not(.erp-settings-seg-btn):not(.erp-settings-tax-help-btn):not(.erp-settings-add-tax-btn):not(.erp-settings-table-del-btn):not(.erp-settings-dismiss-btn):not(.erp-network-copy-btn):not(.erp-network-remove-btn):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-si-"]):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(:is(.erp-si-fv *)) {
+.erp-app-root .erp-core-scope button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-md-refresh):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-cust-toggle):not(.erp-sale-split-btn):not(.erp-sale-picker-btn):not(.erp-sale-hold-btn):not(.erp-sale-hold-trigger):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-pos-chip-btn):not(.erp-pos-cart-remove-btn):not(.erp-pos-cart-dup-btn):not(.erp-btn-hold):not(.erp-dialog-btn):not(.erp-pur-btn-primary):not(.erp-pur-btn-apply):not(.erp-pur-btn-clear):not(.erp-pur-act):not(.erp-pur-quick):not(.erp-pur-inv):not(.erp-pur-icon-btn):not(.erp-pur-pager-btn):not(.erp-pur-date-refresh):not(.erp-pur-search-clear):not([class*="erp-inv-"]):not([class*="erp-pur-"]):not(.erp-settings-seg-btn):not(.erp-settings-tax-help-btn):not(.erp-settings-add-tax-btn):not(.erp-settings-table-del-btn):not(.erp-settings-dismiss-btn):not(.erp-network-copy-btn):not(.erp-network-remove-btn):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-si-"]):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(.erp-rpt-gen-btn):not(.erp-rpt-period):not(.erp-rpt-quick):not(.erp-rpt-tab):not(.erp-rpt-pill):not([class*="erp-rpt-"]):not(:is(.erp-si-fv *)):not(:is(.erp-rpt-fv *)) {
   border: 1px solid var(--erp-core-border-strong) !important;
   background: var(--erp-core-surface) !important;
   background-image: none !important;
@@ -759,7 +759,7 @@
   cursor: pointer !important;
 }
 
-.erp-app-root .erp-core-scope button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-split-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-hold-trigger):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-dialog-btn):not([class*="erp-inv-"]):not([class*="erp-pur-"]):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-si-"]):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(:is(.erp-si-fv *)):hover:not(:disabled) {
+.erp-app-root .erp-core-scope button:not(.erp-btn):not(.erp-tab-btn):not(.erp-folder-tab):not(.erp-pager-btn):not(.erp-act-btn):not(.erp-md-seg-btn):not(.erp-md-link):not(.erp-sale-action-btn):not(.erp-sale-outline-btn):not(.erp-sale-split-btn):not(.erp-sale-pay-method):not(.erp-sale-mini-btn):not(.erp-sale-hold-trigger):not(.erp-pos-seg-btn):not(.erp-pos-mode-tab):not(.erp-dialog-btn):not([class*="erp-inv-"]):not([class*="erp-pur-"]):not(.erp-si-fv-fmt):not(.erp-si-fv-btn):not([class*="erp-si-"]):not([class*="erp-pty-"]):not([class*="erp-set-"]):not(.erp-rpt-gen-btn):not(.erp-rpt-period):not(.erp-rpt-quick):not(.erp-rpt-tab):not(.erp-rpt-pill):not([class*="erp-rpt-"]):not(:is(.erp-si-fv *)):not(:is(.erp-rpt-fv *)):hover:not(:disabled) {
   background: #f8fafc !important;
   background-image: none !important;
   border-color: var(--erp-core-border-strong) !important;

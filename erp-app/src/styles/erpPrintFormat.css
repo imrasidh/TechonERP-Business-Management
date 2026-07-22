@@ -1,0 +1,280 @@
+/* Shared print format chooser (A4 / A5 / Thermal) */
+.erp-print-fmt-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.erp-print-fmt-card {
+  width: min(380px, 100%);
+  background: #fff;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.28);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.erp-print-fmt-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+
+.erp-print-fmt-hint {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  line-height: 1.35;
+  margin-bottom: 4px;
+}
+
+.erp-app-root button.erp-print-fmt-btn,
+button.erp-print-fmt-btn {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  text-align: left !important;
+  border-radius: 10px !important;
+  border: 1.5px solid #e2e8f0 !important;
+  background: #fff !important;
+  background-image: none !important;
+  color: #0f172a !important;
+  padding: 11px 12px !important;
+  min-height: 52px !important;
+  height: auto !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  box-shadow: none !important;
+  position: relative;
+}
+
+.erp-app-root button.erp-print-fmt-btn:hover,
+button.erp-print-fmt-btn:hover {
+  border-color: #93c5fd !important;
+  background: #f8fbff !important;
+}
+
+.erp-print-fmt-main {
+  font-size: 13.5px;
+  font-weight: 800;
+  display: block;
+}
+
+.erp-print-fmt-sub {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  margin-top: 1px;
+}
+
+.erp-print-fmt-btn > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.erp-app-root button.erp-print-fmt-btn > kbd,
+button.erp-print-fmt-btn > kbd {
+  flex-shrink: 0;
+  font-size: 10px !important;
+  font-weight: 800 !important;
+  color: #64748b !important;
+  background: #f1f5f9 !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 6px !important;
+  padding: 2px 6px !important;
+  font-family: inherit !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-a4,
+button.erp-print-fmt-btn.is-a4 {
+  border-color: #bfdbfe !important;
+  background: #eff6ff !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-a4:hover,
+button.erp-print-fmt-btn.is-a4:hover {
+  background: #dbeafe !important;
+  border-color: #60a5fa !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-a5,
+button.erp-print-fmt-btn.is-a5 {
+  border-color: #ddd6fe !important;
+  background: #f5f3ff !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-a5:hover,
+button.erp-print-fmt-btn.is-a5:hover {
+  background: #ede9fe !important;
+  border-color: #a78bfa !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-thermal,
+button.erp-print-fmt-btn.is-thermal {
+  border-color: #a7f3d0 !important;
+  background: #ecfdf5 !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-thermal:hover,
+button.erp-print-fmt-btn.is-thermal:hover {
+  background: #d1fae5 !important;
+  border-color: #34d399 !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-cancel,
+button.erp-print-fmt-btn.is-cancel {
+  margin-top: 2px;
+  min-height: 40px !important;
+  background: #f8fafc !important;
+  border-color: #e2e8f0 !important;
+  color: #475569 !important;
+}
+
+.erp-app-root button.erp-print-fmt-btn.is-cancel .erp-print-fmt-main,
+button.erp-print-fmt-btn.is-cancel .erp-print-fmt-main {
+  font-size: 12.5px;
+  font-weight: 750;
+}
+
+/* Sales / Preview format picker — label + key chip (beats Phase7 modal flatten) */
+.erp-app-root .erp-modal-shell .erp-sale-picker,
+.erp-sale-picker {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+.erp-app-root .erp-modal-shell .erp-sale-picker-hint,
+.erp-sale-picker-hint {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #64748b !important;
+  line-height: 1.4 !important;
+  margin-bottom: 4px !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn,
+.erp-app-root .erp-modal-body button.erp-sale-picker-btn,
+.erp-app-root button.erp-sale-picker-btn,
+button.erp-sale-picker-btn {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  width: 100% !important;
+  min-height: 44px !important;
+  height: auto !important;
+  border-radius: 10px !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  padding: 10px 12px !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+  line-height: 1.2 !important;
+  white-space: nowrap !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn .erp-sale-picker-label,
+.erp-app-root button.erp-sale-picker-btn .erp-sale-picker-label,
+.erp-sale-picker-btn .erp-sale-picker-label {
+  flex: 1 1 auto !important;
+  text-align: left !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  color: inherit !important;
+  display: block !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn .erp-sale-picker-key,
+.erp-app-root .erp-modal-body button.erp-sale-picker-btn .erp-sale-picker-key,
+.erp-app-root button.erp-sale-picker-btn .erp-sale-picker-key,
+.erp-sale-picker-btn .erp-sale-picker-key,
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn > kbd,
+.erp-app-root button.erp-sale-picker-btn > kbd {
+  flex: 0 0 auto !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 28px !important;
+  height: 24px !important;
+  padding: 0 8px !important;
+  margin-left: 8px !important;
+  border-radius: 6px !important;
+  border: 1px solid rgba(15, 23, 42, 0.12) !important;
+  background: rgba(15, 23, 42, 0.08) !important;
+  color: inherit !important;
+  font-family: inherit !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.02em !important;
+  line-height: 1 !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.primary,
+.erp-app-root button.erp-sale-picker-btn.primary {
+  border: 1px solid #1d4ed8 !important;
+  background: #2563eb !important;
+  background-image: none !important;
+  color: #fff !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.primary .erp-sale-picker-key,
+.erp-app-root button.erp-sale-picker-btn.primary .erp-sale-picker-key,
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.primary > kbd,
+.erp-app-root button.erp-sale-picker-btn.primary > kbd {
+  background: rgba(255, 255, 255, 0.22) !important;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+  color: #fff !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.secondary,
+.erp-app-root button.erp-sale-picker-btn.secondary {
+  border: 1px solid #1e3a5f !important;
+  background: #1e3a5f !important;
+  background-image: none !important;
+  color: #fff !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.secondary .erp-sale-picker-key,
+.erp-app-root button.erp-sale-picker-btn.secondary .erp-sale-picker-key,
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.secondary > kbd,
+.erp-app-root button.erp-sale-picker-btn.secondary > kbd {
+  background: rgba(255, 255, 255, 0.18) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+  color: #fff !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.cancel,
+.erp-app-root button.erp-sale-picker-btn.cancel {
+  border: 1px solid #cbd5e1 !important;
+  background: #f8fafc !important;
+  background-image: none !important;
+  color: #475569 !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.cancel .erp-sale-picker-key,
+.erp-app-root button.erp-sale-picker-btn.cancel .erp-sale-picker-key,
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn.cancel > kbd,
+.erp-app-root button.erp-sale-picker-btn.cancel > kbd {
+  background: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+  color: #475569 !important;
+}
+
+.erp-app-root .erp-modal-shell button.erp-sale-picker-btn:hover:not(:disabled),
+.erp-app-root button.erp-sale-picker-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+}

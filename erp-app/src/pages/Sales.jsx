@@ -19,6 +19,7 @@ import {
   quotationToPrintInv,
 } from "../utils/quotationDocument.js";
 import { GlassRateInput, glassCartFieldStyle, GlassCutFields, GlassLineExtras, GLASS_CART_FIELD_H } from "../components/GlassCartLine.jsx";
+import { resolveThermalFormat } from "../utils/printFormat.js";
 import {
   isGlassProduct,
   recalcGlassCartLine,
@@ -2207,6 +2208,7 @@ var POS = React.memo(function (props) {
     canCheckout: cart.length > 0 && !posSetupBlocksCriticalActions() && !isCheckingOut && !posIsSavingRef.current,
     canQuotationAction: cart.length > 0 && !isSavingQuotation && canEditInvoices,
     posPrintPicker: posPrintPicker,
+    posPrintPickerIntent: posPrintPickerIntent,
     waSharePicker: waSharePicker,
     saveOnly: function () { saveAndFinish(false); },
     saveAndPrint: function () { openPosPrintPicker(); },
@@ -2226,23 +2228,31 @@ var POS = React.memo(function (props) {
     focusSearch: focusPosSearch,
     clearCart: clearCurrentCart,
     removeLastRow: removeLastCartRow,
-    printA4: function () { saveAndPrintWithMode(state.settings.invoiceDefaultSize || "a4"); },
-    printThermal: function () { saveAndPrintWithMode(state.settings.invoiceThermalSize || "thermal80"); },
+    printA4: function () { saveAndPrintWithMode("a4"); },
+    printA5: function () { saveAndPrintWithMode("a5"); },
+    printThermal: function () { saveAndPrintWithMode(resolveThermalFormat(state.settings)); },
     previewA4: function () {
       setPosPrintPickerIntent("preview");
-      previewWithMode(state.settings.invoiceDefaultSize || "a4");
+      previewWithMode("a4");
+    },
+    previewA5: function () {
+      setPosPrintPickerIntent("preview");
+      previewWithMode("a5");
     },
     previewThermal: function () {
       setPosPrintPickerIntent("preview");
-      previewWithMode(state.settings.invoiceThermalSize || "thermal80");
+      previewWithMode(resolveThermalFormat(state.settings));
     },
     waShareA4: function () {
-      var mode = state.settings.invoiceDefaultSize || "a4";
-      if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(mode);
-      else saveAndWhatsAppWithMode(mode);
+      if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode("a4");
+      else saveAndWhatsAppWithMode("a4");
+    },
+    waShareA5: function () {
+      if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode("a5");
+      else saveAndWhatsAppWithMode("a5");
     },
     waShareThermal: function () {
-      var mode = state.settings.invoiceThermalSize || "thermal80";
+      var mode = resolveThermalFormat(state.settings);
       if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(mode);
       else saveAndWhatsAppWithMode(mode);
     },
@@ -2256,12 +2266,18 @@ var POS = React.memo(function (props) {
       var s = posShortcutRef.current;
       if (s.posPrintPicker) {
         var pk = e.key.toLowerCase();
-        if (pk === "a") {
+        if (pk === "1" || pk === "a") {
           e.preventDefault();
-          s.printA4();
-        } else if (pk === "t") {
+          if (s.posPrintPickerIntent === "preview") s.previewA4();
+          else s.printA4();
+        } else if (pk === "2" || pk === "5") {
           e.preventDefault();
-          s.printThermal();
+          if (s.posPrintPickerIntent === "preview") s.previewA5();
+          else s.printA5();
+        } else if (pk === "3" || pk === "t") {
+          e.preventDefault();
+          if (s.posPrintPickerIntent === "preview") s.previewThermal();
+          else s.printThermal();
         } else if (pk === "escape") {
           e.preventDefault();
           s.closePrintPicker();
@@ -2270,10 +2286,13 @@ var POS = React.memo(function (props) {
       }
       if (s.waSharePicker) {
         var wk = e.key.toLowerCase();
-        if (wk === "a") {
+        if (wk === "1" || wk === "a") {
           e.preventDefault();
           s.waShareA4();
-        } else if (wk === "t") {
+        } else if (wk === "2" || wk === "5") {
+          e.preventDefault();
+          s.waShareA5();
+        } else if (wk === "3" || wk === "t") {
           e.preventDefault();
           s.waShareThermal();
         } else if (wk === "escape") {
@@ -4875,25 +4894,34 @@ var POS = React.memo(function (props) {
       )}
 
       {waSharePicker && (
-        <Modal title={waSharePickerKind === "quotation" ? "Share Quotation via WhatsApp" : "Share Invoice via WhatsApp"} onClose={function () { setWaSharePicker(false); }}>
+        <Modal title={waSharePickerKind === "quotation" ? "Share Quotation via WhatsApp" : "Share Invoice via WhatsApp"} onClose={function () { setWaSharePicker(false); }} compact>
           {(function () {
-            var paperSize = state.settings.invoiceDefaultSize || "a4";
-            var thermalSize = state.settings.invoiceThermalSize || "thermal80";
-            var paperLabel = paperSize === "a5" ? "A5 PDF" : "A4 PDF";
-            var thermalLabel = thermalSize === "thermal58" ? "Thermal 58mm PDF" : "Thermal 80mm PDF";
+            var thermalSize = resolveThermalFormat(state.settings);
             var docWord = waSharePickerKind === "quotation" ? "quotation" : "invoice";
             return (
               <div className="erp-sale-picker">
-                <div className="erp-sale-picker-hint">Choose which {docWord} format to share on WhatsApp. Press <strong>A</strong> for A4 or <strong>T</strong> for thermal.</div>
+                <div className="erp-sale-picker-hint">Choose which {docWord} format to share on WhatsApp.</div>
                 <button
                   type="button"
                   className="erp-sale-picker-btn primary"
                   onClick={function () {
-                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(paperSize);
-                    else saveAndWhatsAppWithMode(paperSize);
+                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode("a4");
+                    else saveAndWhatsAppWithMode("a4");
                   }}
                 >
-                  <span>{paperLabel}</span><kbd>A</kbd>
+                  <span className="erp-sale-picker-label">A4 PDF</span>
+                  <span className="erp-sale-picker-key">1</span>
+                </button>
+                <button
+                  type="button"
+                  className="erp-sale-picker-btn secondary"
+                  onClick={function () {
+                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode("a5");
+                    else saveAndWhatsAppWithMode("a5");
+                  }}
+                >
+                  <span className="erp-sale-picker-label">A5 PDF</span>
+                  <span className="erp-sale-picker-key">2</span>
                 </button>
                 <button
                   type="button"
@@ -4903,10 +4931,12 @@ var POS = React.memo(function (props) {
                     else saveAndWhatsAppWithMode(thermalSize);
                   }}
                 >
-                  <span>{thermalLabel}</span><kbd>T</kbd>
+                  <span className="erp-sale-picker-label">{thermalSize === "thermal58" ? "Thermal 58mm PDF" : "Thermal 80mm PDF"}</span>
+                  <span className="erp-sale-picker-key">3</span>
                 </button>
                 <button type="button" className="erp-sale-picker-btn cancel" onClick={function () { setWaSharePicker(false); }}>
-                  <span>Cancel</span><kbd>Esc</kbd>
+                  <span className="erp-sale-picker-label">Cancel</span>
+                  <span className="erp-sale-picker-key">Esc</span>
                 </button>
               </div>
             );
@@ -4920,30 +4950,34 @@ var POS = React.memo(function (props) {
             ? (posPrintPickerKind === "quotation" ? "Preview Quotation" : "Preview Invoice")
             : (posPrintPickerKind === "quotation" ? "Print Quotation" : "Print Invoice")}
           onClose={function () { setPosPrintPicker(false); }}
+          compact
         >
           {(function () {
-            var paperSize = state.settings.invoiceDefaultSize || "a4";
-            var thermalSize = state.settings.invoiceThermalSize || "thermal80";
+            var thermalSize = resolveThermalFormat(state.settings);
             var isPreview = posPrintPickerIntent === "preview";
-            var paperLabel = paperSize === "a5" ? (isPreview ? "A5 Preview" : "A5 Print") : (isPreview ? "A4 Preview" : "A4 Print");
-            var thermalLabel = thermalSize === "thermal58"
-              ? (isPreview ? "Thermal 58mm Preview" : "Thermal 58mm Print")
-              : (isPreview ? "Thermal 80mm Preview" : "Thermal 80mm Print");
+            var docWord = posPrintPickerKind === "quotation" ? "quotation" : "invoice";
             return (
               <div className="erp-sale-picker">
                 <div className="erp-sale-picker-hint">
                   {isPreview
-                    ? "View only — nothing will be saved. Press A for A4 or T for thermal."
-                    : "Choose print format. Press A for A4 or T for thermal."}
+                    ? "Choose format to preview. Nothing will be saved."
+                    : "Choose printer paper size for this " + docWord + "."}
                 </div>
-                <button type="button" className="erp-sale-picker-btn primary" onClick={function () { saveAndPrintWithMode(paperSize); }}>
-                  <span>{paperLabel}</span><kbd>A</kbd>
+                <button type="button" className="erp-sale-picker-btn primary" onClick={function () { saveAndPrintWithMode("a4"); }}>
+                  <span className="erp-sale-picker-label">{isPreview ? "A4 Preview" : "A4 Print"}</span>
+                  <span className="erp-sale-picker-key">1</span>
+                </button>
+                <button type="button" className="erp-sale-picker-btn secondary" onClick={function () { saveAndPrintWithMode("a5"); }}>
+                  <span className="erp-sale-picker-label">{isPreview ? "A5 Preview" : "A5 Print"}</span>
+                  <span className="erp-sale-picker-key">2</span>
                 </button>
                 <button type="button" className="erp-sale-picker-btn secondary" onClick={function () { saveAndPrintWithMode(thermalSize); }}>
-                  <span>{thermalLabel}</span><kbd>T</kbd>
+                  <span className="erp-sale-picker-label">{thermalSize === "thermal58" ? (isPreview ? "Thermal 58mm Preview" : "Thermal 58mm Print") : (isPreview ? "Thermal 80mm Preview" : "Thermal 80mm Print")}</span>
+                  <span className="erp-sale-picker-key">3</span>
                 </button>
                 <button type="button" className="erp-sale-picker-btn cancel" onClick={function () { setPosPrintPicker(false); }}>
-                  <span>Cancel</span><kbd>Esc</kbd>
+                  <span className="erp-sale-picker-label">Cancel</span>
+                  <span className="erp-sale-picker-key">Esc</span>
                 </button>
               </div>
             );

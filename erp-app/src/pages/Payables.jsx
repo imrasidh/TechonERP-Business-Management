@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { purchaseReturnUiStatus } from "../utils/returnDisplay.js";
 import { isVoidedTxn } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
@@ -17,6 +17,11 @@ import {
   formatInvoiceEditLockMessage,
   readInvoiceEditLocks,
 } from "../utils/invoiceEditLocks.js";
+import { MoneyInOutModal } from "../components/MoneyInOutModal.jsx";
+import { PurchaseInvoiceDoc } from "../components/PurchaseInvoiceDoc.jsx";
+import { MoneyReceiptDoc } from "../components/MoneyReceiptDoc.jsx";
+import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
+import { resolveThermalFormat } from "../utils/printFormat.js";
 
 /* ═══════════════════════════════════════════════════════════
    ENHANCED PAYABLES — Purchase invoices + Manual (Borrowed, Other)
@@ -72,7 +77,70 @@ var EnhancedPayables = function (props) {
   var [chequeList, setChequeList] = useState([]);
   var [chqForm, setChqForm] = useState({ no: "", bank: "", amount: "", due: today() });
   var [viewItem, setViewItem] = useState(null);
-  var [newForm, setNewForm] = useState({ date: today(), source: "", type: "Borrowed Money", amount: "", paymentMethod: "Cash", reference: "", note: "" });
+  var [docView, setDocView] = useState(null); /* purchase object for purchase invoice */
+  var [receiptView, setReceiptView] = useState(null); /* manual money-in receipt */
+  var [docFmt, setDocFmt] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
+  var [printFmtOpen, setPrintFmtOpen] = useState(false);
+  var [pendingPrintFmt, setPendingPrintFmt] = useState(null);
+  var [printTarget, setPrintTarget] = useState(null); /* "purchase" | "receipt" */
+
+  var PaymentBreakdown = props.PaymentBreakdown;
+  var Badge = props.Badge;
+  var WABtn = props.WABtn;
+  var fmtStock = props.fmtStock || function (q) { return q; };
+  var PRINT_FONT_LINK = props.PRINT_FONT_LINK || "";
+  var escapeHtml = props.escapeHtml || function (s) { return String(s == null ? "" : s); };
+  var shareViaWhatsApp = props.shareViaWhatsApp;
+
+  var invThermalFmt = resolveThermalFormat(state.settings || {});
+  var invPrintFmtOptions = [
+    ["a4", "A4"],
+    ["a5", "A5"],
+    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
+  ];
+
+  var printDocById = function (elId, title, fmt) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    var isA5 = fmt === "a5";
+    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : "8mm";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + " portrait;margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var w = window.open("", "_blank", "width=900,height=760");
+    if (!w) return;
+    w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>" + escapeHtml(title || "Document") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
+    w.document.close();
+    setTimeout(function () { w.focus(); w.print(); }, 500);
+  };
+
+  var whatsappDocById = function (elId, filename, phone, fmt) {
+    var el = document.getElementById(elId);
+    if (!el) { showAlert("Document preview not ready. Please try again."); return; }
+    if (typeof shareViaWhatsApp !== "function") { showAlert("WhatsApp share is not available."); return; }
+    var isA5 = fmt === "a5";
+    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : "8mm";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + (isThermal ? "" : " portrait") + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var pageFormat = isThermal ? (fmt === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
+    shareViaWhatsApp(el.innerHTML, filename, phone || "", { headStyles: css, pageFormat: pageFormat });
+  };
+
+  useEffect(function () {
+    if (!pendingPrintFmt || !printTarget) return undefined;
+    var fmt = pendingPrintFmt;
+    var t = setTimeout(function () {
+      if (printTarget === "purchase" && docView) {
+        printDocById("arap-pur-preview-" + docView.id, "Purchase " + (docView.invoiceNo || ""), fmt);
+      } else if (printTarget === "receipt" && receiptView) {
+        printDocById("arap-rcp-preview-" + receiptView.id, "Receipt " + (receiptView.receiptNo || ""), fmt);
+      }
+      setPendingPrintFmt(null);
+      setPrintTarget(null);
+    }, 120);
+    return function () { clearTimeout(t); };
+  }, [pendingPrintFmt, docFmt, docView, receiptView, printTarget]);
 
   var manualPays = S.get("tc3_manualPayables", []);
 
@@ -85,7 +153,7 @@ var EnhancedPayables = function (props) {
   var manualEntries = manualPays.map(function (mp) {
     var paid = (mp.paymentHistory || []).reduce(function (a, ph) { return a + ph.amount; }, 0);
     var bal = Math.max(0, mp.amount - paid);
-    return { id: mp.id, _type: "manual", date: mp.date, source: mp.source, type: mp.type, amount: mp.amount, paid: paid, balance: bal, reference: mp.reference || "", note: mp.note || "", paymentHistory: mp.paymentHistory || [], _manualObj: mp };
+    return { id: mp.id, _type: "manual", date: mp.date, source: mp.source, type: mp.type, amount: mp.amount, paid: paid, balance: bal, reference: mp.receiptNo || mp.reference || "", note: mp.note || "", receiptNo: mp.receiptNo || "", paymentHistory: mp.paymentHistory || [], _manualObj: mp };
   });
   var allEntries = purchaseEntries.concat(manualEntries).slice().sort(function (a, b) { return a.date < b.date ? 1 : -1; });
 
@@ -100,21 +168,6 @@ var EnhancedPayables = function (props) {
   var totalPayable = allEntries.reduce(function (a, e) { return a + e.balance; }, 0);
   var totalManual = manualEntries.reduce(function (a, e) { return a + e.balance; }, 0);
   var totalPurchases = purchaseEntries.reduce(function (a, e) { return a + e.balance; }, 0);
-
-  var saveManual = function () {
-    if (!newForm.source.trim()) { showAlert("Please enter source (person / company)."); return; }
-    if (!newForm.amount || parseFloat(newForm.amount) <= 0) { showAlert("Please enter a valid amount."); return; }
-    if (!tcTrialGuard(manualPays, "manualPayables")) return;
-    var payTs = new Date().toISOString();
-    var entry = stampTransactionIsoDateTime({ id: uid(), date: newForm.date, source: newForm.source.trim(), type: newForm.type, amount: parseFloat(newForm.amount), paymentMethod: newForm.paymentMethod || "Cash", reference: newForm.reference || "", note: newForm.note || "", paymentHistory: [], createdAt: payTs, updatedAt: payTs }, payTs);
-    var list = manualPays.concat([entry]);
-    S.set("tc3_manualPayables", list);
-    /* Fix 4: Trigger re-render so cash balance and payable totals update immediately */
-    setState(function (st) { return Object.assign({}, st, { _payTs: Date.now() }); });
-    setAddModal(false);
-    setNewForm({ date: today(), source: "", type: "Borrowed Money", amount: "", paymentMethod: "Cash", reference: "", note: "" });
-    showAlert("Payable recorded! Cash balance updated.");
-  };
 
   var recordPayment = function () {
     var amt = parseFloat(payAmt);
@@ -324,116 +377,194 @@ var EnhancedPayables = function (props) {
     });
   };
 
-  var PTABS = [["all", "All"], ["outstanding", "Outstanding"], ["cleared", "Cleared"], ["purchases", "Purchase Invoices"], ["manual", "Manual Entries"]];
+  var outCount = allEntries.filter(function (e) { return e.balance > 0; }).length;
+  var clearedCount = allEntries.filter(function (e) { return e.balance <= 0; }).length;
+  var totalBilled = allEntries.reduce(function (a, e) { return a + e.amount; }, 0);
+  var totalPaidAll = allEntries.reduce(function (a, e) { return a + e.paid; }, 0);
+  var paidPct = totalBilled > 0 ? Math.round((totalPaidAll / totalBilled) * 100) : 0;
+  var PTABS = [
+    ["all", "All", allEntries.length],
+    ["outstanding", "Outstanding", outCount],
+    ["cleared", "Cleared", clearedCount],
+    ["purchases", "Purchases", purchaseEntries.length],
+    ["manual", "Manual", manualEntries.length],
+  ];
+  var filtTotal = filtered.reduce(function (a, e) { return a + e.amount; }, 0);
+  var filtPaid = filtered.reduce(function (a, e) { return a + e.paid; }, 0);
+  var filtBal = filtered.reduce(function (a, e) { return a + e.balance; }, 0);
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-        <StatCard label="Total Payable" value={totalPayable} accent={C.red} icon="📤" sub={allEntries.filter(function (e) { return e.balance > 0; }).length + " pending"} />
-        <StatCard label="Supplier Invoices" value={totalPurchases} accent={C.orange} icon="🏭" sub={state.purchases.length + " orders"} />
-        <StatCard label="Manual (Borrowed etc)" value={totalManual} accent={C.purple} icon="💰" sub={manualEntries.filter(function (e) { return e.balance > 0; }).length + " pending"} />
-        <StatCard label="Total Entries" money={false} value={allEntries.length} accent={C.blue} icon="📋" sub="All payable records" />
-      </div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", gap: 4, borderBottom: "2px solid " + C.border, flex: 1 }}>
-          {PTABS.map(function (t) { return <button key={t[0]} onClick={function () { setPtab(t[0]); }} style={{ padding: "9px 15px", borderRadius: "9px 9px 0 0", border: "1.5px solid " + (ptab === t[0] ? C.border : "transparent"), borderBottom: ptab === t[0] ? "2px solid #fff" : "none", background: ptab === t[0] ? "#fff" : "transparent", color: ptab === t[0] ? C.accent : C.muted, fontWeight: 700, fontSize: 12, cursor: "pointer", marginBottom: ptab === t[0] ? -2 : 0 }}>{t[1]}</button>; })}
-        </div>
-        <div style={{ marginLeft: 12, flexShrink: 0 }}>
-          <Btn col="orange" onClick={function () { setAddModal(true); }}>💰 Add Payable (Money In)</Btn>
-        </div>
-      </div>
-      <Card>
-        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-          <div style={{ flex: 1 }}><Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search source, reference..." /></div>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><TH>Date</TH><TH>Source</TH><TH>Type</TH><TH>Total Amount</TH><TH>Paid</TH><TH>Balance</TH><TH>Reference</TH><TH>Actions</TH></tr></thead>
-            <tbody>
-              {filtered.length === 0 && <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", color: C.muted }}>No payables found</td></tr>}
-              {payPager.slice.map(function (e, i) {
-                var isOut = e.balance > 0;
-                var purRet = e._type === "purchase" && e._returnMeta ? e._returnMeta : { hasReturns: false };
-                var rowBg = purRet.hasReturns ? "#fff7ed" : (i % 2 === 0 ? "#ffffff" : "#f8fbff");
-                return (
-                  <tr key={e.id} className="table-row-hover" style={{ background: rowBg, borderBottom: "1px solid " + C.borderLight }} title={purRet.hasReturns ? "This invoice has return activity" : undefined}>
-                    <TD>{fmtDateFull(e.date)}</TD>
-                    <TD bold>{e.source}</TD>
-                    <td style={{ padding: "10px 12px", whiteSpace: "nowrap" }}>
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: 5, flexWrap: "nowrap" }}>
-                        <span style={{ background: e._type === "purchase" ? C.warnSoft : "#f3e8ff", color: e._type === "purchase" ? C.amber : C.purple, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{e.type}</span>
-                        {purRet.hasReturns ? <span style={{ fontSize: 10, fontWeight: 700, color: "#c2410c", background: "#ffedd5", border: "1px solid #fdba74", borderRadius: 5, padding: "1px 5px", lineHeight: 1.3 }}>↩</span> : null}
-                      </div>
-                    </td>
-                    <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
-                    <TD color={C.green}>{getCurrencySymbol()} {fmtNum(e.paid)}</TD>
-                    <td style={{ padding: "10px 12px" }}>
-                      {isOut
-                        ? <span style={{ background: C.dangerSoft, color: C.red, padding: "3px 10px", borderRadius: 20, fontWeight: 700, fontSize: 12 }}>{getCurrencySymbol()} {fmtNum(e.balance)}</span>
-                        : <span style={{ background: C.successSoft, color: C.green, padding: "3px 10px", borderRadius: 20, fontWeight: 700, fontSize: 12 }}>Cleared</span>
-                      }
-                    </td>
-                    <td style={{ padding: "10px 12px", fontFamily: "monospace", fontSize: 11, color: C.muted }}>{e.reference || "—"}</td>
-                    <td style={actBtnCellStyle}>
-                      <ActBtnGroup>
-                        <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
-                        {isOut && (state.cheques || []).some(function (ch) { return ch.purchaseId === e.id && ch.status === "Pending"; }) ? (
-                          <span title="Has pending cheque(s)" style={{ fontSize: 11, lineHeight: 1 }}>🕐</span>
-                        ) : null}
-                        {isOut ? <ActBtn tone="orange" icon="pay" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
-                        {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }} /> : null}
-                      </ActBtnGroup>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        <Pager pager={payPager} />
-        {filtered.length > 0 && (
-          <div style={{ display: "flex", gap: 20, padding: "10px 14px", borderTop: "2px solid " + C.border, fontSize: 13, fontWeight: 700, background: "#f7f9ff" }}>
-            <span>Total: <span style={{ color: C.blue }}>{getCurrencySymbol()} {fmtNum(filtered.reduce(function (a, e) { return a + e.amount; }, 0))}</span></span>
-            <span>Paid: <span style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum(filtered.reduce(function (a, e) { return a + e.paid; }, 0))}</span></span>
-            <span>Outstanding: <span style={{ color: C.red }}>{getCurrencySymbol()} {fmtNum(filtered.reduce(function (a, e) { return a + e.balance; }, 0))}</span></span>
-          </div>
-        )}
-      </Card>
-
-      {/* Add Modal */}
-      {addModal && (
-        <Modal title="Add Manual Payable" onClose={function () { setAddModal(false); }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ background: "#e8f5e9", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#1b5e20", fontWeight: 700 }}>💰 MONEY IN — Cash/Bank balance will INCREASE when saved. You are receiving money that you must repay later.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label="Date *" type="date" value={newForm.date} onChange={function (e) { setNewForm(function (x) { return Object.assign({}, x, { date: e.target.value }); }); }} />
-              <Sel label="Type *" value={newForm.type} onChange={function (e) { setNewForm(function (x) { return Object.assign({}, x, { type: e.target.value }); }); }}>
-                <option>Borrowed Money</option>
-                <option>Bank Loan</option>
-                <option>Family / Friend Loan</option>
-                <option>Security Deposit Received</option>
-                <option>Advance from Customer</option>
-                <option>Cheque Received (Pending)</option>
-                <option>Inter-Account Transfer</option>
-                <option>Other Payable</option>
-              </Sel>
-            </div>
-            <Input label="Source (Person / Company) *" value={newForm.source} onChange={function (e) { setNewForm(function (x) { return Object.assign({}, x, { source: e.target.value }); }); }} placeholder="e.g. Friend, Bank, Family" />
-            <Input label="Amount (Rs) *" type="number" value={newForm.amount} onChange={function (e) { setNewForm(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }} />
+    <div className="erp-page erp-arap-modern is-pay">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">MP</div>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Received Via</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {[["Cash", "💵 Cash", "#1b5e20", "#f0f9f4"], ["Bank", "🏦 Bank", "#1565c0", "#e8f0fe"]].map(function (opt) {
-                  var active = (newForm.paymentMethod || "Cash") === opt[0];
-                  return <button key={opt[0]} onClick={function () { setNewForm(function (x) { return Object.assign({}, x, { paymentMethod: opt[0] }); }); }} style={{ flex: 1, padding: "9px 8px", borderRadius: 9, border: "2px solid " + (active ? opt[2] : C.border), background: active ? opt[3] : "#fff", color: active ? opt[2] : C.textMd, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{opt[1]}</button>;
-                })}
-              </div>
+              <h1 className="erp-arap-header-title">Payables</h1>
+              <p className="erp-arap-header-sub">Money to pay · purchases &amp; loans</p>
             </div>
-            <Input label="Reference" value={newForm.reference} onChange={function (e) { setNewForm(function (x) { return Object.assign({}, x, { reference: e.target.value }); }); }} placeholder="Optional reference" />
-            <Input label="Note" value={newForm.note} onChange={function (e) { setNewForm(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} placeholder="Optional note" />
-            <Btn col="orange" onClick={saveManual}>Save Payable</Btn>
           </div>
-        </Modal>
+          <div className="erp-arap-kpi-row" aria-label="Payable totals">
+            <div className="erp-arap-kpi is-red">
+              <span className="erp-arap-kpi-lbl">Outstanding</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(totalPayable)}</span>
+              <span className="erp-arap-kpi-sub">{outCount} pending</span>
+            </div>
+            <div className="erp-arap-kpi is-orange">
+              <span className="erp-arap-kpi-lbl">Purchases</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(totalPurchases)}</span>
+              <span className="erp-arap-kpi-sub">{purchaseEntries.length} orders</span>
+            </div>
+            <div className="erp-arap-kpi is-purple">
+              <span className="erp-arap-kpi-lbl">Manual</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(totalManual)}</span>
+              <span className="erp-arap-kpi-sub">{manualEntries.filter(function (e) { return e.balance > 0; }).length} pending</span>
+            </div>
+            <div className="erp-arap-kpi is-green">
+              <span className="erp-arap-kpi-lbl">Paid rate</span>
+              <span className="erp-arap-kpi-val">{paidPct}%</span>
+              <div className="erp-arap-mini-bar is-orange"><i style={{ width: Math.min(100, Math.max(0, paidPct)) + "%" }} /></div>
+              <span className="erp-arap-kpi-sub">{getCurrencySymbol()} {fmtNum(totalPaidAll)}</span>
+            </div>
+          </div>
+          <button type="button" className="erp-arap-add is-in" onClick={function () { setAddModal(true); }}>
+            <span className="erp-arap-add-ico">↑</span> Money In
+          </button>
+        </div>
+        <div className="erp-arap-tabs" role="tablist" aria-label="Payable filters">
+          {PTABS.map(function (t) {
+            var active = ptab === t[0];
+            return (
+              <button
+                key={t[0]}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={"erp-arap-tab" + (active ? " is-active" : "")}
+                onClick={function () { setPtab(t[0]); }}
+              >
+                <span>{t[1]}</span>
+                <span className="erp-arap-tab-count">{t[2]}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="erp-arap-body">
+        <div className="erp-arap-panel">
+          <div className="erp-arap-toolbar">
+            <div className="erp-arap-search-wrap">
+              <input
+                className="erp-arap-field"
+                value={search}
+                onChange={function (e) { setSearch(e.target.value); }}
+                placeholder="Search source, reference…"
+                aria-label="Search payables"
+              />
+            </div>
+            {search ? (
+              <button type="button" className="erp-arap-btn-clear" onClick={function () { setSearch(""); }}>Clear</button>
+            ) : null}
+            <span className="erp-arap-filter-meta">{filtered.length} shown · {allEntries.length} total</span>
+          </div>
+          <div className="erp-arap-table-wrap">
+            <table className="erp-arap-table">
+              <thead>
+                <tr>
+                  <th style={{ width: "9%" }}>Date</th>
+                  <th style={{ width: "18%" }}>Source</th>
+                  <th style={{ width: "15%" }}>Type</th>
+                  <th style={{ width: "12%" }}>Total</th>
+                  <th style={{ width: "11%" }}>Paid</th>
+                  <th style={{ width: "12%" }}>Balance</th>
+                  <th style={{ width: "11%" }}>Reference</th>
+                  <th style={{ width: "12%" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 && (
+                  <tr><td colSpan={8} className="erp-arap-empty">No payables found</td></tr>
+                )}
+                {payPager.slice.map(function (e) {
+                  var isOut = e.balance > 0;
+                  var purRet = e._type === "purchase" && e._returnMeta ? e._returnMeta : { hasReturns: false };
+                  var hasPendChq = isOut && (state.cheques || []).some(function (ch) {
+                    return ch.purchaseId === e.id && ch.status === "Pending";
+                  });
+                  return (
+                    <tr
+                      key={e.id}
+                      className={"table-row-hover" + (purRet.hasReturns ? " is-return" : "")}
+                      title={purRet.hasReturns ? "This invoice has return activity" : undefined}
+                    >
+                      <td>{fmtDateFull(e.date)}</td>
+                      <td className="erp-arap-src" title={e.source}>{e.source}</td>
+                      <td>
+                        <div className="erp-arap-type">
+                          <span className={"erp-arap-badge" + (e._type === "purchase" ? " is-purchase" : " is-manual")}>{e.type}</span>
+                          {purRet.hasReturns ? <span className="erp-arap-ret" title="Has returns">↩</span> : null}
+                        </div>
+                      </td>
+                      <td className="erp-arap-amt">{getCurrencySymbol()} {fmtNum(e.amount)}</td>
+                      <td className="erp-arap-amt is-paid">{getCurrencySymbol()} {fmtNum(e.paid)}</td>
+                      <td>
+                        {isOut
+                          ? <span className="erp-arap-bal is-out">{getCurrencySymbol()} {fmtNum(e.balance)}</span>
+                          : <span className="erp-arap-bal is-ok">Cleared</span>}
+                      </td>
+                      <td className="erp-arap-ref" title={e.reference || ""}>{e.reference || "—"}</td>
+                      <td style={actBtnCellStyle}>
+                        <ActBtnGroup>
+                          <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
+                          {hasPendChq ? <span className="erp-arap-pend" title="Has pending cheque(s)">🕐</span> : null}
+                          {isOut ? <ActBtn tone="orange" icon="pay" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
+                          {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }} /> : null}
+                        </ActBtnGroup>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="erp-arap-foot">
+            {filtered.length > 0 ? (
+              <div className="erp-arap-sums">
+                <span>Total <b className="is-blue">{getCurrencySymbol()} {fmtNum(filtTotal)}</b></span>
+                <span>Paid <b className="is-green">{getCurrencySymbol()} {fmtNum(filtPaid)}</b></span>
+                <span>Outstanding <b className="is-red">{getCurrencySymbol()} {fmtNum(filtBal)}</b></span>
+              </div>
+            ) : null}
+            <div className="erp-arap-pager-wrap">
+              <Pager pager={payPager} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Add via shared Money In modal */}
+      {addModal && (
+        <MoneyInOutModal
+          mode="in"
+          S={S}
+          today={today}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+          showAlert={showAlert}
+          addAudit={addAudit}
+          setState={setState}
+          onClose={function () { setAddModal(false); }}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          getCurrencySymbol={getCurrencySymbol}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+        />
       )}
 
       {/* Payment Modal */}
@@ -448,70 +579,392 @@ var EnhancedPayables = function (props) {
         />
       )}
 
-      {/* View Modal */}
-      {viewItem && (
-        <Modal title={"Payable — " + viewItem.source} onClose={function () { setViewItem(null); }} wide={viewItem._type === "purchase" && viewItem._returnMeta && viewItem._returnMeta.hasReturns}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {[["Date", fmtDateFull(viewItem.date)], ["Source", viewItem.source], ["Type", viewItem.type], ["Total Amount", getCurrencySymbol() + " " + fmtNum(viewItem.amount)], ["Paid", getCurrencySymbol() + " " + fmtNum(viewItem.paid)], ["Balance (after returns)", getCurrencySymbol() + " " + fmtNum(viewItem.balance)], ["Reference", viewItem.reference || "—"], ["Note", viewItem.note || "—"]].map(function (r) {
-              return <div key={r[0]} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid " + C.borderLight }}><span style={{ color: C.muted, fontSize: 13 }}>{r[0]}</span><span style={{ fontWeight: 700, fontSize: 13 }}>{r[1]}</span></div>;
-            })}
-            {viewItem._type === "purchase" && viewItem._returnMeta && viewItem._returnMeta.hasReturns ? (
-              <div style={{ padding: "10px 12px", background: "#fff7ed", borderRadius: 8, border: "1px solid #fed7aa", fontSize: 12, color: "#9a3412" }}>
-                <strong>Return summary:</strong>{" "}
-                {getCurrencySymbol()} {fmtNum(viewItem._returnMeta.totalRet)} returned (goods value) · adjusted balance shown above reflects the current purchase total after returns.
-                <div style={{ fontSize: 11, marginTop: 4, color: C.muted }}>Original invoice link: purchase ID <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{viewItem._purObj && viewItem._purObj.id}</span></div>
+      {/* View Modal — wide compact payable detail */}
+      {viewItem && (function () {
+        var isPur = viewItem._type === "purchase";
+        var pur = viewItem._purObj || null;
+        var invNo = (pur && pur.invoiceNo) || viewItem.reference || (viewItem.id || "").slice(0, 8);
+        var isOut = viewItem.balance > 0;
+        var retMeta = isPur && viewItem._returnMeta ? viewItem._returnMeta : { hasReturns: false };
+        var items = isPur && pur ? (pur.items || []) : [];
+        return (
+          <Modal
+            className="erp-arap-view-modal is-pay"
+            title={isPur ? ("Purchase · " + invNo) : ("Payable · " + (viewItem.source || "Manual"))}
+            subtitle={isPur ? ((viewItem.source || "Supplier") + " · " + fmtDateFull(viewItem.date)) : (viewItem.type + " · " + fmtDateFull(viewItem.date))}
+            onClose={function () { setViewItem(null); }}
+            wide
+            closeRound
+          >
+            <div className="erp-arap-view">
+              {isOut ? (
+                <div className="erp-arap-view-alert is-due">
+                  <div>
+                    <strong>{isPur ? "Payment due on this purchase" : "Amount still payable"}</strong>
+                    <span>Outstanding balance needs to be paid</span>
+                  </div>
+                  <b>{getCurrencySymbol()} {fmtNum(viewItem.balance)}</b>
+                </div>
+              ) : (
+                <div className="erp-arap-view-alert is-ok">
+                  <div>
+                    <strong>Fully cleared</strong>
+                    <span>No outstanding balance</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="erp-arap-view-grid">
+                <div className="erp-arap-view-card">
+                  <div className="erp-arap-view-card-title">{isPur ? "Supplier" : "Party"}</div>
+                  <div className="erp-arap-view-name">{viewItem.source || "—"}</div>
+                  <div className="erp-arap-view-muted">{fmtDateFull(viewItem.date)}</div>
+                  <div className="erp-arap-view-chips">
+                    <span className={"erp-arap-badge" + (isPur ? " is-purchase" : " is-manual")}>{viewItem.type}</span>
+                    {retMeta.hasReturns ? <span className="erp-arap-ret">↩ Returns</span> : null}
+                  </div>
+                </div>
+                <div className="erp-arap-view-card is-money">
+                  <div className="erp-arap-view-money-row"><span>Total</span><b className="is-blue">{getCurrencySymbol()} {fmtNum(viewItem.amount)}</b></div>
+                  <div className="erp-arap-view-money-row"><span>Paid</span><b className="is-green">{getCurrencySymbol()} {fmtNum(viewItem.paid)}</b></div>
+                  <div className="erp-arap-view-money-row is-strong"><span>Balance</span><b className={isOut ? "is-red" : "is-green"}>{isOut ? (getCurrencySymbol() + " " + fmtNum(viewItem.balance)) : "Cleared"}</b></div>
+                </div>
               </div>
-            ) : null}
-            {viewItem._type === "purchase" && viewItem._returnMeta && viewItem._returnMeta.hasReturns ? (
-              <ReturnDetailsPanel
-                mode="purchase"
-                rows={viewItem._returnMeta.rows}
-                originalId={viewItem._purObj ? viewItem._purObj.id : viewItem.id}
-                C={C}
-                getCurrencySymbol={getCurrencySymbol}
-                fmtNum={fmtNum}
-                fmtDateFull={fmtDateFull}
-              />
-            ) : null}
-            {viewItem.paymentHistory && viewItem.paymentHistory.length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Payment History</div>
-                {viewItem.paymentHistory.map(function (ph, i) {
-                  var isNegative = (ph.amount || 0) < 0;
-                  var isReversal = ph.note && ph.note.toLowerCase().includes("reversed");
-                  return (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid " + C.borderLight, fontSize: 13 }}>
-                      <div>
-                        <span style={{ color: isNegative ? C.red : C.text }}>{fmtDateFull(ph.date)} — {ph.cashMethod || "Cash"}</span>
-                        {ph.note && <div style={{ fontSize: 11, color: C.muted }}>{ph.note}</div>}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontWeight: 700, color: isNegative ? C.red : C.green }}>{getCurrencySymbol()} {fmtNum(ph.amount)}</span>
-                        {(ph.amount || 0) > 0 && !isReversal && viewItem._type === "manual" && (
-                          <button onClick={function () {
-                            showConfirm("Reverse this payment of " + getCurrencySymbol() + " " + fmtNum(ph.amount) + "?\n\nA correction entry will be added to cancel it out.", function () {
-                              var manPays = S.get("tc3_manualPayables", []);
-                              var updated = manPays.map(function (m) {
-                                if (m.id !== viewItem.id) return m;
-                                var reversalEntry = { id: uid(), date: today(), amount: -ph.amount, cashMethod: ph.cashMethod || "Cash", note: "Reversed: " + (ph.note || fmtDateFull(ph.date)) };
-                                return Object.assign({}, m, { paymentHistory: (m.paymentHistory || []).concat([reversalEntry]) });
-                              });
-                              S.set("tc3_manualPayables", updated);
-                              setState(function (st) { return Object.assign({}, st, { _payTs: Date.now() }); });
-                              setViewItem(null);
-                              showAlert("✅ Payment reversed. A correction entry has been added.");
-                            });
-                          }} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 5, border: "1px solid " + C.border, background: "#fff", color: C.red, cursor: "pointer", fontWeight: 700, fontFamily: "inherit" }}>↩ Reverse</button>
-                        )}
-                      </div>
+
+              {isPur ? (
+                <div className="erp-arap-view-doclink">
+                  <div>
+                    <div className="erp-arap-view-card-title">Purchase invoice</div>
+                    <button
+                      type="button"
+                      className="erp-arap-inv-link is-pay"
+                      onClick={function () {
+                        if (!pur) { showAlert("Purchase record not found."); return; }
+                        setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+                        setDocView(pur);
+                      }}
+                      title="Open actual purchase invoice"
+                    >
+                      {invNo}
+                    </button>
+                    <div className="erp-arap-view-muted">Click invoice number to open the purchase invoice</div>
+                  </div>
+                  <button
+                    type="button"
+                    className="erp-arap-doc-btn is-pay-tone"
+                    onClick={function () {
+                      if (!pur) { showAlert("Purchase record not found."); return; }
+                      setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+                      setDocView(pur);
+                    }}
+                  >
+                    Open purchase
+                  </button>
+                </div>
+              ) : (function () {
+                var rcpNo = (viewItem._manualObj && viewItem._manualObj.receiptNo) || viewItem.receiptNo || viewItem.reference || "";
+                var hasRcp = !!(viewItem._manualObj && (viewItem._manualObj.receiptNo || viewItem._manualObj.id));
+                return (
+                  <div className="erp-arap-view-doclink">
+                    <div>
+                      <div className="erp-arap-view-card-title">Money In receipt</div>
+                      {hasRcp ? (
+                        <button
+                          type="button"
+                          className="erp-arap-inv-link is-pay"
+                          onClick={function () {
+                            setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+                            setReceiptView(viewItem._manualObj || viewItem);
+                          }}
+                          title="Open receipt"
+                        >
+                          {rcpNo || "Receipt"}
+                        </button>
+                      ) : (
+                        <b style={{ fontSize: 14 }}>{viewItem.reference || "—"}</b>
+                      )}
+                      <div className="erp-arap-view-muted">{hasRcp ? "Click receipt number to open the saved receipt" : (viewItem.note || "No receipt on older entries")}</div>
                     </div>
-                  );
-                })}
+                    {hasRcp ? (
+                      <button type="button" className="erp-arap-doc-btn is-pay-tone" onClick={function () {
+                        setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+                        setReceiptView(viewItem._manualObj || viewItem);
+                      }}>
+                        Open receipt
+                      </button>
+                    ) : null}
+                  </div>
+                );
+              })()}
+
+              {PaymentBreakdown && isPur && pur ? (
+                <div className="erp-arap-view-paybreak">
+                  <PaymentBreakdown invoice={Object.assign({}, pur, { paid: pur.paidAmount || 0 })} cheques={state.cheques || []} isSale={false} />
+                </div>
+              ) : null}
+
+              {items.length > 0 ? (
+                <div className="erp-arap-view-items">
+                  <div className="erp-arap-view-card-title">Line items</div>
+                  <div className="erp-arap-view-table-wrap">
+                    <table className="erp-arap-view-table">
+                      <thead>
+                        <tr><th>#</th><th>Item</th><th>Qty</th><th>Cost</th><th>Total</th></tr>
+                      </thead>
+                      <tbody>
+                        {items.map(function (it, i) {
+                          var unitCost = it.cost != null ? it.cost : (it.price || 0);
+                          return (
+                            <tr key={i}>
+                              <td>{i + 1}</td>
+                              <td>{it.name || "Item"}</td>
+                              <td>{fmtStock(it.qty, it.unit)}</td>
+                              <td>{getCurrencySymbol()} {fmtNum(unitCost)}</td>
+                              <td>{getCurrencySymbol()} {fmtNum((it.qty || 0) * unitCost)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : null}
+
+              {retMeta.hasReturns ? (
+                <ReturnDetailsPanel
+                  mode="purchase"
+                  rows={retMeta.rows}
+                  originalId={pur ? pur.id : viewItem.id}
+                  C={C}
+                  getCurrencySymbol={getCurrencySymbol}
+                  fmtNum={fmtNum}
+                  fmtDateFull={fmtDateFull}
+                />
+              ) : null}
+
+              {viewItem.paymentHistory && viewItem.paymentHistory.length > 0 ? (
+                <div className="erp-arap-view-hist">
+                  <div className="erp-arap-view-card-title">Payment history</div>
+                  {viewItem.paymentHistory.map(function (ph, i) {
+                    var isNegative = (ph.amount || 0) < 0;
+                    var isReversal = ph.note && ph.note.toLowerCase().includes("reversed");
+                    return (
+                      <div key={i} className={"erp-arap-view-hist-row" + (isNegative ? " is-neg" : "")}>
+                        <div>
+                          <b>{fmtDateFull(ph.date)} · {ph.cashMethod || "Cash"}</b>
+                          {ph.note ? <span>{ph.note}</span> : null}
+                        </div>
+                        <div className="erp-arap-view-hist-amt">
+                          <strong className={isNegative ? "is-red" : "is-green"}>{getCurrencySymbol()} {fmtNum(ph.amount)}</strong>
+                          {(ph.amount || 0) > 0 && !isReversal && viewItem._type === "manual" ? (
+                            <button
+                              type="button"
+                              className="erp-arap-rev-btn"
+                              onClick={function () {
+                                showConfirm("Reverse this payment of " + getCurrencySymbol() + " " + fmtNum(ph.amount) + "?\n\nA correction entry will be added to cancel it out.", function () {
+                                  var manPays = S.get("tc3_manualPayables", []);
+                                  var updated = manPays.map(function (m) {
+                                    if (m.id !== viewItem.id) return m;
+                                    var reversalEntry = { id: uid(), date: today(), amount: -ph.amount, cashMethod: ph.cashMethod || "Cash", note: "Reversed: " + (ph.note || fmtDateFull(ph.date)) };
+                                    return Object.assign({}, m, { paymentHistory: (m.paymentHistory || []).concat([reversalEntry]) });
+                                  });
+                                  S.set("tc3_manualPayables", updated);
+                                  setState(function (st) { return Object.assign({}, st, { _payTs: Date.now() }); });
+                                  setViewItem(null);
+                                  showAlert("Payment reversed. A correction entry has been added.");
+                                });
+                              }}
+                            >↩ Reverse</button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              <div className="erp-arap-view-actions">
+                {isPur && pur ? (
+                  <button type="button" className="erp-arap-doc-btn is-ghost" onClick={function () {
+                    setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+                    setDocView(pur);
+                  }}>
+                    View actual purchase
+                  </button>
+                ) : null}
+                {isOut ? (
+                  <button type="button" className="erp-arap-doc-btn is-pay is-pay-tone" onClick={function () { setViewItem(null); setSplitPayModal(viewItem); }}>
+                    Record payment
+                  </button>
+                ) : null}
+                <button type="button" className="erp-arap-doc-btn is-ghost" onClick={function () { setViewItem(null); }}>Close</button>
               </div>
-            )}
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* View & Print — purchase invoice (universal chrome) */}
+      {docView && (function () {
+        var dRet = purchaseReturnUiStatus(docView, state.purchaseReturns);
+        var sheetSize = (docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt;
+        return (
+          <div className="erp-si-fv is-purchase" role="dialog" aria-modal="true" aria-label="View and print purchase invoice">
+            <div className="erp-si-fv-bar">
+              <div className="erp-si-fv-bar-left">
+                <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+                <div className="erp-si-fv-meta">
+                  <span className="erp-si-fv-kicker">View &amp; Print</span>
+                  <div className="erp-si-fv-meta-main">
+                    <span className="erp-si-fv-inv">{docView.invoiceNo || docView.id.slice(0, 8)}</span>
+                    <span className="erp-si-fv-sub">{docView.supplier || "Supplier"} · {fmtDateFull(docView.date)}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="erp-si-fv-tools">
+                <span className="erp-si-fv-tool-label">Format</span>
+                <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                  {invPrintFmtOptions.map(function (item) {
+                    var v = item[0]; var lbl = item[1];
+                    var active = docFmt === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
+                        onClick={function () { setDocFmt(v); }}
+                      >{lbl}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="erp-si-fv-actions">
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-print"
+                  onClick={function () { setPrintTarget("purchase"); setPrintFmtOpen(true); }}
+                >Print</button>
+                {WABtn ? (
+                  <WABtn
+                    title="Share as PDF via WhatsApp"
+                    onClick={function () {
+                      whatsappDocById(
+                        "arap-pur-preview-" + docView.id,
+                        "Purchase-" + (docView.invoiceNo || docView.id.slice(0, 8)),
+                        "",
+                        docFmt
+                      );
+                    }}
+                  />
+                ) : null}
+                <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setDocView(null); }} aria-label="Close">✕</button>
+              </div>
+            </div>
+            {dRet.hasReturns ? (
+              <div className="erp-si-fv-return">
+                <span>↩ Returns linked to this purchase</span>
+              </div>
+            ) : null}
+            <div className="erp-si-fv-stage">
+              <div id={"arap-pur-preview-" + docView.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+                <PurchaseInvoiceDoc
+                  pur={docView}
+                  settings={state.settings}
+                  size={sheetSize}
+                  fmtDateFull={fmtDateFull}
+                  fmtNum={fmtNum}
+                  getCurrencySymbol={getCurrencySymbol}
+                  fmtStock={fmtStock}
+                />
+              </div>
+            </div>
           </div>
-        </Modal>
-      )}
+        );
+      })()}
+
+      {/* View & Print — Money In receipt (universal chrome) */}
+      {receiptView && (function () {
+        var rcp = receiptView;
+        var rcpNo = rcp.receiptNo || rcp.reference || (rcp.id || "").slice(0, 8);
+        var sheetSize = (docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt;
+        return (
+          <div className="erp-si-fv is-receipt" role="dialog" aria-modal="true" aria-label="View and print money in receipt">
+            <div className="erp-si-fv-bar">
+              <div className="erp-si-fv-bar-left">
+                <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+                <div className="erp-si-fv-meta">
+                  <span className="erp-si-fv-kicker">View &amp; Print</span>
+                  <div className="erp-si-fv-meta-main">
+                    <span className="erp-si-fv-inv">{rcpNo}</span>
+                    <span className="erp-si-fv-sub">Money In · {rcp.source || "Party"} · {fmtDateFull(rcp.date)}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="erp-si-fv-tools">
+                <span className="erp-si-fv-tool-label">Format</span>
+                <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                  {invPrintFmtOptions.map(function (item) {
+                    var v = item[0]; var lbl = item[1];
+                    var active = docFmt === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        className={"erp-si-fv-fmt" + (active ? " is-active" : "")}
+                        onClick={function () { setDocFmt(v); }}
+                      >{lbl}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="erp-si-fv-actions">
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-print"
+                  onClick={function () { setPrintTarget("receipt"); setPrintFmtOpen(true); }}
+                >Print</button>
+                {WABtn ? (
+                  <WABtn
+                    title="Share as PDF via WhatsApp"
+                    onClick={function () {
+                      whatsappDocById("arap-rcp-preview-" + rcp.id, "Receipt-" + rcpNo, "", docFmt);
+                    }}
+                  />
+                ) : null}
+                <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setReceiptView(null); }} aria-label="Close">✕</button>
+              </div>
+            </div>
+            <div className="erp-si-fv-stage">
+              <div id={"arap-rcp-preview-" + rcp.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+                <MoneyReceiptDoc
+                  receipt={rcp}
+                  mode="in"
+                  size={sheetSize}
+                  settings={state.settings}
+                  fmtDateFull={fmtDateFull}
+                  fmtNum={fmtNum}
+                  getCurrencySymbol={getCurrencySymbol}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      <PrintFormatChooser
+        open={printFmtOpen}
+        settings={state.settings}
+        thermalId={invThermalFmt}
+        title={printTarget === "receipt" ? "Print receipt" : "Print purchase invoice"}
+        hint="Choose A4, A5, or Thermal for your printer."
+        onClose={function () { setPrintFmtOpen(false); setPrintTarget(null); }}
+        onSelect={function (fmt) {
+          setPrintFmtOpen(false);
+          setDocFmt(fmt);
+          setPendingPrintFmt(fmt);
+        }}
+        zIndex={13000}
+      />
     </div>
   );
 };
