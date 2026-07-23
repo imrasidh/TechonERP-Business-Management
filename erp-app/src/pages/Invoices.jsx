@@ -244,8 +244,7 @@ var QuotationForm = function (props) {
                   <TD>{getCurrencySymbol()} {fmtNum(it.price)}</TD>
                   <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(it.qty * it.price)}</TD>
                   <td style={{ padding: "6px 10px" }}>
-                    <button onClick={function () { setFq(Object.assign({}, fq, { items: fq.items.filter(function (_, j) { return j !== i; }) })); }}
-                      style={{ background: "#fde8ed", color: C.red, border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>✕</button>
+                    <button type="button" className="erp-si-row-x" onClick={function () { setFq(Object.assign({}, fq, { items: fq.items.filter(function (_, j) { return j !== i; }) })); }}>✕</button>
                   </td>
                 </TR>
               );

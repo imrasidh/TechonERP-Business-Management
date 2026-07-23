@@ -13,8 +13,8 @@ export var TOOLBAR_CATALOG = [
   { key: "returns", navId: "returns", label: "Returns", icon: "↩️", bg: "#ffe8d6", group: "main" },
   { key: "expenses", navId: "expenses", label: "Expenses", icon: "🧾", bg: "#fde7f3", group: "main" },
   { key: "accounts", navId: "accounts", label: "Accounts", icon: "💰", bg: "#fff0b8", group: "main" },
-  { key: "receivables", navId: "receivables", label: "Receivables", icon: "📥", bg: "#d9f5dc", group: "finance" },
-  { key: "payables", navId: "payables", label: "Payables", icon: "📤", bg: "#ffe3e3", group: "finance" },
+  { key: "receivables", navId: "receivables", label: "Receivables", icon: "svg:receivables", bg: "#dcfce7", group: "finance" },
+  { key: "payables", navId: "payables", label: "Payables", icon: "svg:payables", bg: "#fee2e2", group: "finance" },
   { key: "cheques", navId: "cheques", label: "Cheques", icon: "🏦", bg: "#e0f2fe", group: "finance" },
   { key: "money_in", action: "money_in", label: "Money In", icon: "💵", bg: "#d9f5dc", group: "cash" },
   { key: "money_out", action: "money_out", label: "Money Out", icon: "💸", bg: "#ffe3e3", group: "cash" },
@@ -25,7 +25,6 @@ export var TOOLBAR_CATALOG = [
   { key: "reports", navId: "reports", label: "Reports", icon: "📈", bg: "#dde2f7", group: "tools" },
   { key: "barcodeprint", navId: "barcodeprint", label: "Barcodes", icon: "🏷️", bg: "#f3e8ff", group: "tools" },
   { key: "auditlog", navId: "auditlog", label: "Audit Log", icon: "📋", bg: "#e2e8f0", group: "tools" },
-  { key: "backup", navId: "settings", pageId: "settings", label: "Backup", icon: "💾", bg: "#e8ecef", group: "tools" },
   { key: "calc", action: "calc", label: "Calculator", icon: "🧮", bg: "#f2f2f2", group: "sys" },
   { key: "exit", action: "exit", label: "Exit", icon: "🚪", bg: "#ffe3e3", group: "sys", exit: true },
 ];
@@ -42,7 +41,6 @@ export var DEFAULT_TOOLBAR_KEYS = [
   "money_out",
   "parties",
   "reports",
-  "backup",
   "calc",
   "exit",
 ];

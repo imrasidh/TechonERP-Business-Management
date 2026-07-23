@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from "react";
 
+function isSettingsMenu(menu) {
+  if (!menu) return false;
+  var id = String(menu.id || "");
+  var label = String(menu.label || "");
+  if (id === "Settings" || label === "Settings") return true;
+  if (menu.pageId === "settings") return true;
+  if (menu.flat && menu.pageId === "settings") return true;
+  return false;
+}
+
 export function ErpClassicMenuBar(props) {
   var openMenu = props.openMenu;
   var setOpenMenu = props.setOpenMenu;
@@ -17,10 +27,23 @@ export function ErpClassicMenuBar(props) {
   var adminToggleLabel = props.adminToggleLabel;
   var openSubMenu = props.openSubMenu;
   var setOpenSubMenu = props.setOpenSubMenu;
+  var menusLocked = !!props.menusLocked;
+  var onRequestMenuUnlock = props.onRequestMenuUnlock;
 
   var [localSub, setLocalSub] = useState(null);
   var subOpen = typeof setOpenSubMenu === "function" ? openSubMenu : localSub;
   var setSubOpen = typeof setOpenSubMenu === "function" ? setOpenSubMenu : setLocalSub;
+
+  var menuIsGreyed = function (menu) {
+    return menusLocked && !isSettingsMenu(menu);
+  };
+
+  var tryOpenMenu = function (menu) {
+    /* Staff lock: greyed menus stay closed — no admin unlock prompt. */
+    if (menuIsGreyed(menu)) return;
+    setOpenMenu(menu && menu.id);
+    setSubOpen(null);
+  };
 
   useEffect(function () {
     if (!openMenu) {
@@ -36,20 +59,25 @@ export function ErpClassicMenuBar(props) {
   }, [openMenu, setOpenMenu, setSubOpen]);
 
   return (
-    <div className="erp-menu-bar" onMouseDown={function (e) { e.stopPropagation(); }}>
+    <div className={"erp-menu-bar" + (menusLocked ? " is-staff-locked" : "")} onMouseDown={function (e) { e.stopPropagation(); }}>
       <div className="erp-menu-bar-left">
         {menus.map(function (menu) {
           var isOpen = openMenu === menu.id;
           var isFlat = !!menu.flat && menu.pageId;
+          var greyed = menuIsGreyed(menu);
 
           if (isFlat) {
             return (
-              <div key={menu.id} className="erp-menu-item">
+              <div key={menu.id} className={"erp-menu-item" + (greyed ? " is-locked" : "")}>
                 <button
                   type="button"
-                  className="erp-menu-btn"
+                  className={"erp-menu-btn" + (greyed ? " is-locked" : "")}
+                  title={greyed ? "Available in admin mode only" : undefined}
+                  disabled={greyed}
+                  aria-disabled={greyed ? "true" : undefined}
                   onMouseDown={function (e) {
                     e.stopPropagation();
+                    if (greyed) return;
                     setOpenMenu(null);
                     setSubOpen(null);
                     onNavigate(menu.pageId);
@@ -62,18 +90,21 @@ export function ErpClassicMenuBar(props) {
           }
 
           return (
-            <div key={menu.id} className={"erp-menu-item" + (isOpen ? " open" : "")}>
+            <div key={menu.id} className={"erp-menu-item" + (isOpen ? " open" : "") + (greyed ? " is-locked" : "")}>
               <button
                 type="button"
-                className="erp-menu-btn"
+                className={"erp-menu-btn" + (greyed ? " is-locked" : "")}
+                title={greyed ? "Available in admin mode only" : undefined}
+                disabled={greyed}
+                aria-disabled={greyed ? "true" : undefined}
                 onMouseDown={function (e) {
                   e.stopPropagation();
+                  if (greyed) return;
                   if (isOpen) {
                     setOpenMenu(null);
                     setSubOpen(null);
                   } else {
-                    setOpenMenu(menu.id);
-                    setSubOpen(null);
+                    tryOpenMenu(menu);
                   }
                 }}
               >
@@ -102,6 +133,7 @@ export function ErpClassicMenuBar(props) {
                       <div
                         key={childKey + "-" + idx}
                         className={"erp-menu-flyout-row" + (isSubOpen ? " open" : "")}
+                        onMouseEnter={function () { setSubOpen(childKey); }}
                       >
                         <button
                           type="button"
@@ -117,10 +149,12 @@ export function ErpClassicMenuBar(props) {
                         {isSubOpen ? (
                           <div className="erp-menu-flyout">
                             {item.children.map(function (child, cIdx) {
+                              var isActive = child.pageId && child.pageId === activePageId;
                               return (
                                 <button
                                   key={(child.pageId || "c") + "-" + cIdx}
                                   type="button"
+                                  className={isActive ? "active" : undefined}
                                   onMouseDown={function (e) {
                                     e.stopPropagation();
                                     setOpenMenu(null);

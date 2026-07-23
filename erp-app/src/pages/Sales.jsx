@@ -8,7 +8,7 @@ import {
 import CustomerPicker from "../components/CustomerPicker.jsx";
 import { createAndPersistCustomer } from "../utils/customerCreate.js";
 import { productMatchesSearch, productMatchesSearchExact } from "../utils/productSearch.js";
-import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
+import { isRepair3pInternalProduct, markRepair3pSoldAfterStockDeduct } from "../utils/repair3pProduct.js";
 import { splitSaleItemsByFree, baseQtyInCartLines, FREE_ITEM_LABEL } from "../utils/posFreeItems.js";
 import { UI } from "../utils/uiIcons.js";
 import { ensureUniqueDocumentNumber } from "../utils/docNumbers.js";
@@ -20,6 +20,7 @@ import {
 } from "../utils/quotationDocument.js";
 import { GlassRateInput, glassCartFieldStyle, GlassCutFields, GlassLineExtras, GLASS_CART_FIELD_H } from "../components/GlassCartLine.jsx";
 import { resolveThermalFormat } from "../utils/printFormat.js";
+import UniversalPrintPreview from "../components/UniversalPrintPreview.jsx";
 import {
   isGlassProduct,
   recalcGlassCartLine,
@@ -87,6 +88,9 @@ var POS = React.memo(function (props) {
   var PRINT_FONT_LINK = props.PRINT_FONT_LINK;
   var escapeHtml = props.escapeHtml;
   var shareViaWhatsApp = props.shareViaWhatsApp;
+  var WABtn = props.WABtn;
+  var fmtDate = props.fmtDate || function (d) { return d || ""; };
+  var openPrintWindow = props.openPrintWindow;
   var getDuplicateNormalizedNameKeys = props.getDuplicateNormalizedNameKeys;
   var normalizePaymentCustomerName = props.normalizePaymentCustomerName;
   var InvoiceThermal = props.InvoiceThermal;
@@ -1497,7 +1501,11 @@ var POS = React.memo(function (props) {
         _baseProds = productsSnap.map(function (p) {
           var back = (_origSale.items || []).filter(function (x) { return x.id === p.id; }).reduce(function (a, oi) { return a + (oi.qty || 0); }, 0);
           if (!back) return p;
-          return stampProductStock(Object.assign({}, p, { stock: (p.stock || 0) + back }), saleTs, p);
+          var restored = (p.stock || 0) + back;
+          var patched = isRepair3pInternalProduct(p)
+            ? markRepair3pSoldAfterStockDeduct(p, restored)
+            : Object.assign({}, p, { stock: restored });
+          return stampProductStock(patched, saleTs, p);
         });
       }
     }
@@ -1508,7 +1516,12 @@ var POS = React.memo(function (props) {
       var deductQty = lines.reduce(function (acc, ci) {
         return acc + toProductBaseQty(ci.qty || 0, ci.saleUnit || ci.unit || "Pcs", p);
       }, 0);
-      return stampProductStock(Object.assign({}, p, { stock: (p.stock || 0) - deductQty }), saleTs, p);
+      var nextStock = (p.stock || 0) - deductQty;
+      var patched = markRepair3pSoldAfterStockDeduct(p, nextStock);
+      if (patched !== p) {
+        return stampProductStock(patched, saleTs, p);
+      }
+      return stampProductStock(Object.assign({}, p, { stock: nextStock }), saleTs, p);
     });
     var nc = state.customers.slice();
     if (editingSaleId) {
@@ -2398,35 +2411,32 @@ var POS = React.memo(function (props) {
     setTimeout(function () { w.focus(); w.print(); }, 500);
   };
 
-  /* After React renders the hidden print preview, grab it and open print window */
+  /* WhatsApp share path: render off-screen then share. Print/preview stays in universal modal. */
   useEffect(function () {
-    if (!pendingPrint) return;
+    if (!pendingPrint || !waPendingRef.current) return;
     var timer = setTimeout(function () {
       var el = document.getElementById("pos-print-preview");
-      if (waPendingRef.current && el) {
-        /* WhatsApp path ? capture HTML and share instead of printing */
+      if (!el) {
         waPendingRef.current = false;
-        var isA5 = pendingPrint.mode === "a5";
-        var isThermal = pendingPrint.mode === "thermal" || pendingPrint.mode === "thermal58" || pendingPrint.mode === "thermal80";
-        var bodyW = isThermal
-          ? "body{background:#fff;font-family:'Courier New',monospace;width:" + (pendingPrint.mode === "thermal58" ? "218px" : "302px") + ";}"
-          : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
-        var pgSize = isThermal ? (pendingPrint.mode === "thermal58" ? "58mm auto" : "80mm auto") : (isA5 ? "A5" : "A4");
-        var pgMargin = isThermal ? "3mm" : "8mm";
-        /* Thermal: no "portrait" keyword ? Chromium PDF maps it to A4 incorrectly */
-        var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pgSize + (isThermal ? "" : " portrait") + ";margin:" + pgMargin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
-        var pageFormat = isThermal ? (pendingPrint.mode === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
-        var isQuot = pendingPrint.kind === "quotation";
-        var filename = (isQuot ? "Quotation-" : "Invoice-") + (pendingPrint.sale.invoiceNo || pendingPrint.sale.id.slice(0, 8));
-        var phone = pendingPrint.sale.customerPhone || "";
         setPendingPrint(null);
-        shareViaWhatsApp(el.innerHTML, filename, phone, { headStyles: css, pageFormat: pageFormat });
-      } else {
-        /* Normal print path */
-        doPopupPrint(pendingPrint.sale.invoiceNo, pendingPrint.mode, pendingPrint.kind);
-        setPendingPrint(null);
+        return;
       }
-    }, 300); /* 300ms ensures DOM is painted for both paths */
+      waPendingRef.current = false;
+      var isA5 = pendingPrint.mode === "a5";
+      var isThermal = pendingPrint.mode === "thermal" || pendingPrint.mode === "thermal58" || pendingPrint.mode === "thermal80";
+      var bodyW = isThermal
+        ? "body{background:#fff;font-family:'Courier New',monospace;width:" + (pendingPrint.mode === "thermal58" ? "218px" : "302px") + ";}"
+        : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
+      var pgSize = isThermal ? (pendingPrint.mode === "thermal58" ? "58mm auto" : "80mm auto") : (isA5 ? "A5" : "A4");
+      var pgMargin = isThermal ? "3mm" : "8mm";
+      var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pgSize + (isThermal ? "" : " portrait") + ";margin:" + pgMargin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+      var pageFormat = isThermal ? (pendingPrint.mode === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
+      var isQuot = pendingPrint.kind === "quotation";
+      var filename = (isQuot ? "Quotation-" : "Invoice-") + (pendingPrint.sale.invoiceNo || pendingPrint.sale.id.slice(0, 8));
+      var phone = pendingPrint.sale.customerPhone || "";
+      setPendingPrint(null);
+      shareViaWhatsApp(el.innerHTML, filename, phone, { headStyles: css, pageFormat: pageFormat });
+    }, 300);
     return function () { clearTimeout(timer); };
   }, [pendingPrint]);
 
@@ -4123,7 +4133,7 @@ var POS = React.memo(function (props) {
                         </td>
                         <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 800, color: C.green }}>{FREE_ITEM_LABEL}</td>
                         <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                          <button onClick={function () { removeFreeLine(cartLineKey(item)); }} style={{ background: "none", border: "none", color: C.red, cursor: "pointer", fontSize: 14 }}>Remove</button>
+                          <button type="button" className="erp-pos-cart-remove-btn" onClick={function () { removeFreeLine(cartLineKey(item)); }}>Remove</button>
                         </td>
                       </tr>
                     );
@@ -4883,15 +4893,56 @@ var POS = React.memo(function (props) {
         </Modal>
       )}
 
-      {/* Hidden off-screen invoice preview ? used by doPopupPrint to get innerHTML */}
-      {pendingPrint && (
+      {/* Universal print preview modal (Sales / Quotation — same chrome as Reports) */}
+      {pendingPrint && !waPendingRef.current ? (function () {
+        var sale = pendingPrint.sale || {};
+        var isQuot = pendingPrint.kind === "quotation";
+        var isThermal = pendingPrint.mode === "thermal" || pendingPrint.mode === "thermal58" || pendingPrint.mode === "thermal80";
+        var docNo = sale.invoiceNo || String(sale.id || "").slice(0, 8);
+        return (
+          <UniversalPrintPreview
+            open
+            badge={isQuot ? "QT" : "INV"}
+            kicker="Print preview"
+            title={(isQuot ? "Quotation " : "Invoice ") + docNo}
+            subtitle={(sale.customerName || sale.customer || "Walk-in") + (sale.date ? (" · " + fmtDate(sale.date)) : "")}
+            filename={(isQuot ? "Quotation-" : "Invoice-") + docNo}
+            settings={pendingPrint.settings || state.settings}
+            WABtn={WABtn}
+            showAlert={showAlert}
+            shareViaWhatsApp={shareViaWhatsApp}
+            PRINT_FONT_LINK={PRINT_FONT_LINK}
+            escapeHtml={escapeHtml}
+            openPrintWindow={openPrintWindow}
+            waPhone={sale.customerPhone || ""}
+            showFormats
+            format={pendingPrint.mode || "a4"}
+            onFormatChange={function (fmt) {
+              setPendingPrint(function (prev) {
+                if (!prev) return prev;
+                return Object.assign({}, prev, { mode: fmt });
+              });
+            }}
+            previewElId="pos-print-preview"
+            onClose={function () { setPendingPrint(null); }}
+          >
+            {isThermal
+              ? <InvoiceThermal inv={Object.assign({}, sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} width={pendingPrint.mode === "thermal58" ? 218 : 302} documentKind={isQuot ? "quotation" : "invoice"} />
+              : <InvoiceA4 inv={Object.assign({}, sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} size={pendingPrint.mode || "a4"} documentKind={isQuot ? "quotation" : "invoice"} />
+            }
+          </UniversalPrintPreview>
+        );
+      })() : null}
+
+      {/* Hidden off-screen capture for WhatsApp share path only */}
+      {pendingPrint && waPendingRef.current ? (
         <div id="pos-print-preview" style={{ position: "fixed", left: -9999, top: -9999, width: (pendingPrint.mode === "thermal58") ? 230 : (pendingPrint.mode === "thermal80" || pendingPrint.mode === "thermal") ? 310 : 794, pointerEvents: "none", opacity: 0 }}>
           {(pendingPrint.mode === "thermal" || pendingPrint.mode === "thermal58" || pendingPrint.mode === "thermal80")
             ? <InvoiceThermal inv={Object.assign({}, pendingPrint.sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} width={pendingPrint.mode === "thermal58" ? 218 : 302} documentKind={pendingPrint.kind === "quotation" ? "quotation" : "invoice"} />
             : <InvoiceA4 inv={Object.assign({}, pendingPrint.sale, { includeWarranty: pendingPrint.warranty })} settings={pendingPrint.settings} invoiceLang={pendingPrint.invoiceLang != null ? pendingPrint.invoiceLang : ((pendingPrint.settings && pendingPrint.settings.defaultInvoiceLang) || "en")} size={pendingPrint.mode || "a4"} documentKind={pendingPrint.kind === "quotation" ? "quotation" : "invoice"} />
           }
         </div>
-      )}
+      ) : null}
 
       {waSharePicker && (
         <Modal title={waSharePickerKind === "quotation" ? "Share Quotation via WhatsApp" : "Share Invoice via WhatsApp"} onClose={function () { setWaSharePicker(false); }} compact>

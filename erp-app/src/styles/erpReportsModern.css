@@ -350,10 +350,11 @@
   color: #64748b;
 }
 
-/* Preview overlay — force toolbar colors (escape page button flatteners) */
+/* Universal + report print preview toolbar colors */
 .erp-app-root .erp-rpt-fv.erp-si-fv button.erp-si-fv-btn.is-print,
 .erp-rpt-fv.erp-si-fv button.erp-si-fv-btn.is-print,
-body > .erp-rpt-fv button.erp-si-fv-btn.is-print {
+body > .erp-rpt-fv button.erp-si-fv-btn.is-print,
+body > .erp-univ-fv button.erp-si-fv-btn.is-print {
   background: linear-gradient(135deg, #3b82f6, #1d4ed8) !important;
   background-image: linear-gradient(135deg, #3b82f6, #1d4ed8) !important;
   color: #fff !important;
@@ -363,7 +364,8 @@ body > .erp-rpt-fv button.erp-si-fv-btn.is-print {
 
 .erp-app-root .erp-rpt-fv.erp-si-fv button.erp-si-fv-btn.is-convert,
 .erp-rpt-fv.erp-si-fv button.erp-si-fv-btn.is-convert,
-body > .erp-rpt-fv button.erp-si-fv-btn.is-convert {
+body > .erp-rpt-fv button.erp-si-fv-btn.is-convert,
+body > .erp-univ-fv button.erp-si-fv-btn.is-convert {
   background: linear-gradient(135deg, #14b8a6, #0f766e) !important;
   background-image: linear-gradient(135deg, #14b8a6, #0f766e) !important;
   color: #fff !important;
@@ -373,7 +375,8 @@ body > .erp-rpt-fv button.erp-si-fv-btn.is-convert {
 
 .erp-app-root .erp-rpt-fv.erp-si-fv button.erp-si-fv-btn.is-close,
 .erp-rpt-fv.erp-si-fv button.erp-si-fv-btn.is-close,
-body > .erp-rpt-fv button.erp-si-fv-btn.is-close {
+body > .erp-rpt-fv button.erp-si-fv-btn.is-close,
+body > .erp-univ-fv button.erp-si-fv-btn.is-close {
   background: rgba(255, 255, 255, 0.08) !important;
   background-image: none !important;
   color: #e2e8f0 !important;
@@ -395,6 +398,89 @@ body > .erp-rpt-fv button.erp-si-fv-btn.is-close {
   height: min(78vh, 980px);
   border: 0;
   background: #fff;
+}
+
+.erp-univ-fv .erp-univ-fv-react-doc {
+  width: 100%;
+  max-width: 100%;
+  display: block;
+  padding: 0;
+  background: #fff;
+}
+
+/* Actual paper sizes in print preview (96dpi ≈ InvoiceA4 / thermal widths) */
+.erp-univ-fv .erp-univ-fv-sheet {
+  margin: 0 auto;
+  background: #fff;
+  overflow: hidden;
+  box-sizing: border-box;
+  transition: width 0.18s ease, min-height 0.18s ease;
+}
+
+.erp-univ-fv .erp-univ-fv-sheet.is-a4 {
+  width: 794px !important;
+  min-width: 794px !important;
+  max-width: 794px !important;
+  min-height: 1123px;
+}
+
+.erp-univ-fv .erp-univ-fv-sheet.is-a5 {
+  width: 560px !important;
+  min-width: 560px !important;
+  max-width: 560px !important;
+  min-height: 794px;
+}
+
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal80 {
+  width: 310px !important;
+  min-width: 310px !important;
+  max-width: 310px !important;
+  min-height: 0;
+  padding: 6px;
+}
+
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal58 {
+  width: 230px !important;
+  min-width: 230px !important;
+  max-width: 230px !important;
+  min-height: 0;
+  padding: 4px;
+}
+
+.erp-univ-fv .erp-univ-fv-sheet.is-a4 .erp-univ-fv-react-doc > *,
+.erp-univ-fv .erp-univ-fv-sheet.is-a5 .erp-univ-fv-react-doc > *,
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal80 .erp-univ-fv-react-doc > *,
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal58 .erp-univ-fv-react-doc > * {
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.erp-univ-fv .erp-univ-fv-iframe {
+  display: block;
+  width: 100%;
+  min-height: inherit;
+  height: min(78vh, 1123px);
+  border: 0;
+  background: #fff;
+}
+
+.erp-univ-fv .erp-univ-fv-sheet.is-a5 .erp-univ-fv-iframe {
+  height: min(72vh, 794px);
+}
+
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal80 .erp-univ-fv-iframe,
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal58 .erp-univ-fv-iframe {
+  height: min(70vh, 900px);
+}
+
+@media (max-width: 860px) {
+  .erp-univ-fv .erp-univ-fv-sheet.is-a4 {
+    width: min(794px, 100%) !important;
+    transform-origin: top center;
+  }
+  .erp-univ-fv .erp-univ-fv-sheet.is-a5 {
+    width: min(560px, 100%) !important;
+  }
 }
 
 /* Main tabs — segmented look */

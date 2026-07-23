@@ -46,6 +46,7 @@ export function emptyCodProfitSettings() {
   return {
     totalInvestment: 0,
     shareholders: [],
+    updatedAt: "",
   };
 }
 
@@ -150,19 +151,31 @@ export function shareholderInvestmentPct(sh, totalInvestment) {
   return Math.round((Number(sh.investmentAmount) || 0) / total * 10000) / 100;
 }
 
+function codNumOr(v, fallback) {
+  if (v == null || v === "") return fallback;
+  var n = Number(v);
+  return isNaN(n) ? fallback : n;
+}
+
 export function hydrateProfitSettings(settings) {
   var next = Object.assign({}, emptyCodProfitSettings(), settings || {});
-  next.totalInvestment = Number(next.totalInvestment) || 0;
+  next.totalInvestment = codNumOr(next.totalInvestment, 0);
   next.shareholders = (next.shareholders || []).map(function (sh, i) {
-    return Object.assign({}, emptyShareholder(sh.id || ("cod_sh_" + i)), sh, {
-      investmentAmount: Number(sh.investmentAmount) || 0,
-      openingBalanceOwed: Number(sh.openingBalanceOwed) || 0,
-      userSharePercentage: Number(sh.userSharePercentage) || 60,
-      partnerSharePercentage: Number(sh.partnerSharePercentage) != null
-        ? Number(sh.partnerSharePercentage)
-        : Math.max(0, 100 - (Number(sh.userSharePercentage) || 60)),
-      sortOrder: sh.sortOrder != null ? sh.sortOrder : i + 1,
-      isActive: sh.isActive !== false,
+    var row = sh || {};
+    var id = row.id || ("cod_sh_" + i);
+    var userPct = codNumOr(row.userSharePercentage, 60);
+    var partnerPct = row.partnerSharePercentage != null && row.partnerSharePercentage !== ""
+      ? codNumOr(row.partnerSharePercentage, Math.max(0, 100 - userPct))
+      : Math.max(0, 100 - userPct);
+    return Object.assign({}, emptyShareholder(id), row, {
+      id: id,
+      name: row.name != null ? String(row.name) : "",
+      investmentAmount: codNumOr(row.investmentAmount, 0),
+      openingBalanceOwed: codNumOr(row.openingBalanceOwed, 0),
+      userSharePercentage: userPct,
+      partnerSharePercentage: partnerPct,
+      sortOrder: row.sortOrder != null ? row.sortOrder : i + 1,
+      isActive: row.isActive !== false,
     });
   });
   return next;

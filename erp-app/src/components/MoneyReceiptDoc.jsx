@@ -1,4 +1,5 @@
 import React from "react";
+import { DocPrintHeader, DOC_PRINT_ACCENT } from "./DocPrintHeader.jsx";
 
 /**
  * Money In / Money Out receipt — invoice-style layout (same family as InvoiceA4).
@@ -14,10 +15,7 @@ export function MoneyReceiptDoc(props) {
   var size = props.size || "a4";
   var isA5 = size === "a5";
 
-  var accent = "#1a4fa0";
-  var shopName = settings.shopName || "TechonERP";
-  var logo = settings.invoiceLogo;
-  var logoW = settings.invoiceLogoSize || 80;
+  var accent = DOC_PRINT_ACCENT;
   var receiptNo = receipt.receiptNo || receipt.reference || (receipt.id || "").slice(0, 8);
   var partyName = isIn
     ? (receipt.source || receipt.person || "—")
@@ -49,46 +47,20 @@ export function MoneyReceiptDoc(props) {
         flexDirection: "column",
       }}
     >
-      {/* Header — same pattern as sales invoice */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "24px " + px + " 16px" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {logo ? <img src={logo} alt={shopName} style={{ width: logoW, height: "auto", objectFit: "contain", display: "block" }} /> : null}
-            {!logo ? <div style={{ fontSize: 20, fontWeight: 900, color: accent, letterSpacing: "-0.02em", textTransform: "uppercase" }}>{shopName}</div> : null}
-          </div>
-          <div style={{ lineHeight: 1.7 }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>{shopName}</div>
-            {settings.address ? <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.address}</div> : null}
-            {settings.phone ? <div style={{ fontSize: fs - 1, color: "#555" }}>Tel: {settings.phone}{settings.phone2 ? " / " + settings.phone2 : ""}</div> : null}
-            {settings.email ? <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.email}</div> : null}
-            {settings.website ? <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.website}</div> : null}
-            {settings.brn ? <div style={{ fontSize: fs - 1, color: "#555" }}>BRN: {settings.brn}</div> : null}
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 18, fontWeight: 800, color: accent, letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: 1, marginBottom: 10 }}>{docTitle}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: fs }}>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Receipt No:</span>
-              <span style={{ fontWeight: 700, color: "#111", fontFamily: "monospace", minWidth: 120, textAlign: "right" }}>{receiptNo}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Date:</span>
-              <span style={{ fontWeight: 600, minWidth: 120, textAlign: "right" }}>{fmtDateFull(receipt.date)}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Time:</span>
-              <span style={{ fontWeight: 600, minWidth: 120, textAlign: "right" }}>{tStr}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Type:</span>
-              <span style={{ fontWeight: 700, minWidth: 120, textAlign: "right" }}>{isIn ? "Money In" : "Money Out"}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div style={{ margin: "0 " + px, borderTop: "2px solid " + accent, marginBottom: 14 }} />
+      <DocPrintHeader
+        settings={settings}
+        title={docTitle}
+        padPx={pad}
+        showTopbar
+        showLogo={false}
+        contactLabels={{ phone: "Tel:", email: "Email:", brn: "BRN:" }}
+        metaRows={[
+          { label: "Receipt No:", value: receiptNo, mono: true },
+          { label: "Date:", value: fmtDateFull(receipt.date) },
+          { label: "Time:", value: tStr },
+          { label: "Type:", value: isIn ? "Money In" : "Money Out" },
+        ]}
+      />
 
       {/* Party */}
       <div style={{ padding: "0 " + px, marginBottom: 14 }}>

@@ -3,6 +3,7 @@
  */
 import { getReturnsForSale, getReturnsForPurchase } from "./returnDisplay.js";
 import { stampProductStock, stampUpdatedAt, stampCustomerBalance } from "./stampUpdatedAt.js";
+import { applyRepair3pStockFlags, isRepair3pInternalProduct } from "./repair3pProduct.js";
 
 export var VOID_REASON_OPTIONS = [
   "Wrong customer / supplier",
@@ -125,7 +126,9 @@ function restoreSaleLineStock(products, productId, qty, saleCost, atIso) {
     } else {
       newC = ((curS * curC) + (q * retCost)) / newS;
     }
-    return stampProductStock(Object.assign({}, p, { stock: newS, cost: round2(newC) }), atIso, p);
+    var patched = Object.assign({}, p, { stock: newS, cost: round2(newC) });
+    if (isRepair3pInternalProduct(p)) patched = applyRepair3pStockFlags(patched, newS);
+    return stampProductStock(patched, atIso, p);
   });
 }
 

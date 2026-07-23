@@ -13,7 +13,6 @@ import {
 } from "../utils/rawMaterialPricingBackfill.js";
 import { ROLE_ADMIN, ROLE_LABELS, CASHIER_ACCESS_SUMMARY, normalizeRole } from "../security/rbac.js";
 import { COMPUTER_SHOP_EDITION, validateJsonBackupPayload } from "../productionConfig.js";
-import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import {
   isFreeItemsEnabled,
   isPosLineCommentsEnabled,
@@ -25,9 +24,9 @@ import {
   persistStaffModuleToggles,
   persistCounterModuleToggles,
   MODULE_TOGGLE_DEFS,
+  SETTINGS_OPTIONAL_MODULE_IDS,
 } from "../utils/featureFlags.js";
 import { getToolbarKeys, persistToolbarKeys } from "../utils/toolbarConfig.js";
-import ToolbarCustomizePanel from "../components/ToolbarCustomizePanel.jsx";
 import { safeStr } from "../utils/syncDataNormalize.js";
 import { pushKeysToServer, NETWORK_KV_KEYS } from "../sync/SyncEngine.js";
 import {
@@ -38,6 +37,71 @@ import {
 } from "../utils/categoryGroups.js";
 
 var WARRANTY_TEXT = "WARRANTY POLICY\n• Laptops & Desktops: 6 months warranty on hardware defects.\n• Accessories & Peripherals: 1 month replacement warranty.\n• Warranty is void if physically damaged, liquid damaged, or tampered with.\n• Warranty covers manufacturer defects only, not user damage.\n• Please retain this invoice as proof of purchase for warranty claims.";
+
+/** Activity Log panel — kept separate so the tab body stays readable. */
+var SettingsActivityPanel = function (props) {
+  var S = props.S;
+  var Card = props.Card;
+  var all = S.get("tc3_auditLog", []) || [];
+  if (!Array.isArray(all)) all = [];
+  var total = all.length;
+  var rows = all.slice(0, 80);
+
+  return (
+    <div className="erp-act-page">
+      <div className="erp-act-wrap">
+        <Card className="erp-act-card">
+          <div className="erp-act-brand">
+            <div className="erp-act-brand-ico" aria-hidden="true">📋</div>
+            <div className="erp-act-brand-text">
+              <div className="erp-act-title">Activity Log</div>
+              <div className="erp-act-sub">Login, sales, returns, edits and settings</div>
+            </div>
+            <span className="erp-act-count">
+              {Math.min(total, 80) + (total > 80 ? "+" : "") + " recent"}
+            </span>
+          </div>
+          {!rows.length ? (
+            <div className="erp-act-empty">No activity yet. User actions will appear here.</div>
+          ) : (
+            <div className="erp-act-body">
+              <div className="erp-act-table-wrap">
+                <table className="erp-act-table">
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>User</th>
+                      <th>Action</th>
+                      <th>Detail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(function (r, idx) {
+                      return (
+                        <tr key={r.id || ("act-" + idx)}>
+                          <td className="erp-act-when">{r.timestamp || r.date || "—"}</td>
+                          <td>
+                            <span className="erp-act-user">{r.user || "Unknown"}</span>
+                            <span className="erp-act-role">{ROLE_LABELS[normalizeRole(r.role)] || "User"}</span>
+                          </td>
+                          <td className="erp-act-action">{r.action || "Action"}</td>
+                          <td className="erp-act-detail">
+                            {r.reference || "—"}
+                            {r.terminal ? <span className="erp-act-term"> · {r.terminal}</span> : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+};
 
 var Settings = function (props) {
   var state = props.state;
@@ -116,22 +180,33 @@ var Settings = function (props) {
   var InvoiceA4 = props.InvoiceA4;
   var Input = props.Input;
   var Btn = props.Btn;
-  var CardRaw = props.Card;
-  var CardTitleRaw = props.CardTitle;
-  var Card = function (p) {
-    var cls = ["erp-set-card", p && p.className].filter(Boolean).join(" ");
-    var pad = p && p.pad !== undefined ? p.pad : (wizardUi ? undefined : 12);
-    return React.createElement(CardRaw, Object.assign({}, p, { className: cls, pad: pad }));
-  };
-  var CardTitle = function (p) {
-    return React.createElement("div", { className: "erp-set-card-title" }, React.createElement(CardTitleRaw, p));
-  };
+  /* Stable Card/CardTitle identity — defining these inside Settings remounted all
+     inputs on every keystroke (cursor disappeared after each character). */
+  var setCardDepsRef = useRef({ CardRaw: props.Card, CardTitleRaw: props.CardTitle, wizardUi: wizardUi });
+  setCardDepsRef.current = { CardRaw: props.Card, CardTitleRaw: props.CardTitle, wizardUi: wizardUi };
+  var setCardUiRef = useRef(null);
+  if (!setCardUiRef.current) {
+    setCardUiRef.current = {
+      Card: function SettingsCard(p) {
+        var deps = setCardDepsRef.current;
+        var cls = ["erp-set-card", p && p.className].filter(Boolean).join(" ");
+        var pad = p && p.pad !== undefined ? p.pad : (deps.wizardUi ? undefined : 12);
+        return React.createElement(deps.CardRaw, Object.assign({}, p, { className: cls, pad: pad }));
+      },
+      CardTitle: function SettingsCardTitle(p) {
+        var deps = setCardDepsRef.current;
+        return React.createElement("div", { className: "erp-set-card-title" }, React.createElement(deps.CardTitleRaw, p));
+      }
+    };
+  }
+  var Card = setCardUiRef.current.Card;
+  var CardTitle = setCardUiRef.current.CardTitle;
   var Sel = props.Sel;
   var Modal = props.Modal;
   var StatCard = props.StatCard;
   var [stab, setStab] = useState(function () {
     var sc = props.systemConfig || {};
-    return sc.role === "network_client" ? "features" : "shop";
+    return sc.role === "network_client" ? "features" : "profile";
   });
   var [supBndFrom, setSupBndFrom] = useState(today().slice(0, 7) + "-01");
   var [supBndTo, setSupBndTo] = useState(today());
@@ -268,6 +343,12 @@ var Settings = function (props) {
   var [newUserRole, setNewUserRole] = useState("cashier");
   var [newUserPassword, setNewUserPassword] = useState("");
   var [userMsg, setUserMsg] = useState(null);
+  var [userEditModal, setUserEditModal] = useState(null); /* { mode: "name"|"password", user } */
+  var [userEditName, setUserEditName] = useState("");
+  var [userEditPw, setUserEditPw] = useState("");
+  var [userEditPw2, setUserEditPw2] = useState("");
+  var [userEditErr, setUserEditErr] = useState("");
+  var [userEditBusy, setUserEditBusy] = useState(false);
   var isRestaurantBusiness = businessType === "restaurant";
   var normalizeRestaurantTableName = function (name) {
     return String(name || "").replace(/\s+/g, " ").trim();
@@ -345,22 +426,80 @@ var Settings = function (props) {
     });
   };
 
-  var resetUserPassword = function (u) {
+  var closeUserEditModal = function () {
+    setUserEditModal(null);
+    setUserEditName("");
+    setUserEditPw("");
+    setUserEditPw2("");
+    setUserEditErr("");
+    setUserEditBusy(false);
+  };
+
+  var openEditUserName = function (u) {
+    if (!canManageUsers) { setUserMsg({ type: "error", text: "Only admin can edit users." }); return; }
+    setUserEditModal({ mode: "name", user: u });
+    setUserEditName(u && u.name ? String(u.name) : "");
+    setUserEditErr("");
+    setUserEditBusy(false);
+  };
+
+  var openResetUserPassword = function (u) {
     if (!canManageUsers) { setUserMsg({ type: "error", text: "Only admin can reset passwords." }); return; }
-    var p = window.prompt("Enter a new password for " + (u.username || u.name) + " (min 4 chars):", "");
-    if (p == null) return;
-    if (String(p).length < 4) { setUserMsg({ type: "error", text: "Password too short." }); return; }
-    hashPw(String(p)).then(function (hashed) {
+    setUserEditModal({ mode: "password", user: u });
+    setUserEditPw("");
+    setUserEditPw2("");
+    setUserEditErr("");
+    setUserEditBusy(false);
+  };
+
+  var saveEditedUserName = function () {
+    if (!userEditModal || !userEditModal.user) return;
+    if (!canManageUsers) { setUserEditErr("Only admin can edit users."); return; }
+    var u = userEditModal.user;
+    var name = String(userEditName || "").trim();
+    if (!name || name.length < 2) { setUserEditErr("Enter full name (min 2 chars)."); return; }
+    var next = users.map(function (x) {
+      return x.id === u.id
+        ? Object.assign({}, x, { name: name, updatedAt: new Date().toISOString() })
+        : x;
+    });
+    saveUsers(next, { type: "success", text: "Name updated for @" + (u.username || "user") + "." });
+    if (normalizeUsername(u.username) === "admin" || u.role === ROLE_ADMIN) {
+      try { S.set("tc3_admin_name", name); } catch (e) { /* ignore */ }
+    }
+    closeUserEditModal();
+  };
+
+  var saveResetUserPassword = function () {
+    if (!userEditModal || !userEditModal.user) return;
+    if (!canManageUsers) { setUserEditErr("Only admin can reset passwords."); return; }
+    var u = userEditModal.user;
+    var p1 = String(userEditPw || "");
+    var p2 = String(userEditPw2 || "");
+    if (p1.length < 4) { setUserEditErr("Password must be at least 4 characters."); return; }
+    if (p1 !== p2) { setUserEditErr("Passwords do not match."); return; }
+    if (typeof hashPw !== "function") { setUserEditErr("Password hashing is unavailable."); return; }
+    setUserEditBusy(true);
+    setUserEditErr("");
+    hashPw(p1).then(function (hashed) {
       var next = users.map(function (x) {
         return x.id === u.id
           ? Object.assign({}, x, { passwordHash: hashed, updatedAt: new Date().toISOString() })
           : x;
       });
-      saveUsers(next, { type: "success", text: "Password reset for " + (u.username || u.name) + "." });
+      saveUsers(next, { type: "success", text: "Password reset for @" + (u.username || u.name || "user") + "." });
       if (typeof setLoginPassword === "function" && (u.role === "admin" || normalizeUsername(u.username) === "admin")) {
         setLoginPassword(hashed, { userId: u.id, username: u.username });
       }
+      closeUserEditModal();
+    }).catch(function () {
+      setUserEditBusy(false);
+      setUserEditErr("Could not save password. Try again.");
     });
+  };
+
+  var resetUserPassword = function (u) {
+    openResetUserPassword(u);
   };
 
   var removeUser = function (u) {
@@ -369,6 +508,83 @@ var Settings = function (props) {
     showConfirm("Remove user " + (u.username || u.name) + "?", function () {
       var next = users.filter(function (x) { return x.id !== u.id; });
       saveUsers(next, { type: "success", text: "User removed." });
+    });
+  };
+
+  var saveAdminSecuritySettings = function () {
+    if (f.adminPin && f.adminPin.length > 0 && f.adminPin.length < 4) {
+      showAlert("PIN must be at least 4 digits.");
+      return;
+    }
+    if (adminNameEdit && adminNameEdit.trim().length < 2) {
+      showAlert("Administrator name must be at least 2 characters.");
+      return;
+    }
+    if (pwNew || pwOld) {
+      var current = S.get("tc3_apppass", "");
+      var allowNoOld = false;
+      try { allowNoOld = sessionStorage.getItem("tc3_allow_login_pw_reset_without_old") === "1"; } catch (e) {}
+      if (!pwNew || pwNew.length < 4) { setPwMsg({ type: "error", text: "New password must be at least 4 characters." }); return; }
+      if (pwNew !== pwNew2) { setPwMsg({ type: "error", text: "Passwords do not match." }); return; }
+      if (allowNoOld) {
+        hashPw(pwNew).then(function (hashed) {
+          if (typeof setLoginPassword === "function") {
+            setLoginPassword(hashed, { username: "admin" });
+          } else {
+            S.set("tc3_apppass", hashed);
+          }
+          try { sessionStorage.removeItem("tc3_allow_login_pw_reset_without_old"); } catch (e2) {}
+          setPwOld(""); setPwNew(""); setPwNew2("");
+          setShowAppPasswordResetHint(false);
+          setPwMsg({ type: "success", text: "Password changed!" });
+        });
+        return;
+      }
+      pwMatchesAsync(pwOld, current).then(function (oldOk) {
+        if (current && !oldOk) { setPwMsg({ type: "error", text: "Current password incorrect." }); return; }
+        hashPw(pwNew).then(function (hashed) {
+          if (typeof setLoginPassword === "function") {
+            setLoginPassword(hashed, { username: "admin" });
+          } else {
+            S.set("tc3_apppass", hashed);
+          }
+          setPwOld(""); setPwNew(""); setPwNew2("");
+          setPwMsg({ type: "success", text: "Password changed!" });
+        });
+      });
+      return;
+    }
+    if (adminNameEdit && adminNameEdit.trim().length >= 2) {
+      S.set("tc3_admin_name", adminNameEdit.trim());
+    }
+    var saveSettingsWithPin = function (pinToSave) {
+      var ns = Object.assign({}, state.settings, f, {
+        adminPin: pinToSave,
+        autoLockEnabled: f.autoLockEnabled !== false,
+        autoLockMinutes: f.autoLockMinutes || 10,
+        requirePasswordOnLogin: f.requirePasswordOnLogin !== false
+      });
+      S.set("tc3_settings", ns);
+      setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+      showAlert("Settings updated successfully!");
+    };
+    var rawPin = f.adminPin || "";
+    if (rawPin && rawPin.length >= 4 && !rawPin.startsWith("sha256:")) {
+      hashPw(rawPin).then(function (hashedPin) { saveSettingsWithPin(hashedPin); });
+    } else {
+      saveSettingsWithPin(rawPin);
+    }
+  };
+
+  var toggleRequirePasswordOnLogin = function () {
+    var next = f.requirePasswordOnLogin === false;
+    setF(function (x) { return Object.assign({}, x, { requirePasswordOnLogin: next }); });
+    var ns = Object.assign({}, state.settings, f, { requirePasswordOnLogin: next });
+    S.set("tc3_settings", ns);
+    setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+    setUserMsg({
+      type: "success",
+      text: next ? "Password will be required on launch." : "Password on launch is off.",
     });
   };
 
@@ -706,12 +922,15 @@ var Settings = function (props) {
     ns.allowCostFallback = ns.allowCostFallback === true;
     ns.glVatPostingEnabled = ns.glVatPostingEnabled !== false;
     if (!isNetworkClient) {
-      if (canManageUsers) {
-        Object.assign(ns, persistMainModuleToggles(f.mainModuleToggles || f.moduleToggles || {}));
-      }
-      Object.assign(ns, persistStaffModuleToggles(f.staffModuleToggles || {}));
+      var modSrc = f.mainModuleToggles || f.moduleToggles || {};
+      Object.assign(ns, persistMainModuleToggles(modSrc));
+      /* Keep staff in sync — no separate cashier/staff modules panel. */
+      Object.assign(ns, persistStaffModuleToggles(modSrc));
     }
     Object.assign(ns, persistToolbarKeys(f.toolbarKeys));
+    if (!isNetworkClient) {
+      Object.assign(ns, persistCategoryGroupToggles(f.enabledCategoryGroups || {}));
+    }
     ns.strictPeriodLock = ns.strictPeriodLock === true;
     ns.purchaseReturnCostMode = ns.purchaseReturnCostMode === "original_cost" ? "original_cost" : "current_wac";
     ns.taxApplyBase = ns.taxApplyBase === "before_discount" ? "before_discount" : "after_discount";
@@ -740,14 +959,6 @@ var Settings = function (props) {
     S.set("tc3_settings", ns);
     setState(function (st) { return Object.assign({}, st, { settings: ns }); });
     showAlert("Counter modules saved.");
-  };
-
-  var saveCategoryGroups = function () {
-    var ns = Object.assign({}, state.settings);
-    Object.assign(ns, persistCategoryGroupToggles(f.enabledCategoryGroups || {}));
-    S.set("tc3_settings", ns);
-    setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-    showAlert("Category groups saved.");
   };
 
   var saveAccountingSettings = function () {
@@ -1048,7 +1259,7 @@ var Settings = function (props) {
   };
 
   var renderIndustryBlock = function (editable, compact) {
-    if (!isRestaurantBusiness) return renderMasterEditionBlock(compact, editable);
+    if (!isRestaurantBusiness) return renderMasterEditionBlock(compact, false);
     if (!getBusinessProfile && !industryProfileKeys.length) return null;
     var bp = getBusinessProfile ? getBusinessProfile() : (BUSINESS_PROFILES[businessType] || {});
     var chipKey = editable ? pendingIndustry : businessType;
@@ -1113,9 +1324,8 @@ var Settings = function (props) {
     );
   };
 
-  var TABS = [["shop", "Shop Info"], ["features", "Modules"], ["categories", "Categories"], ["langcurrency", "Currency"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["security", "Security"]];
-  if (isRestaurantBusiness) TABS.splice(1, 0, ["restaurantsetup", "Restaurant Setup"]);
-  if (canManageUsers) TABS.push(["users", "Users"]);
+  var TABS = [["profile", "Shop Profile"], ["shop", "Business Settings"], ["features", "Modules"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["users", "Security & Users"]];
+  if (isRestaurantBusiness) TABS.splice(2, 0, ["restaurantsetup", "Restaurant Setup"]);
   TABS.push(["activity", "Activity Log"]);
   /* Always show Network tab on server/client PCs (needed for API URL + security key on main PC). */
   if (isNetworkServer || isNetworkClient) TABS.push(["network", "Network"]);
@@ -1125,84 +1335,69 @@ var Settings = function (props) {
   }
 
   var renderModulePanel = function (toggleKey, title, sub) {
-    var groupNames = ["Main", "Stock", "People", "Finance", "Operations", "COD Database", "Insight", "POS options"];
+    var optionalDefs = MODULE_TOGGLE_DEFS.filter(function (m) {
+      return SETTINGS_OPTIONAL_MODULE_IDS.indexOf(m.id) >= 0;
+    });
+    var posItems = optionalDefs.filter(function (m) { return m.group === "POS"; });
+    var codItems = optionalDefs.filter(function (m) { return m.group === "COD"; });
+    var renderToggleTile = function (m) {
+      var toggles = f[toggleKey] || {};
+      var parentOff = m.parentModule && toggles[m.parentModule] !== true;
+      var on = toggles[m.id] === true && !parentOff;
+      return (
+        <label
+          key={m.id}
+          className={"erp-mod-tile" + (on ? " is-on" : "") + (parentOff ? " is-disabled" : "") + (m.parentModule ? " is-child" : "")}
+        >
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={parentOff}
+            onChange={function (e) {
+              var checked = e.target.checked;
+              setF(function (x) {
+                var nextToggles = Object.assign({}, x[toggleKey] || {}, { [m.id]: checked });
+                if (m.id === "coddatabase" && checked) {
+                  nextToggles.codSalesTrack = true;
+                }
+                if (m.id === "coddatabase" && !checked) {
+                  nextToggles.codCostProfit = false;
+                  nextToggles.codSalesTrack = false;
+                }
+                var patch = {};
+                patch[toggleKey] = nextToggles;
+                if (toggleKey === "mainModuleToggles") {
+                  patch.moduleToggles = nextToggles;
+                  if (m.id === "freeItems") patch.freeItemsEnabled = checked;
+                }
+                return Object.assign({}, x, patch);
+              });
+            }}
+          />
+          <span className="erp-mod-tile-ico" aria-hidden="true">{m.id === "freeItems" ? "🎁" : (m.id === "codCostProfit" ? "💹" : "🚚")}</span>
+          <span className="erp-mod-tile-body">
+            <span className="erp-mod-tile-name">{m.label}</span>
+            <span className="erp-mod-tile-blurb">{m.blurb}</span>
+          </span>
+          <span className={"erp-mod-tile-state" + (on ? " is-on" : "")}>{on ? "On" : "Off"}</span>
+        </label>
+      );
+    };
     return (
-      <Card key={toggleKey}>
-        <CardTitle sub={sub}>{title}</CardTitle>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 640 }}>
-          <div style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid " + C.border, background: "#f8fafc" }}>
-            <div className="erp-set-section-label">Always on</div>
-            {[
-              { label: "Sales", blurb: "Point of sale — create invoices, take payments, and hold orders." },
-              { label: "Settings", blurb: toggleKey === "counterModuleToggles" ? "Counter modules and network connection (main PC password required)." : "Shop setup, modules, backup, security, and accounting options." },
-            ].map(function (row) {
-              return (
-                <div key={row.label} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 0", borderTop: "1px solid " + C.borderLight }}>
-                  <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: C.accent, background: C.accentSoft, padding: "3px 8px", borderRadius: 999, marginTop: 2 }}>On</span>
-                  <span>
-                    <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: C.text }}>{row.label}</span>
-                    <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{row.blurb}</span>
-                  </span>
-                </div>
-              );
-            })}
+      <div key={toggleKey} className="erp-mod-panel">
+        {posItems.length ? (
+          <div className="erp-mod-section">
+            <div className="erp-mod-section-label">POS</div>
+            <div className="erp-mod-tiles">{posItems.map(renderToggleTile)}</div>
           </div>
-          {groupNames.map(function (groupName) {
-            var items = MODULE_TOGGLE_DEFS.filter(function (m) { return m.group === groupName; });
-            if (!items.length) return null;
-            return (
-              <div key={groupName}>
-                <div className="erp-set-section-label">{groupName}</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {items.map(function (m) {
-                    var toggles = f[toggleKey] || {};
-                    var parentOff = m.parentModule && toggles[m.parentModule] !== true;
-                    var on = toggles[m.id] === true && !parentOff;
-                    return (
-                      <label key={m.id} className="erp-set-toggle-row" style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: parentOff ? "not-allowed" : "pointer", padding: "8px 10px", borderRadius: 8, border: "1px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff", opacity: parentOff ? 0.55 : 1, marginLeft: m.parentModule ? 14 : 0 }}>
-                        <input
-                          type="checkbox"
-                          checked={on}
-                          disabled={parentOff}
-                          onChange={function (e) {
-                            var checked = e.target.checked;
-                            setF(function (x) {
-                              var nextToggles = Object.assign({}, x[toggleKey] || {}, { [m.id]: checked });
-                              if (m.id === "coddatabase" && checked) {
-                                nextToggles.codSalesTrack = true;
-                              }
-                              if (m.id === "coddatabase" && !checked) {
-                                nextToggles.codCostProfit = false;
-                              }
-                              if (m.id === "codSalesTrack" && checked) {
-                                nextToggles.coddatabase = true;
-                              }
-                              var patch = {};
-                              patch[toggleKey] = nextToggles;
-                              if (toggleKey === "mainModuleToggles") {
-                                patch.moduleToggles = nextToggles;
-                                if (m.id === "freeItems") patch.freeItemsEnabled = checked;
-                                if (m.id === "posLineComments") patch.posLineCommentsEnabled = checked;
-                                if (m.id === "repairs") patch.repairsModuleEnabled = checked;
-                              }
-                              return Object.assign({}, x, patch);
-                            });
-                          }}
-                          style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 2, flexShrink: 0 }}
-                        />
-                        <span>
-                          <span style={{ display: "block", fontWeight: 800, fontSize: 13, color: on ? C.accent : C.text }}>{m.label}</span>
-                          <span style={{ display: "block", fontSize: 12, color: C.muted, marginTop: 3, lineHeight: 1.45 }}>{m.blurb}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </Card>
+        ) : null}
+        {codItems.length ? (
+          <div className="erp-mod-section">
+            <div className="erp-mod-section-label">COD Tracker</div>
+            <div className="erp-mod-tiles">{codItems.map(renderToggleTile)}</div>
+          </div>
+        ) : null}
+      </div>
     );
   };
 
@@ -1234,7 +1429,7 @@ var Settings = function (props) {
   }, [countrySearchOpen]);
 
   useEffect(function () {
-    if (stab !== "langcurrency") setCountrySearchOpen(false);
+    if (stab !== "langcurrency" && stab !== "shop") setCountrySearchOpen(false);
   }, [stab]);
 
   useEffect(function () {
@@ -1245,31 +1440,31 @@ var Settings = function (props) {
       var appPwReset = sessionStorage.getItem("tc3_open_app_password_reset") === "1";
       if (pinReset) {
         sessionStorage.removeItem("tc3_open_security_pin_reset");
-        setStab("security");
+        setStab("users");
         setShowSupportPinResetHint(true);
       }
       if (appPwReset) {
         sessionStorage.removeItem("tc3_open_app_password_reset");
-        setStab("security");
+        setStab("users");
         setShowAppPasswordResetHint(true);
       }
       var openShop = sessionStorage.getItem("tc3_open_settings_shop_tab") === "1";
       if (openShop) {
         sessionStorage.removeItem("tc3_open_settings_shop_tab");
-        setStab("shop");
+        setStab("profile");
       }
     } catch (e) { /* ignore */ }
   }, [props.embeddedWizard, isNetworkClient]);
 
   /* Startup wizard: force correct tab when embedding Settings */
   useEffect(function () {
-    if (props.embeddedWizard === "shop_limited") setStab("shop");
+    if (props.embeddedWizard === "shop_limited") setStab("profile");
     else if (props.embeddedWizard === "langcurrency") setStab("langcurrency");
   }, [props.embeddedWizard]);
 
   /* Wizard shop step: focus first invalid core field when entering this step (not on every keystroke). */
   useEffect(function () {
-    if (props.embeddedWizard !== "shop_limited" || stab !== "shop") return;
+    if (props.embeddedWizard !== "shop_limited" || stab !== "profile") return;
     var snapshot = f;
     var t = setTimeout(function () {
       var v = validateCoreStartupIdentity(snapshot);
@@ -1346,7 +1541,7 @@ var Settings = function (props) {
         phone: v.missing.indexOf("phone") >= 0,
         address: v.missing.indexOf("address") >= 0
       });
-      setStab("shop");
+      setStab("profile");
       setTimeout(function () {
         var order = ["shopName", "phone", "address"];
         for (var oi = 0; oi < order.length; oi++) {
@@ -1443,7 +1638,7 @@ var Settings = function (props) {
       <div className="erp-set-chrome">
         <div className="erp-set-tabs" role="tablist" aria-label="Settings sections">
           {TABS.map(function (t) {
-            var icons = { shop: "🏪", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "👤", activity: "📋", network: "🌐", pos: "🛒", about: "ℹ", restaurantsetup: "🍽", categories: "📁" };
+            var icons = { profile: "🏪", shop: "⚙️", features: "🧩", langcurrency: "🌍", capital: "💼", invoice: "🧾", barcode: "🏷", assets: "📦", backup: "💾", accounting: "⚖", security: "🔐", users: "🔐", activity: "📋", network: "🌐", pos: "🛒", about: "ℹ", restaurantsetup: "🍽", categories: "📁" };
             var active = stab === t[0];
             return (
               <button
@@ -1465,7 +1660,7 @@ var Settings = function (props) {
 
       <div className="erp-set-body">
 
-      {stab === "shop" && (
+      {stab === "profile" && (
         <div className={"erp-set-stack" + (wizardUi && props.embeddedWizard === "shop_limited" ? " is-tight" : "")}>
           {wizardUi && props.embeddedWizard === "shop_limited" ? (
             <React.Fragment>
@@ -1500,176 +1695,205 @@ var Settings = function (props) {
                 </div>
               </div>
               <div style={Object.assign({}, wizPanelStyle, { marginBottom: 6 })}>
-                {wizHeading("Address & invoice footer")}
+                {wizHeading("Address & registration")}
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div>
                     <Input compact={denseWiz} id="tc-core-address" error={embWiz && coreStartupErr.address} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Shop Address" value={f.address || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} />
                     {embWiz && (coreStartupErr.phone || coreStartupErr.address) && <div id="tc-core-hint-contact" role="status" aria-live="polite" style={{ fontSize: 11, color: "#e03151", fontWeight: 600, marginTop: 2, transition: "opacity .15s ease" }}>Enter at least one</div>}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <Input compact={denseWiz} label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
-                    <Input compact={denseWiz} label="Invoice Footer Message" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
-                  </div>
+                  <Input compact={denseWiz} label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
                 </div>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 6, borderTop: "1px solid #e8ecf4", marginTop: 2 }}>
-                <button type="button" onClick={function () { if (onWizardBack) onWizardBack(); }} style={{ padding: "8px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "#fff", fontSize: 13, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
+                <button type="button" className="erp-set-wizard-back" onClick={function () { if (onWizardBack) onWizardBack(); }}>← Back</button>
                 <Btn col="cyan" onClick={function () { runWizardCoreIdentityStep(function () { save({ silent: true }); if (props.onWizardNext) props.onWizardNext(); }); }}>Continue →</Btn>
               </div>
             </React.Fragment>
           ) : (
-          <Card>
-            <CardTitle sub="Your shop contact and display information">Shop Information</CardTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {renderIndustryBlock(true, false)}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div>
-                  <Input compact={denseWiz} id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
-                  {embWiz && coreStartupErr.shopName && <div id="tc-core-hint-shopName" role="status" aria-live="polite" style={{ fontSize: 11, color: "#e03151", fontWeight: 600, marginTop: 2, transition: "opacity .15s ease" }}>Required</div>}
-                </div>
-                <div>
-                  <Input compact={denseWiz} id="tc-core-phone" error={embWiz && coreStartupErr.phone} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Primary Phone" value={f.phone || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} placeholder="+94 77 123 4567" />
-                </div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input compact={denseWiz} label="Second Phone" value={f.phone2 || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone2: e.target.value }); }); }} placeholder="+94 11 234 5678" />
-                <Input compact={denseWiz} label="WhatsApp Number" value={f.whatsapp || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { whatsapp: e.target.value }); }); }} placeholder="+94 77 123 4567" />
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <Input compact={denseWiz} label="Email Address" value={f.email || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { email: e.target.value }); }); }} placeholder="info@techon.lk" />
-                <Input compact={denseWiz} label="Website" value={f.website || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { website: e.target.value }); }); }} placeholder="www.techon.lk" />
-              </div>
-              <div>
-                <Input compact={denseWiz} id="tc-core-address" error={embWiz && coreStartupErr.address} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Shop Address" value={f.address || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} />
-                {embWiz && (coreStartupErr.phone || coreStartupErr.address) && <div id="tc-core-hint-contact" role="status" aria-live="polite" style={{ fontSize: 11, color: "#e03151", fontWeight: 600, marginTop: 2, transition: "opacity .15s ease" }}>Enter at least one</div>}
-              </div>
-              <Input compact={denseWiz} label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
-              <Input compact={denseWiz} label="Invoice Footer Message" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
-              <div style={{ marginTop: 4 }}>
-                {props.embeddedWizard === "shop_limited" ? (
-                  <Btn col="cyan" onClick={function () { runWizardCoreIdentityStep(function () { save({ silent: true }); if (props.onWizardNext) props.onWizardNext(); }); }}>Save &amp; Continue</Btn>
-                ) : (
-                  <Btn col="cyan" onClick={save}>Save Shop Info</Btn>
-                )}
-              </div>
-            </div>
-          </Card>
-          )}
-
-          {!props.embeddedWizard && (
-            <Card>
-              <CardTitle sub="Shown on invoices when warranty is enabled">Warranty Policy</CardTitle>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 14px", borderRadius: 9, border: "1.5px solid " + (f.warrantyEnabled ? C.accent : C.border), background: f.warrantyEnabled ? C.accentSoft : "#fff" }}>
-                  <input type="checkbox" checked={f.warrantyEnabled} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyEnabled: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.accent }} />
-                  <span style={{ fontWeight: 700, fontSize: 13, color: f.warrantyEnabled ? C.accent : C.textMd }}>Enable warranty text on invoices</span>
-                </label>
-                {f.warrantyEnabled && (
+          <div className="erp-prof-page">
+            <div className="erp-prof-wrap">
+              <Card className="erp-prof-card">
+                <div className="erp-prof-brand">
+                  <div className="erp-prof-brand-ico" aria-hidden="true">🏪</div>
                   <div>
-                    <label style={{ fontSize: 11, fontWeight: 700, color: C.textMd, display: "block", marginBottom: 6 }}>Warranty Text</label>
-                    <textarea value={f.warrantyText || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyText: e.target.value }); }); }} rows={8} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
+                    <div className="erp-prof-title">Shop Profile</div>
+                    <div className="erp-prof-sub">Name, contact and registration on invoices</div>
+                  </div>
+                </div>
+
+                <div className="erp-prof-block">
+                  <div className="erp-prof-block-label">Identity</div>
+                  <div className="erp-prof-grid">
+                    <div>
+                      <Input compact={denseWiz} id="tc-core-shopName" error={embWiz && coreStartupErr.shopName} aria-describedby={embWiz && coreStartupErr.shopName ? "tc-core-hint-shopName" : undefined} label="Shop Name" value={f.shopName || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopName: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { shopName: false }); }); }} placeholder="e.g. Techon Computers" />
+                      {embWiz && coreStartupErr.shopName && <div id="tc-core-hint-shopName" role="status" aria-live="polite" className="erp-prof-err">Required</div>}
+                    </div>
+                    <Input compact={denseWiz} label="Business Reg. No (BRN)" value={f.brn || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { brn: e.target.value }); }); }} placeholder="e.g. PV 00012345" />
+                  </div>
+                </div>
+
+                <div className="erp-prof-block">
+                  <div className="erp-prof-block-label">Contact</div>
+                  <div className="erp-prof-grid">
+                    <div>
+                      <Input compact={denseWiz} id="tc-core-phone" error={embWiz && coreStartupErr.phone} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Primary Phone" value={f.phone || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} placeholder="+94 77 123 4567" />
+                    </div>
+                    <Input compact={denseWiz} label="Second Phone" value={f.phone2 || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { phone2: e.target.value }); }); }} placeholder="+94 11 234 5678" />
+                    <Input compact={denseWiz} label="WhatsApp Number" value={f.whatsapp || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { whatsapp: e.target.value }); }); }} placeholder="+94 77 123 4567" />
+                    <Input compact={denseWiz} label="Email Address" value={f.email || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { email: e.target.value }); }); }} placeholder="info@techon.lk" />
+                    <Input compact={denseWiz} label="Website" value={f.website || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { website: e.target.value }); }); }} placeholder="www.techon.lk" />
+                  </div>
+                </div>
+
+                <div className="erp-prof-block">
+                  <div className="erp-prof-block-label">Address</div>
+                  <div>
+                    <Input compact={denseWiz} id="tc-core-address" error={embWiz && coreStartupErr.address} aria-describedby={embWiz && (coreStartupErr.phone || coreStartupErr.address) ? "tc-core-hint-contact" : undefined} label="Shop Address" value={f.address || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { address: e.target.value }); }); if (embWiz) setCoreStartupErr(function (prev) { return Object.assign({}, prev, { phone: false, address: false }); }); }} />
+                    {embWiz && (coreStartupErr.phone || coreStartupErr.address) && <div id="tc-core-hint-contact" role="status" aria-live="polite" className="erp-prof-err">Enter at least one</div>}
+                  </div>
+                </div>
+
+                <button type="button" className="erp-prof-save" onClick={save}>Save Shop Profile</button>
+              </Card>
+            </div>
+          </div>
+          )}
+        </div>
+      )}
+
+      {stab === "shop" && (function () {
+        var enabledCats = getEnabledCategoryGroupsList(Object.assign({}, state.settings, { enabledCategoryGroups: f.enabledCategoryGroups }));
+        var enabledCount = enabledCats.length;
+        var countryLabel = selectedCountryLabel || "Not set";
+        var currencyLabel = currencySelectValue || "—";
+        var setAllCategoryGroups = function (on) {
+          setF(function (x) {
+            var next = Object.assign({}, x.enabledCategoryGroups || {});
+            CATEGORY_GROUPS.forEach(function (g) { next[g.id] = on; });
+            return Object.assign({}, x, { enabledCategoryGroups: next });
+          });
+        };
+        return (
+        <div className="erp-bizset-page">
+          <div className="erp-bizset-wrap">
+            <Card className="erp-bizset-card">
+              <div className="erp-bizset-brand">
+                <div className="erp-bizset-brand-ico" aria-hidden="true">⚙️</div>
+                <div>
+                  <div className="erp-bizset-title">Business Settings</div>
+                  <div className="erp-bizset-sub">
+                    {enabledCount} of {CATEGORY_GROUPS.length} categories · {countryLabel} · {currencyLabel}
+                  </div>
+                </div>
+              </div>
+
+              <div className="erp-bizset-block">
+                <div className="erp-bizset-block-label">Edition</div>
+                {isRestaurantBusiness ? (
+                  renderIndustryBlock(true, false)
+                ) : (
+                  <div className="erp-bizset-note is-blue">
+                    <strong>TechonERP Master Edition</strong>
+                    <span> — turn on the category groups your shop sells below.</span>
                   </div>
                 )}
-                <Btn col="cyan" onClick={save}>Save Warranty</Btn>
               </div>
+
+              {!isNetworkClient ? (
+                <div className="erp-bizset-block">
+                  <div className="erp-bizset-block-label">Category Groups</div>
+                  <div className="erp-biz-cat-toolbar">
+                    <div className="erp-biz-cat-count">
+                      <strong>{enabledCount}</strong> of {CATEGORY_GROUPS.length} active
+                    </div>
+                    <div className="erp-biz-cat-actions">
+                      <button type="button" className="erp-biz-mini" onClick={function () { setAllCategoryGroups(true); }}>Enable all</button>
+                      <button type="button" className="erp-biz-mini" onClick={function () { setAllCategoryGroups(false); }}>Clear all</button>
+                    </div>
+                  </div>
+                  <div className="erp-bizset-note is-muted">Units and sub-categories follow each group automatically.</div>
+                  <div className="erp-biz-cat-grid">
+                    {CATEGORY_GROUPS.map(function (g) {
+                      var on = (f.enabledCategoryGroups || {})[g.id] === true;
+                      return (
+                        <label key={g.id} className={"erp-biz-cat-tile" + (on ? " is-on" : "")}>
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={function (e) {
+                              var checked = e.target.checked;
+                              setF(function (x) {
+                                var next = Object.assign({}, x.enabledCategoryGroups || {}, { [g.id]: checked });
+                                return Object.assign({}, x, { enabledCategoryGroups: next });
+                              });
+                            }}
+                          />
+                          <span className="erp-biz-cat-emoji" aria-hidden="true">{g.emoji}</span>
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span className="erp-biz-cat-name">
+                              {g.label}
+                              {g.workflow === "glass_cut" ? <span className="erp-biz-cat-badge">Cut size</span> : null}
+                            </span>
+                            <span className="erp-biz-cat-meta">
+                              Units: {(g.units || []).slice(0, 6).join(", ")}{(g.units || []).length > 6 ? "…" : ""}
+                            </span>
+                            {on ? (
+                              <span className="erp-biz-cat-subs">
+                                {(g.subCategories || []).slice(0, 5).join(" · ")}{(g.subCategories || []).length > 5 ? "…" : ""}
+                              </span>
+                            ) : null}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
             </Card>
-          )}
+          </div>
         </div>
-      )}
+        );
+      })()}
 
       {stab === "features" && (
-        <div className="erp-set-stack">
-          {isNetworkClient
-            ? renderModulePanel("counterModuleToggles", "Counter modules", "Screens shown on this counter terminal. Changes sync to the main PC. Data still syncs even when a module is hidden.")
-            : (
-              <React.Fragment>
-                {canManageUsers
-                  ? renderModulePanel("mainModuleToggles", "Admin modules", "Screens shown when signed in as admin. Cashier and manager use the staff list below.")
-                  : null}
-                {renderModulePanel(
-                  "staffModuleToggles",
-                  canManageUsers ? "Cashier & staff modules" : "Your modules",
-                  canManageUsers
-                    ? "Screens shown when a cashier or manager signs in. Independent from the admin list above."
-                    : "Choose which screens appear in your sidebar. Changes apply only to your role, not admin."
-                )}
-              </React.Fragment>
-            )}
-          <Card>
-            <CardTitle sub="Live toolbar preview — one click to add or remove, drag to reorder.">Toolbar shortcuts</CardTitle>
-            <ToolbarCustomizePanel
-              keys={f.toolbarKeys || getToolbarKeys(state.settings)}
-              onChange={function (next) {
-                setF(function (x) { return Object.assign({}, x, { toolbarKeys: next }); });
-              }}
-              C={C}
-            />
-          </Card>
-          <div>
-            <Btn col="blue" onClick={isNetworkClient ? saveCounterModules : save}>Save modules</Btn>
+        <div className="erp-modset-page">
+          <div className="erp-modset-wrap">
+            <Card className="erp-modset-card">
+              <div className="erp-modset-brand">
+                <div className="erp-modset-brand-ico" aria-hidden="true">🧩</div>
+                <div>
+                  <div className="erp-modset-title">Modules</div>
+                  <div className="erp-modset-sub">
+                    {isNetworkClient ? "Optional extras on this counter terminal" : "Free Items and COD Tracker for this shop"}
+                  </div>
+                </div>
+              </div>
+              <div className="erp-modset-block">
+                {isNetworkClient
+                  ? renderModulePanel("counterModuleToggles", "Modules", "Optional extras on this counter terminal.")
+                  : renderModulePanel("mainModuleToggles", "Modules", "Free Items and COD Tracker for this shop.")}
+              </div>
+              <button type="button" className="erp-modset-save" onClick={isNetworkClient ? saveCounterModules : save}>Save Modules</button>
+            </Card>
           </div>
         </div>
       )}
 
-      {stab === "categories" && !isNetworkClient && (
-        <div className="erp-set-stack">
-          <Card>
-            <CardTitle sub="Enable the product groups your shop sells. Sub-categories and units follow each group (e.g. Glass shows sheet dimensions; Phones use Pcs, Box, etc.).">Category groups</CardTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 720 }}>
-              {CATEGORY_GROUPS.map(function (g) {
-                var on = (f.enabledCategoryGroups || {})[g.id] === true;
-                return (
-                  <label key={g.id} style={{ display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + (on ? C.accent : C.border), background: on ? C.accentSoft : "#fff" }}>
-                    <input
-                      type="checkbox"
-                      checked={on}
-                      onChange={function (e) {
-                        var checked = e.target.checked;
-                        setF(function (x) {
-                          var next = Object.assign({}, x.enabledCategoryGroups || {}, { [g.id]: checked });
-                          return Object.assign({}, x, { enabledCategoryGroups: next });
-                        });
-                      }}
-                      style={{ width: 16, height: 16, accentColor: C.accent, marginTop: 3, flexShrink: 0 }}
-                    />
-                    <span style={{ flex: 1 }}>
-                      <span style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                        <span style={{ fontSize: 18 }}>{g.emoji}</span>
-                        <span style={{ fontWeight: 800, fontSize: 14, color: on ? C.accent : C.text }}>{g.label}</span>
-                        {g.workflow === "glass_cut" && (
-                          <span style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: "#0e7490", background: "#ecfeff", padding: "2px 8px", borderRadius: 999 }}>Cut size</span>
-                        )}
-                      </span>
-                      <span style={{ display: "block", fontSize: 11, color: C.muted, lineHeight: 1.45 }}>
-                        Units: {(g.units || []).slice(0, 8).join(", ")}{(g.units || []).length > 8 ? "…" : ""}
-                      </span>
-                      {on && (
-                        <span style={{ display: "block", fontSize: 11, color: C.textMd, marginTop: 6, lineHeight: 1.5 }}>
-                          {(g.subCategories || []).join(" · ")}
-                        </span>
-                      )}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          </Card>
-          <div>
-            <Btn col="blue" onClick={saveCategoryGroups}>Save categories</Btn>
-          </div>
-        </div>
-      )}
-
-      {stab === "langcurrency" && (
-        <div className={"erp-set-stack" + (langWizShell ? " is-tight" : "")}>
-          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 12}>
+      {(stab === "langcurrency" || (stab === "shop" && !props.embeddedWizard)) && (
+        <div className={"erp-set-stack" + (langWizShell ? " is-tight" : "") + (stab === "shop" ? " erp-bizset-region" : "")}>
+          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 12} className={stab === "shop" ? "erp-bizset-region-card" : undefined}>
             {langWizShell ? (
               <CardTitle variant="wizard" sub="Choose your country and currency—they stay aligned for symbols and regional options. For Euro (€), pick the country that matches your business (for example Germany, France, or Italy).">
                 Country &amp; currency
               </CardTitle>
+            ) : stab === "shop" ? (
+              <React.Fragment>
+                <div className="erp-bizset-block-label">Country &amp; Currency</div>
+                <div className="erp-bizset-note is-muted">Country and currency stay in sync for correct symbols and regional options.</div>
+              </React.Fragment>
             ) : (
-              <CardTitle sub="Choose your shop country and currency—they stay in sync for correct symbols and regional options. For Euro (€), pick the country that matches your business (for example Germany, France, or Italy) from the list.">
-                🌍 1. Country &amp; currency
+              <CardTitle sub="Country and currency stay in sync for correct symbols and regional options.">
+                Country &amp; currency
               </CardTitle>
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: langWizShell ? 8 : 12, alignItems: "end" }}>
@@ -1815,14 +2039,19 @@ var Settings = function (props) {
             </div>
           </Card>
 
-          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20}>
+          <Card wizardChrome={langWizShell} pad={langWizShell ? 14 : 20} className={stab === "shop" ? "erp-bizset-region-card" : undefined}>
             {langWizShell ? (
               <CardTitle variant="wizard" sub="Optional. Suggested rates match your country; you can edit or add custom taxes.">
                 Tax
               </CardTitle>
+            ) : stab === "shop" ? (
+              <React.Fragment>
+                <div className="erp-bizset-block-label">Tax Setup</div>
+                <div className="erp-bizset-note is-muted">Optional — suggested rates load from your country; edit or add custom taxes.</div>
+              </React.Fragment>
             ) : (
               <CardTitle sub="Optional — enable taxes for your region. Suggested rates load from your selected country; you can edit percentages and add custom taxes.">
-                💰 2. Tax
+                Tax setup
               </CardTitle>
             )}
             <div style={{ display: "flex", flexDirection: "column", gap: langWizShell ? 8 : 14 }}>
@@ -1860,7 +2089,7 @@ var Settings = function (props) {
                       (f.selectedTaxes || []).map(function (t, idx) {
                         return (
                           <div
-                            key={"tax-" + idx + "-" + (t.name || "")}
+                            key={"tax-" + idx}
                             style={{
                               display: "grid",
                               gridTemplateColumns: f.taxCompoundMode === "cascade" ? "28px minmax(0, 1fr) 88px 120px" : "28px minmax(0, 1fr) 88px",
@@ -2114,7 +2343,7 @@ var Settings = function (props) {
               langWizShell ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", paddingTop: 6, borderTop: "1px solid #e8ecf4", marginTop: 2 }}>
-                    <button type="button" onClick={function () { if (onWizardBack) onWizardBack(); }} style={{ padding: "8px 16px", borderRadius: 8, border: "1.5px solid #e2e8f0", background: "#fff", fontSize: 13, fontWeight: 600, color: "#475569", cursor: "pointer", fontFamily: "inherit" }}>← Back</button>
+                    <button type="button" className="erp-set-wizard-back" onClick={function () { if (onWizardBack) onWizardBack(); }}>← Back</button>
                     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, justifyContent: "flex-end", flex: "1 1 auto" }}>
                       <button
                         type="button"
@@ -2161,328 +2390,337 @@ var Settings = function (props) {
                   <span style={{ fontSize: 11, color: C.muted, maxWidth: 280, lineHeight: 1.4 }}>Shop name and a phone or address are still required. Other tax options stay at defaults.</span>
                 </div>
               )
+            ) : stab === "shop" ? (
+              <button type="button" className="erp-bizset-save" onClick={save}>Save Business Settings</button>
             ) : (
-              <Btn col="cyan" onClick={save}>Save Currency</Btn>
+              <Btn col="blue" onClick={save}>Save Currency</Btn>
             )}
           </div>
         </div>
       )}
 
       {stab === "invoice" && (
-        <div className="erp-set-stack">
-
-          {/* ── Top-level A4/A5 vs Thermal tabs ── */}
-          {(function () {
-            var isA4A5 = invFmt === "a4a5";
-
-            /* ── Shared: logo only (design is fixed/standard) ── */
-            var sharedControls = (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-                {/* Logo */}
-                <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
-                    {isA4A5 ? "📄 Logo for A4 / A5" : "🖨 Logo for Thermal"}
-                  </div>
-                  {f.invoiceLogo ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <img src={f.invoiceLogo} alt="logo" style={{ width: isA4A5 ? (f.invoiceLogoSize || 80) : (f.thermalLogoSize || 40), height: "auto", objectFit: "contain", border: "1px solid " + C.border, borderRadius: 7, background: "#f7f9ff", padding: 4 }} />
-                        <Btn sm col="red" onClick={removeLogo}>Remove Logo</Btn>
-                      </div>
-                      {isA4A5 ? (
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, marginBottom: 6 }}>A4/A5 Logo Size — {f.invoiceLogoSize || 80}px</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ fontSize: 11, color: C.muted }}>Small</span>
-                            <input type="range" min="40" max="200" value={f.invoiceLogoSize || 80} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { invoiceLogoSize: parseInt(e.target.value) }); }); }} style={{ flex: 1 }} />
-                            <span style={{ fontSize: 11, color: C.muted }}>Large</span>
-                            <span style={{ fontSize: 12, fontWeight: 800, color: C.accent, minWidth: 40 }}>{f.invoiceLogoSize || 80}px</span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, marginBottom: 6 }}>Thermal Logo Size — {f.thermalLogoSize || 40}px</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ fontSize: 11, color: C.muted }}>Small</span>
-                            <input type="range" min="20" max="80" value={f.thermalLogoSize || 40} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalLogoSize: parseInt(e.target.value) }); }); }} style={{ flex: 1 }} />
-                            <span style={{ fontSize: 11, color: C.muted }}>Large</span>
-                            <span style={{ fontSize: 12, fontWeight: 800, color: C.orange, minWidth: 40 }}>{f.thermalLogoSize || 40}px</span>
-                          </div>
-                        </div>
-                      )}
-                      {isA4A5 && (
-                        <div>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, marginBottom: 6 }}>Logo Position</div>
-                          <div style={{ display: "flex", gap: 6 }}>
-                            {[["left","◀ Left"],["center","◆ Center"],["right","▶ Right"]].map(function (al) {
-                              var isA = (f.invoiceLogoAlign || "left") === al[0];
-                              return <button key={al[0]} onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceLogoAlign: al[0] }); }); }}
-                                style={{ flex: 1, padding: "6px 0", borderRadius: 7, border: "2px solid " + (isA ? C.accent : C.border), background: isA ? C.accentSoft : "#fff", color: isA ? C.accent : C.muted, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{al[1]}</button>;
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div style={{ background: "#f7f9ff", border: "2px dashed " + C.border, borderRadius: 9, padding: "14px", textAlign: "center" }}>
-                      <div style={{ fontSize: 12, color: C.muted, marginBottom: 8 }}>Upload PNG/JPG logo</div>
-                      <label style={{ background: "linear-gradient(135deg,#2979ff,#5591ff)", color: "#fff", borderRadius: 7, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "inline-block" }}>
-                        Choose Logo
-                        <input type="file" accept="image/*" onChange={handleLogoUpload} style={{ display: "none" }} />
-                      </label>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-
-            /* ── A4/A5 specific controls ── */
-            var a4a5Controls = (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-                {/* Default size */}
+        <div className="erp-invd-page">
+          <div className="erp-invd-wrap">
+            <Card className="erp-invd-card">
+              <div className="erp-invd-brand">
+                <div className="erp-invd-brand-ico" aria-hidden="true">🧾</div>
                 <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Default Paper Size</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {[["a4","📄 A4","Full Page"],["a5","📋 A5","Half Page"]].map(function (s) {
-                      var active = (f.invoiceDefaultSize || "a4") === s[0];
-                      return <button key={s[0]} onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceDefaultSize: s[0] }); }); }}
-                        style={{ flex: 1, padding: "10px 12px", borderRadius: 9, border: "2px solid " + (active ? C.accent : C.border), background: active ? C.accentSoft : "#fff", color: active ? C.accent : C.textMd, fontWeight: 700, fontSize: 13, cursor: "pointer", textAlign: "center" }}>
-                        <div>{active ? "✓ " : ""}{s[1]}</div>
-                        <div style={{ fontSize: 10, color: active ? C.accent : C.muted, marginTop: 2 }}>{s[2]}</div>
-                      </button>;
-                    })}
-                  </div>
-                </div>
-
-                {/* Shop Name size */}
-                <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Shop Name Size</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 11, color: C.muted }}>S</span>
-                    <input type="range" min="10" max="36" step="1" value={f.shopNameFontSize || 15} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopNameFontSize: parseInt(e.target.value) }); }); }} style={{ flex: 1 }} />
-                    <span style={{ fontSize: 11, color: C.muted }}>L</span>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: C.accent, minWidth: 36 }}>{f.shopNameFontSize || 15}px</span>
-                  </div>
-                  <div style={{ marginTop: 8, padding: "6px 10px", background: "#f7f9ff", borderRadius: 8 }}>
-                    <span style={{ fontWeight: 900, fontSize: f.shopNameFontSize || 15, color: f.invoiceAccentColor || "#0d47a1", textTransform: "uppercase" }}>{f.shopName || "Techon Computers"}</span>
-                  </div>
-                </div>
-
-                {/* Shop Info size */}
-                <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Address / Phone / Email Size</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 11, color: C.muted }}>S</span>
-                    <input type="range" min="8" max="16" step="1" value={f.shopInfoFontSize || 11} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopInfoFontSize: parseInt(e.target.value) }); }); }} style={{ flex: 1 }} />
-                    <span style={{ fontSize: 11, color: C.muted }}>L</span>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: C.accent, minWidth: 36 }}>{f.shopInfoFontSize || 11}px</span>
-                  </div>
-                  <div style={{ marginTop: 8, padding: "6px 10px", background: "#f7f9ff", borderRadius: 8, display: "flex", flexDirection: "column", gap: 1 }}>
-                    {[f.address, f.phone ? "Phone: " + f.phone : null, f.email, f.website].filter(Boolean).slice(0,3).map(function (line, i) {
-                      return <span key={i} style={{ fontSize: f.shopInfoFontSize || 11, color: "#555" }}>{line}</span>;
-                    })}
-                    {!f.address && !f.phone && <span style={{ fontSize: f.shopInfoFontSize || 11, color: "#aaa" }}>123 Main Street, Negombo · +94 77 123 4567</span>}
-                  </div>
-                </div>
-
-              </div>
-            );
-
-            /* ── Thermal specific controls ── */
-            var thermalControls = (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-                {/* Default thermal size */}
-                <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Default Thermal Size</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {[["thermal58","🖨 58mm","Narrow"],["thermal80","🖨 80mm","Standard POS"]].map(function (s) {
-                      var active = (f.invoiceThermalSize || "thermal80") === s[0];
-                      return <button key={s[0]} onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceThermalSize: s[0] }); }); }}
-                        style={{ flex: 1, padding: "10px 12px", borderRadius: 9, border: "2px solid " + (active ? C.orange : C.border), background: active ? "#fff3e0" : "#fff", color: active ? C.orange : C.textMd, fontWeight: 700, fontSize: 13, cursor: "pointer", textAlign: "center" }}>
-                        <div>{active ? "✓ " : ""}{s[1]}</div>
-                        <div style={{ fontSize: 10, color: active ? C.orange : C.muted, marginTop: 2 }}>{s[2]}</div>
-                      </button>;
-                    })}
-                  </div>
-                </div>
-
-                {/* Thermal shop name size */}
-                <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Shop Name Size (Thermal)</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 11, color: C.muted }}>S</span>
-                    <input type="range" min="10" max="28" step="1" value={f.thermalShopNameSize || 18} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalShopNameSize: parseInt(e.target.value) }); }); }} style={{ flex: 1 }} />
-                    <span style={{ fontSize: 11, color: C.muted }}>L</span>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: C.orange, minWidth: 36 }}>{f.thermalShopNameSize || 18}px</span>
-                  </div>
-                  <div style={{ marginTop: 8, padding: "6px 10px", background: "#fff8f0", borderRadius: 8, textAlign: "center" }}>
-                    <span style={{ fontWeight: 900, fontSize: f.thermalShopNameSize || 18, textTransform: "uppercase", letterSpacing: "0.08em" }}>{f.shopName || "Techon Computers"}</span>
-                  </div>
-                </div>
-
-                {/* Thermal shop info size */}
-                <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Address / Phone / Email Size (Thermal)</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 11, color: C.muted }}>S</span>
-                    <input type="range" min="7" max="13" step="1" value={f.thermalInfoSize || 10} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalInfoSize: parseInt(e.target.value) }); }); }} style={{ flex: 1 }} />
-                    <span style={{ fontSize: 11, color: C.muted }}>L</span>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: C.orange, minWidth: 36 }}>{f.thermalInfoSize || 10}px</span>
-                  </div>
-                  <div style={{ marginTop: 8, padding: "6px 10px", background: "#fff8f0", borderRadius: 8, textAlign: "center" }}>
-                    <div style={{ fontSize: f.thermalInfoSize || 10, color: "#333" }}>{f.address || "123 Main Street, Negombo"}</div>
-                    <div style={{ fontSize: f.thermalInfoSize || 10, color: "#333" }}>{f.phone || "+94 31 222 3456"}</div>
-                  </div>
-                </div>
-
-              </div>
-            );
-
-            /* ── Live previews ── */
-            var previews = isA4A5 ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>📄 A4 — Live Preview</div>
-                  <button onClick={function () { setPreviewInv("a4"); }}
-                    style={{ padding: "4px 14px", borderRadius: 7, border: "1.5px solid " + C.accent, background: C.accentSoft, color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                    👁 View Full
-                  </button>
-                </div>
-                <div style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, overflow: "hidden", height: 320 }}>
-                  <div style={{ transform: "scale(0.38)", transformOrigin: "top left", width: "263%", pointerEvents: "none" }}>
-                    <InvoiceA4 inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} size="a4" />
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>📋 A5 — Live Preview</div>
-                  <button onClick={function () { setPreviewInv("a5"); }}
-                    style={{ padding: "4px 14px", borderRadius: 7, border: "1.5px solid " + C.accent, background: C.accentSoft, color: C.accent, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                    👁 View Full
-                  </button>
-                </div>
-                <div style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, overflow: "hidden", height: 260 }}>
-                  <div style={{ transform: "scale(0.46)", transformOrigin: "top left", width: "217%", pointerEvents: "none" }}>
-                    <InvoiceA4 inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} size="a5" />
-                  </div>
+                  <div className="erp-invd-title">Invoice Design</div>
+                  <div className="erp-invd-sub">Footer, warranty, logo, paper size and live preview</div>
                 </div>
               </div>
-            ) : (
-              <div style={{ display: "flex", gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>🖨 80mm — Live Preview</div>
-                    <button onClick={function () { setPreviewInv("thermal80"); }}
-                      style={{ padding: "4px 14px", borderRadius: 7, border: "1.5px solid " + C.orange, background: "#fff7ed", color: C.orange, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                      👁 View Full
-                    </button>
-                  </div>
-                  <div style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, overflow: "hidden", height: 320 }}>
-                    <div style={{ transform: "scale(0.75)", transformOrigin: "top left", width: "133%", pointerEvents: "none" }}>
-                      <InvoiceThermal inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} width={302} />
-                    </div>
-                  </div>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <div style={{ fontSize: 12, fontWeight: 800, color: C.text }}>🖨 58mm — Live Preview</div>
-                    <button onClick={function () { setPreviewInv("thermal58"); }}
-                      style={{ padding: "4px 14px", borderRadius: 7, border: "1.5px solid " + C.orange, background: "#fff7ed", color: C.orange, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                      👁 View Full
-                    </button>
-                  </div>
-                  <div style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, overflow: "hidden", height: 320 }}>
-                    <div style={{ transform: "scale(0.75)", transformOrigin: "top left", width: "133%", pointerEvents: "none" }}>
-                      <InvoiceThermal inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} width={218} />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
 
-            return (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <Card>
-                  <CardTitle sub="Invoices and PDFs shared via WhatsApp from Sales, Invoices, and other screens save here automatically (not your Downloads folder). Leave default to use Documents/TechonERP/Invoices.">
-                    📁 WhatsApp invoice PDF folder
-                  </CardTitle>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                    <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
-                      Default: <strong style={{ color: C.text }}>Documents/TechonERP/Invoices</strong>. Choose another folder if you prefer.
-                    </div>
-                    <div style={{ background: "#f8faff", border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 14px", fontSize: 12, color: C.text, fontFamily: "monospace", wordBreak: "break-all" }}>
-                      {f.invoicePdfFolder || "Documents/TechonERP/Invoices (default)"}
-                    </div>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <Btn col="blue" onClick={async function () {
-                        if (window.electronAPI && window.electronAPI.selectFolder) {
-                          var folder = await window.electronAPI.selectFolder();
-                          if (folder) {
-                            setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: folder }); });
-                            var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: folder });
-                            S.set("tc3_settings", ns);
-                            setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-                            showAlert("Invoice PDF folder saved.");
-                          }
-                        } else {
-                          showAlert("Folder selection is only available in the desktop app.");
-                        }
-                      }}>Select folder…</Btn>
-                      {f.invoicePdfFolder ? (
-                        <Btn col="gray" onClick={function () {
-                          setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: "" }); });
-                          var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: "" });
+              <div className="erp-invd-top">
+                <div className="erp-invd-block">
+                  <div className="erp-invd-block-label">Footer Message</div>
+                  <Input compact={denseWiz} label="Shown at bottom of printed invoices" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
+                </div>
+
+                <div className="erp-invd-block">
+                  <div className="erp-invd-block-label">Warranty Policy</div>
+                  <label className={"erp-invd-check" + (f.warrantyEnabled ? " is-on" : "")}>
+                    <input type="checkbox" checked={f.warrantyEnabled} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyEnabled: e.target.checked }); }); }} />
+                    <span className="erp-invd-check-title">Enable warranty text on invoices</span>
+                  </label>
+                  {f.warrantyEnabled ? (
+                    <textarea
+                      className="erp-invd-textarea"
+                      value={f.warrantyText || ""}
+                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyText: e.target.value }); }); }}
+                      rows={5}
+                      placeholder="Warranty terms…"
+                    />
+                  ) : null}
+                </div>
+
+                <div className="erp-invd-block">
+                  <div className="erp-invd-block-label">WhatsApp PDF Folder</div>
+                  <div className="erp-invd-note is-blue">PDFs shared via WhatsApp save here (not Downloads). Default: Documents/TechonERP/Invoices.</div>
+                  <div className="erp-invd-path">{f.invoicePdfFolder || "Documents/TechonERP/Invoices (default)"}</div>
+                  <div className="erp-invd-tools">
+                    <Btn col="blue" onClick={async function () {
+                      if (window.electronAPI && window.electronAPI.selectFolder) {
+                        var folder = await window.electronAPI.selectFolder();
+                        if (folder) {
+                          setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: folder }); });
+                          var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: folder });
                           S.set("tc3_settings", ns);
                           setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-                          showAlert("Reset to default folder (Documents/TechonERP/Invoices).");
-                        }}>Use default folder</Btn>
-                      ) : null}
-                    </div>
-                  </div>
-                </Card>
-                {/* Format toggle */}
-                <div className="erp-set-fmt" role="tablist" aria-label="Invoice format">
-                  {[["a4a5","📄 A4 / A5 Invoice"],["thermal","🖨 Thermal Receipt"]].map(function (tab) {
-                    var active = invFmt === tab[0];
-                    return (
-                      <button
-                        key={tab[0]}
-                        type="button"
-                        role="tab"
-                        aria-selected={active}
-                        className={"erp-set-fmt-btn" + (active ? " is-active" : "")}
-                        onClick={function () { setInvFmt(tab[0]); }}
-                      >
-                        {tab[1]}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Main layout */}
-                <div style={{ display: "grid", gridTemplateColumns: "minmax(280px,340px) 1fr", gap: 14, alignItems: "start" }}>
-                  <Card>
-                    <CardTitle sub={isA4A5 ? "A4 & A5 invoice settings" : "Thermal receipt settings"}>
-                      {isA4A5 ? "📄 A4 / A5 Settings" : "🖨 Thermal Settings"}
-                    </CardTitle>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                      {isA4A5 ? a4a5Controls : thermalControls}
-                      <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
-                        {sharedControls}
-                      </div>
-                      <Btn col="cyan" onClick={save}>💾 Save Invoice Settings</Btn>
-                    </div>
-                  </Card>
-                  <div>
-                    {previews}
+                          showAlert("Invoice PDF folder saved.");
+                        }
+                      } else {
+                        showAlert("Folder selection is only available in the desktop app.");
+                      }
+                    }}>Select folder</Btn>
+                    {f.invoicePdfFolder ? (
+                      <Btn col="gray" onClick={function () {
+                        setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: "" }); });
+                        var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: "" });
+                        S.set("tc3_settings", ns);
+                        setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+                        showAlert("Reset to default folder (Documents/TechonERP/Invoices).");
+                      }}>Use default</Btn>
+                    ) : null}
                   </div>
                 </div>
               </div>
-            );
-          })()}
 
+              {(function () {
+                var isA4A5 = invFmt === "a4a5";
+
+                var logoBlock = (
+                  <div className="erp-invd-section">
+                    <div className="erp-invd-section-label">{isA4A5 ? "Logo for A4 / A5" : "Logo for Thermal"}</div>
+                    {f.invoiceLogo ? (
+                      <div className="erp-invd-logo">
+                        <div className="erp-invd-logo-row">
+                          <img
+                            src={f.invoiceLogo}
+                            alt="logo"
+                            className="erp-invd-logo-img"
+                            style={{ width: isA4A5 ? (f.invoiceLogoSize || 80) : (f.thermalLogoSize || 40) }}
+                          />
+                          <Btn sm col="red" onClick={removeLogo}>Remove</Btn>
+                        </div>
+                        {isA4A5 ? (
+                          <div className="erp-invd-slider">
+                            <div className="erp-invd-slider-label">A4/A5 logo size — {f.invoiceLogoSize || 80}px</div>
+                            <div className="erp-invd-slider-row">
+                              <span>Small</span>
+                              <input type="range" min="40" max="200" value={f.invoiceLogoSize || 80} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { invoiceLogoSize: parseInt(e.target.value) }); }); }} />
+                              <span>Large</span>
+                              <strong>{f.invoiceLogoSize || 80}px</strong>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="erp-invd-slider">
+                            <div className="erp-invd-slider-label">Thermal logo size — {f.thermalLogoSize || 40}px</div>
+                            <div className="erp-invd-slider-row">
+                              <span>Small</span>
+                              <input type="range" min="20" max="80" value={f.thermalLogoSize || 40} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalLogoSize: parseInt(e.target.value) }); }); }} />
+                              <span>Large</span>
+                              <strong>{f.thermalLogoSize || 40}px</strong>
+                            </div>
+                          </div>
+                        )}
+                        {isA4A5 ? (
+                          <div className="erp-invd-pills">
+                            {[["left", "Left"], ["center", "Center"], ["right", "Right"]].map(function (al) {
+                              var isA = (f.invoiceLogoAlign || "left") === al[0];
+                              return (
+                                <button
+                                  key={al[0]}
+                                  type="button"
+                                  className={"erp-invd-pill" + (isA ? " is-active" : "")}
+                                  onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceLogoAlign: al[0] }); }); }}
+                                >
+                                  {al[1]}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="erp-invd-upload">
+                        <div className="erp-invd-hint">Upload PNG/JPG logo</div>
+                        <label className="erp-invd-upload-btn">
+                          Choose Logo
+                          <input type="file" accept="image/*" onChange={handleLogoUpload} style={{ display: "none" }} />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                );
+
+                var a4a5Controls = (
+                  <div className="erp-invd-controls">
+                    <div className="erp-invd-section">
+                      <div className="erp-invd-section-label">Default Paper Size</div>
+                      <div className="erp-invd-choice">
+                        {[["a4", "A4", "Full page"], ["a5", "A5", "Half page"]].map(function (s) {
+                          var active = (f.invoiceDefaultSize || "a4") === s[0];
+                          return (
+                            <button
+                              key={s[0]}
+                              type="button"
+                              className={"erp-invd-choice-btn" + (active ? " is-active" : "")}
+                              onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceDefaultSize: s[0] }); }); }}
+                            >
+                              <div>{active ? "✓ " : ""}{s[1]}</div>
+                              <div className="erp-invd-choice-sub">{s[2]}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="erp-invd-section">
+                      <div className="erp-invd-section-label">Shop Name Size</div>
+                      <div className="erp-invd-slider-row">
+                        <span>S</span>
+                        <input type="range" min="10" max="36" step="1" value={f.shopNameFontSize || 15} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopNameFontSize: parseInt(e.target.value) }); }); }} />
+                        <span>L</span>
+                        <strong>{f.shopNameFontSize || 15}px</strong>
+                      </div>
+                      <div className="erp-invd-preview-chip">
+                        <span style={{ fontWeight: 900, fontSize: f.shopNameFontSize || 15, color: f.invoiceAccentColor || "#0d47a1", textTransform: "uppercase" }}>{f.shopName || "Techon Computers"}</span>
+                      </div>
+                    </div>
+                    <div className="erp-invd-section">
+                      <div className="erp-invd-section-label">Address / Phone / Email Size</div>
+                      <div className="erp-invd-slider-row">
+                        <span>S</span>
+                        <input type="range" min="8" max="16" step="1" value={f.shopInfoFontSize || 11} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopInfoFontSize: parseInt(e.target.value) }); }); }} />
+                        <span>L</span>
+                        <strong>{f.shopInfoFontSize || 11}px</strong>
+                      </div>
+                      <div className="erp-invd-preview-chip is-stack">
+                        {[f.address, f.phone ? "Phone: " + f.phone : null, f.email, f.website].filter(Boolean).slice(0, 3).map(function (line, i) {
+                          return <span key={i} style={{ fontSize: f.shopInfoFontSize || 11, color: "#555" }}>{line}</span>;
+                        })}
+                        {!f.address && !f.phone ? <span style={{ fontSize: f.shopInfoFontSize || 11, color: "#aaa" }}>123 Main Street, Negombo · +94 77 123 4567</span> : null}
+                      </div>
+                    </div>
+                    {logoBlock}
+                  </div>
+                );
+
+                var thermalControls = (
+                  <div className="erp-invd-controls">
+                    <div className="erp-invd-section">
+                      <div className="erp-invd-section-label">Default Thermal Size</div>
+                      <div className="erp-invd-choice">
+                        {[["thermal58", "58mm", "Narrow"], ["thermal80", "80mm", "Standard POS"]].map(function (s) {
+                          var active = (f.invoiceThermalSize || "thermal80") === s[0];
+                          return (
+                            <button
+                              key={s[0]}
+                              type="button"
+                              className={"erp-invd-choice-btn is-thermal" + (active ? " is-active" : "")}
+                              onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceThermalSize: s[0] }); }); }}
+                            >
+                              <div>{active ? "✓ " : ""}{s[1]}</div>
+                              <div className="erp-invd-choice-sub">{s[2]}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="erp-invd-section">
+                      <div className="erp-invd-section-label">Shop Name Size</div>
+                      <div className="erp-invd-slider-row">
+                        <span>S</span>
+                        <input type="range" min="10" max="28" step="1" value={f.thermalShopNameSize || 18} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalShopNameSize: parseInt(e.target.value) }); }); }} />
+                        <span>L</span>
+                        <strong>{f.thermalShopNameSize || 18}px</strong>
+                      </div>
+                      <div className="erp-invd-preview-chip is-center is-thermal">
+                        <span style={{ fontWeight: 900, fontSize: f.thermalShopNameSize || 18, textTransform: "uppercase", letterSpacing: "0.08em" }}>{f.shopName || "Techon Computers"}</span>
+                      </div>
+                    </div>
+                    <div className="erp-invd-section">
+                      <div className="erp-invd-section-label">Address / Phone / Email Size</div>
+                      <div className="erp-invd-slider-row">
+                        <span>S</span>
+                        <input type="range" min="7" max="13" step="1" value={f.thermalInfoSize || 10} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalInfoSize: parseInt(e.target.value) }); }); }} />
+                        <span>L</span>
+                        <strong>{f.thermalInfoSize || 10}px</strong>
+                      </div>
+                      <div className="erp-invd-preview-chip is-center is-thermal is-stack">
+                        <div style={{ fontSize: f.thermalInfoSize || 10, color: "#333" }}>{f.address || "123 Main Street, Negombo"}</div>
+                        <div style={{ fontSize: f.thermalInfoSize || 10, color: "#333" }}>{f.phone || "+94 31 222 3456"}</div>
+                      </div>
+                    </div>
+                    {logoBlock}
+                  </div>
+                );
+
+                var previews = isA4A5 ? (
+                  <div className="erp-invd-previews">
+                    <div className="erp-invd-preview-head">
+                      <span>A4 — Live Preview</span>
+                      <button type="button" className="erp-invd-view" onClick={function () { setPreviewInv("a4"); }}>View Full</button>
+                    </div>
+                    <div className="erp-invd-preview-frame" style={{ height: 320 }}>
+                      <div style={{ transform: "scale(0.38)", transformOrigin: "top left", width: "263%", pointerEvents: "none" }}>
+                        <InvoiceA4 inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} size="a4" />
+                      </div>
+                    </div>
+                    <div className="erp-invd-preview-head">
+                      <span>A5 — Live Preview</span>
+                      <button type="button" className="erp-invd-view" onClick={function () { setPreviewInv("a5"); }}>View Full</button>
+                    </div>
+                    <div className="erp-invd-preview-frame" style={{ height: 260 }}>
+                      <div style={{ transform: "scale(0.46)", transformOrigin: "top left", width: "217%", pointerEvents: "none" }}>
+                        <InvoiceA4 inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} size="a5" />
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="erp-invd-previews is-thermal-row">
+                    <div className="erp-invd-preview-col">
+                      <div className="erp-invd-preview-head">
+                        <span>80mm — Live Preview</span>
+                        <button type="button" className="erp-invd-view is-thermal" onClick={function () { setPreviewInv("thermal80"); }}>View Full</button>
+                      </div>
+                      <div className="erp-invd-preview-frame" style={{ height: 320 }}>
+                        <div style={{ transform: "scale(0.75)", transformOrigin: "top left", width: "133%", pointerEvents: "none" }}>
+                          <InvoiceThermal inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} width={302} />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="erp-invd-preview-col">
+                      <div className="erp-invd-preview-head">
+                        <span>58mm — Live Preview</span>
+                        <button type="button" className="erp-invd-view is-thermal" onClick={function () { setPreviewInv("thermal58"); }}>View Full</button>
+                      </div>
+                      <div className="erp-invd-preview-frame" style={{ height: 320 }}>
+                        <div style={{ transform: "scale(0.75)", transformOrigin: "top left", width: "133%", pointerEvents: "none" }}>
+                          <InvoiceThermal inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} width={218} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+
+                return (
+                  <div className="erp-invd-design">
+                    <div className="erp-invd-fmt" role="tablist" aria-label="Invoice format">
+                      {[["a4a5", "A4 / A5 Invoice"], ["thermal", "Thermal Receipt"]].map(function (tab) {
+                        var active = invFmt === tab[0];
+                        return (
+                          <button
+                            key={tab[0]}
+                            type="button"
+                            role="tab"
+                            aria-selected={active}
+                            className={"erp-invd-fmt-btn" + (active ? " is-active" : "") + (tab[0] === "thermal" ? " is-thermal" : "")}
+                            onClick={function () { setInvFmt(tab[0]); }}
+                          >
+                            {tab[1]}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="erp-invd-main">
+                      <div className="erp-invd-block erp-invd-settings">
+                        <div className="erp-invd-block-label">{isA4A5 ? "A4 / A5 Settings" : "Thermal Settings"}</div>
+                        {isA4A5 ? a4a5Controls : thermalControls}
+                      </div>
+                      <div className="erp-invd-block erp-invd-live">
+                        <div className="erp-invd-block-label">Live Preview</div>
+                        {previews}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <button type="button" className="erp-invd-save" onClick={save}>Save Invoice Design</button>
+            </Card>
+          </div>
         </div>
       )}
 
@@ -2567,593 +2805,586 @@ var Settings = function (props) {
       )}
 
       {stab === "backup" && (
-        <div className="erp-set-stack">
-          {bakMsg && <div style={{ background: bakMsg.type === "error" ? C.dangerSoft : C.successSoft, color: bakMsg.type === "error" ? C.red : C.green, borderRadius: 10, padding: "12px 18px", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>{bakMsg.text}</div>}
+        <div className="erp-bak-page">
+          <div className="erp-bak-wrap">
+            <Card className="erp-bak-card">
+              <div className="erp-bak-brand">
+                <div className="erp-bak-brand-ico" aria-hidden="true">💾</div>
+                <div>
+                  <div className="erp-bak-title">Backup</div>
+                  <div className="erp-bak-sub">Folder, download, restore, cloud and reset</div>
+                </div>
+              </div>
 
-          <Card>
-            <CardTitle sub="Choose a custom location for your automatic backups">Backup Folder</CardTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 6 }}>Current Backup Folder</div>
-                <div style={{ background: "#f8faff", border: "1.5px solid " + C.border, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.text, fontFamily: "monospace", wordBreak: "break-all" }}>
-                  {f.backupFolder || "Documents/TechonERP/backups (Default)"}
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                <Btn col="blue" onClick={async function () {
-                  if (window.electronAPI && window.electronAPI.selectFolder) {
-                    const folder = await window.electronAPI.selectFolder();
-                    if (folder) {
-                      setF(function (x) { return Object.assign({}, x, { backupFolder: folder }); });
-                      var ns = Object.assign({}, state.settings, f, { backupFolder: folder });
-                      S.set("tc3_settings", ns);
-                      setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-                      setBakMsg({ type: "success", text: "Backup folder updated successfully." });
-                    }
-                  } else {
-                    setBakMsg({ type: "error", text: "Folder selection is only available in the desktop app." });
-                  }
-                }}>Select Folder</Btn>
-                {f.backupFolder && (
-                  <Btn col="gray" onClick={function () {
-                    setF(function (x) { return Object.assign({}, x, { backupFolder: "" }); });
-                    var ns = Object.assign({}, state.settings, f, { backupFolder: "" });
-                    S.set("tc3_settings", ns);
-                    setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-                    setBakMsg({ type: "success", text: "Reset to default backup folder." });
-                  }}>Reset Default</Btn>
-                )}
-              </div>
-            </div>
-          </Card>
+              {bakMsg ? (
+                <div className={"erp-bak-banner" + (bakMsg.type === "error" ? " is-err" : " is-ok")}>{bakMsg.text}</div>
+              ) : null}
 
-          {/* ── Backup age warning banner ── */}
-          {(function () {
-            var manualT = S.get("tc3_last_manual_backup", null);
-            var autoT   = S.get("tc3_last_auto_backup", null) || S.get("tc3_autobak_time", null);
-            var bestMs  = Math.max(manualT ? new Date(manualT).getTime() : 0, autoT ? new Date(autoT).getTime() : 0);
-            if (bestMs === 0) {
-              return (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 10, padding: "11px 16px", marginBottom: 12, fontSize: 13, color: "#92400e", fontWeight: 600 }}>
-                  ⚠️ No backup found. Please download a backup now to protect your shop data.
-                </div>
-              );
-            }
-            var ageDays = (Date.now() - bestMs) / (1000 * 60 * 60 * 24);
-            if (ageDays >= 2) {
-              return (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#fef3c7", border: "1.5px solid #f59e0b", borderRadius: 10, padding: "11px 16px", marginBottom: 12, fontSize: 13, color: "#92400e", fontWeight: 600 }}>
-                  ⚠️ Last backup was <b>{Math.floor(ageDays)} days ago</b>. Please back up your data soon.
-                </div>
-              );
-            }
-            return null;
-          })()}
+              {(function () {
+                var manualT = S.get("tc3_last_manual_backup", null);
+                var autoT = S.get("tc3_last_auto_backup", null) || S.get("tc3_autobak_time", null);
+                var bestMs = Math.max(manualT ? new Date(manualT).getTime() : 0, autoT ? new Date(autoT).getTime() : 0);
+                if (bestMs === 0) {
+                  return <div className="erp-bak-banner is-warn">No backup found. Download a backup now to protect your shop data.</div>;
+                }
+                var ageDays = (Date.now() - bestMs) / (1000 * 60 * 60 * 24);
+                if (ageDays >= 2) {
+                  return (
+                    <div className="erp-bak-banner is-warn">
+                      Last backup was <strong>{Math.floor(ageDays)} days ago</strong>. Please back up soon.
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10 }}>
-            <StatCard label="Last Manual Backup" money={false}
-              value={(function () { var t = S.get("tc3_last_manual_backup", null); return t ? "Downloaded" : "Never"; })()}
-              sub={(function () { var t = S.get("tc3_last_manual_backup", null); return t ? new Date(t).toLocaleString() : "Click Download below"; })()}
-              accent={C.blue} icon="💾" />
-            <StatCard label="Last Auto Backup" money={false}
-              value={(function () { var t = S.get("tc3_last_auto_backup", null) || S.get("tc3_autobak_time", null); return t ? "Saved ✅" : "Pending"; })()}
-              sub={(function () { var t = S.get("tc3_last_auto_backup", null) || S.get("tc3_autobak_time", null); return t ? new Date(t).toLocaleString() : "Runs every 5 min"; })()}
-              accent={C.green} icon="🔄" />
-            <StatCard label="Auto Backup File" money={false}
-              value="Every 5 min"
-              sub="Documents/TechonERP/backups/"
-              accent={C.cyan} icon="📂" />
-            <StatCard label="Daily Snapshot" money={false}
-              value={(function () { var d = S.get("tc3_daily_bak_date", null); return d === new Date().toISOString().slice(0, 10) ? "Done ✅" : "Pending"; })()}
-              sub={(function () { var d = S.get("tc3_daily_bak_date", null); return d ? ("Last: " + d) : "Not yet today"; })()}
-              accent={C.purple} icon="📅" />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-            <Card>
-              <CardTitle sub="Safe copies of all your ERP data">Manual & Daily Backup</CardTitle>
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ background: C.accentSoft, borderRadius: 9, padding: "12px 16px", fontSize: 12, color: C.accent, lineHeight: 1.7 }}>
-                  Downloads a <strong>backup-YYYY-MM-DD.json</strong> file to your computer.
-                  Auto-backup runs every 5 minutes, on tab/window close, and on app exit. In Electron, backups are saved to Documents/TechonERP/backups/ as techon-backup-YYYY-MM-DD-HHMM.json (last 30 kept).
-                </div>
-                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "12px 16px", fontSize: 12, color: "#92400e", lineHeight: 1.8 }}>
-                  <div style={{ fontWeight: 800, marginBottom: 6, fontSize: 13 }}>💡 Important: Save your backups here</div>
-                  <div>Always save backup files to this folder on your computer:</div>
-                  <div style={{ fontFamily: "monospace", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 6, padding: "6px 12px", margin: "6px 0", fontSize: 13, fontWeight: 700, color: "#78350f", letterSpacing: "0.02em" }}>Documents\TechonERP\backups</div>
-                  <div style={{ color: "#555", fontSize: 11.5 }}>Example path on your PC:</div>
-                  <div style={{ fontFamily: "monospace", background: "#f5f5f5", border: "1px solid #e5e7eb", borderRadius: 6, padding: "6px 12px", margin: "4px 0", fontSize: 12, color: "#333" }}>C:\Users\RASHID\Documents\TechonERP\backups</div>
-                  <div style={{ marginTop: 4, fontSize: 11, color: "#777" }}>That way all backups stay organised and safe.</div>
-                </div>
-                <Btn col="cyan" onClick={doManualBackup}>⬇ Download Backup Now</Btn>
-                <Btn col="blue" sm onClick={function () {
-                  try {
-                    var bakObj = S.get("tc3_autobak", null); var bak = bakObj ? JSON.stringify(bakObj, null, 2) : null;
-                    if (!bak) { setBakMsg({ type: "error", text: "No auto-backup found yet." }); return; }
-                    var b = JSON.parse(bak);
-                    var url = URL.createObjectURL(new Blob([JSON.stringify(b, null, 2)], { type: "application/json" }));
-                    var a = document.createElement("a"); a.href = url; a.download = "techon-autobak.json"; a.click(); URL.revokeObjectURL(url);
-                    setBakMsg({ type: "success", text: "Auto-backup exported!" });
-                  } catch (e) { setBakMsg({ type: "error", text: "Failed: " + e.message }); }
-                }}>⬇ Export Last Auto-Backup</Btn>
-              </div>
-            </Card>
-            <Card>
-              <CardTitle sub="Restore from a previous backup file">Restore Backup</CardTitle>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ background: C.warnSoft, border: "1px solid #fcd34d", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#92400e" }}>
-                  ⚠ A <strong>safety backup of your current data</strong> will be automatically downloaded before restoring. Nothing will be lost.
-                </div>
-                <label style={{ background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", borderRadius: 8, padding: "11px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", textAlign: "center", display: "block" }}>
-                  📂 Choose Backup File to Restore
-                  <input type="file" accept=".json" onChange={doRestore} style={{ display: "none" }} />
-                </label>
-              </div>
-            </Card>
-          </div>
-          <Card>
-            <CardTitle sub="Export data for accountants or external review">Excel / CSV Export</CardTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#166534" }}>
-                Exports all ERP data (Products, Sales, Purchases, Customers, Expenses, Repairs) as a <strong>CSV file</strong> — open with <strong>Microsoft Excel</strong> or Google Sheets.
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Btn col="green" onClick={doExcelExport}>📊 Export All Data to CSV/Excel</Btn>
-              </div>
-            </div>
-          </Card>
-
-          
-
-          {/* ── CLOUD DASHBOARD SYNC ── */}
-          <Card>
-            <CardTitle sub="Connect to TechonERP Dashboard at app.techon.lk">☁ Cloud Dashboard Sync</CardTitle>
-            {S.get("tc3_cloud_sync", false) && S.get("tc3_cloud_email", null) ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ background: "#dcfce7", border: "1px solid #86efac", borderRadius: 9, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 20 }}>✅</span>
-                  <div>
-                    <div style={{ fontWeight: 800, color: "#15803d", fontSize: 13 }}>Cloud sync is active</div>
-                    <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>Connected as: {S.get("tc3_cloud_email", "")}</div>
-                    <div style={{ fontSize: 12, color: "#166534", marginTop: 1 }}>Data syncs automatically every 60 seconds</div>
-                    {S.get("tc3_last_cloud_sync", null) && <div style={{ fontSize: 11, color: "#166534", marginTop: 2 }}>Last sync: {new Date(S.get("tc3_last_cloud_sync", "")).toLocaleString()}</div>}
+              <div className="erp-bak-stats">
+                <div className="erp-bak-stat">
+                  <div className="erp-bak-stat-label">Manual</div>
+                  <div className="erp-bak-stat-val">
+                    {(function () { var t = S.get("tc3_last_manual_backup", null); return t ? "Downloaded" : "Never"; })()}
+                  </div>
+                  <div className="erp-bak-stat-sub">
+                    {(function () { var t = S.get("tc3_last_manual_backup", null); return t ? new Date(t).toLocaleString() : "Use Download below"; })()}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <Btn col="green" onClick={function () {
-                    var apiKey = S.get("tc3_cloud_api_key", null);
-                    if (!apiKey) { setCloudMsg({ type: "error", text: "Not connected. Please disconnect and reconnect." }); return; }
-                    if (typeof buildCloudSyncPayload !== "function") { setCloudMsg({ type: "error", text: "Sync unavailable — please update the app." }); return; }
-                    setCloudMsg({ type: "info", text: "Syncing…" });
-                    fetch("https://api.techon.lk/sync.php", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify(buildCloudSyncPayload())
-                    })
-                      .then(function (r) { return r.text().then(function (txt) { return { r: r, txt: txt }; }); })
-                      .then(function (o) {
-                        var d = null;
-                        try { d = o.txt && o.txt.trim() ? JSON.parse(o.txt) : null; } catch (e) { d = null; }
-                        if (!o.r.ok) {
-                          var errTxt = (d && (d.error || d.message)) ? (d.error || d.message) : (o.txt ? o.txt.slice(0, 160) : "");
-                          setCloudMsg({ type: "error", text: "Sync failed (HTTP " + o.r.status + "): " + (errTxt || "Unknown error") });
-                          return;
-                        }
-                        if (d && d.success) {
-                          S.set("tc3_last_cloud_sync", new Date().toISOString());
-                          setCloudMsg({ type: "success", text: "✅ Synced successfully!" });
-                        } else {
-                          setCloudMsg({ type: "error", text: "Sync error: " + (d && (d.error || d.message) ? (d.error || d.message) : "Unknown") });
-                        }
-                      })
-                      .catch(function (err) {
-                        setCloudMsg({
-                          type: "error",
-                          text: "Could not reach api.techon.lk — " + (err && err.message ? err.message : "check firewall, VPN, or try again.") +
-                            " (Your PC can be online even if this request fails.)",
-                        });
-                      });
-                  }}>🔄 Sync Now</Btn>
-                  <Btn col="red" onClick={function () {
-                    showConfirm("Disconnect from cloud dashboard?", function () {
-                      S.set("tc3_cloud_sync", false); S.set("tc3_cloud_email", null); S.set("tc3_cloud_pass", null); S.set("tc3_cloud_token", null); S.set("tc3_cloud_api_key", null);
-                      showAlert("Disconnected. Reload the app to apply.");
-                    });
-                  }}>Disconnect</Btn>
+                <div className="erp-bak-stat">
+                  <div className="erp-bak-stat-label">Auto</div>
+                  <div className="erp-bak-stat-val">
+                    {(function () { var t = S.get("tc3_last_auto_backup", null) || S.get("tc3_autobak_time", null); return t ? "Saved" : "Pending"; })()}
+                  </div>
+                  <div className="erp-bak-stat-sub">
+                    {(function () { var t = S.get("tc3_last_auto_backup", null) || S.get("tc3_autobak_time", null); return t ? new Date(t).toLocaleString() : "Every 5 min"; })()}
+                  </div>
                 </div>
-                {cloudMsg && <div style={{ background: cloudMsg.type === "error" ? "#fde8ed" : cloudMsg.type === "info" ? "#e8eeff" : "#dcfce7", color: cloudMsg.type === "error" ? C.red : cloudMsg.type === "info" ? C.accent : C.green, borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 600 }}>{cloudMsg.text}</div>}
+                <div className="erp-bak-stat">
+                  <div className="erp-bak-stat-label">Auto file</div>
+                  <div className="erp-bak-stat-val">Every 5 min</div>
+                  <div className="erp-bak-stat-sub">Documents/TechonERP/backups/</div>
+                </div>
+                <div className="erp-bak-stat">
+                  <div className="erp-bak-stat-label">Daily</div>
+                  <div className="erp-bak-stat-val">
+                    {(function () { var d = S.get("tc3_daily_bak_date", null); return d === new Date().toISOString().slice(0, 10) ? "Done" : "Pending"; })()}
+                  </div>
+                  <div className="erp-bak-stat-sub">
+                    {(function () { var d = S.get("tc3_daily_bak_date", null); return d ? ("Last: " + d) : "Not yet today"; })()}
+                  </div>
+                </div>
               </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ background: C.accentSoft, borderRadius: 9, padding: "10px 14px", fontSize: 12, color: C.accent }}>
-                  Connect your ERP to <strong>app.techon.lk</strong> — enter your dashboard login credentials below.
-                </div>
-                <Input compact={denseWiz} label="Dashboard Email" type="email" value={cloudEmail} onChange={function (e) { setCloudEmail(e.target.value); setCloudMsg(null); }} placeholder="your@email.com" />
-                <Input compact={denseWiz} label="Dashboard Password" type="password" value={cloudPass} onChange={function (e) { setCloudPass(e.target.value); setCloudMsg(null); }} placeholder="Your dashboard password" />
-                {cloudMsg && <div style={{ background: cloudMsg.type === "error" ? "#fde8ed" : "#dcfce7", color: cloudMsg.type === "error" ? C.red : C.green, borderRadius: 8, padding: "9px 14px", fontSize: 12, fontWeight: 600 }}>{cloudMsg.text}</div>}
-                <Btn col="blue" disabled={cloudLoading || !cloudEmail || !cloudPass} onClick={function () {
-                  setCloudLoading(true); setCloudMsg(null);
-                  fetch("https://api.techon.lk/login.php", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ email: cloudEmail, password: cloudPass })
-                  }).then(function (r) { return r.json(); }).then(function (d) {
-                    setCloudLoading(false);
-                    if (d.success) {
-                      /* Store api_key for sync — never need to login again, no session conflict */
-                      S.set("tc3_cloud_email",   cloudEmail);
-                      S.set("tc3_cloud_pass",    cloudPass);
-                      S.set("tc3_cloud_api_key", d.api_key);
-                      S.set("tc3_cloud_sync",    true);
-                      setCloudMsg({ type: "success", text: "✅ Connected! Cloud sync is now active." });
-                      setCloudEmail(""); setCloudPass("");
+
+              <div className="erp-bak-block">
+                <div className="erp-bak-block-label">Backup Folder</div>
+                <div className="erp-bak-path">{f.backupFolder || "Documents/TechonERP/backups (Default)"}</div>
+                <div className="erp-bak-tools">
+                  <Btn col="blue" onClick={async function () {
+                    if (window.electronAPI && window.electronAPI.selectFolder) {
+                      const folder = await window.electronAPI.selectFolder();
+                      if (folder) {
+                        setF(function (x) { return Object.assign({}, x, { backupFolder: folder }); });
+                        var ns = Object.assign({}, state.settings, f, { backupFolder: folder });
+                        S.set("tc3_settings", ns);
+                        setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+                        setBakMsg({ type: "success", text: "Backup folder updated successfully." });
+                      }
                     } else {
-                      setCloudMsg({ type: "error", text: d.error || "Login failed." });
+                      setBakMsg({ type: "error", text: "Folder selection is only available in the desktop app." });
                     }
-                  }).catch(function () {
-                    setCloudLoading(false);
-                    setCloudMsg({ type: "error", text: "Cannot reach server. Check your internet." });
-                  });
-                }}>{cloudLoading ? "Connecting…" : "🔗 Connect to Cloud Dashboard"}</Btn>
-                <div style={{ fontSize: 11, color: C.muted, textAlign: "center" }}>Don't have an account? Register at <strong>app.techon.lk</strong> first.</div>
-              </div>
-            )}
-          </Card>
-
-          {/* Network details moved to the Network tab */}
-
-          <Card>
-            <CardTitle sub="Uses latest purchase line per ingredient — cost per base unit; sell from purchase sell ÷ unit factor">Raw material pricing fix</CardTitle>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.6 }}>
-              One-time correction for ingredient products where cost/price were saved as a sack or pack total instead of per Kg (base unit). Run dry-run, review, then apply. Each change is logged in Activity Log.
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <Btn col="blue" onClick={runRmBfDryRun}>Dry-run</Btn>
-              <Btn col="cyan" onClick={runRmBfApply} disabled={!rmBfPreview || !(rmBfPreview.changes && rmBfPreview.changes.length)}>Apply</Btn>
-              {rmBfPreview && rmBfPreview.changes && rmBfPreview.changes.length ? (
-                <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{rmBfPreview.changes.length} change(s) ready</span>
-              ) : (
-                <span style={{ fontSize: 12, color: C.muted }}>Run dry-run to preview</span>
-              )}
-            </div>
-          </Card>
-
-          {/* ── RESET SYSTEM DATA ── */}
-          <Card>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: "#b91c1c", marginBottom: 4 }}>Reset System Data</div>
-                <div style={{ fontSize: 12, color: "#6b7280", maxWidth: 480, lineHeight: 1.6 }}>
-                  Permanently wipes <strong>everything</strong> — all sales, purchases, products, customers, suppliers, inventory, expenses, repairs, settings, logo and password.
-                  The app returns to a completely fresh state. A safety backup is auto-downloaded first.
+                  }}>Select Folder</Btn>
+                  {f.backupFolder ? (
+                    <Btn col="gray" onClick={function () {
+                      setF(function (x) { return Object.assign({}, x, { backupFolder: "" }); });
+                      var ns = Object.assign({}, state.settings, f, { backupFolder: "" });
+                      S.set("tc3_settings", ns);
+                      setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+                      setBakMsg({ type: "success", text: "Reset to default backup folder." });
+                    }}>Reset Default</Btn>
+                  ) : null}
                 </div>
               </div>
-              <Btn col="red" onClick={function () { setResetStep(1); setResetPw(""); setResetMsg(null); }}>🗑 Reset All Data</Btn>
-            </div>
-          </Card>
 
+              <div className="erp-bak-split">
+                <div className="erp-bak-block">
+                  <div className="erp-bak-block-label">Download Backup</div>
+                  <div className="erp-bak-note is-blue">
+                    Downloads <strong>backup-YYYY-MM-DD.json</strong>. Auto-backup runs every 5 min and on exit (last 30 kept in Electron).
+                  </div>
+                  <div className="erp-bak-note is-amber">
+                    Keep files in <strong>Documents\TechonERP\backups</strong> so they stay organised.
+                  </div>
+                  <div className="erp-bak-tools">
+                    <Btn col="cyan" onClick={doManualBackup}>Download Backup Now</Btn>
+                    <Btn col="blue" sm onClick={function () {
+                      try {
+                        var bakObj = S.get("tc3_autobak", null); var bak = bakObj ? JSON.stringify(bakObj, null, 2) : null;
+                        if (!bak) { setBakMsg({ type: "error", text: "No auto-backup found yet." }); return; }
+                        var b = JSON.parse(bak);
+                        var url = URL.createObjectURL(new Blob([JSON.stringify(b, null, 2)], { type: "application/json" }));
+                        var a = document.createElement("a"); a.href = url; a.download = "techon-autobak.json"; a.click(); URL.revokeObjectURL(url);
+                        setBakMsg({ type: "success", text: "Auto-backup exported!" });
+                      } catch (e) { setBakMsg({ type: "error", text: "Failed: " + e.message }); }
+                    }}>Export Last Auto-Backup</Btn>
+                  </div>
+                </div>
+
+                <div className="erp-bak-block">
+                  <div className="erp-bak-block-label">Restore</div>
+                  <div className="erp-bak-note is-amber">
+                    A <strong>safety backup of current data</strong> downloads automatically before restore.
+                  </div>
+                  <label className="erp-bak-restore">
+                    Choose Backup File to Restore
+                    <input type="file" accept=".json" onChange={doRestore} style={{ display: "none" }} />
+                  </label>
+                </div>
+              </div>
+
+              <div className="erp-bak-block">
+                <div className="erp-bak-block-label">Excel / CSV Export</div>
+                <div className="erp-bak-note is-green">
+                  Exports Products, Sales, Purchases, Customers, Expenses and Repairs as CSV for Excel or Sheets.
+                </div>
+                <div className="erp-bak-tools">
+                  <Btn col="green" onClick={doExcelExport}>Export All Data to CSV/Excel</Btn>
+                </div>
+              </div>
+
+              <div className="erp-bak-block">
+                <div className="erp-bak-block-label">Cloud Dashboard Sync</div>
+                {S.get("tc3_cloud_sync", false) && S.get("tc3_cloud_email", null) ? (
+                  <div className="erp-bak-cloud">
+                    <div className="erp-bak-note is-green">
+                      <strong>Cloud sync active</strong> — {S.get("tc3_cloud_email", "")}
+                      {S.get("tc3_last_cloud_sync", null) ? (
+                        <span> · Last: {new Date(S.get("tc3_last_cloud_sync", "")).toLocaleString()}</span>
+                      ) : null}
+                    </div>
+                    <div className="erp-bak-tools">
+                      <Btn col="green" onClick={function () {
+                        var apiKey = S.get("tc3_cloud_api_key", null);
+                        if (!apiKey) { setCloudMsg({ type: "error", text: "Not connected. Please disconnect and reconnect." }); return; }
+                        if (typeof buildCloudSyncPayload !== "function") { setCloudMsg({ type: "error", text: "Sync unavailable — please update the app." }); return; }
+                        setCloudMsg({ type: "info", text: "Syncing…" });
+                        fetch("https://api.techon.lk/sync.php", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify(buildCloudSyncPayload())
+                        })
+                          .then(function (r) { return r.text().then(function (txt) { return { r: r, txt: txt }; }); })
+                          .then(function (o) {
+                            var d = null;
+                            try { d = o.txt && o.txt.trim() ? JSON.parse(o.txt) : null; } catch (e) { d = null; }
+                            if (!o.r.ok) {
+                              var errTxt = (d && (d.error || d.message)) ? (d.error || d.message) : (o.txt ? o.txt.slice(0, 160) : "");
+                              setCloudMsg({ type: "error", text: "Sync failed (HTTP " + o.r.status + "): " + (errTxt || "Unknown error") });
+                              return;
+                            }
+                            if (d && d.success) {
+                              S.set("tc3_last_cloud_sync", new Date().toISOString());
+                              setCloudMsg({ type: "success", text: "Synced successfully!" });
+                            } else {
+                              setCloudMsg({ type: "error", text: "Sync error: " + (d && (d.error || d.message) ? (d.error || d.message) : "Unknown") });
+                            }
+                          })
+                          .catch(function (err) {
+                            setCloudMsg({
+                              type: "error",
+                              text: "Could not reach api.techon.lk — " + (err && err.message ? err.message : "check firewall, VPN, or try again.") +
+                                " (Your PC can be online even if this request fails.)",
+                            });
+                          });
+                      }}>Sync Now</Btn>
+                      <Btn col="red" onClick={function () {
+                        showConfirm("Disconnect from cloud dashboard?", function () {
+                          S.set("tc3_cloud_sync", false); S.set("tc3_cloud_email", null); S.set("tc3_cloud_pass", null); S.set("tc3_cloud_token", null); S.set("tc3_cloud_api_key", null);
+                          showAlert("Disconnected. Reload the app to apply.");
+                        });
+                      }}>Disconnect</Btn>
+                    </div>
+                    {cloudMsg ? (
+                      <div className={"erp-bak-banner is-inline" + (cloudMsg.type === "error" ? " is-err" : cloudMsg.type === "info" ? " is-info" : " is-ok")}>{cloudMsg.text}</div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="erp-bak-cloud">
+                    <div className="erp-bak-note is-blue">Connect to <strong>app.techon.lk</strong> with your dashboard login.</div>
+                    <div className="erp-bak-cloud-form">
+                      <Input compact={denseWiz} label="Dashboard Email" type="email" value={cloudEmail} onChange={function (e) { setCloudEmail(e.target.value); setCloudMsg(null); }} placeholder="your@email.com" />
+                      <Input compact={denseWiz} label="Dashboard Password" type="password" value={cloudPass} onChange={function (e) { setCloudPass(e.target.value); setCloudMsg(null); }} placeholder="Your dashboard password" />
+                    </div>
+                    {cloudMsg ? (
+                      <div className={"erp-bak-banner is-inline" + (cloudMsg.type === "error" ? " is-err" : " is-ok")}>{cloudMsg.text}</div>
+                    ) : null}
+                    <div className="erp-bak-tools">
+                      <Btn col="blue" disabled={cloudLoading || !cloudEmail || !cloudPass} onClick={function () {
+                        setCloudLoading(true); setCloudMsg(null);
+                        fetch("https://api.techon.lk/login.php", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ email: cloudEmail, password: cloudPass })
+                        }).then(function (r) { return r.json(); }).then(function (d) {
+                          setCloudLoading(false);
+                          if (d.success) {
+                            S.set("tc3_cloud_email", cloudEmail);
+                            S.set("tc3_cloud_pass", cloudPass);
+                            S.set("tc3_cloud_api_key", d.api_key);
+                            S.set("tc3_cloud_sync", true);
+                            setCloudMsg({ type: "success", text: "Connected! Cloud sync is now active." });
+                            setCloudEmail(""); setCloudPass("");
+                          } else {
+                            setCloudMsg({ type: "error", text: d.error || "Login failed." });
+                          }
+                        }).catch(function () {
+                          setCloudLoading(false);
+                          setCloudMsg({ type: "error", text: "Cannot reach server. Check your internet." });
+                        });
+                      }}>{cloudLoading ? "Connecting…" : "Connect to Cloud Dashboard"}</Btn>
+                    </div>
+                    <div className="erp-bak-hint">No account? Register at <strong>app.techon.lk</strong> first.</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="erp-bak-block">
+                <div className="erp-bak-block-label">Raw Material Pricing Fix</div>
+                <div className="erp-bak-note is-blue">
+                  One-time correction when cost/price were saved as pack totals instead of per base unit. Dry-run, review, then apply.
+                </div>
+                <div className="erp-bak-tools">
+                  <Btn col="blue" onClick={runRmBfDryRun}>Dry-run</Btn>
+                  <Btn col="cyan" onClick={runRmBfApply} disabled={!rmBfPreview || !(rmBfPreview.changes && rmBfPreview.changes.length)}>Apply</Btn>
+                  {rmBfPreview && rmBfPreview.changes && rmBfPreview.changes.length ? (
+                    <span className="erp-bak-chip">{rmBfPreview.changes.length} change(s) ready</span>
+                  ) : (
+                    <span className="erp-bak-hint">Run dry-run to preview</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="erp-bak-block is-danger">
+                <div className="erp-bak-block-label is-danger">Reset System Data</div>
+                <div className="erp-bak-reset">
+                  <div className="erp-bak-hint is-danger">
+                    Permanently wipes sales, purchases, products, customers, inventory, settings and more. A safety backup downloads first.
+                  </div>
+                  <Btn col="red" onClick={function () { setResetStep(1); setResetPw(""); setResetMsg(null); }}>Reset All Data</Btn>
+                </div>
+              </div>
+            </Card>
+          </div>
         </div>
       )}
 
       {stab === "accounting" && (
-        <div className="erp-set-stack">
-          <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 16px", fontSize: 13, color: C.textMd, lineHeight: 1.55 }}>
-            Bookkeeping and ledger options for accountants and advanced users. Everyday shop setup stays on <strong>Shop Info</strong> — you can leave these at defaults unless your accountant asks you to change them.
-          </div>
-
-          <Card>
-            <CardTitle sub="Soft warning when editing old records">📅 Period Close Date</CardTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 420 }}>
-              <div style={{ background: C.accentSoft, borderRadius: 9, padding: "10px 14px", fontSize: 12, color: C.accent }}>
-                Set a &quot;Books Closed&quot; date. Any edit to records dated before this date will show a warning to protect historical data.
-              </div>
-              <Input compact={denseWiz} label="Books Closed Date" type="date" value={f.booksClosedDate || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { booksClosedDate: e.target.value }); }); }} />
-              {f.booksClosedDate && <div style={{ fontSize: 11, color: C.muted }}>⚠ Edits to records before <strong>{fmtDate(f.booksClosedDate)}</strong> will require confirmation.</div>}
-              {f.booksClosedDate && <button onClick={function () { setF(function (x) { return Object.assign({}, x, { booksClosedDate: "" }); }); }} style={{ background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", textAlign: "left", fontWeight: 600 }}>✕ Clear date</button>}
-              <Btn col="cyan" onClick={save}>Save period close</Btn>
-            </div>
-          </Card>
-
-          <Card>
-            <CardTitle sub="Double-entry journal mode, inventory costing, and hard period lock">⚖ Accounting &amp; GL</CardTitle>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
-                gap: 16,
-                width: "100%",
-                boxSizing: "border-box",
-              }}
-            >
-              <div style={{ gridColumn: "1 / -1", width: "100%", marginBottom: 12, boxSizing: "border-box" }}>
-                <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#0369a1", width: "100%", boxSizing: "border-box" }}>
-                  <strong>Live</strong> updates the journal on each transaction. <strong>Repair</strong> only rebuilds when you use Rebuild in Accounts or when data changes in this mode (fallback for large imports).
+        <div className="erp-acct-page">
+          <div className="erp-acct-wrap">
+            <Card className="erp-acct-card">
+              <div className="erp-acct-brand">
+                <div className="erp-acct-brand-ico" aria-hidden="true">⚖</div>
+                <div>
+                  <div className="erp-acct-title">Accounting</div>
+                  <div className="erp-acct-sub">Period close, journal, costing and lock</div>
                 </div>
               </div>
 
-              <div
-                style={{
-                  gridColumn: "1 / -1",
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 200px), 1fr))",
-                  gap: 16,
-                  width: "100%",
-                  boxSizing: "border-box",
-                }}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                  <label htmlFor="tc-settings-gl-mode" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Journal mode</label>
-                  <select
-                    id="tc-settings-gl-mode"
-                    value={S.get("tc3_gl_mode", "live")}
-                    onChange={function (e) {
-                      S.set("tc3_gl_mode", e.target.value);
-                      setState(function (st) { return Object.assign({}, st); });
-                    }}
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
-                  >
-                    <option value="live">Live — journal is authoritative (recommended)</option>
-                    <option value="rebuild">Repair — rebuild journal on schedule / manual only</option>
-                  </select>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                  <label htmlFor="tc-settings-inv-costing" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Inventory costing</label>
-                  <select
-                    id="tc-settings-inv-costing"
-                    value={f.inventoryCostingMethod || "wac"}
-                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { inventoryCostingMethod: e.target.value }); }); }}
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
-                  >
-                    <option value="wac">Weighted average (line / product cost)</option>
-                    <option value="fifo">FIFO (uses product fifoBatches when set)</option>
-                  </select>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                  <label htmlFor="tc-settings-pr-cost-mode" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Purchase return cost</label>
-                  <select
-                    id="tc-settings-pr-cost-mode"
-                    value={f.purchaseReturnCostMode || "current_wac"}
-                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { purchaseReturnCostMode: e.target.value }); }); }}
-                    title="Cost basis for supplier returns: current policy uses unit cost captured on the purchase line (aligned with inventory). original_cost is reserved for a future FIFO layer match."
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, cursor: "pointer" }}
-                  >
-                    <option value="current_wac">Current policy (line / WAC snapshot on purchase)</option>
-                    <option value="original_cost">Original receipt cost (reserved — uses line cost for now)</option>
-                  </select>
-                  <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>GL posting uses stored line unit cost; product WAC is not recomputed on return.</span>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
-                  <label htmlFor="tc-settings-lock-date" style={{ fontSize: 14, fontWeight: 500, color: C.text, lineHeight: 1.35 }}>Lock date</label>
-                  <input
-                    id="tc-settings-lock-date"
-                    type="date"
-                    value={f.lockedUntilDate || ""}
-                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { lockedUntilDate: e.target.value }); }); }}
-                    style={{ width: "100%", boxSizing: "border-box", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text }}
-                  />
-                  <span style={{ fontSize: 11, color: C.muted, lineHeight: 1.35 }}>Hard lock — no posts on or before this date</span>
-                </div>
+              <div className="erp-acct-intro">
+                Bookkeeping options for accountants. Everyday shop setup stays on <strong>Shop Profile</strong> — leave defaults unless your accountant asks otherwise.
               </div>
 
-              {f.lockedUntilDate && (
-                <div style={{ gridColumn: "1 / -1", fontSize: 11, color: C.muted, marginTop: -4 }}>
-                  Transactions dated on or before <strong>{fmtDate(f.lockedUntilDate)}</strong> are blocked unless Admin (PIN) is unlocked.
+              <div className="erp-acct-block">
+                <div className="erp-acct-block-label">Period Close</div>
+                <div className="erp-acct-note is-blue">Soft warning when editing records dated before the books-closed date.</div>
+                <div className="erp-acct-inline">
+                  <div className="erp-acct-field grow">
+                    <Input compact={denseWiz} label="Books Closed Date" type="date" value={f.booksClosedDate || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { booksClosedDate: e.target.value }); }); }} />
+                  </div>
+                  {f.booksClosedDate ? (
+                    <button type="button" className="erp-acct-link-danger" onClick={function () { setF(function (x) { return Object.assign({}, x, { booksClosedDate: "" }); }); }}>Clear</button>
+                  ) : null}
+                  <button type="button" className="erp-acct-btn-sec" onClick={save}>Save period</button>
                 </div>
-              )}
+                {f.booksClosedDate ? (
+                  <div className="erp-acct-hint">Edits before <strong>{fmtDate(f.booksClosedDate)}</strong> require confirmation.</div>
+                ) : null}
+              </div>
 
-              <div style={{ gridColumn: "1 / -1" }}>
-                <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.45 }}>
+              <div className="erp-acct-block">
+                <div className="erp-acct-block-label">Journal &amp; Costing</div>
+                <div className="erp-acct-note is-blue">
+                  <strong>Live</strong> updates the journal on each sale. <strong>Repair</strong> rebuilds only on demand (large imports).
+                </div>
+                <div className="erp-acct-grid">
+                  <div className="erp-acct-field">
+                    <span className="erp-acct-field-label" id="tc-settings-gl-mode-lbl">Journal mode</span>
+                    <select
+                      id="tc-settings-gl-mode"
+                      className="erp-acct-select"
+                      aria-labelledby="tc-settings-gl-mode-lbl"
+                      value={S.get("tc3_gl_mode", "live")}
+                      onChange={function (e) {
+                        S.set("tc3_gl_mode", e.target.value);
+                        setState(function (st) { return Object.assign({}, st); });
+                      }}
+                    >
+                      <option value="live">Live — journal authoritative (recommended)</option>
+                      <option value="rebuild">Repair — rebuild on schedule / manual</option>
+                    </select>
+                  </div>
+                  <div className="erp-acct-field">
+                    <span className="erp-acct-field-label" id="tc-settings-inv-costing-lbl">Inventory costing</span>
+                    <select
+                      id="tc-settings-inv-costing"
+                      className="erp-acct-select"
+                      aria-labelledby="tc-settings-inv-costing-lbl"
+                      value={f.inventoryCostingMethod || "wac"}
+                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { inventoryCostingMethod: e.target.value }); }); }}
+                    >
+                      <option value="wac">Weighted average (line / product cost)</option>
+                      <option value="fifo">FIFO (product fifoBatches when set)</option>
+                    </select>
+                  </div>
+                  <div className="erp-acct-field">
+                    <span className="erp-acct-field-label" id="tc-settings-pr-cost-mode-lbl">Purchase return cost</span>
+                    <select
+                      id="tc-settings-pr-cost-mode"
+                      className="erp-acct-select"
+                      aria-labelledby="tc-settings-pr-cost-mode-lbl"
+                      value={f.purchaseReturnCostMode || "current_wac"}
+                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { purchaseReturnCostMode: e.target.value }); }); }}
+                      title="Current policy uses unit cost on the purchase line. original_cost is reserved for a future FIFO layer match."
+                    >
+                      <option value="current_wac">Current policy (line / WAC snapshot)</option>
+                      <option value="original_cost">Original receipt cost (reserved)</option>
+                    </select>
+                    <span className="erp-acct-field-hint">GL uses stored line cost; product WAC is not recomputed on return.</span>
+                  </div>
+                  <div className="erp-acct-field">
+                    <span className="erp-acct-field-label" id="tc-settings-lock-date-lbl">Lock date</span>
+                    <input
+                      id="tc-settings-lock-date"
+                      className="erp-acct-select"
+                      type="date"
+                      aria-labelledby="tc-settings-lock-date-lbl"
+                      value={f.lockedUntilDate || ""}
+                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { lockedUntilDate: e.target.value }); }); }}
+                    />
+                    <span className="erp-acct-field-hint">Hard lock — no posts on or before this date</span>
+                  </div>
+                </div>
+                {f.lockedUntilDate ? (
+                  <div className="erp-acct-hint">Blocked through <strong>{fmtDate(f.lockedUntilDate)}</strong> unless Admin (PIN) is unlocked.</div>
+                ) : null}
+              </div>
+
+              <div className="erp-acct-block">
+                <div className="erp-acct-block-label">Lock &amp; Policies</div>
+                <label className={"erp-acct-check" + (f.strictPeriodLock === true ? " is-on" : "")}>
                   <input
                     type="checkbox"
                     checked={f.strictPeriodLock === true}
                     onChange={function (e) { setF(function (x) { return Object.assign({}, x, { strictPeriodLock: e.target.checked }); }); }}
-                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent, marginTop: 2 }}
                   />
                   <span>
-                    <strong>Strict period lock</strong> (recommended for audit): transactions dated on or before the lock date cannot be edited, deleted, or have line items changed — only when this is on and a lock date is set. Admin (PIN) unlock still bypasses.
+                    <span className="erp-acct-check-title">Strict period lock</span>
+                    <span className="erp-acct-check-sub">Recommended for audit. Locked-period edits/deletes blocked; Admin PIN still bypasses.</span>
                   </span>
                 </label>
-              </div>
-
-              <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 12, width: "100%" }}>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
-                  <input
-                    type="checkbox"
-                    checked={!f.preventNegativeStock}
-                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { preventNegativeStock: !e.target.checked }); }); }}
-                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
-                  />
-                  <span>Allow negative stock (disables hard block on save)</span>
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
-                  <input
-                    type="checkbox"
-                    checked={f.allowCostFallback === true}
-                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { allowCostFallback: e.target.checked }); }); }}
-                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
-                  />
-                  <span>FIFO: allow line-cost fallback when no layers (default off — stricter audit)</span>
-                </label>
-                <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, lineHeight: 1.35 }}>
-                  <input
-                    type="checkbox"
-                    checked={f.glVatPostingEnabled !== false}
-                    onChange={function (e) { setF(function (x) { return Object.assign({}, x, { glVatPostingEnabled: e.target.checked }); }); }}
-                    style={{ width: 16, height: 16, flexShrink: 0, accentColor: C.accent }}
-                  />
-                  <span>Post VAT to GL (VAT Payable / Receivable) when tax is enabled</span>
-                </label>
-              </div>
-
-              <div style={{ gridColumn: "1 / -1", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 12 }}>
-                {typeof props.createFinancialSnapshot === "function" && (
-                  <Btn col="gray" onClick={function () {
-                    props.createFinancialSnapshot({ label: "Manual snapshot (Settings)" });
-                  }}>Save financial snapshot</Btn>
-                )}
-                {typeof props.repairInventoryLayersFromReplay === "function" && (
-                  <Btn col="cyan" onClick={props.repairInventoryLayersFromReplay}>Repair inventory layers (replay)</Btn>
-                )}
-                {glDeveloperToolsSettings && exportSupportBundle && downloadSupportBundleJson && (
-                  <Btn
-                    col="gray"
-                    onClick={function () {
-                      try {
-                        var bundle = exportSupportBundle({
-                          periodFrom: supBndFrom,
-                          periodTo: supBndTo,
-                          anonymize: supBndAnon,
-                          includeReplay: supBndReplay,
-                          replayProductId: supBndPid || "",
-                        });
-                        downloadSupportBundleJson(bundle, "techon-support-bundle.json");
-                      } catch (e) {
-                        showAlert("Could not build support bundle.");
-                      }
-                    }}
-                  >
-                    Export support bundle (JSON)
-                  </Btn>
-                )}
-                <Btn col="cyan" onClick={saveAccountingSettings}>Save accounting settings</Btn>
-              </div>
-              {glDeveloperToolsSettings && exportSupportBundle && (
-                <div style={{ gridColumn: "1 / -1", display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginTop: 8 }}>
-                  <Input type="date" label="Bundle period from" value={supBndFrom} onChange={function (e) { setSupBndFrom(e.target.value); }} compact />
-                  <Input type="date" label="Bundle period to" value={supBndTo} onChange={function (e) { setSupBndTo(e.target.value); }} compact />
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                    <input type="checkbox" checked={supBndAnon} onChange={function (e) { setSupBndAnon(e.target.checked); }} /> Anonymize customers in bundle subset
+                <div className="erp-acct-checks">
+                  <label className={"erp-acct-check is-compact" + (!f.preventNegativeStock ? " is-on" : "")}>
+                    <input
+                      type="checkbox"
+                      checked={!f.preventNegativeStock}
+                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { preventNegativeStock: !e.target.checked }); }); }}
+                    />
+                    <span className="erp-acct-check-title">Allow negative stock</span>
                   </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                    <input type="checkbox" checked={supBndReplay} onChange={function (e) { setSupBndReplay(e.target.checked); }} /> Include replay sample
+                  <label className={"erp-acct-check is-compact" + (f.allowCostFallback === true ? " is-on" : "")}>
+                    <input
+                      type="checkbox"
+                      checked={f.allowCostFallback === true}
+                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { allowCostFallback: e.target.checked }); }); }}
+                    />
+                    <span className="erp-acct-check-title">FIFO line-cost fallback</span>
                   </label>
-                  <Input label="Replay product ID (optional)" value={supBndPid} onChange={function (e) { setSupBndPid(e.target.value); }} placeholder="SKU id" compact style={{ minWidth: 160 }} />
+                  <label className={"erp-acct-check is-compact" + (f.glVatPostingEnabled !== false ? " is-on" : "")}>
+                    <input
+                      type="checkbox"
+                      checked={f.glVatPostingEnabled !== false}
+                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { glVatPostingEnabled: e.target.checked }); }); }}
+                    />
+                    <span className="erp-acct-check-title">Post VAT to GL</span>
+                  </label>
                 </div>
-              )}
+              </div>
 
-              {typeof props.createFinancialSnapshot === "function" && (
-                <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 8, width: "100%", marginTop: 2 }}>
-                  {(function () {
-                    var snaps = S.get("tc3_financial_snapshots", []);
-                    var last = Array.isArray(snaps) && snaps.length ? snaps[snaps.length - 1] : null;
-                    if (!last) {
+              <div className="erp-acct-block">
+                <div className="erp-acct-block-label">Tools</div>
+                <div className="erp-acct-tools">
+                  {typeof props.createFinancialSnapshot === "function" && (
+                    <Btn col="gray" onClick={function () {
+                      props.createFinancialSnapshot({ label: "Manual snapshot (Settings)" });
+                    }}>Save snapshot</Btn>
+                  )}
+                  {typeof props.repairInventoryLayersFromReplay === "function" && (
+                    <Btn col="cyan" onClick={props.repairInventoryLayersFromReplay}>Repair layers</Btn>
+                  )}
+                  {glDeveloperToolsSettings && exportSupportBundle && downloadSupportBundleJson && (
+                    <Btn
+                      col="gray"
+                      onClick={function () {
+                        try {
+                          var bundle = exportSupportBundle({
+                            periodFrom: supBndFrom,
+                            periodTo: supBndTo,
+                            anonymize: supBndAnon,
+                            includeReplay: supBndReplay,
+                            replayProductId: supBndPid || "",
+                          });
+                          downloadSupportBundleJson(bundle, "techon-support-bundle.json");
+                        } catch (e) {
+                          showAlert("Could not build support bundle.");
+                        }
+                      }}
+                    >
+                      Export support bundle
+                    </Btn>
+                  )}
+                </div>
+
+                {glDeveloperToolsSettings && exportSupportBundle && (
+                  <div className="erp-acct-dev">
+                    <Input type="date" label="Bundle from" value={supBndFrom} onChange={function (e) { setSupBndFrom(e.target.value); }} compact />
+                    <Input type="date" label="Bundle to" value={supBndTo} onChange={function (e) { setSupBndTo(e.target.value); }} compact />
+                    <label className={"erp-acct-check is-compact" + (supBndAnon ? " is-on" : "")}>
+                      <input type="checkbox" checked={supBndAnon} onChange={function (e) { setSupBndAnon(e.target.checked); }} />
+                      <span className="erp-acct-check-title">Anonymize</span>
+                    </label>
+                    <label className={"erp-acct-check is-compact" + (supBndReplay ? " is-on" : "")}>
+                      <input type="checkbox" checked={supBndReplay} onChange={function (e) { setSupBndReplay(e.target.checked); }} />
+                      <span className="erp-acct-check-title">Replay sample</span>
+                    </label>
+                    <Input label="Replay product ID" value={supBndPid} onChange={function (e) { setSupBndPid(e.target.value); }} placeholder="SKU id" compact />
+                  </div>
+                )}
+
+                {typeof props.createFinancialSnapshot === "function" && (
+                  <div className="erp-acct-snap">
+                    {(function () {
+                      var snaps = S.get("tc3_financial_snapshots", []);
+                      var last = Array.isArray(snaps) && snaps.length ? snaps[snaps.length - 1] : null;
+                      if (!last) {
+                        return (
+                          <div className="erp-acct-snap-status">
+                            <span>No snapshots yet. New saves show as</span>
+                            <SnapshotIntegrityBadge variant="sealed" />
+                            <span>when saved.</span>
+                          </div>
+                        );
+                      }
+                      var sealed = !!(last.contentHash && validateSnapshotIntegrity(last));
+                      var legacy = !last.contentHash;
                       return (
-                        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 11 }}>
-                          <span style={{ color: C.muted }}>No snapshots yet. New saves will show as</span>
-                          <SnapshotIntegrityBadge variant="sealed" />
-                          <span style={{ color: C.muted }}>when you save.</span>
+                        <div className="erp-acct-snap-status">
+                          <span>Latest:</span>
+                          {sealed ? (
+                            <SnapshotIntegrityBadge variant="sealed" liveStatus />
+                          ) : legacy ? (
+                            <SnapshotIntegrityBadge variant="legacy" liveStatus />
+                          ) : (
+                            <SnapshotIntegrityBadge variant="failed" liveStatus />
+                          )}
+                          {last.label ? <span className="erp-acct-snap-label">{last.label}</span> : null}
                         </div>
                       );
-                    }
-                    var sealed = !!(last.contentHash && validateSnapshotIntegrity(last));
-                    var legacy = !last.contentHash;
-                    return (
-                      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 11, minWidth: 0 }}>
-                        <span style={{ color: C.muted }}>Latest snapshot:</span>
-                        {sealed ? (
-                          <SnapshotIntegrityBadge variant="sealed" liveStatus />
-                        ) : legacy ? (
-                          <SnapshotIntegrityBadge variant="legacy" liveStatus />
-                        ) : (
-                          <SnapshotIntegrityBadge variant="failed" liveStatus />
-                        )}
-                        {last.label && <span style={{ color: C.muted }}>{last.label}</span>}
-                      </div>
-                    );
-                  })()}
-                  {(function () {
-                    var snaps = S.get("tc3_financial_snapshots", []);
-                    if (!Array.isArray(snaps) || snaps.length === 0) return null;
-                    var idx = Math.max(0, Math.min(snapValIdx || 0, snaps.length - 1));
-                    return (
-                      <div style={{ marginTop: 10, paddingTop: 12, borderTop: "1px solid " + C.borderLight, display: "flex", flexDirection: "column", gap: 8 }}>
-                        <div style={{ fontSize: 12, fontWeight: 700, color: C.textMd }}>Validate snapshot (hash + HMAC)</div>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-                          <select
-                            value={idx}
-                            onChange={function (e) { setSnapValIdx(parseInt(e.target.value, 10) || 0); setSnapValResult(null); }}
-                            style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "8px 10px", fontSize: 12, maxWidth: "100%" }}
-                          >
-                            {snaps.map(function (s, i) {
-                              var lab = (s.label || s.id || "snapshot").slice(0, 48);
-                              var when = (s.createdAt || "").slice(0, 19);
-                              return (
-                                <option key={(s.id || i) + "_" + i} value={i}>{when + " — " + lab}</option>
-                              );
-                            })}
-                          </select>
-                          <Btn
-                            col="gray"
-                            disabled={snapValBusy}
-                            onClick={function () {
-                              var list = S.get("tc3_financial_snapshots", []);
-                              var pick = list[idx];
-                              if (!pick) return;
-                              setSnapValBusy(true);
-                              setSnapValResult(null);
-                              validateSnapshotIntegrityFull(pick).then(function (r) {
-                                setSnapValBusy(false);
-                                setSnapValResult(r);
-                              }).catch(function () {
-                                setSnapValBusy(false);
-                                setSnapValResult({ ok: false, tampered: true, reason: "validate_error" });
-                              });
-                            }}
-                          >
-                            {snapValBusy ? "Checking…" : "Validate integrity"}
-                          </Btn>
-                        </div>
-                        {snapValResult && (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                            <div style={{
-                              fontSize: 12,
-                              padding: "10px 12px",
-                              borderRadius: 8,
-                              border: "1.5px solid " + (snapValResult.tampered ? "#fecaca" : "#a7f3d0"),
-                              background: snapValResult.tampered ? "#fef2f2" : "#ecfdf5",
-                              color: snapValResult.tampered ? "#991b1b" : "#065f46",
-                              whiteSpace: "pre-wrap",
-                              wordBreak: "break-word",
-                            }}>
-                              <div style={{ fontWeight: 700, marginBottom: 4 }}>{(snapValResult.tampered ? "Tampered or invalid — " : "Valid — ") + (snapValResult.reason || "")}</div>
-                              {(snapValResult.snapshotCreatedAt ? <div>Snapshot time: {snapValResult.snapshotCreatedAt}</div> : null)}
-                              {(snapValResult.snapshotPeriodDate ? <div>Period / as-of: {snapValResult.snapshotPeriodDate}</div> : null)}
-                              {(snapValResult.recomputedContentHashShort ? <div>Content hash (recomputed): {snapValResult.recomputedContentHashShort}</div> : null)}
-                              {(snapValResult.storedContentHashShort ? <div>Content hash (stored): {snapValResult.storedContentHashShort}</div> : null)}
-                              {(snapValResult.storedIntegrityHmacShort ? <div>HMAC (stored): {snapValResult.storedIntegrityHmacShort}</div> : null)}
-                              {(snapValResult.canonicalBodyLength != null ? <div>Canonical body length: {snapValResult.canonicalBodyLength}</div> : null)}
-                              {(snapValResult.matched ? <div>Matched: {snapValResult.matched}</div> : null)}
-                              {(snapValResult.legacy ? <div>(Legacy snapshot — hash-only seal)</div> : null)}
-                            </div>
-                            <Btn sm col="gray" onClick={function () {
-                              var r = snapValResult;
-                              var lines = [
-                                "TechonERP snapshot validation",
-                                "reason: " + (r.reason || ""),
-                                "tampered: " + !!r.tampered,
-                                "snapshotId: " + (r.snapshotId || ""),
-                                "createdAt: " + (r.snapshotCreatedAt || ""),
-                                "periodDate: " + (r.snapshotPeriodDate || ""),
-                                "recomputedHash: " + (r.expectedContentHash || r.recomputedContentHashShort || ""),
-                                "storedHash: " + (r.storedContentHashValue || r.storedContentHash || ""),
-                                "storedHmac: " + (r.storedIntegrityHmac || ""),
-                                "canonicalLen: " + (r.canonicalBodyLength != null ? r.canonicalBodyLength : ""),
-                              ];
-                              var t = lines.join("\n");
-                              try {
-                                navigator.clipboard.writeText(t).then(function () { showAlert("Copied validation details to clipboard."); }).catch(function () { showAlert(t); });
-                              } catch (e) {
-                                showAlert(t);
-                              }
-                            }}>Copy debug details</Btn>
+                    })()}
+                    {(function () {
+                      var snaps = S.get("tc3_financial_snapshots", []);
+                      if (!Array.isArray(snaps) || snaps.length === 0) return null;
+                      var idx = Math.max(0, Math.min(snapValIdx || 0, snaps.length - 1));
+                      return (
+                        <div className="erp-acct-snap-validate">
+                          <div className="erp-acct-snap-validate-title">Validate snapshot</div>
+                          <div className="erp-acct-inline">
+                            <select
+                              className="erp-acct-select grow"
+                              value={idx}
+                              onChange={function (e) { setSnapValIdx(parseInt(e.target.value, 10) || 0); setSnapValResult(null); }}
+                            >
+                              {snaps.map(function (s, i) {
+                                var lab = (s.label || s.id || "snapshot").slice(0, 48);
+                                var when = (s.createdAt || "").slice(0, 19);
+                                return (
+                                  <option key={(s.id || i) + "_" + i} value={i}>{when + " — " + lab}</option>
+                                );
+                              })}
+                            </select>
+                            <Btn
+                              col="gray"
+                              disabled={snapValBusy}
+                              onClick={function () {
+                                var list = S.get("tc3_financial_snapshots", []);
+                                var pick = list[idx];
+                                if (!pick) return;
+                                setSnapValBusy(true);
+                                setSnapValResult(null);
+                                validateSnapshotIntegrityFull(pick).then(function (r) {
+                                  setSnapValBusy(false);
+                                  setSnapValResult(r);
+                                }).catch(function () {
+                                  setSnapValBusy(false);
+                                  setSnapValResult({ ok: false, tampered: true, reason: "validate_error" });
+                                });
+                              }}
+                            >
+                              {snapValBusy ? "Checking…" : "Validate"}
+                            </Btn>
                           </div>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
-            </div>
-          </Card>
+                          {snapValResult ? (
+                            <div className="erp-acct-snap-result">
+                              <div className={"erp-acct-snap-box" + (snapValResult.tampered ? " is-bad" : " is-ok")}>
+                                <div className="erp-acct-snap-box-title">{(snapValResult.tampered ? "Tampered or invalid — " : "Valid — ") + (snapValResult.reason || "")}</div>
+                                {snapValResult.snapshotCreatedAt ? <div>Snapshot time: {snapValResult.snapshotCreatedAt}</div> : null}
+                                {snapValResult.snapshotPeriodDate ? <div>Period / as-of: {snapValResult.snapshotPeriodDate}</div> : null}
+                                {snapValResult.recomputedContentHashShort ? <div>Content hash (recomputed): {snapValResult.recomputedContentHashShort}</div> : null}
+                                {snapValResult.storedContentHashShort ? <div>Content hash (stored): {snapValResult.storedContentHashShort}</div> : null}
+                                {snapValResult.storedIntegrityHmacShort ? <div>HMAC (stored): {snapValResult.storedIntegrityHmacShort}</div> : null}
+                                {snapValResult.canonicalBodyLength != null ? <div>Canonical body length: {snapValResult.canonicalBodyLength}</div> : null}
+                                {snapValResult.matched ? <div>Matched: {snapValResult.matched}</div> : null}
+                                {snapValResult.legacy ? <div>(Legacy snapshot — hash-only seal)</div> : null}
+                              </div>
+                              <Btn sm col="gray" onClick={function () {
+                                var r = snapValResult;
+                                var lines = [
+                                  "TechonERP snapshot validation",
+                                  "reason: " + (r.reason || ""),
+                                  "tampered: " + !!r.tampered,
+                                  "snapshotId: " + (r.snapshotId || ""),
+                                  "createdAt: " + (r.snapshotCreatedAt || ""),
+                                  "periodDate: " + (r.snapshotPeriodDate || ""),
+                                  "recomputedHash: " + (r.expectedContentHash || r.recomputedContentHashShort || ""),
+                                  "storedHash: " + (r.storedContentHashValue || r.storedContentHash || ""),
+                                  "storedHmac: " + (r.storedIntegrityHmac || ""),
+                                  "canonicalLen: " + (r.canonicalBodyLength != null ? r.canonicalBodyLength : ""),
+                                ];
+                                var t = lines.join("\n");
+                                try {
+                                  navigator.clipboard.writeText(t).then(function () { showAlert("Copied validation details to clipboard."); }).catch(function () { showAlert(t); });
+                                } catch (e) {
+                                  showAlert(t);
+                                }
+                              }}>Copy debug details</Btn>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+
+              <button type="button" className="erp-acct-save" onClick={saveAccountingSettings}>Save Accounting Settings</button>
+            </Card>
+          </div>
         </div>
       )}
 
@@ -3251,612 +3482,382 @@ var Settings = function (props) {
         </Modal>
       )}
 
-      {stab === "security" && (
-        <div className="erp-set-stack">
-
-          {/* ── UNIFIED SECURITY SETTINGS CARD ── */}
-          <Card>
-            <CardTitle sub="Manage login, PIN, auto-lock and administrator settings">Security Settings</CardTitle>
-            <div style={{ display: "flex", flexDirection: "column", gap: 18, maxWidth: 480 }}>
-              {showSupportPinResetHint && (
-                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, background: "linear-gradient(135deg,#e0f2fe,#dbeafe)", border: "1.5px solid #7dd3fc", borderRadius: 12, padding: "12px 16px", fontSize: 13, color: "#0369a1", fontWeight: 600, textAlign: "left", lineHeight: 1.5 }}>
-                  <span>🔑 <strong>Set a new Admin PIN</strong> below (support unlock). Then tap <strong>Update Settings</strong>.</span>
-                  <button type="button" onClick={function () { setShowSupportPinResetHint(false); }} style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: "#0369a1", background: "rgba(255,255,255,0.7)", border: "1px solid #7dd3fc", borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>Dismiss</button>
-                </div>
-              )}
-              {showAppPasswordResetHint && (
-                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, background: "linear-gradient(135deg,#ecfdf5,#d1fae5)", border: "1.5px solid #6ee7b7", borderRadius: 12, padding: "12px 16px", fontSize: 13, color: "#047857", fontWeight: 600, textAlign: "left", lineHeight: 1.5 }}>
-                  <span>🔐 <strong>Set a new login password</strong> in <strong>Change Login Password</strong> below (support unlock). Leave <strong>Current Password</strong> empty for this one-time reset. Then tap <strong>Update Settings</strong>.</span>
-                  <button type="button" onClick={function () { setShowAppPasswordResetHint(false); }} style={{ flexShrink: 0, fontSize: 11, fontWeight: 800, color: "#047857", background: "rgba(255,255,255,0.7)", border: "1px solid #6ee7b7", borderRadius: 8, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit" }}>Dismiss</button>
-                </div>
-              )}
-
-              {/* Password on launch toggle */}
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Login Protection</div>
-                <div style={{ background: "#f8fafc", border: "1.5px solid " + C.border, borderRadius: 10, padding: "14px 16px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>🔒 Require Password on Launch</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
-                        {f.requirePasswordOnLogin !== false ? "Password screen shown every time the app opens" : "App opens directly — no password required"}
-                      </div>
-                    </div>
-                    <button onClick={function () { setF(function (x) { return Object.assign({}, x, { requirePasswordOnLogin: x.requirePasswordOnLogin === false ? true : false }); }); }}
-                      style={{ flexShrink: 0, width: 48, height: 27, borderRadius: 14, border: "none", cursor: "pointer",
-                        background: f.requirePasswordOnLogin !== false ? C.accent : "#cbd5e1", position: "relative", transition: "background 0.2s" }}>
-                      <div style={{ position: "absolute", top: 3, width: 21, height: 21, borderRadius: 11, background: "#fff",
-                        boxShadow: "0 1px 4px rgba(0,0,0,0.25)", transition: "left 0.2s",
-                        left: f.requirePasswordOnLogin !== false ? 24 : 3 }} />
-                    </button>
-                  </div>
-                  {f.requirePasswordOnLogin === false && (
-                    <div style={{ marginTop: 10, background: "#fef9c3", border: "1px solid #fde68a", borderRadius: 7, padding: "8px 12px", fontSize: 11, color: "#92400e" }}>
-                      ⚠️ Password protection is <strong>disabled</strong>. App will open without asking for a password.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div style={{ borderTop: "1px solid " + C.border }} />
-
-              {/* Admin name */}
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Administrator Name</div>
-                <Input compact={denseWiz} label="Name shown in sidebar" value={adminNameEdit} onChange={function (e) { setAdminNameEdit(e.target.value); }} placeholder="e.g. Rashid" />
-              </div>
-
-              <div style={{ borderTop: "1px solid " + C.border }} />
-
-              {!COMPUTER_SHOP_EDITION ? (
-              <React.Fragment>
-              {/* Admin PIN */}
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Admin PIN</div>
-                <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 9, padding: "10px 14px", fontSize: 12, color: "#92400e", fontWeight: 600, marginBottom: 10 }}>
-                  🔐 This PIN switches from Sales Mode to Admin Mode. Use 4–6 digits.
-                </div>
-                <Input compact={denseWiz} label="Admin PIN (4–6 digits)" type="password" value={f.adminPin || ""} onChange={function (e) { var v = e.target.value.replace(/\D/g, "").slice(0, 6); setF(function (x) { return Object.assign({}, x, { adminPin: v }); }); }} placeholder="Enter 4–6 digit PIN..." />
-                {f.adminPin && f.adminPin.length >= 4 && (
-                  <div style={{ background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 8, padding: "8px 14px", fontSize: 12, color: "#065f46", fontWeight: 700, marginTop: 8 }}>
-                    ✅ PIN set{f.adminPin.startsWith && f.adminPin.startsWith("sha256:") ? " (secured)" : " — " + f.adminPin.length + " digits"}
-                  </div>
-                )}
-                {f.adminPin && f.adminPin.length > 0 && f.adminPin.length < 4 && (
-                  <div style={{ fontSize: 12, color: C.red, fontWeight: 600, marginTop: 6 }}>PIN must be at least 4 digits.</div>
-                )}
-              </div>
-
-              <div style={{ borderTop: "1px solid " + C.border }} />
-
-              {/* Auto-lock */}
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Auto-Lock</div>
-                <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer", padding: "12px 14px", borderRadius: 10, border: "1.5px solid " + (f.autoLockEnabled ? C.blue : C.border), background: f.autoLockEnabled ? C.accentSoft : "#fafbff", marginBottom: 10 }}>
-                  <input type="checkbox" checked={f.autoLockEnabled !== false} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { autoLockEnabled: e.target.checked }); }); }} style={{ width: 16, height: 16, accentColor: C.blue }} />
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: f.autoLockEnabled ? C.blue : C.textMd }}>Enable Auto-Lock</div>
-                    <div style={{ fontSize: 12, color: C.muted }}>Automatically lock to Sales Mode after inactivity</div>
-                  </div>
-                </label>
-                {f.autoLockEnabled !== false && (
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <input type="number" min="1" max="120" value={f.autoLockMinutes || 10}
-                      onChange={function (e) { var v = Math.max(1, Math.min(120, parseInt(e.target.value) || 1)); setF(function (x) { return Object.assign({}, x, { autoLockMinutes: v }); }); }}
-                      style={{ width: 90, border: "1.5px solid " + C.border, borderRadius: 9, padding: "9px 14px", fontSize: 16, fontWeight: 700, outline: "none", fontFamily: "inherit", color: C.text, textAlign: "center" }} />
-                    <span style={{ fontSize: 13, color: C.muted, fontWeight: 600 }}>minutes of inactivity (1 – 120)</span>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ borderTop: "1px solid " + C.border }} />
-              </React.Fragment>
-              ) : null}
-
-              {/* Change password */}
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Change Login Password</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ background: C.accentSoft, borderRadius: 9, padding: "9px 14px", fontSize: 12, color: C.accent }}>
-                    Leave these blank if you don't want to change your password.
-                  </div>
-                  {pwMsg && (
-                    <div style={{ background: pwMsg.type === "error" ? C.dangerSoft : C.successSoft, color: pwMsg.type === "error" ? C.red : C.green, borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600 }}>{pwMsg.text}</div>
-                  )}
-                  <Input compact={denseWiz} label="Current Password" type="password" value={pwOld} onChange={function (e) { setPwOld(e.target.value); setPwMsg(null); }} placeholder="Enter current password..." />
-                  <Input compact={denseWiz} label="New Password" type="password" value={pwNew} onChange={function (e) { setPwNew(e.target.value); setPwMsg(null); }} placeholder="Min 4 characters..." />
-                  <Input compact={denseWiz} label="Confirm New Password" type="password" value={pwNew2} onChange={function (e) { setPwNew2(e.target.value); setPwMsg(null); }} placeholder="Repeat new password..." />
-                </div>
-              </div>
-
-              {/* Single save button */}
-              <Btn col="blue" full onClick={function () {
-                /* Validate PIN */
-                if (f.adminPin && f.adminPin.length > 0 && f.adminPin.length < 4) {
-                  showAlert("PIN must be at least 4 digits."); return;
-                }
-                /* Validate admin name */
-                if (adminNameEdit && adminNameEdit.trim().length < 2) {
-                  showAlert("Administrator name must be at least 2 characters."); return;
-                }
-                /* Handle password change if fields filled */
-                if (pwNew || pwOld) {
-                  var current = S.get("tc3_apppass", "");
-                  var allowNoOld = false;
-                  try { allowNoOld = sessionStorage.getItem("tc3_allow_login_pw_reset_without_old") === "1"; } catch (e) {}
-                  if (!pwNew || pwNew.length < 4) { setPwMsg({ type: "error", text: "New password must be at least 4 characters." }); return; }
-                  if (pwNew !== pwNew2) { setPwMsg({ type: "error", text: "Passwords do not match." }); return; }
-                  if (allowNoOld) {
-                    hashPw(pwNew).then(function (hashed) {
-                      if (typeof setLoginPassword === "function") {
-                        setLoginPassword(hashed, { username: "admin" });
-                      } else {
-                        S.set("tc3_apppass", hashed);
-                      }
-                      try { sessionStorage.removeItem("tc3_allow_login_pw_reset_without_old"); } catch (e2) {}
-                      setPwOld(""); setPwNew(""); setPwNew2("");
-                      setShowAppPasswordResetHint(false);
-                      setPwMsg({ type: "success", text: "Password changed!" });
-                    });
-                    return;
-                  }
-                  /* Verify old password async then save hashed new */
-                  pwMatchesAsync(pwOld, current).then(function (oldOk) {
-                    if (current && !oldOk) { setPwMsg({ type: "error", text: "Current password incorrect." }); return; }
-                    hashPw(pwNew).then(function (hashed) {
-                      if (typeof setLoginPassword === "function") {
-                        setLoginPassword(hashed, { username: "admin" });
-                      } else {
-                        S.set("tc3_apppass", hashed);
-                      }
-                      setPwOld(""); setPwNew(""); setPwNew2("");
-                      setPwMsg({ type: "success", text: "Password changed!" });
-                    });
-                  });
-                  return; /* settings save happens after async completes via normal flow */
-                }
-                /* Save admin name */
-                if (adminNameEdit && adminNameEdit.trim().length >= 2) {
-                  S.set("tc3_admin_name", adminNameEdit.trim());
-                }
-                /* Hash PIN before saving to settings */
-                var saveSettingsWithPin = function (pinToSave) {
-                  var ns = Object.assign({}, state.settings, f, {
-                    adminPin: pinToSave,
-                    autoLockEnabled: f.autoLockEnabled !== false,
-                    autoLockMinutes: f.autoLockMinutes || 10,
-                    requirePasswordOnLogin: f.requirePasswordOnLogin !== false
-                  });
-                  S.set("tc3_settings", ns);
-                  setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-                  showAlert("✅ Settings updated successfully!");
-                };
-                var rawPin = f.adminPin || "";
-                if (rawPin && rawPin.length >= 4 && !rawPin.startsWith("sha256:")) {
-                  hashPw(rawPin).then(function (hashedPin) { saveSettingsWithPin(hashedPin); });
-                } else {
-                  saveSettingsWithPin(rawPin);
-                }
-              }}>💾 Update Settings</Btn>
-
-            </div>
-          </Card>
-
-        </div>
-      )}
-
-
       {stab === "network" && isNetworkClient && (
-        <div className="erp-set-stack">
-          <Card>
-            <CardTitle sub="Counter terminal sync">Sync status</CardTitle>
-            <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
-              Products, invoices, and customers sync from the main PC every few seconds. Changes you make here (sales, customers) sync back to the main PC automatically.
-              Counter sidebar modules and complimentary free items are configured on this counter PC under <strong>Settings → Modules</strong> (main PC password required).
-            </div>
-          </Card>
-          <Card>
-            <CardTitle sub="POS terminal connection">Network</CardTitle>
-            {(function () {
-              var st = clientConnStatus;
-              var row = { emoji: "🟡", bg: "#f0f4ff", border: C.border, title: "Checking connection…" };
-              if (clientNetBusy) {
-                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: clientNetStep || "Connecting…" };
-              } else if (st === "connected") {
-                row = { emoji: "🟢", bg: "#e6f7f2", border: "#9ee8ce", title: "Connected to server" };
-              } else if (st === "disconnected") {
-                row = { emoji: "🔴", bg: "#fde8ed", border: "#f9a8ba", title: "Cannot reach server" };
-              } else if (st === "reconnecting") {
-                row = { emoji: "🟡", bg: "#fef3c7", border: "#fcd34d", title: "Reconnecting…" };
-              }
-              return (
-                <div
-                  title={row.title}
-                  style={{
-                    display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6,
-                    marginBottom: 12, padding: "10px 14px", borderRadius: 10,
-                    border: "1.5px solid " + row.border, background: row.bg,
-                  }}
-                >
-                  <span style={{ fontSize: 20, lineHeight: 1 }} aria-hidden="true">{row.emoji}</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{row.title}</span>
+        <div className="erp-net-page">
+          <div className="erp-net-wrap">
+            <Card className="erp-net-card">
+              <div className="erp-net-brand is-client">
+                <div className="erp-net-brand-ico" aria-hidden="true">💻</div>
+                <div className="erp-net-brand-text">
+                  <div className="erp-net-title">Counter Network</div>
+                  <div className="erp-net-sub">Products and invoices sync from the main PC</div>
                 </div>
-              );
-            })()}
-            {(systemConfig && systemConfig.apiUrl) ? (
-              <div style={{ background: "#f0f4ff", border: "1.5px solid #c7d8ff", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-                  Current server (read-only)
+                {(function () {
+                  var st = clientConnStatus;
+                  var label = "Checking…";
+                  var cls = "is-warn";
+                  if (clientNetBusy) { label = clientNetStep || "Connecting…"; cls = "is-warn"; }
+                  else if (st === "connected") { label = "Connected"; cls = "is-server"; }
+                  else if (st === "disconnected") { label = "Offline"; cls = "is-offline"; }
+                  else if (st === "reconnecting") { label = "Reconnecting…"; cls = "is-warn"; }
+                  return <span className={"erp-net-badge " + cls}>{label}</span>;
+                })()}
+              </div>
+
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">Connection</div>
+                {(systemConfig && systemConfig.apiUrl) ? (
+                  <div className="erp-net-cred is-url">
+                    <div className="erp-net-cred-label">Current server</div>
+                    <code className="erp-net-cred-val">{systemConfig.apiUrl}</code>
+                  </div>
+                ) : null}
+                <div className="erp-net-form">
+                  <Input label="Network Address" value={clientNetUrl} onChange={function (e) { setClientNetUrl(e.target.value); setClientNetErr(null); }} placeholder="http://192.168.1.100/api/" readOnly={!!(systemConfig && systemConfig.apiUrl && clientConnStatus === "connected")} />
+                  <Input label="Security Key" value={clientNetKey} onChange={function (e) { setClientNetKey(e.target.value); setClientNetErr(null); }} placeholder="Key from server PC" />
                 </div>
-                <div style={{ fontFamily: "monospace", fontSize: 12, color: C.blue, fontWeight: 700, wordBreak: "break-all" }}>
-                  {systemConfig.apiUrl}
+                {clientNetErr ? <div className="erp-net-err">{clientNetErr}</div> : null}
+                <div className="erp-net-actions">
+                  <Btn col="blue" onClick={clientConnectToServer} disabled={clientNetBusy || clientConnStatus === "reconnecting"}>{clientNetBusy ? "Connecting…" : "Connect to Server"}</Btn>
+                  <Btn col="cyan" onClick={function () { window.location.reload(); }} disabled={clientNetBusy || clientConnStatus === "reconnecting"}>Reconnect</Btn>
+                  <Btn col="orange" onClick={function () {
+                    showConfirm("Are you sure you want to reset connection?\n\nThis will disconnect from server and require setup again.", function () {
+                      if (tcIsDevEnv()) {
+                        try { console.info("[TC_CLIENT] reset connection confirmed"); } catch (e) {}
+                      }
+                      var api = window.electronAPI;
+                      if (api && api.resetNetworkConfig) {
+                        api.resetNetworkConfig().then(function () {
+                          try { sessionStorage.clear(); } catch (e) {}
+                          window.location.reload();
+                        });
+                      }
+                    });
+                  }} disabled={clientNetBusy}>Reset Connection</Btn>
                 </div>
               </div>
-            ) : null}
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
-              Enter the server address and security key from your main PC. Other settings are managed on the server.
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, maxWidth: 560 }}>
-              <Input label="Network Address" value={clientNetUrl} onChange={function (e) { setClientNetUrl(e.target.value); setClientNetErr(null); }} placeholder="http://192.168.1.100/api/" readOnly={!!(systemConfig && systemConfig.apiUrl && clientConnStatus === "connected")} />
-              <Input label="Security Key" value={clientNetKey} onChange={function (e) { setClientNetKey(e.target.value); setClientNetErr(null); }} placeholder="Key from server PC" />
-            </div>
-            {clientNetErr ? <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600 }}>{clientNetErr}</div> : null}
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
-              <Btn col="blue" onClick={clientConnectToServer} disabled={clientNetBusy || clientConnStatus === "reconnecting"}>{clientNetBusy ? "Connecting…" : "Connect to Server"}</Btn>
-              <Btn col="cyan" onClick={function () { window.location.reload(); }} disabled={clientNetBusy || clientConnStatus === "reconnecting"}>Reconnect</Btn>
-              <Btn col="orange" onClick={function () {
-                showConfirm("Are you sure you want to reset connection?\n\nThis will disconnect from server and require setup again.", function () {
-                  if (tcIsDevEnv()) {
-                    try { console.info("[TC_CLIENT] reset connection confirmed"); } catch (e) {}
-                  }
-                  var api = window.electronAPI;
-                  if (api && api.resetNetworkConfig) {
-                    api.resetNetworkConfig().then(function () {
-                      try { sessionStorage.clear(); } catch (e) {}
-                      window.location.reload();
-                    });
-                  }
-                });
-              }} disabled={clientNetBusy}>Reset Connection</Btn>
-            </div>
-          </Card>
-          <Card>
-            <CardTitle sub="Register this counter as a trusted device">Device Authentication</CardTitle>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
-              Status: <strong style={{ color: C.text }}>{deviceCredStatus || "none"}</strong>.
-              {" "}Use the legacy security key until approved, then this PC switches to device credentials automatically.
-            </div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Btn col="blue" disabled={deviceRegBusy} onClick={function () {
-                var api = window.electronAPI;
-                if (!api || !api.registerDevice) { showAlert("Device registration not available."); return; }
-                setDeviceRegBusy(true);
-                api.registerDevice({ device_name: "Counter PC" }).then(function (r) {
-                  if (r && r.ok) {
-                    showAlert("Registration sent. Ask the administrator to approve this device on the Main PC.");
-                    setDeviceCredStatus("pending");
-                  } else showAlert((r && r.message) || "Registration failed");
-                }).finally(function () { setDeviceRegBusy(false); });
-              }}>{deviceRegBusy ? "Sending…" : "Register Device"}</Btn>
-              <Btn col="green" disabled={deviceRegBusy} onClick={function () {
-                var api = window.electronAPI;
-                if (!api || !api.pollDeviceStatus) return;
-                setDeviceRegBusy(true);
-                api.pollDeviceStatus().then(function (r) {
-                  if (r && r.ok) {
-                    setDeviceCredStatus(r.status || "unknown");
-                    if (r.status === "approved" && r.has_secret) showAlert("Device approved — secure credentials saved.");
-                    else if (r.status === "pending") showAlert("Still awaiting administrator approval.");
-                    else showAlert("Status: " + (r.status || "unknown"));
-                  } else showAlert((r && r.message) || "Could not check status");
-                }).finally(function () { setDeviceRegBusy(false); });
-              }}>Check Approval</Btn>
-            </div>
-          </Card>
+
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">Device Authentication</div>
+                <div className="erp-net-hint">
+                  Status: <strong>{deviceCredStatus || "none"}</strong>. Use the security key until approved, then this PC switches to device credentials.
+                </div>
+                <div className="erp-net-actions">
+                  <Btn col="blue" disabled={deviceRegBusy} onClick={function () {
+                    var api = window.electronAPI;
+                    if (!api || !api.registerDevice) { showAlert("Device registration not available."); return; }
+                    setDeviceRegBusy(true);
+                    api.registerDevice({ device_name: "Counter PC" }).then(function (r) {
+                      if (r && r.ok) {
+                        showAlert("Registration sent. Ask the administrator to approve this device on the Main PC.");
+                        setDeviceCredStatus("pending");
+                      } else showAlert((r && r.message) || "Registration failed");
+                    }).finally(function () { setDeviceRegBusy(false); });
+                  }}>{deviceRegBusy ? "Sending…" : "Register Device"}</Btn>
+                  <Btn col="green" disabled={deviceRegBusy} onClick={function () {
+                    var api = window.electronAPI;
+                    if (!api || !api.pollDeviceStatus) return;
+                    setDeviceRegBusy(true);
+                    api.pollDeviceStatus().then(function (r) {
+                      if (r && r.ok) {
+                        setDeviceCredStatus(r.status || "unknown");
+                        if (r.status === "approved" && r.has_secret) showAlert("Device approved — secure credentials saved.");
+                        else if (r.status === "pending") showAlert("Still awaiting administrator approval.");
+                        else showAlert("Status: " + (r.status || "unknown"));
+                      } else showAlert((r && r.message) || "Could not check status");
+                    }).finally(function () { setDeviceRegBusy(false); });
+                  }}>Check Approval</Btn>
+                </div>
+              </div>
+            </Card>
+          </div>
         </div>
       )}
 
       {stab === "network" && isNetworkServer && (
-        <div className="erp-set-stack">
+        <div className="erp-net-page">
+          <div className="erp-net-wrap">
+            <Card className="erp-net-card">
+              <div className="erp-net-brand">
+                <div className="erp-net-brand-ico" aria-hidden="true">🗄️</div>
+                <div className="erp-net-brand-text">
+                  <div className="erp-net-title">Network Server</div>
+                  <div className="erp-net-sub">This PC stores shop data in local MySQL (XAMPP)</div>
+                </div>
+                <span className="erp-net-badge is-server">Server</span>
+              </div>
 
-          {/* ── Mode & Status ── */}
-          <Card>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-              <div style={{ width: 42, height: 42, borderRadius: 12, background: "#e6f7f2", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>
-                🗄️
-              </div>
-              <div>
-                <div style={{ fontSize: 16, fontWeight: 900, color: C.text, letterSpacing: "-0.01em" }}>
-                  Network Server Mode
-                </div>
-                <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
-                  This PC stores all shop data in local MySQL (XAMPP)
-                </div>
-              </div>
-              <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, background: "#e6f7f2", border: "1px solid #0f9e6e", borderRadius: 20, padding: "4px 12px" }}>
-                <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#0f9e6e" }}></div>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "#0f9e6e" }}>
-                  Server
-                </span>
-              </div>
-            </div>
-
-            {/* API URL row */}
-            <div style={{ background: "#f0f4ff", border: "1.5px solid #c7d8ff", borderRadius: 10, padding: "12px 16px", marginBottom: 10 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-                Server API URL (share with client PCs)
-              </div>
-              <div style={{ fontFamily: "monospace", fontSize: 13, color: C.blue, fontWeight: 700, wordBreak: "break-all" }}>
-                {systemConfig.apiUrl || "Not configured"}
-              </div>
-              {systemConfig.apiUrl && (
-                <button onClick={function () { try { navigator.clipboard.writeText(systemConfig.apiUrl); showAlert("API URL copied to clipboard!"); } catch (e) {} }}
-                  style={{ marginTop: 8, background: C.blue, color: "#fff", border: "none", borderRadius: 6, padding: "4px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                  📋 Copy URL
-                </button>
-              )}
-            </div>
-
-            {/* Security Key row */}
-            {systemConfig.apiKey && (
-              <div style={{ background: "#fef3e2", border: "1.5px solid #fcd34d", borderRadius: 10, padding: "12px 16px", marginBottom: 14 }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-                  🔑 Security Key (install on each client PC)
-                </div>
-                <div style={{ fontFamily: "monospace", fontSize: 12, color: "#78350f", fontWeight: 700, wordBreak: "break-all", letterSpacing: "0.04em" }}>
-                  {systemConfig.apiKey}
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button onClick={function () { try { navigator.clipboard.writeText(systemConfig.apiKey); showAlert("Security key copied to clipboard!"); } catch (e) {} }}
-                    style={{ background: "#e07a10", color: "#fff", border: "none", borderRadius: 6, padding: "4px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                    📋 Copy Key
-                  </button>
-                  <span style={{ fontSize: 11, color: "#92400e", lineHeight: "26px" }}>Keep this secret — do not share publicly</span>
-                </div>
-              </div>
-            )}
-
-            {/* Role details */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              {[
-                { label: "System Mode", value: "Network" },
-                { label: "Role", value: "Main Server" },
-                { label: "Data Storage", value: "Local MySQL (XAMPP)" },
-                { label: "ERP Access", value: "Full ERP" },
-              ].map(function (row) {
-                return (
-                  <div key={row.label} style={{ background: "#f8faff", border: "1px solid " + C.border, borderRadius: 8, padding: "10px 12px" }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>{row.label}</div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{row.value}</div>
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">Credentials</div>
+                <div className="erp-net-creds">
+                  <div className="erp-net-cred is-url">
+                    <div className="erp-net-cred-label">Server API URL</div>
+                    <div className="erp-net-cred-row">
+                      <code className="erp-net-cred-val">{systemConfig.apiUrl || "Not configured"}</code>
+                      {systemConfig.apiUrl ? (
+                        <button
+                          type="button"
+                          className="erp-net-copy"
+                          onClick={function () { try { navigator.clipboard.writeText(systemConfig.apiUrl); showAlert("API URL copied to clipboard!"); } catch (e) {} }}
+                        >
+                          Copy URL
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="erp-net-cred-hint">Share with client PCs</div>
                   </div>
-                );
-              })}
-            </div>
-          </Card>
 
-          <Card>
-              <CardTitle sub="Cloud is source of truth for license">License Sync</CardTitle>
-              {(function () {
-                var isTrialMode = !!(licenseInfo && licenseInfo.status === "trial");
-                var maxClientsRaw = isTrialMode ? 2 : ((licenseInfo && licenseInfo.maxClients != null) ? licenseInfo.maxClients : clientSlots.max_clients);
-                var maxClients = Number(maxClientsRaw) || 0;
-                var connectedCount = Number(clientSlots.connected) || 0;
-                maxClients = Math.max(0, maxClients);
-                connectedCount = Math.max(0, connectedCount);
-                var noClientsAllowed = maxClients === 0;
-                var connectedText = connectedCount + " / " + (noClientsAllowed ? "Not Allowed" : String(maxClients));
-                return (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                <div style={{ fontSize: 12, color: C.muted }}>
-                  Allowed PCs:{" "}
-                  {isTrialMode ? (
-                    <span style={{ marginLeft: 2, display: "inline-block", padding: "1px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.2, color: "#1d4ed8", background: "#dbeafe", border: "1px solid #bfdbfe" }}>
-                      2 (Trial)
-                    </span>
-                  ) : noClientsAllowed ? (
-                    <span style={{ marginLeft: 2, display: "inline-block", padding: "1px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.2, color: "#7f1d1d", background: "#fee2e2", border: "1px solid #fecaca" }}>
-                      Not Allowed
-                    </span>
-                  ) : (
-                    <span style={{ marginLeft: 2, display: "inline-block", padding: "1px 7px", borderRadius: 999, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.2, color: "#334155", background: "#e2e8f0", border: "1px solid #cbd5e1" }}>
-                      {String(maxClients)}
-                    </span>
-                  )}
-                  {" · "}Connected PCs: <strong style={{ color: C.text }}>{connectedText}</strong>
-                  {(licenseInfo && licenseInfo.lastSuccessfulSyncTime) ? (
-                    <span>{" · "}Last sync: <strong style={{ color: C.text }}>{(function () { var dt = new Date(parseInt(licenseInfo.lastSuccessfulSyncTime, 10)); return isNaN(dt.getTime()) ? "-" : dt.toLocaleString(); })()}</strong></span>
-                  ) : null}
-                  {isTrialMode ? (
-                    <div style={{ marginTop: 5, fontSize: 11, color: C.muted }}>
-                      Upgrade license to add more PCs.
+                  {systemConfig.apiKey ? (
+                    <div className="erp-net-cred is-key">
+                      <div className="erp-net-cred-label">Security Key</div>
+                      <div className="erp-net-cred-row">
+                        <code className="erp-net-cred-val">{systemConfig.apiKey}</code>
+                        <button
+                          type="button"
+                          className="erp-net-copy is-amber"
+                          onClick={function () { try { navigator.clipboard.writeText(systemConfig.apiKey); showAlert("Security key copied to clipboard!"); } catch (e) {} }}
+                        >
+                          Copy Key
+                        </button>
+                      </div>
+                      <div className="erp-net-cred-hint is-warn">Keep secret — do not share publicly</div>
                     </div>
                   ) : null}
                 </div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <Btn sm col="cyan" onClick={refreshConnectedClients} disabled={clientSlotsBusy}>🔄 Refresh PCs</Btn>
-                  <Btn sm col="blue" onClick={function () {
-                    var api = window.electronAPI;
-                    if (!api || !api.syncLicenseNow) { showAlert("License sync API is not available."); return; }
-                    setLicSyncBusy(true);
-                    api.syncLicenseNow().then(function (r) {
-                      if (r && r.ok) showAlert("✅ License synced from cloud.\nMax clients: " + (r.max_clients != null ? r.max_clients : "—"));
-                      else showAlert("Sync failed: " + ((r && r.message) || "Unknown error"));
-                    }).finally(function () { setLicSyncBusy(false); refreshConnectedClients(); });
-                  }} disabled={licSyncBusy}>☁️ Sync License</Btn>
-                </div>
-              </div>
-                );
-              })()}
-              <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 10 }}>
-                If a PC was reformatted/replaced, remove the old device to free a slot.
-              </div>
-
-              <div style={{ border: "1px solid " + C.border, borderRadius: 8, overflow: "hidden" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                  <thead><tr style={{ background: "#f8faff" }}><th style={{ textAlign: "left", padding: "8px 10px" }}>Admin label</th><th style={{ textAlign: "left", padding: "8px 10px" }}>Reported name</th><th style={{ textAlign: "left", padding: "8px 10px" }}>Device ID</th><th style={{ textAlign: "left", padding: "8px 10px" }}>Last seen</th><th style={{ textAlign: "right", padding: "8px 10px" }}>Action</th></tr></thead>
-                  <tbody>
-                    {(clientSlots.clients || []).map(function (c, i) {
-                      var dk = c.device_id || "";
-                      var draftVal = clientLabelDrafts[dk] !== undefined ? clientLabelDrafts[dk] : (c.client_label != null ? String(c.client_label) : "");
-                      return (
-                        <tr key={(c.device_id || "") + "-" + i} style={{ borderTop: "1px solid " + C.borderLight }}>
-                          <td style={{ padding: "8px 10px", minWidth: 160 }}>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0, flex: "1 1 120px" }}>
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                              <input
-                                value={draftVal}
-                                onChange={function (e) {
-                                  var v = e.target.value;
-                                  setClientLabelDrafts(function (prev) { var n = Object.assign({}, prev); n[dk] = v; return n; });
-                                }}
-                                placeholder="e.g. Counter 1"
-                                style={{
-                                  flex: "1 1 120px",
-                                  minWidth: 100,
-                                  padding: "5px 8px",
-                                  borderRadius: 6,
-                                  border: clientLabelFlashDk === dk ? "2px solid #f59e0b" : "1px solid " + C.border,
-                                  fontSize: 12,
-                                  boxShadow: clientLabelFlashDk === dk ? "0 0 0 3px rgba(245,158,11,0.25)" : "none",
-                                  transition: "border-color .2s ease, box-shadow .2s ease",
-                                }}
-                              />
-                              <Btn sm col="blue" onClick={function () {
-                                var api = window.electronAPI;
-                                if (!api || !api.setConnectedClientLabel) { showAlert("Label update is not available."); return; }
-                                var v = clientLabelDrafts[dk] !== undefined ? clientLabelDrafts[dk] : (c.client_label || "");
-                                api.setConnectedClientLabel({ deviceId: c.device_id, clientLabel: v }).then(function (r) {
-                                  if (r && r.ok) {
-                                    showAlert((r && r.message) ? String(r.message) : "Label saved.");
-                                    if (r.labelAdjusted && r.clientLabel != null && String(r.clientLabel).length) {
-                                      setClientLabelDrafts(function (prev) { var n = Object.assign({}, prev); n[dk] = String(r.clientLabel); return n; });
-                                      setClientLabelFlashDk(dk);
-                                      setClientLabelAdjustedHintDk(dk);
-                                      setTimeout(function () {
-                                        setClientLabelFlashDk(null);
-                                        setClientLabelAdjustedHintDk(null);
-                                      }, 2000);
-                                    }
-                                    refreshConnectedClients();
-                                  } else {
-                                    showAlert((r && r.message) || "Could not save label.");
-                                  }
-                                });
-                              }}>Save</Btn>
-                            </div>
-                            {clientLabelAdjustedHintDk === dk ? (
-                              <div style={{ fontSize: 10, fontWeight: 600, color: "#b45309" }}>Adjusted to avoid duplicate</div>
-                            ) : null}
-                            </div>
-                          </td>
-                          <td style={{ padding: "8px 10px", fontWeight: 600, color: C.textMd }}>{c.device_name || "—"}</td>
-                          <td style={{ padding: "8px 10px", fontFamily: "monospace", color: C.muted, fontSize: 11 }}>{c.device_id || "-"}</td>
-                          <td style={{ padding: "8px 10px", color: C.text }}>{c.last_seen || "-"}</td>
-                          <td style={{ padding: "8px 10px", textAlign: "right" }}>
-                            <button onClick={function () {
-                              var api = window.electronAPI;
-                              if (!api || !api.removeConnectedClient) return;
-                              showConfirm("Remove this client slot?\n\n" + (c.device_name || c.device_id || "Client"), function () {
-                                api.removeConnectedClient({ deviceId: c.device_id }).then(function (r) {
-                                  if (r && r.ok) showAlert("Client removed.");
-                                  else showAlert("Remove failed: " + ((r && r.message) || "Unknown error"));
-                                  refreshConnectedClients();
-                                });
-                              });
-                            }} style={{ background: "#fee2e2", color: "#b91c1c", border: "1px solid #fecaca", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontWeight: 700, fontSize: 11 }}>Remove</button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {(!clientSlots.clients || clientSlots.clients.length === 0) && (
-                      <tr><td colSpan={5} style={{ padding: 14, color: C.muted, textAlign: "center" }}>{clientSlotsBusy ? "Loading connected clients..." : "No connected client devices found."}</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-
-          <Card>
-            <CardTitle sub="Per-counter device authentication (legacy security key still supported)">Trusted Devices</CardTitle>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
-              Approve new counter PCs here. Each receives a unique device secret. The shared security key remains active until all counters are migrated.
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-              <Btn sm col="blue" onClick={refreshTrustedDevices} disabled={trustedDevicesBusy}>{trustedDevicesBusy ? "Loading…" : "Refresh"}</Btn>
-            </div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                <thead>
-                  <tr style={{ background: "#f8faff", borderBottom: "1px solid " + C.border }}>
-                    {["Name", "Computer", "Status", "Last seen", "Version", "Actions"].map(function (h) {
-                      return <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontWeight: 800, color: C.muted }}>{h}</th>;
-                    })}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(trustedDevices || []).map(function (d) {
-                    var st = d.status || "pending";
-                    var stColor = st === "approved" ? "#0f9e6e" : (st === "pending" ? "#d97706" : "#b91c1c");
+                <div className="erp-net-stats">
+                  {[
+                    { label: "Mode", value: "Network" },
+                    { label: "Role", value: "Main Server" },
+                    { label: "Storage", value: "Local MySQL" },
+                    { label: "Access", value: "Full ERP" },
+                  ].map(function (row) {
                     return (
-                      <tr key={d.device_id} style={{ borderBottom: "1px solid " + C.border }}>
-                        <td style={{ padding: "8px 10px", fontWeight: 700 }}>{d.device_name || "—"}</td>
-                        <td style={{ padding: "8px 10px" }}>{d.computer_name || "—"}</td>
-                        <td style={{ padding: "8px 10px", fontWeight: 800, color: stColor }}>{st}</td>
-                        <td style={{ padding: "8px 10px", color: C.muted }}>{d.last_seen || "—"}</td>
-                        <td style={{ padding: "8px 10px", color: C.muted }}>{d.software_version || "—"}</td>
-                        <td style={{ padding: "8px 10px" }}>
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {st === "pending" ? (
-                              <Btn sm col="green" onClick={function () {
-                                var api = window.electronAPI;
-                                if (!api || !api.manageDevices) return;
-                                api.manageDevices({ action: "approve", device_id: d.device_id }).then(function (r) {
-                                  if (r && r.ok) { showAlert("Device approved."); refreshTrustedDevices(); }
-                                  else showAlert((r && r.message) || "Approve failed");
-                                });
-                              }}>Approve</Btn>
-                            ) : null}
-                            {st === "approved" ? (
-                              <Btn sm col="orange" onClick={function () {
-                                var api = window.electronAPI;
-                                if (!api || !api.manageDevices) return;
-                                showConfirm("Disable this device?\n\n" + (d.device_name || d.device_id), function () {
-                                  api.manageDevices({ action: "disable", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
-                                });
-                              }}>Disable</Btn>
-                            ) : null}
-                            {st === "disabled" ? (
-                              <Btn sm col="green" onClick={function () {
-                                var api = window.electronAPI;
-                                if (!api || !api.manageDevices) return;
-                                api.manageDevices({ action: "enable", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
-                              }}>Enable</Btn>
-                            ) : null}
-                            <Btn sm col="red" onClick={function () {
-                              var api = window.electronAPI;
-                              if (!api || !api.manageDevices) return;
-                              showConfirm("Remove this trusted device?", function () {
-                                api.manageDevices({ action: "remove", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
-                              });
-                            }}>Remove</Btn>
-                          </div>
-                        </td>
-                      </tr>
+                      <div key={row.label} className="erp-net-stat">
+                        <span className="erp-net-stat-label">{row.label}</span>
+                        <strong className="erp-net-stat-value">{row.value}</strong>
+                      </div>
                     );
                   })}
-                  {(!trustedDevices || trustedDevices.length === 0) && (
-                    <tr><td colSpan={6} style={{ padding: 14, color: C.muted, textAlign: "center" }}>{trustedDevicesBusy ? "Loading…" : "No trusted devices yet."}</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+                </div>
+              </div>
 
-          {/* ── Server Actions (server only) ── */}
-            <Card>
-              <CardTitle sub="Database backup and maintenance">Server Actions</CardTitle>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">License &amp; Connected PCs</div>
+                {(function () {
+                  var isTrialMode = !!(licenseInfo && licenseInfo.status === "trial");
+                  var maxClientsRaw = isTrialMode ? 2 : ((licenseInfo && licenseInfo.maxClients != null) ? licenseInfo.maxClients : clientSlots.max_clients);
+                  var maxClients = Number(maxClientsRaw) || 0;
+                  var connectedCount = Number(clientSlots.connected) || 0;
+                  maxClients = Math.max(0, maxClients);
+                  connectedCount = Math.max(0, connectedCount);
+                  var noClientsAllowed = maxClients === 0;
+                  var connectedText = connectedCount + " / " + (noClientsAllowed ? "Not Allowed" : String(maxClients));
+                  return (
+                    <div className="erp-net-lic-bar">
+                      <div className="erp-net-lic-meta">
+                        <span>
+                          Allowed PCs{" "}
+                          {isTrialMode ? (
+                            <em className="erp-net-chip is-blue">2 (Trial)</em>
+                          ) : noClientsAllowed ? (
+                            <em className="erp-net-chip is-red">Not Allowed</em>
+                          ) : (
+                            <em className="erp-net-chip">{String(maxClients)}</em>
+                          )}
+                        </span>
+                        <span>Connected <strong>{connectedText}</strong></span>
+                        {(licenseInfo && licenseInfo.lastSuccessfulSyncTime) ? (
+                          <span>Last sync <strong>{(function () { var dt = new Date(parseInt(licenseInfo.lastSuccessfulSyncTime, 10)); return isNaN(dt.getTime()) ? "-" : dt.toLocaleString(); })()}</strong></span>
+                        ) : null}
+                        {isTrialMode ? <div className="erp-net-lic-note">Upgrade license to add more PCs.</div> : null}
+                      </div>
+                      <div className="erp-net-lic-actions">
+                        <Btn sm col="cyan" onClick={refreshConnectedClients} disabled={clientSlotsBusy}>Refresh PCs</Btn>
+                        <Btn sm col="blue" onClick={function () {
+                          var api = window.electronAPI;
+                          if (!api || !api.syncLicenseNow) { showAlert("License sync API is not available."); return; }
+                          setLicSyncBusy(true);
+                          api.syncLicenseNow().then(function (r) {
+                            if (r && r.ok) showAlert("License synced from cloud.\nMax clients: " + (r.max_clients != null ? r.max_clients : "—"));
+                            else showAlert("Sync failed: " + ((r && r.message) || "Unknown error"));
+                          }).finally(function () { setLicSyncBusy(false); refreshConnectedClients(); });
+                        }} disabled={licSyncBusy}>Sync License</Btn>
+                      </div>
+                    </div>
+                  );
+                })()}
+                <div className="erp-net-hint">If a PC was reformatted or replaced, remove the old device to free a slot.</div>
+                <div className="erp-net-table-wrap">
+                  <table className="erp-net-table">
+                    <thead>
+                      <tr>
+                        <th>Admin label</th>
+                        <th>Reported name</th>
+                        <th>Device ID</th>
+                        <th>Last seen</th>
+                        <th className="is-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(clientSlots.clients || []).map(function (c, i) {
+                        var dk = c.device_id || "";
+                        var draftVal = clientLabelDrafts[dk] !== undefined ? clientLabelDrafts[dk] : (c.client_label != null ? String(c.client_label) : "");
+                        return (
+                          <tr key={(c.device_id || "") + "-" + i}>
+                            <td>
+                              <div className="erp-net-label-edit">
+                                <div className="erp-net-label-row">
+                                  <input
+                                    value={draftVal}
+                                    onChange={function (e) {
+                                      var v = e.target.value;
+                                      setClientLabelDrafts(function (prev) { var n = Object.assign({}, prev); n[dk] = v; return n; });
+                                    }}
+                                    placeholder="e.g. Counter 1"
+                                    className={"erp-net-input" + (clientLabelFlashDk === dk ? " is-flash" : "")}
+                                  />
+                                  <Btn sm col="blue" onClick={function () {
+                                    var api = window.electronAPI;
+                                    if (!api || !api.setConnectedClientLabel) { showAlert("Label update is not available."); return; }
+                                    var v = clientLabelDrafts[dk] !== undefined ? clientLabelDrafts[dk] : (c.client_label || "");
+                                    api.setConnectedClientLabel({ deviceId: c.device_id, clientLabel: v }).then(function (r) {
+                                      if (r && r.ok) {
+                                        showAlert((r && r.message) ? String(r.message) : "Label saved.");
+                                        if (r.labelAdjusted && r.clientLabel != null && String(r.clientLabel).length) {
+                                          setClientLabelDrafts(function (prev) { var n = Object.assign({}, prev); n[dk] = String(r.clientLabel); return n; });
+                                          setClientLabelFlashDk(dk);
+                                          setClientLabelAdjustedHintDk(dk);
+                                          setTimeout(function () {
+                                            setClientLabelFlashDk(null);
+                                            setClientLabelAdjustedHintDk(null);
+                                          }, 2000);
+                                        }
+                                        refreshConnectedClients();
+                                      } else {
+                                        showAlert((r && r.message) || "Could not save label.");
+                                      }
+                                    });
+                                  }}>Save</Btn>
+                                </div>
+                                {clientLabelAdjustedHintDk === dk ? (
+                                  <div className="erp-net-label-hint">Adjusted to avoid duplicate</div>
+                                ) : null}
+                              </div>
+                            </td>
+                            <td className="is-strong">{c.device_name || "—"}</td>
+                            <td className="is-mono">{c.device_id || "-"}</td>
+                            <td>{c.last_seen || "-"}</td>
+                            <td className="is-right">
+                              <button
+                                type="button"
+                                className="erp-net-remove"
+                                onClick={function () {
+                                  var api = window.electronAPI;
+                                  if (!api || !api.removeConnectedClient) return;
+                                  showConfirm("Remove this client slot?\n\n" + (c.device_name || c.device_id || "Client"), function () {
+                                    api.removeConnectedClient({ deviceId: c.device_id }).then(function (r) {
+                                      if (r && r.ok) showAlert("Client removed.");
+                                      else showAlert("Remove failed: " + ((r && r.message) || "Unknown error"));
+                                      refreshConnectedClients();
+                                    });
+                                  });
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {(!clientSlots.clients || clientSlots.clients.length === 0) && (
+                        <tr>
+                          <td colSpan={5} className="is-empty">{clientSlotsBusy ? "Loading connected clients..." : "No connected client devices found."}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">Trusted Devices</div>
+                <div className="erp-net-hint">Legacy security key stays active until all counters are migrated.</div>
+                <div className="erp-net-actions" style={{ marginBottom: 8 }}>
+                  <Btn sm col="blue" onClick={refreshTrustedDevices} disabled={trustedDevicesBusy}>{trustedDevicesBusy ? "Loading…" : "Refresh"}</Btn>
+                </div>
+                <div className="erp-net-table-wrap">
+                  <table className="erp-net-table">
+                    <thead>
+                      <tr>
+                        {["Name", "Computer", "Status", "Last seen", "Version", "Actions"].map(function (h) {
+                          return <th key={h}>{h}</th>;
+                        })}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(trustedDevices || []).map(function (d) {
+                        var st = d.status || "pending";
+                        var stClass = st === "approved" ? "is-ok" : (st === "pending" ? "is-warn" : "is-bad");
+                        return (
+                          <tr key={d.device_id}>
+                            <td className="is-strong">{d.device_name || "—"}</td>
+                            <td>{d.computer_name || "—"}</td>
+                            <td><span className={"erp-net-status " + stClass}>{st}</span></td>
+                            <td className="is-muted">{d.last_seen || "—"}</td>
+                            <td className="is-muted">{d.software_version || "—"}</td>
+                            <td>
+                              <div className="erp-net-row-actions">
+                                {st === "pending" ? (
+                                  <Btn sm col="green" onClick={function () {
+                                    var api = window.electronAPI;
+                                    if (!api || !api.manageDevices) return;
+                                    api.manageDevices({ action: "approve", device_id: d.device_id }).then(function (r) {
+                                      if (r && r.ok) { showAlert("Device approved."); refreshTrustedDevices(); }
+                                      else showAlert((r && r.message) || "Approve failed");
+                                    });
+                                  }}>Approve</Btn>
+                                ) : null}
+                                {st === "approved" ? (
+                                  <Btn sm col="orange" onClick={function () {
+                                    var api = window.electronAPI;
+                                    if (!api || !api.manageDevices) return;
+                                    showConfirm("Disable this device?\n\n" + (d.device_name || d.device_id), function () {
+                                      api.manageDevices({ action: "disable", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
+                                    });
+                                  }}>Disable</Btn>
+                                ) : null}
+                                {st === "disabled" ? (
+                                  <Btn sm col="green" onClick={function () {
+                                    var api = window.electronAPI;
+                                    if (!api || !api.manageDevices) return;
+                                    api.manageDevices({ action: "enable", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
+                                  }}>Enable</Btn>
+                                ) : null}
+                                <Btn sm col="red" onClick={function () {
+                                  var api = window.electronAPI;
+                                  if (!api || !api.manageDevices) return;
+                                  showConfirm("Remove this trusted device?", function () {
+                                    api.manageDevices({ action: "remove", device_id: d.device_id }).then(function () { refreshTrustedDevices(); });
+                                  });
+                                }}>Remove</Btn>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {(!trustedDevices || trustedDevices.length === 0) && (
+                        <tr>
+                          <td colSpan={6} className="is-empty">{trustedDevicesBusy ? "Loading…" : "No trusted devices yet."}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">Server Actions</div>
+                <div className="erp-net-actions">
                   <Btn col="blue" onClick={function () {
                     if (!isNetworkServer || !systemConfig.apiUrl) {
                       showAlert("Network server is not configured. Check Settings → Network.");
@@ -3869,160 +3870,356 @@ var Settings = function (props) {
                     }).catch(function (e) {
                       showAlert("Upload failed: " + (e && e.message ? e.message : String(e)));
                     }).finally(function () { setDataPushBusy(false); });
-                  }} disabled={dataPushBusy}>{dataPushBusy ? "Uploading..." : "⬆ Upload Shop Data to Server"}</Btn>
+                  }} disabled={dataPushBusy}>{dataPushBusy ? "Uploading..." : "Upload Shop Data"}</Btn>
                   <Btn col="green" onClick={function () {
                     var api = window.electronAPI;
                     if (!api || !api.backupDatabase) { showAlert("Backup not available in this build."); return; }
                     api.backupDatabase({}).then(function (r) {
-                      if (r.ok) showAlert("✅ Database backup saved!\n\nFile: " + r.path);
+                      if (r.ok) showAlert("Database backup saved!\n\nFile: " + r.path);
                       else showAlert("Backup failed: " + r.message);
                     });
-                  }}>💾 Backup Database Now</Btn>
+                  }}>Backup Database</Btn>
                   <Btn col="gray" onClick={function () {
                     var api = window.electronAPI;
                     if (api && api.openBackupFolder) api.openBackupFolder();
-                  }}>📂 Open Backup Folder</Btn>
+                  }}>Open Backup Folder</Btn>
+                  <Btn col="gray" onClick={function () {
+                    var api = window.electronAPI;
+                    if (api && api.openLogFolder) api.openLogFolder();
+                  }}>Open Logs</Btn>
                 </div>
-                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
-                  Use <strong>Upload Shop Data to Server</strong> if counter PCs cannot see products or invoices (pushes this PC&apos;s data into MySQL).
-                  Backups are saved as <code>.sql</code> files in <strong>Documents/TechonERP/backups/</strong>. Keep regular backups to avoid data loss.
+                <div className="erp-net-hint">
+                  Upload shop data if counters cannot see products or invoices. Backups save as <code>.sql</code> in Documents/TechonERP/backups/.
                 </div>
               </div>
+
+              {!COMPUTER_SHOP_EDITION ? (
+                <div className="erp-net-block is-danger">
+                  <div className="erp-net-block-label is-danger">Reset Setup Wizard</div>
+                  <div className="erp-net-danger-row">
+                    <div className="erp-net-hint" style={{ marginBottom: 0 }}>Clears network config so you can re-run setup. No business data is deleted.</div>
+                    <Btn col="orange" onClick={function () {
+                      showConfirm("Reset Setup Wizard? This will require you to choose your system mode again on next restart. Current data is not deleted.", function () {
+                        var api = window.electronAPI;
+                        if (api && api.resetNetworkConfig) {
+                          api.resetNetworkConfig().then(function () {
+                            try { sessionStorage.clear(); } catch (e) {}
+                            showAlert("Setup wizard has been reset. Please restart Techon ERP.");
+                          });
+                        }
+                      });
+                    }}>Reset Setup</Btn>
+                  </div>
+                </div>
+              ) : null}
             </Card>
-
-          {/* ── Logs ── */}
-          <Card>
-            <CardTitle sub="Sync errors, API failures and connection logs">System Logs</CardTitle>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Btn col="gray" onClick={function () {
-                var api = window.electronAPI;
-                if (api && api.openLogFolder) api.openLogFolder();
-              }}>📋 Open Log Folder</Btn>
-            </div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 10, lineHeight: 1.6 }}>
-              Log files are stored in <strong>Documents/TechonERP/logs/</strong>.
-            </div>
-          </Card>
-
-          {/* ── Reset Wizard (full edition only) ── */}
-          {!COMPUTER_SHOP_EDITION ? (
-          <Card>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 800, color: C.orange, marginBottom: 4 }}>Reset Setup Wizard</div>
-                <div style={{ fontSize: 12, color: "#6b7280", maxWidth: 480, lineHeight: 1.6 }}>
-                  Clears network configuration so you can re-run the setup wizard on next restart. <strong>No business data is deleted.</strong>
-                </div>
-              </div>
-              <Btn col="orange" onClick={function () {
-                showConfirm("Reset Setup Wizard? This will require you to choose your system mode again on next restart. Current data is not deleted.", function () {
-                  var api = window.electronAPI;
-                  if (api && api.resetNetworkConfig) {
-                    api.resetNetworkConfig().then(function () {
-                      try { sessionStorage.clear(); } catch (e) {}
-                      showAlert("Setup wizard has been reset. Please restart Techon ERP.");
-                    });
-                  }
-                });
-              }}>⚙️ Reset Setup Wizard</Btn>
-            </div>
-          </Card>
-          ) : null}
-
+          </div>
         </div>
       )}
 
-      {stab === "users" && canManageUsers && (
-        <div className="erp-set-stack">
-          <Card>
-            <CardTitle sub={"Create staff accounts with role-based access. Cashier role: " + CASHIER_ACCESS_SUMMARY + "."}>User Management</CardTitle>
-            {userMsg && (
-              <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, fontSize: 12, fontWeight: 700, background: userMsg.type === "error" ? "#fde8ed" : "#e6f7f2", color: userMsg.type === "error" ? "#b91c1c" : "#0a7a53", border: "1px solid " + (userMsg.type === "error" ? "#fca5a5" : "#9ee8ce") }}>
-                {userMsg.text}
+      
+{stab === "users" && (
+        <div className="erp-usr-page">
+          <div className="erp-usr-wrap">
+            <div className="erp-usr-brand">
+              <div className="erp-usr-brand-ico" aria-hidden="true">🔐</div>
+              <div className="erp-usr-brand-text">
+                <div className="erp-usr-title">Security &amp; Users</div>
+                <div className="erp-usr-sub">App login, admin account, and staff access</div>
               </div>
-            )}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
-              <Input label="Full Name" value={newUserName} onChange={function (e) { setNewUserName(e.target.value); setUserMsg(null); }} placeholder="e.g. Nimal" />
-              <Input label="Username" value={newUserUsername} onChange={function (e) { setNewUserUsername(e.target.value); setUserMsg(null); }} placeholder="e.g. cashier1" />
-              <Sel label="Role" value={newUserRole} onChange={function (e) { setNewUserRole(e.target.value); }}>
-                <option value="manager">Manager</option>
-                <option value="cashier">Cashier ({CASHIER_ACCESS_SUMMARY})</option>
-              </Sel>
-              <Input label="Password" type="password" value={newUserPassword} onChange={function (e) { setNewUserPassword(e.target.value); setUserMsg(null); }} placeholder="Min 4 chars" />
-              <Btn col="blue" onClick={createUser}>+ Add User</Btn>
             </div>
-          </Card>
-          <Card>
-            <CardTitle sub={users.length + " user account(s)"}>Current Users</CardTitle>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead><tr><th style={{ textAlign: "left", padding: "8px 6px" }}>Name</th><th style={{ textAlign: "left", padding: "8px 6px" }}>Username</th><th style={{ textAlign: "left", padding: "8px 6px" }}>Role</th><th style={{ textAlign: "left", padding: "8px 6px" }}>Created</th><th style={{ textAlign: "right", padding: "8px 6px" }}>Actions</th></tr></thead>
-                <tbody>
-                  {users.map(function (u) {
-                    return (
-                      <tr key={u.id} style={{ borderTop: "1px solid " + C.border }}>
-                        <td style={{ padding: "8px 6px", fontWeight: 700 }}>{u.name || "—"}</td>
-                        <td style={{ padding: "8px 6px", fontFamily: "'JetBrains Mono',monospace" }}>{u.username || "—"}</td>
-                        <td style={{ padding: "8px 6px" }}>{ROLE_LABELS[normalizeRole(u.role)] || "Cashier"}</td>
-                        <td style={{ padding: "8px 6px", color: C.muted }}>{u.createdAt ? new Date(u.createdAt).toLocaleString() : "—"}</td>
-                        <td style={Object.assign({}, actBtnCellStyle, { padding: "8px 6px" })}>
-                          <ActBtnGroup>
-                            <ActBtn tone="gray" title="Reset password" wide onClick={function () { resetUserPassword(u); }}>Reset</ActBtn>
-                            <ActBtn tone="red" title="Remove user" onClick={function () { removeUser(u); }} disabled={normalizeUsername(u.username) === "admin"} />
-                          </ActBtnGroup>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+
+            {(userMsg || showSupportPinResetHint || showAppPasswordResetHint) ? (
+              <div className="erp-usr-alerts">
+                {userMsg ? (
+                  <div className={"erp-usr-banner" + (userMsg.type === "error" ? " is-err" : " is-ok")}>{userMsg.text}</div>
+                ) : null}
+                {showSupportPinResetHint ? (
+                  <div className="erp-usr-banner is-info">
+                    <span>Set a new <strong>Admin PIN</strong> below, then tap <strong>Save admin settings</strong>.</span>
+                    <button type="button" className="erp-usr-dismiss" onClick={function () { setShowSupportPinResetHint(false); }}>Dismiss</button>
+                  </div>
+                ) : null}
+                {showAppPasswordResetHint ? (
+                  <div className="erp-usr-banner is-ok">
+                    <span>Set a new <strong>login password</strong> below. Leave current password empty for this reset.</span>
+                    <button type="button" className="erp-usr-dismiss" onClick={function () { setShowAppPasswordResetHint(false); }}>Dismiss</button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className={"erp-usr-layout" + (canManageUsers ? " has-staff" : "")}>
+              <section className="erp-usr-panel erp-usr-panel-security" aria-label="Security">
+                <div className="erp-usr-panel-head">
+                  <div className="erp-usr-panel-kicker">Security</div>
+                  <div className="erp-usr-panel-title">App &amp; admin login</div>
+                  <div className="erp-usr-panel-sub">Control launch login and the main administrator account.</div>
+                </div>
+
+                <div className="erp-usr-panel-body">
+                  <div className="erp-usr-field-group">
+                    <div className="erp-usr-field-label">Login protection</div>
+                    <div className="erp-usr-toggle-card">
+                      <div className="erp-usr-toggle-text">
+                        <div className="erp-usr-toggle-title">Require password on launch</div>
+                        <div className="erp-usr-toggle-sub">
+                          {f.requirePasswordOnLogin !== false
+                            ? "Login screen is shown every time the app opens"
+                            : "App opens without asking for a password"}
+                        </div>
+                      </div>
+                      <div
+                        role="switch"
+                        tabIndex={0}
+                        className={"erp-usr-switch" + (f.requirePasswordOnLogin !== false ? " is-on" : "")}
+                        onClick={toggleRequirePasswordOnLogin}
+                        onKeyDown={function (e) {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            toggleRequirePasswordOnLogin();
+                          }
+                        }}
+                        aria-checked={f.requirePasswordOnLogin !== false}
+                        aria-label="Require password on launch"
+                      >
+                        <span className="erp-usr-switch-knob" />
+                      </div>
+                    </div>
+                    {f.requirePasswordOnLogin === false ? (
+                      <div className="erp-usr-warn">Password protection is off — anyone can open the app on this PC.</div>
+                    ) : null}
+                  </div>
+
+                  <div className="erp-usr-field-group">
+                    <div className="erp-usr-field-label">Administrator</div>
+                    <Input
+                      compact={denseWiz}
+                      label="Display name"
+                      value={adminNameEdit}
+                      onChange={function (e) { setAdminNameEdit(e.target.value); }}
+                      placeholder="e.g. Rashid"
+                    />
+                    <div className="erp-usr-hint">Shown as User in the bottom status bar when signed in as admin.</div>
+                  </div>
+
+                  {!COMPUTER_SHOP_EDITION ? (
+                    <div className="erp-usr-field-group">
+                      <div className="erp-usr-field-label">Admin PIN &amp; auto-lock</div>
+                      <div className="erp-usr-hint is-amber">PIN switches Sales Mode → Admin Mode (4–6 digits).</div>
+                      <Input compact={denseWiz} label="Admin PIN" type="password" value={f.adminPin || ""} onChange={function (e) { var v = e.target.value.replace(/\D/g, "").slice(0, 6); setF(function (x) { return Object.assign({}, x, { adminPin: v }); }); }} placeholder="4–6 digit PIN..." />
+                      {f.adminPin && f.adminPin.length >= 4 ? (
+                        <div className="erp-usr-hint is-green">
+                          PIN set{f.adminPin.startsWith && f.adminPin.startsWith("sha256:") ? " (secured)" : " — " + f.adminPin.length + " digits"}
+                        </div>
+                      ) : null}
+                      {f.adminPin && f.adminPin.length > 0 && f.adminPin.length < 4 ? (
+                        <div className="erp-usr-hint is-red">PIN must be at least 4 digits.</div>
+                      ) : null}
+                      <label className={"erp-sec-check" + (f.autoLockEnabled !== false ? " is-on" : "")}>
+                        <input type="checkbox" checked={f.autoLockEnabled !== false} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { autoLockEnabled: e.target.checked }); }); }} />
+                        <span>
+                          <span className="erp-sec-toggle-title">Enable Auto-Lock</span>
+                          <span className="erp-sec-toggle-sub">Lock to Sales Mode after inactivity</span>
+                        </span>
+                      </label>
+                      {f.autoLockEnabled !== false ? (
+                        <div className="erp-sec-mins">
+                          <input
+                            type="number"
+                            min="1"
+                            max="120"
+                            value={f.autoLockMinutes || 10}
+                            onChange={function (e) { var v = Math.max(1, Math.min(120, parseInt(e.target.value) || 1)); setF(function (x) { return Object.assign({}, x, { autoLockMinutes: v }); }); }}
+                          />
+                          <span>minutes (1–120)</span>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <div className="erp-usr-field-group">
+                    <div className="erp-usr-field-label">Change admin login password</div>
+                    <div className="erp-usr-hint">Leave blank to keep the current password. Staff passwords use Reset on the user list.</div>
+                    {pwMsg ? (
+                      <div className={"erp-usr-banner " + (pwMsg.type === "error" ? "is-err" : "is-ok")}>{pwMsg.text}</div>
+                    ) : null}
+                    <div className="erp-usr-pw-grid">
+                      <Input compact={denseWiz} label="Current Password" type="password" value={pwOld} onChange={function (e) { setPwOld(e.target.value); setPwMsg(null); }} placeholder="Current password" />
+                      <Input compact={denseWiz} label="New Password" type="password" value={pwNew} onChange={function (e) { setPwNew(e.target.value); setPwMsg(null); }} placeholder="Min 4 characters" />
+                      <Input compact={denseWiz} label="Confirm Password" type="password" value={pwNew2} onChange={function (e) { setPwNew2(e.target.value); setPwMsg(null); }} placeholder="Repeat new password" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="erp-usr-panel-foot">
+                  <button type="button" className="erp-usr-save" onClick={saveAdminSecuritySettings}>
+                    Save admin settings
+                  </button>
+                </div>
+              </section>
+
+              {canManageUsers ? (
+                <section className="erp-usr-panel erp-usr-panel-staff" aria-label="Staff users">
+                  <div className="erp-usr-panel-head">
+                    <div className="erp-usr-panel-kicker">Staff</div>
+                    <div className="erp-usr-panel-title">User accounts</div>
+                    <div className="erp-usr-panel-sub">Cashier: {CASHIER_ACCESS_SUMMARY}</div>
+                  </div>
+
+                  <div className="erp-usr-panel-body">
+                    <div className="erp-usr-field-group">
+                      <div className="erp-usr-field-label">Add user</div>
+                      <div className="erp-usr-form">
+                        <Input label="Full Name" value={newUserName} onChange={function (e) { setNewUserName(e.target.value); setUserMsg(null); }} placeholder="e.g. Nimal" />
+                        <Input label="Username" value={newUserUsername} onChange={function (e) { setNewUserUsername(e.target.value); setUserMsg(null); }} placeholder="e.g. cashier1" />
+                        <Sel label="Role" value={newUserRole} onChange={function (e) { setNewUserRole(e.target.value); }}>
+                          <option value="manager">Manager</option>
+                          <option value="cashier">Cashier</option>
+                        </Sel>
+                        <Input label="Password" type="password" value={newUserPassword} onChange={function (e) { setNewUserPassword(e.target.value); setUserMsg(null); }} placeholder="Min 4 chars" />
+                        <div className="erp-usr-form-btn">
+                          <Btn col="blue" onClick={createUser}>+ Add User</Btn>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="erp-usr-field-group is-table">
+                      <div className="erp-usr-field-label">Current users · {users.length}</div>
+                      {users.length === 0 ? (
+                        <div className="erp-usr-empty">No users yet. Add a cashier or manager above.</div>
+                      ) : (
+                        <div className="erp-usr-table-wrap">
+                          <table className="erp-usr-table">
+                            <thead>
+                              <tr>
+                                <th>Name</th>
+                                <th>Username</th>
+                                <th>Role</th>
+                                <th>Created</th>
+                                <th className="is-right">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {users.map(function (u) {
+                                var roleKey = normalizeRole(u.role);
+                                var roleLbl = ROLE_LABELS[roleKey] || "Cashier";
+                                var roleCls = roleKey === "admin" ? "is-admin" : (roleKey === "manager" ? "is-mgr" : "is-cash");
+                                var isPrimaryAdmin = normalizeUsername(u.username) === "admin";
+                                return (
+                                  <tr key={u.id}>
+                                    <td className="is-strong">{u.name || "—"}</td>
+                                    <td className="is-mono">@{u.username || "—"}</td>
+                                    <td><span className={"erp-usr-role " + roleCls}>{roleLbl}</span></td>
+                                    <td className="is-muted">{u.createdAt ? new Date(u.createdAt).toLocaleString() : "—"}</td>
+                                    <td className="is-right">
+                                      <div className="erp-set-usr-acts" role="group" aria-label="User actions">
+                                        <button type="button" className="erp-set-usr-act is-edit" title="Edit name" onClick={function () { openEditUserName(u); }}>
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                            <path d="M12 20h9" />
+                                            <path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4 12.5-12.5z" />
+                                          </svg>
+                                          <span>Edit</span>
+                                        </button>
+                                        <button type="button" className="erp-set-usr-act is-reset" title="Reset password" onClick={function () { openResetUserPassword(u); }}>
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                            <rect x="3" y="11" width="18" height="11" rx="2" />
+                                            <path d="M7 11V7a5 5 0 0110 0v4" />
+                                          </svg>
+                                          <span>Reset</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="erp-set-usr-act is-del"
+                                          title={isPrimaryAdmin ? "Primary admin cannot be removed" : "Remove user"}
+                                          disabled={isPrimaryAdmin}
+                                          onClick={function () { removeUser(u); }}
+                                        >
+                                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                            <path d="M3 6h18" />
+                                            <path d="M8 6V4h8v2" />
+                                            <path d="M19 6l-1 14H6L5 6" />
+                                          </svg>
+                                          <span>Delete</span>
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              ) : null}
             </div>
-          </Card>
+          </div>
+
+          {userEditModal && Modal ? (
+            <Modal
+              title={userEditModal.mode === "password" ? "Reset password" : "Edit name"}
+              onClose={closeUserEditModal}
+            >
+              <div style={{ fontSize: 13, color: C.muted, marginBottom: 14, lineHeight: 1.5 }}>
+                {userEditModal.mode === "password"
+                  ? ("Set a new login password for @" + ((userEditModal.user && userEditModal.user.username) || "user") + ".")
+                  : ("Update display name for @" + ((userEditModal.user && userEditModal.user.username) || "user") + ".")}
+              </div>
+              {userEditModal.mode === "name" ? (
+                <Input
+                  label="Full Name"
+                  value={userEditName}
+                  onChange={function (e) { setUserEditName(e.target.value); setUserEditErr(""); }}
+                  placeholder="e.g. Nimal"
+                />
+              ) : (
+                <React.Fragment>
+                  <Input
+                    label="New Password"
+                    type="password"
+                    value={userEditPw}
+                    onChange={function (e) { setUserEditPw(e.target.value); setUserEditErr(""); }}
+                    placeholder="Min 4 characters"
+                    onKeyDown={function (e) { if (e.key === "Enter") saveResetUserPassword(); }}
+                  />
+                  <div style={{ height: 10 }} />
+                  <Input
+                    label="Confirm Password"
+                    type="password"
+                    value={userEditPw2}
+                    onChange={function (e) { setUserEditPw2(e.target.value); setUserEditErr(""); }}
+                    placeholder="Re-enter password"
+                    onKeyDown={function (e) { if (e.key === "Enter") saveResetUserPassword(); }}
+                  />
+                </React.Fragment>
+              )}
+              {userEditErr ? (
+                <div className="erp-usr-banner is-err" style={{ marginTop: 12 }}>{userEditErr}</div>
+              ) : null}
+              <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+                <Btn
+                  col="blue"
+                  disabled={userEditBusy}
+                  onClick={userEditModal.mode === "password" ? saveResetUserPassword : saveEditedUserName}
+                >
+                  {userEditModal.mode === "password" ? (userEditBusy ? "Saving…" : "Save password") : "Save name"}
+                </Btn>
+                <Btn col="gray" disabled={userEditBusy} onClick={closeUserEditModal}>Cancel</Btn>
+              </div>
+            </Modal>
+          ) : null}
         </div>
       )}
 
       {stab === "activity" && (
-        <Card>
-          <CardTitle sub="Login, sales, returns, edits and settings actions">Activity Log</CardTitle>
-          {(function () {
-            var rows = (S.get("tc3_auditLog", []) || []).slice(0, 120);
-            if (!rows.length) {
-              return <div style={{ padding: "18px 4px", color: C.muted, fontSize: 13 }}>No activity yet. User actions will appear here.</div>;
-            }
-            return (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {rows.map(function (r) {
-                  return (
-                    <div key={r.id} style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", display: "grid", gridTemplateColumns: "170px 140px 1fr", gap: 10, alignItems: "start" }}>
-                      <div style={{ fontSize: 11.5, color: C.muted }}>{r.timestamp || r.date || "—"}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>{(r.user || "Unknown") + " · " + (ROLE_LABELS[normalizeRole(r.role)] || "User")}</div>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{r.action || "Action"}</div>
-                        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{r.reference || "—"}{r.terminal ? " · " + r.terminal : ""}</div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
-        </Card>
+        <SettingsActivityPanel S={S} Card={Card} />
       )}
 
       {stab === "about" && (
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            width: "100%",
-            boxSizing: "border-box",
-            /* Fill space below the tab row so the card sits in the visual center of the About view (header + tabs ≈ 200px) */
-            minHeight: "calc(100vh - 200px)",
-            padding: "16px 0 24px",
-          }}
-        >
+        <div className="erp-about-page">
           <AboutTab licenseInfo={licenseInfo} onActivate={onActivate} onLicenseRefresh={onLicenseRefresh} isNetworkClient={isNetworkClient} C={C} />
         </div>
       )}

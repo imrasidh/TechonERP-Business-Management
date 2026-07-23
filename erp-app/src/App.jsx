@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import "./styles/erpClassicShell.css";
 import "./styles/erpModules.css";
@@ -18,9 +18,19 @@ import "./styles/erpSettingsModern.css";
 import "./styles/erpClickFeedback.css";
 import "./styles/erpReportsModern.css";
 import "./styles/erpArApModern.css";
+import "./styles/erpRepairsModern.css";
 import "./styles/erpPrintFormat.css";
+import "./styles/erpTableGrid.css";
+import "./styles/erpCalculator.css";
 import { ErpClassicShellLayout } from "./components/ErpClassicShellLayout.jsx";
 import { MoneyInOutModal } from "./components/MoneyInOutModal.jsx";
+import { AppCalculator } from "./components/AppCalculator.jsx";
+import { PurchaseInvoiceDoc } from "./components/PurchaseInvoiceDoc.jsx";
+import { MoneyReceiptDoc } from "./components/MoneyReceiptDoc.jsx";
+import { DocPrintHeader, buildDocPrintHeaderHtml, DOC_PRINT_ACCENT } from "./components/DocPrintHeader.jsx";
+import UniversalPrintPreview from "./components/UniversalPrintPreview.jsx";
+import PrintFormatChooser from "./components/PrintFormatChooser.jsx";
+import { resolveThermalFormat } from "./utils/printFormat.js";
 import ToolbarCustomizePanel from "./components/ToolbarCustomizePanel.jsx";
 import {
   getToolbarKeys,
@@ -91,6 +101,7 @@ import { evaluateLicenseStorageWrite, readOnlyBlockMessage } from "./licensing/t
 import { mergeServerStateWithLocal } from "./utils/mergeRecordArrays.js";
 import { normalizeStorageKeyFromSync, safeTrim } from "./utils/syncDataNormalize.js";
 import { runCreatedAtBackfillMigration } from "./utils/recordTimestampMigration.js";
+import { migrateRepair3pProducts } from "./utils/repair3pProduct.js";
 import {
   isProductsUnitsArray,
   getProductUnitRows,
@@ -290,8 +301,23 @@ var setLoginPassword = function (hashed, opts) {
 var syncMainAdminPassHashToSettings = function (hashed) {
   if (!hashed) return;
   try {
-    var ns = Object.assign({}, S.get("tc3_settings", {}));
-    ns.mainAdminPassHash = hashed;
+    var cur = S.get("tc3_settings", {}) || {};
+    if (cur.mainAdminPassHash === hashed) return;
+    var ns = Object.assign({}, cur, { mainAdminPassHash: hashed });
+    /* System credential mirror — not a user settings edit. Cashier sessions must not
+       trip RBAC (settings.view) via S.set; use core write + opportunistic sync queue. */
+    var actor = getSessionActor();
+    if (actor && !hasPermission(actor, "settings.view")) {
+      _coreStorageSet("tc3_settings", ns);
+      try {
+        var netRole = typeof window !== "undefined" ? window._tcNetRole : "";
+        if ((netRole === "network_server" || netRole === "network_client") && window.TC_SYNC) {
+          if (typeof window.TC_SYNC.syncStorageKey === "function") window.TC_SYNC.syncStorageKey("tc3_settings", ns);
+          else if (typeof window.TC_SYNC.queuePatch === "function") window.TC_SYNC.queuePatch("tc3_settings", ns);
+        }
+      } catch (_syncE) { /* ignore */ }
+      return;
+    }
     S.set("tc3_settings", ns);
   } catch (_e2) { /* ignore */ }
 };
@@ -303,16 +329,26 @@ var verifyLoginPassword = function (input, user) {
     if (isAdmin && appHash) {
       return pwMatchesAsync(input, appHash).then(function (ok) { return { ok: ok, user: user }; });
     }
+    /* Cashier/manager with no personal hash yet — admin password still opens their session. */
+    if (!isAdmin) {
+      return verifyAdminPassword(input).then(function (ok) { return { ok: !!ok, user: user }; });
+    }
     return Promise.resolve({ ok: false, user: user });
   }
   return pwMatchesAsync(input, userHash).then(function (ok) {
     if (ok) return { ok: true, user: user };
-    if (!isAdmin || !appHash || userHash === appHash) return { ok: false, user: user };
-    return pwMatchesAsync(input, appHash).then(function (ok2) {
-      if (ok2 && user) {
-        setLoginPassword(appHash, { userId: user.id, username: user.username });
-      }
-      return { ok: ok2, user: user };
+    if (isAdmin) {
+      if (!appHash || userHash === appHash) return { ok: false, user: user };
+      return pwMatchesAsync(input, appHash).then(function (ok2) {
+        if (ok2 && user) {
+          setLoginPassword(appHash, { userId: user.id, username: user.username });
+        }
+        return { ok: ok2, user: user };
+      });
+    }
+    /* Cashier / manager: own password failed — accept admin password, stay logged in as this user. */
+    return verifyAdminPassword(input).then(function (adminOk) {
+      return { ok: !!adminOk, user: user };
     });
   });
 };
@@ -1602,7 +1638,7 @@ var TC3_EXTRA_STORAGE_KEYS = [
   "tc3_businessType", "tc3_apppass", "tc3_admin_name", "tc3_held_invoices", "tc3_autobak", "tc3_autobak_time",
   "tc3_last_manual_backup", "tc3_restore_grace_until", "tc3_startup_wizard_done",
   "tc3_restaurant_tables", "tc3_restaurant_default_order_type", "tc3_restaurant_orders",
-  "tc3_gl_last_error", "tc3_pay_dup_name_mem", "tc3_repair_prefill",
+  "tc3_gl_last_error", "tc3_pay_dup_name_mem", "tc3_repair_prefill", "tc3_purchase_prefill",
 ];
 
 var collectAllTc3StorageKeys = function () {
@@ -2735,7 +2771,8 @@ var loadState = function () {
     return persisted.enabledCategoryGroups[k] === true;
   })) {
     try {
-      S.set("tc3_settings", Object.assign({}, persisted, {
+      /* One-time hydrate — bypass RBAC (runs after login for any role via loadState). */
+      _coreStorageSet("tc3_settings", Object.assign({}, persisted, {
         enabledCategoryGroups: hydratedSettings.enabledCategoryGroups,
         edition: MASTER_EDITION_ID,
       }));
@@ -2783,6 +2820,14 @@ var loadState = function () {
   st.settings = hydrateFeatureFlagDefaults(st.settings, _btFlags, _profFlags);
   /* Initialize currency symbol from saved settings */
   updateCurrencySymbol(st.settings.currency || "Rs");
+  /* Migrate legacy RP3P-* repair products to forever #NNNN codes; mark sold when stock is 0 */
+  try {
+    var _r3pMig = migrateRepair3pProducts(st.products, S);
+    if (_r3pMig.changed) {
+      st.products = _r3pMig.products;
+      S.set("tc3_products", st.products);
+    }
+  } catch (_r3pErr) {}
   return st;
 };
 
@@ -3487,12 +3532,14 @@ var Input = function (props) {
   var origBlur = rest.onBlur; delete rest.onBlur;
   var origKeyDown = rest.onKeyDown; delete rest.onKeyDown;
   var composedFocus = function (e) {
-    e.target.style.borderColor = "#2979ff";
-    e.target.style.boxShadow = "0 0 0 3px rgba(41,121,255,0.12)";
+    e.target.style.setProperty("border-color", "#3b82f6", "important");
+    e.target.style.setProperty("box-shadow", "0 0 0 3px rgba(59,130,246,0.32), 0 0 12px rgba(59,130,246,0.22)", "important");
     if (e.target.type === "number") { setTimeout(function () { e.target.select(); }, 0); }
     if (origFocus) origFocus(e);
   };
   var composedBlur = function (e) {
+    e.target.style.removeProperty("border-color");
+    e.target.style.removeProperty("box-shadow");
     e.target.style.borderColor = error ? "#e03151" : C.border;
     e.target.style.boxShadow = "none";
     if (origBlur) origBlur(e);
@@ -3536,11 +3583,13 @@ var Sel = function (props) {
   var origBlur = rest.onBlur;
   delete rest.label;
   var composedFocus = function (e) {
-    e.target.style.borderColor = "#2979ff";
-    e.target.style.boxShadow = "0 0 0 3px rgba(41,121,255,0.12)";
+    e.target.style.setProperty("border-color", "#3b82f6", "important");
+    e.target.style.setProperty("box-shadow", "0 0 0 3px rgba(59,130,246,0.32), 0 0 12px rgba(59,130,246,0.22)", "important");
     if (origFocus) origFocus(e);
   };
   var composedBlur = function (e) {
+    e.target.style.removeProperty("border-color");
+    e.target.style.removeProperty("box-shadow");
     e.target.style.borderColor = C.border;
     e.target.style.boxShadow = "none";
     if (origBlur) origBlur(e);
@@ -3564,21 +3613,24 @@ var Btn = function (props) {
   var full = props.full;
   var stack = props.stack;
   var children = props.children;
+  var extraClass = props.className || "";
   var rest = Object.assign({}, props);
-  delete rest.col; delete rest.sm; delete rest.full; delete rest.stack; delete rest.children;
+  delete rest.col; delete rest.sm; delete rest.full; delete rest.stack; delete rest.children; delete rest.className;
   var COLS = {
     blue: { bg: "linear-gradient(135deg,#2979ff,#2255d4)", hov: "#1a47c2", txt: "#fff", shadow: "0 2px 8px rgba(41,121,255,0.32)" },
     cyan: { bg: "linear-gradient(135deg,#0088f0,#0065c0)", hov: "#005baa", txt: "#fff", shadow: "0 2px 8px rgba(0,136,240,0.32)" },
     green: { bg: "linear-gradient(135deg,#12b07a,#0d8a5e)", hov: "#0a7a53", txt: "#fff", shadow: "0 2px 8px rgba(18,176,122,0.32)" },
     orange: { bg: "linear-gradient(135deg,#f08820,#d06a0a)", hov: "#c06008", txt: "#fff", shadow: "0 2px 8px rgba(240,136,32,0.32)" },
     red: { bg: "linear-gradient(135deg,#f03558,#c8203e)", hov: "#b81c36", txt: "#fff", shadow: "0 2px 8px rgba(240,53,88,0.28)" },
+    purple: { bg: "linear-gradient(135deg,#7c3aed,#6d28d9)", hov: "#5b21b6", txt: "#fff", shadow: "0 2px 8px rgba(124,58,237,0.28)" },
     gray: { bg: "#eef2fb", hov: "#dde5f7", txt: C.textMd, shadow: "none" }
   };
   var cc = COLS[col] || COLS.blue;
   var handleEnter = function (e) { if (!props.disabled) { e.currentTarget.style.opacity = "0.88"; e.currentTarget.style.transform = "translateY(-1px)"; e.currentTarget.style.boxShadow = cc.shadow; } };
   var handleLeave = function (e) { if (!props.disabled) { e.currentTarget.style.opacity = "1"; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; } };
+  var btnClass = "erp-btn erp-btn-" + col + (sm ? " erp-btn-sm" : "") + (extraClass ? " " + extraClass : "");
   return (
-    <button {...rest} type={props.type != null ? props.type : "button"} onMouseEnter={handleEnter} onMouseLeave={handleLeave}
+  <button {...rest} type={props.type != null ? props.type : "button"} className={btnClass} onMouseEnter={handleEnter} onMouseLeave={handleLeave}
       style={{ background: cc.bg, color: cc.txt, border: "none", borderRadius: 8, padding: stack ? "8px 14px 7px" : (sm ? "6px 14px" : "9px 18px"), fontSize: sm ? 12 : 13, fontWeight: 700, cursor: props.disabled ? "not-allowed" : "pointer", display: "inline-flex", flexDirection: stack ? "column" : "row", alignItems: "center", gap: stack ? 0 : 6, width: full ? "100%" : "auto", justifyContent: "center", opacity: props.disabled ? 0.45 : 1, whiteSpace: stack ? "normal" : "nowrap", transition: "all .15s cubic-bezier(.22,1,.36,1)", fontFamily: "inherit", letterSpacing: "0.01em" }}>
       {children}
     </button>
@@ -4087,6 +4139,7 @@ var JsBarcodeWidget = function (props) {
   var value = props.value || "0";
   var h = props.height || 40;
   var w = props.width || 1.5;
+  var fill = props.fill === true;
   var svgRef = useRef(null);
   useEffect(function () {
     function render() {
@@ -4101,6 +4154,11 @@ var JsBarcodeWidget = function (props) {
           background: "transparent",
           lineColor: "#000"
         });
+        if (fill) {
+          svgRef.current.setAttribute("preserveAspectRatio", "none");
+          svgRef.current.style.width = "100%";
+          svgRef.current.style.height = "100%";
+        }
       } catch (e) { /* ignore invalid barcode value */ }
     }
     if (window.JsBarcode) {
@@ -4114,8 +4172,15 @@ var JsBarcodeWidget = function (props) {
     } else {
       var t = setInterval(function () { if (window.JsBarcode) { clearInterval(t); render(); } }, 50);
     }
-  }, [value, h, w]);
-  return <svg ref={svgRef} style={{ display: "block" }} />;
+  }, [value, h, w, fill]);
+  return (
+    <svg
+      ref={svgRef}
+      style={fill
+        ? { display: "block", width: "100%", height: "100%" }
+        : { display: "block" }}
+    />
+  );
 };
 
 /* --- BARCODE LABEL SHEET --------------------------- */
@@ -4551,12 +4616,7 @@ var InvoiceA4 = function (props) {
   var invTotalTaxA4 = inv.totalTax || 0;
   var showTaxBlockA4 = invTotalTaxA4 > 0 && invTaxLinesA4.length > 0;
 
-  var accent = "#1a4fa0"; /* fixed professional blue - not user-configurable */
-  var shopName = settings.shopName || "Techon Computers";
-  var logo = settings.invoiceLogo;
-  var logoW = settings.invoiceLogoSize || 80;
-  if (previewMode && logoW > 64) logoW = 64;
-
+  var accent = DOC_PRINT_ACCENT;
   var now = new Date();
   var HH = String(now.getHours()).padStart(2, "0");
   var MM = String(now.getMinutes()).padStart(2, "0");
@@ -4577,44 +4637,22 @@ var InvoiceA4 = function (props) {
   return (
     <div style={{ fontFamily: "'Segoe UI',Arial,sans-serif", background: "#fff", width: mw, margin: "0 auto", color: "#111", minHeight: pageMinH, display: "flex", flexDirection: "column" }}>
 
-      {/* -- HEADER -- */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: (previewMode ? "14px " : "24px ") + px + (previewMode ? " 10px" : " 16px") }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: previewMode ? 6 : 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {logo && <img src={logo} alt={shopName} style={{ width: logoW, height: "auto", objectFit: "contain", display: "block" }} />}
-            {!logo && <div style={{ fontSize: previewMode ? 16 : 20, fontWeight: 900, color: accent, letterSpacing: "-0.02em", textTransform: "uppercase" }}>{shopName}</div>}
-          </div>
-          <div style={{ lineHeight: previewMode ? 1.45 : 1.7 }}>
-            <div style={{ fontSize: previewMode ? 11 : 13, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.03em", marginBottom: 2 }}>{shopName}</div>
-            {settings.address && <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.address}</div>}
-            {settings.phone && <div style={{ fontSize: fs - 1, color: "#555" }}>{L.phoneLabel} {settings.phone}{settings.phone2 ? " / " + settings.phone2 : ""}</div>}
-            {settings.email && <div style={{ fontSize: fs - 1, color: "#555" }}>{L.emailLabel} {settings.email}</div>}
-            {settings.website && <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.website}</div>}
-            {settings.brn && <div style={{ fontSize: fs - 1, color: "#555" }}>{L.brnLabel} {settings.brn}</div>}
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: previewMode ? 15 : 18, fontWeight: 800, color: accent, letterSpacing: "0.08em", textTransform: "uppercase", lineHeight: 1, marginBottom: previewMode ? 6 : 10 }}>{isQuotation ? L.quotationTitle : L.invoiceTitle}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: fs }}>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>{isQuotation ? "Quotation No:" : L.invoiceNo}</span>
-              <span style={{ fontWeight: 700, color: "#111", fontFamily: "monospace", minWidth: 100, textAlign: "right" }}>{inv.invoiceNo || inv.id}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>{L.dateLabel}</span>
-              <span style={{ fontWeight: 600, minWidth: 100, textAlign: "right" }}>{fmtDateFull(inv.date)}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>{L.timeLabel}</span>
-              <span style={{ fontWeight: 600, minWidth: 100, textAlign: "right" }}>{tStr}</span>
-            </div>
-            {inv.cashier && <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}><span style={{ color: "#888" }}>{L.cashierLabel}</span><span style={{ fontWeight: 600, minWidth: 100, textAlign: "right" }}>{inv.cashier}</span></div>}
-          </div>
-        </div>
-      </div>
-
-      {/* -- RULE -- */}
-      <div style={{ margin: "0 " + px, borderTop: "2px solid " + accent, marginBottom: vg }}></div>
+      <DocPrintHeader
+        settings={settings}
+        title={isQuotation ? L.quotationTitle : L.invoiceTitle}
+        previewMode={previewMode}
+        padPx={pad}
+        ruleMarginBottom={vg}
+        showTopbar={!previewMode}
+        showLogo={false}
+        contactLabels={{ phone: "Tel:", email: "Email:", brn: "BRN:" }}
+        metaRows={[
+          { label: isQuotation ? "Quotation No:" : "Invoice No:", value: inv.invoiceNo || inv.id, mono: true },
+          { label: "Date:", value: fmtDateFull(inv.date) },
+          { label: "Time:", value: tStr },
+          { label: L.cashierLabel, value: inv.cashier, hide: !inv.cashier },
+        ]}
+      />
 
       {/* -- BODY -- */}
       <div style={{ }}>
@@ -5413,7 +5451,7 @@ var AboutTab = function (props) {
   var canLocalReactivate = !isNetworkClient;
 
   return (
-    <div style={{ width: "100%", maxWidth: 1040, margin: "0 auto", padding: "8px 12px 28px", boxSizing: "border-box" }}>
+    <div className="erp-about-wrap">
       {showUpdateModal && updateInfo && (
         <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(13,27,62,0.6)", zIndex: 99999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
           onClick={function (e) { if (e.target === e.currentTarget && updateState !== "downloading" && updateState !== "installing") setShowUpdateModal(false); }}>
@@ -5487,254 +5525,210 @@ var AboutTab = function (props) {
         </div>
       )}
 
-      {/* -- About: wide, compact two-column layout -- */}
-      <div style={{ background: "#fff", borderRadius: 20, border: "1.5px solid " + C.border, width: "100%", boxShadow: "0 10px 44px rgba(13,27,62,0.11)", overflow: "hidden" }}>
+      {(function () {
+        var validityLabel = (function () {
+          if (!licenseInfo) return "—";
+          var plan = (licenseInfo.plan || "").toLowerCase();
+          var status = licenseInfo.status;
+          if (plan === "lifetime") return "Lifetime";
+          if (plan === "2year" || plan === "2years") return "730 days";
+          if (plan === "yearly" || plan === "year" || plan === "1year") return "365 days";
+          if (plan === "monthly" || plan === "month" || plan === "1month") return "30 days";
+          if (status === "trial") return "3 days (Trial)";
+          if (licenseInfo.daysLeft !== undefined) return licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s left" : " left");
+          return "—";
+        })();
+        var updateBusy = updateState === "checking" || updateState === "downloading" || updateState === "installing";
+        var openLink = function (url) {
+          if (window.electronAPI && window.electronAPI.openExternal) window.electronAPI.openExternal(url);
+          else window.open(url);
+        };
+        var supportRows = [
+          [UI.globe, "Website", "www.erp.techon.lk", "https://www.erp.techon.lk"],
+          [UI.email, "Email", "info@techon.lk", "mailto:info@techon.lk"],
+          [UI.phone, "Phone", "+94 70 123 4678", "tel:+94701234678"],
+          [UI.phone, "Phone", "+94 70 123 4178", "tel:+94701234178"],
+        ];
+        var statusTone = needsReactivate ? "bad" : (isGrace || isTrial ? "warn" : "ok");
+        var statusTitle = needsReactivate ? "License Not Valid" : (isGrace ? "Grace Period" : (isActivatedGood ? "Software Activated" : "Trial Version"));
+        var statusSub = needsReactivate
+          ? "Reactivation required"
+          : (isGrace ? "License expired — renew soon" : (isActivatedGood ? "Full version · all features unlocked" : "Limited period active"));
+        var tone = {
+          ok: { bg: "#ecfdf5", badge: "#16a34a", title: "#166534", sub: "#15803d", soft: "#d1fae5" },
+          warn: { bg: "#fffbeb", badge: "#d97706", title: "#92400e", sub: "#b45309", soft: "#fde68a" },
+          bad: { bg: "#fef2f2", badge: "#dc2626", title: "#b91c1c", sub: "#dc2626", soft: "#fecaca" },
+        }[statusTone];
+        var licRows = isActivatedGood ? [
+          ["Licensed To", licenseInfo.shopName || "—"],
+          ["License Key", licenseInfo.key || "—"],
+          ["Device ID", licenseInfo.deviceId || "—"],
+        ] : null;
+        var brandLines = [
+          "Version v" + appVersion,
+          "Validity · " + validityLabel,
+          licenseInfo && licenseInfo.shopName ? ("Licensed to " + licenseInfo.shopName) : "Techon Computers · Sri Lanka",
+        ];
 
-        {/* Header - horizontal on wide view */}
-        <div style={{ background: "linear-gradient(135deg, #0d1b3e 0%, #1a3580 55%, #2979ff 100%)", padding: "18px 22px 20px", position: "relative" }}>
-          <div style={{ position: "absolute", top: -16, right: -16, width: 100, height: 100, borderRadius: "50%", background: "rgba(255,255,255,0.04)" }} />
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, position: "relative", zIndex: 1 }}>
-            <div style={{ width: 72, height: 72, borderRadius: 20, flexShrink: 0, filter: "drop-shadow(0 0 12px rgba(180,100,255,0.75))" }}>
-              <img src={TECHON_LOGO} alt="TechonERP" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
-            </div>
-            <div style={{ flex: "1 1 220px", minWidth: 0 }}>
-              <div style={{ fontSize: 21, fontWeight: 900, color: "#fff", letterSpacing: "-0.03em", lineHeight: 1.2 }}>TechonERP</div>
-              <div style={{ fontSize: 11, color: "rgba(148,163,184,0.95)", fontWeight: 600, marginTop: 4, letterSpacing: "0.06em", textTransform: "uppercase" }}>Business Management</div>
-              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginTop: 8 }}>
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.14)", border: "1.5px solid rgba(255,255,255,0.2)", borderRadius: 20, padding: "4px 14px" }}>
-                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80", boxShadow: "0 0 6px #4ade80" }} />
-                  <span style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 13, fontWeight: 700, color: "#fff" }}>v{appVersion}</span>
-                </span>
-              </div>
-              <div style={{ fontSize: 11.5, color: "rgba(200,218,255,0.88)", marginTop: 6, fontWeight: 500, lineHeight: 1.4 }}>
-                {licenseInfo && licenseInfo.shopName
-                  ? <span>Licensed to <strong style={{ color: "#fff" }}>{licenseInfo.shopName}</strong></span>
-                  : <span>Techon Computers - Negombo, Sri Lanka</span>}
-                {licenseInfo && licenseInfo.deviceId && (
-                  <span style={{ display: "block", fontSize: 10, color: "rgba(160,190,235,0.75)", marginTop: 4, fontFamily: "'JetBrains Mono',monospace" }}>
-                    Device: {licenseInfo.deviceId.slice(0, 24)}-
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Body - two columns: left = updates + meta + support | right = license */}
-        <div style={{ padding: "18px 20px 16px" }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 18, alignItems: "stretch" }}>
-            <div style={{ flex: "1 1 380px", minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
-
-              <div>
-                <button onClick={checkForUpdates} disabled={updateState === "checking" || updateState === "downloading" || updateState === "installing"}
-                  style={{ padding: "9px 22px", background: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "#e2e8f0" : "linear-gradient(135deg,#0d47a1,#2979ff)", color: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "#5a78a5" : "#fff", border: "none", borderRadius: 9, fontSize: 12.5, fontWeight: 800, cursor: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: (updateState === "checking" || updateState === "downloading" || updateState === "installing") ? "none" : "0 3px 12px rgba(41,121,255,0.28)" }}>
-                  {updateState === "checking" ? UI.wait + " Checking..." : updateState === "downloading" ? UI.wait + " Downloading " + Math.round(downloadPercent) + "%" : updateState === "installing" ? UI.wait + " Installing..." : "Check for Updates"}
-                </button>
-                {updateState === "uptodate" && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>{UI.ok} Latest version.</div>
-                )}
-                {updateState === "error" && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>{UI.warn} {updateError || "Update server unreachable."}</div>
-                )}
-                {updateState === "downloading" && (
-                  <div style={{ marginTop: 8, fontSize: 12, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 7, padding: "6px 12px", display: "inline-block" }}>Downloading update… {Math.round(downloadPercent)}%</div>
-                )}
-                {updateState === "downloaded" && (
-                  <div onClick={restartToInstall} style={{ marginTop: 8, fontSize: 12, color: "#0a7a53", fontWeight: 700, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 12px", display: "inline-block", cursor: "pointer" }}>Update ready — click to restart & install</div>
-                )}
-                {updateState === "available" && !showUpdateModal && (
-                  <div onClick={function () { setShowUpdateModal(true); }} style={{ marginTop: 8, fontSize: 12, color: "#1e40af", fontWeight: 700, background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 7, padding: "6px 12px", display: "inline-block", cursor: "pointer" }}>Update available - click to view</div>
-                )}
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <div style={{ background: "#f7f9ff", borderRadius: 9, padding: "8px 12px", border: "1.5px solid " + C.border }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Version</div>
-                  <div style={{ fontSize: 12.5, fontWeight: 800, color: C.text, fontFamily: "'JetBrains Mono',monospace" }}>{"v" + appVersion}</div>
-                </div>
-                <div style={{ background: "#f7f9ff", borderRadius: 9, padding: "8px 12px", border: "1.5px solid " + C.border }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2 }}>Validity</div>
-                  <div style={{ fontSize: 12.5, fontWeight: 800, color: C.text, lineHeight: 1.25 }}>
-                    {(function () {
-                      if (!licenseInfo) return "-";
-                      var plan = (licenseInfo.plan || "").toLowerCase();
-                      var status = licenseInfo.status;
-                      if (plan === "lifetime") return UI.infinity + " Lifetime";
-                      if (plan === "2year" || plan === "2years") return "730 days";
-                      if (plan === "yearly" || plan === "year" || plan === "1year") return "365 days";
-                      if (plan === "monthly" || plan === "month" || plan === "1month") return "30 days";
-                      if (status === "trial") return "3 days (Trial)";
-                      if (licenseInfo.daysLeft !== undefined) return licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s left" : " left");
-                      return "-";
-                    })()}
+        return (
+          <div className="erp-about-card tc-about-grid">
+            <div className="erp-about-brand">
+              <div className="erp-about-brand-glow erp-about-brand-glow-a" aria-hidden="true" />
+              <div className="erp-about-brand-glow erp-about-brand-glow-b" aria-hidden="true" />
+              <div className="erp-about-brand-inner">
+                <div className="erp-about-brand-head">
+                  <div className="erp-about-logo">
+                    <img src={TECHON_LOGO} alt="" />
+                  </div>
+                  <div>
+                    <div className="erp-about-name">TechonERP</div>
+                    <div className="erp-about-tag">Business Management</div>
                   </div>
                 </div>
-              </div>
-
-              <div style={{ background: "#f0f4ff", borderRadius: 11, padding: "10px 12px", border: "1.5px solid " + C.border }}>
-                <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Developer &amp; Support</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                  {[
-                    [UI.globe, "Site", "www.erp.techon.lk", "https://www.erp.techon.lk"],
-                    [UI.email, "Email", "info@techon.lk", "mailto:info@techon.lk"],
-                    [UI.phone, "+94", "701234678", "tel:+94701234678"],
-                    [UI.phone, "+94", "701234178", "tel:+94701234178"]
-                  ].map(function (row, i) {
+                <div className="erp-about-brand-lead">About this installation</div>
+                <div className="erp-about-brand-lines">
+                  {brandLines.map(function (line) {
                     return (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, minWidth: 0 }}>
-                        <span style={{ flexShrink: 0 }}>{row[0]}</span>
-                        <a href={row[3]} title={row[2]} onClick={function (e) { e.preventDefault(); if (window.electronAPI && window.electronAPI.openExternal) window.electronAPI.openExternal(row[3]); else window.open(row[3]); }}
-                          style={{ color: C.accent, fontWeight: 600, textDecoration: "none", fontFamily: i <= 1 ? "'JetBrains Mono',monospace" : "inherit", fontSize: i <= 1 ? 11 : 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {i >= 2 ? row[1] + " " + row[2] : row[2]}
-                        </a>
+                      <div key={line} className="erp-about-brand-line">
+                        <span className="erp-about-dot" aria-hidden="true" />
+                        <span>{line}</span>
                       </div>
+                    );
+                  })}
+                </div>
+                <div className="erp-about-brand-support">
+                  <div className="erp-about-brand-support-label">Developer &amp; Support</div>
+                  {supportRows.map(function (row, i) {
+                    return (
+                      <a
+                        key={i}
+                        href={row[3]}
+                        className="erp-about-brand-link"
+                        onClick={function (e) { e.preventDefault(); openLink(row[3]); }}
+                      >
+                        <span aria-hidden="true">{row[0]}</span>
+                        <span>{row[2]}</span>
+                      </a>
                     );
                   })}
                 </div>
               </div>
             </div>
 
-            <div style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column" }}>
-              {(function () {
-                if (needsReactivate) {
-                  return (
-                    <div style={{ background: "linear-gradient(135deg,#fde8ed,#fff5f7)", border: "1.5px solid #fca5a5", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#dc2626", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, color: "#fff" }}>{UI.warn}</div>
-                        <div>
-                          <div style={{ fontWeight: 800, fontSize: 13.5, color: "#b91c1c" }}>License Not Valid</div>
-                          <div style={{ fontSize: 10.5, color: "#dc2626", fontWeight: 600 }}>Reactivation required</div>
-                        </div>
-                      </div>
-                      <div style={{ fontSize: 12.5, color: "#991b1b", marginBottom: 12, lineHeight: 1.55 }}>
-                        {licCheckMsg || (licenseInfo && licenseInfo.reason) || (isNetworkClient
-                          ? "The license on the Main Server is not active. Open Techon ERP on the Main PC and reactivate, or contact Techon support."
-                          : "This license is no longer valid on Techon cloud (deactivated, deleted, or expired). Enter a new or corrected license key.")}
-                      </div>
-                      {canLocalReactivate ? (
-                        <button onClick={function () { if (onActivate) onActivate(); }}
-                          style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#dc2626,#ef4444)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(220,38,38,0.28)", marginBottom: 10 }}>
-                          Reactivate License
-                        </button>
-                      ) : null}
-                      <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
-                        style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: licCheckState === "checking" ? "#5a78a5" : "#b91c1c", border: "1.5px solid #fca5a5", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                        {licCheckState === "checking" ? UI.wait + " Checking..." : "Check License Status"}
-                      </button>
-                      {licCheckedAt ? (
-                        <div style={{ marginTop: 8, fontSize: 11, color: "#9ca3af", fontWeight: 600 }}>Last checked: {licCheckedAt}</div>
-                      ) : null}
-                    </div>
-                  );
-                }
-                if (isGrace) {
-                  return (
-                    <div style={{ background: "linear-gradient(135deg,#fef3e2,#fff8ed)", border: "1.5px solid #fcd34d", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, color: "#fff" }}>!</div>
-                        <div>
-                          <div style={{ fontWeight: 800, fontSize: 13.5, color: "#92400e" }}>Grace Period</div>
-                          <div style={{ fontSize: 10.5, color: "#b45309", fontWeight: 600 }}>License expired — renew soon</div>
-                        </div>
-                      </div>
-                      <div style={{ fontSize: 12.5, color: "#92400e", marginBottom: 12, lineHeight: 1.55 }}>
-                        {(licenseInfo && licenseInfo.graceDaysLeft != null)
-                          ? licenseInfo.graceDaysLeft + " day" + (licenseInfo.graceDaysLeft !== 1 ? "s" : "") + " left in grace period."
-                          : "Your license has expired. Please renew or reactivate."}
-                      </div>
-                      {canLocalReactivate ? (
-                        <button onClick={function () { if (onActivate) onActivate(); }}
-                          style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", marginBottom: 10 }}>
-                          Renew / Reactivate
-                        </button>
-                      ) : null}
-                      <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
-                        style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: "#92400e", border: "1.5px solid #fcd34d", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                        {licCheckState === "checking" ? UI.wait + " Checking..." : "Check License Status"}
-                      </button>
-                      {licCheckState === "done" && licCheckMsg ? (
-                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#0a7a53", fontWeight: 600, background: "#e6f7f2", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 10px" }}>{UI.ok} {licCheckMsg}</div>
-                      ) : null}
-                      {licCheckState === "error" && licCheckMsg ? (
-                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 10px" }}>{licCheckMsg}</div>
-                      ) : null}
-                    </div>
-                  );
-                }
-                if (isActivatedGood) {
-                  return (
-                    <div style={{ background: "linear-gradient(135deg,#e6f7f2,#f0fdf8)", border: "1.5px solid #9ee8ce", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                        <div style={{ width: 30, height: 30, borderRadius: 8, background: "#0f9e6e", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, color: "#fff" }}>{UI.check}</div>
-                        <div>
-                          <div style={{ fontWeight: 800, fontSize: 13.5, color: "#0a7a53" }}>Software Activated</div>
-                          <div style={{ fontSize: 10.5, color: "#10b981", fontWeight: 600 }}>Full version - all features unlocked</div>
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 12.5, marginBottom: 12 }}>
-                        {[["Licensed To", licenseInfo.shopName || "-", "#0a7a53"], ["License Key", licenseInfo.key || "-", "#047857"], ["Device ID", (licenseInfo.deviceId || "-").slice(0, 18) + "-", C.muted]].map(function (row) {
-                          return (
-                            <div key={row[0]} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, background: "rgba(255,255,255,0.65)", borderRadius: 7, padding: "6px 10px" }}>
-                              <span style={{ fontWeight: 700, color: "#065f46", flexShrink: 0 }}>{row[0]}</span>
-                              <span style={{ fontFamily: row[0] !== "Licensed To" ? "'JetBrains Mono',monospace" : "inherit", fontSize: row[0] === "Device ID" ? 10.5 : 12, color: row[2], fontWeight: row[0] === "Licensed To" ? 800 : 600, textAlign: "right", wordBreak: "break-all" }}>{row[1]}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
-                        style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: "#0a7a53", border: "1.5px solid #9ee8ce", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                        {licCheckState === "checking" ? UI.wait + " Checking with Techon cloud..." : "Check License Status"}
-                      </button>
-                      {licCheckState === "done" && licCheckMsg ? (
-                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#0a7a53", fontWeight: 600, background: "rgba(255,255,255,0.8)", border: "1px solid #9ee8ce", borderRadius: 7, padding: "6px 10px" }}>{UI.ok} {licCheckMsg}</div>
-                      ) : null}
-                      {licCheckState === "error" && licCheckMsg ? (
-                        <div style={{ marginTop: 8, fontSize: 11.5, color: "#b91c1c", fontWeight: 600, background: "#fde8ed", border: "1px solid #fca5a5", borderRadius: 7, padding: "6px 10px" }}>{licCheckMsg}</div>
-                      ) : null}
-                      {licCheckedAt ? (
-                        <div style={{ marginTop: 6, fontSize: 11, color: "#9ca3af", fontWeight: 600 }}>Last checked: {licCheckedAt}</div>
-                      ) : null}
-                    </div>
-                  );
-                }
-                return (
-                  <div style={{ background: "linear-gradient(135deg,#fef3e2,#fff8ed)", border: "1.5px solid #fcd34d", borderRadius: 12, padding: "14px 16px", height: "100%", boxSizing: "border-box" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                      <div style={{ width: 30, height: 30, borderRadius: 8, background: "#f59e0b", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>KEY</div>
-                      <div>
-                        <div style={{ fontWeight: 800, fontSize: 13.5, color: "#92400e" }}>Trial Version</div>
-                        <div style={{ fontSize: 10.5, color: "#b45309", fontWeight: 600 }}>Limited period active</div>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 12.5, color: "#92400e", marginBottom: 12, lineHeight: 1.55 }}>
-                      {licenseInfo && licenseInfo.daysLeft !== undefined
-                        ? licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s" : "") + " remaining in your free trial."
-                        : "Free trial period active."}
-                      {" "}Activate a license key to unlock the full version permanently.
-                    </div>
-                    {canLocalReactivate ? (
-                      <button onClick={function () { if (onActivate) onActivate(); }}
-                        style={{ width: "100%", padding: "10px", background: "linear-gradient(135deg,#e07a10,#f59e0b)", color: "#fff", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 800, cursor: "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif", boxShadow: "0 3px 12px rgba(245,158,11,0.32)", marginBottom: 10 }}>Activate Now
-                      </button>
-                    ) : null}
-                    <button onClick={checkLicenseStatus} disabled={licCheckState === "checking"}
-                      style={{ width: "100%", padding: "9px", background: licCheckState === "checking" ? "#e2e8f0" : "#fff", color: "#92400e", border: "1.5px solid #fcd34d", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: licCheckState === "checking" ? "not-allowed" : "pointer", fontFamily: "'Plus Jakarta Sans',sans-serif" }}>
-                      {licCheckState === "checking" ? UI.wait + " Checking..." : "Check License Status"}
-                    </button>
-                  </div>
-                );
-              })()}
-            </div>
-          </div>
+            <div className="erp-about-panel">
+              {(updateState === "uptodate" || updateState === "error" || updateState === "downloading" || updateState === "downloaded" || (updateState === "available" && !showUpdateModal)) ? (
+                <div className={"erp-about-banner is-" + (updateState === "error" ? "bad" : (updateState === "uptodate" || updateState === "downloaded" ? "ok" : "info"))}>
+                  {updateState === "uptodate" ? (UI.ok + " You are on the latest version.") : null}
+                  {updateState === "error" ? (UI.warn + " " + (updateError || "Update server unreachable.")) : null}
+                  {updateState === "downloading" ? ("Downloading update… " + Math.round(downloadPercent) + "%") : null}
+                  {updateState === "downloaded" ? (
+                    <button type="button" className="erp-about-banner-link" onClick={restartToInstall}>Update ready — restart &amp; install</button>
+                  ) : null}
+                  {updateState === "available" && !showUpdateModal ? (
+                    <button type="button" className="erp-about-banner-link" onClick={function () { setShowUpdateModal(true); }}>Update available — view details</button>
+                  ) : null}
+                </div>
+              ) : null}
 
-          <div style={{ borderTop: "1.5px solid " + C.border, paddingTop: 12, marginTop: 14, textAlign: "center" }}>
-            <div style={{ fontSize: 11.5, color: C.muted, fontWeight: 500, lineHeight: 1.65 }}>
-              Designed &amp; developed by <span style={{ fontWeight: 700, color: C.accent }}>Techon Computers</span>
-              {" - "}- {new Date().getFullYear()} All rights reserved.
+              <div className="erp-about-panel-title">License</div>
+              <div className="erp-about-panel-sub">Activation status for this PC</div>
+
+              <div className="erp-about-license" style={{ background: tone.bg }}>
+                <div className="erp-about-lic-head">
+                  <span className="erp-about-lic-badge" style={{ background: tone.badge }}>{needsReactivate ? UI.warn : (isActivatedGood ? UI.check : "!")}</span>
+                  <div>
+                    <div className="erp-about-lic-title" style={{ color: tone.title }}>{statusTitle}</div>
+                    <div className="erp-about-lic-sub" style={{ color: tone.sub }}>{statusSub}</div>
+                  </div>
+                </div>
+
+                {needsReactivate ? (
+                  <p className="erp-about-lic-msg" style={{ color: tone.title }}>
+                    {licCheckMsg || (licenseInfo && licenseInfo.reason) || (isNetworkClient
+                      ? "The license on the Main Server is not active. Open TechonERP on the Main PC and reactivate, or contact Techon support."
+                      : "This license is no longer valid on Techon cloud. Enter a new or corrected license key.")}
+                  </p>
+                ) : null}
+
+                {isGrace ? (
+                  <p className="erp-about-lic-msg" style={{ color: tone.title }}>
+                    {(licenseInfo && licenseInfo.graceDaysLeft != null)
+                      ? (licenseInfo.graceDaysLeft + " day" + (licenseInfo.graceDaysLeft !== 1 ? "s" : "") + " left in grace period.")
+                      : "Your license has expired. Please renew or reactivate."}
+                  </p>
+                ) : null}
+
+                {isTrial && !needsReactivate && !isGrace ? (
+                  <p className="erp-about-lic-msg" style={{ color: tone.title }}>
+                    {licenseInfo && licenseInfo.daysLeft !== undefined
+                      ? (licenseInfo.daysLeft + " day" + (licenseInfo.daysLeft !== 1 ? "s" : "") + " remaining in your free trial.")
+                      : "Free trial period active."}
+                    {" "}Activate a license key to unlock the full version.
+                  </p>
+                ) : null}
+
+                {licRows ? (
+                  <div className="erp-about-lic-rows">
+                    {licRows.map(function (row) {
+                      return (
+                        <div key={row[0]} className="erp-about-lic-row">
+                          <span>{row[0]}</span>
+                          <strong title={row[1]}>{row[1]}</strong>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="erp-about-actions">
+                <button
+                  type="button"
+                  className={"erp-about-btn" + (updateBusy ? " is-muted" : "")}
+                  onClick={checkForUpdates}
+                  disabled={updateBusy}
+                >
+                  {updateState === "checking" ? "Checking…" : updateState === "downloading" ? ("Downloading " + Math.round(downloadPercent) + "%") : updateState === "installing" ? "Installing…" : "Check for Updates"}
+                </button>
+
+                {canLocalReactivate && (needsReactivate || isGrace || isTrial) ? (
+                  <button
+                    type="button"
+                    className="erp-about-btn erp-about-btn-warn"
+                    style={{ background: tone.badge }}
+                    onClick={function () { if (onActivate) onActivate(); }}
+                  >
+                    {needsReactivate ? "Reactivate License" : (isGrace ? "Renew / Reactivate" : "Activate Now")}
+                  </button>
+                ) : null}
+
+                <button
+                  type="button"
+                  className={"erp-about-btn erp-about-btn-soft" + (licCheckState === "checking" ? " is-muted" : "")}
+                  onClick={checkLicenseStatus}
+                  disabled={licCheckState === "checking"}
+                >
+                  {licCheckState === "checking" ? "Checking…" : "Check License Status"}
+                </button>
+              </div>
+
+              {licCheckState === "done" && licCheckMsg ? (
+                <div className="erp-about-lic-feedback is-ok">{UI.ok} {licCheckMsg}</div>
+              ) : null}
+              {licCheckState === "error" && licCheckMsg ? (
+                <div className="erp-about-lic-feedback is-bad">{licCheckMsg}</div>
+              ) : null}
+              {licCheckedAt ? (
+                <div className="erp-about-lic-checked">Last checked: {licCheckedAt}</div>
+              ) : null}
+
+              <div className="erp-about-foot">
+                Designed &amp; developed by <strong>Techon Computers</strong> · {new Date().getFullYear()}
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        );
+      })()}
     </div>
   );
 };
@@ -5773,15 +5767,83 @@ var Statements = function (props) {
   var state = props.state;
   var cur = getCurrencySymbol();
 
-  var [mode, setMode] = useState("customer"); /* "customer" | "supplier" */
+  var [mode, setMode] = useState("customer"); /* "customer" | "supplier" | "other" */
   var [selId, setSelId] = useState("");
+  var [partyQuery, setPartyQuery] = useState("");
+  var [partyDropOpen, setPartyDropOpen] = useState(false);
+  var [partyDropIdx, setPartyDropIdx] = useState(-1);
   var [dateFrom, setDateFrom] = useState("");
   var [dateTo, setDateTo] = useState("");
+  var partyPickRef = useRef(null);
+  var [docView, setDocView] = useState(null);
+  var [docKind, setDocKind] = useState(""); /* sale | purchase */
+  var [receiptView, setReceiptView] = useState(null);
+  var [receiptMode, setReceiptMode] = useState("in"); /* in | out */
+  var [editReceipt, setEditReceipt] = useState(null); /* manual money in/out for edit */
+  var [docFmt, setDocFmt] = useState((state.settings && state.settings.invoiceDefaultSize) || "a4");
+  var [printFmtOpen, setPrintFmtOpen] = useState(false);
+  var [printTarget, setPrintTarget] = useState(null);
+  var [stmtPreview, setStmtPreview] = useState(null); /* { html, title, subtitle } */
+  var invThermalFmt = resolveThermalFormat(state.settings || {});
+  var invPrintFmtOptions = [
+    ["a4", "A4"],
+    ["a5", "A5"],
+    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
+  ];
 
   var customers = (state.customers || []).slice().sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
   var suppliers = (state.suppliers || []).slice().sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
-  var people = mode === "customer" ? customers : suppliers;
+  var othersList = (state.others || []).slice().sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+  var people = mode === "customer" ? customers : (mode === "supplier" ? suppliers : othersList);
   var selected = people.find(function (p) { return p.id === selId; }) || null;
+  var modeLabel = mode === "customer" ? "Customer" : (mode === "supplier" ? "Supplier" : "Other");
+
+  var partySuggestions = useMemo(function () {
+    var q = String(partyQuery || "").trim().toLowerCase();
+    var list = people;
+    if (q) {
+      list = people.filter(function (p) {
+        return String(p.name || "").toLowerCase().indexOf(q) >= 0
+          || String(p.phone || "").toLowerCase().indexOf(q) >= 0;
+      });
+    }
+    return list.slice(0, 12);
+  }, [people, partyQuery]);
+
+  useEffect(function () {
+    if (!partyDropOpen) return undefined;
+    var onDoc = function (e) {
+      if (partyPickRef.current && !partyPickRef.current.contains(e.target)) {
+        setPartyDropOpen(false);
+        setPartyDropIdx(-1);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return function () { document.removeEventListener("mousedown", onDoc); };
+  }, [partyDropOpen]);
+
+  var switchMode = function (nextMode) {
+    setMode(nextMode);
+    setSelId("");
+    setPartyQuery("");
+    setPartyDropOpen(false);
+    setPartyDropIdx(-1);
+  };
+
+  var pickParty = function (p) {
+    if (!p) return;
+    setSelId(p.id);
+    setPartyQuery(p.name || "");
+    setPartyDropOpen(false);
+    setPartyDropIdx(-1);
+  };
+
+  var clearParty = function () {
+    setSelId("");
+    setPartyQuery("");
+    setPartyDropOpen(false);
+    setPartyDropIdx(-1);
+  };
 
   var namesMatch = function (a, b) {
     return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
@@ -5797,6 +5859,10 @@ var Statements = function (props) {
       return (i.name || "Item") + (q > 1 ? (" x" + q) : "");
     }).join(", ");
   };
+  var manualDocRef = function (m) {
+    if (!m) return "—";
+    return m.receiptNo || m.reference || (m._isOpening ? "Opening" : String(m.id || "").slice(0, 8));
+  };
   /** If paidAmount > sum(paymentHistory), add a reconciling payment so statement matches real paid. */
   var pushPaymentRows = function (rowsOut, opts) {
     var history = opts.history || [];
@@ -5804,28 +5870,35 @@ var Statements = function (props) {
     var ref = opts.ref || "";
     var fallDate = opts.date || "";
     var verb = opts.verb || "Payment";
+    var sourceKind = opts.sourceKind || "";
+    var sourceId = opts.sourceId || "";
     var histSum = 0;
     history.forEach(function (ph) {
       var amt = Number(ph && ph.amount) || 0;
       if (Math.abs(amt) <= 0.005) return;
       var method = payMethodLabel(ph);
+      var payRef = (ph && (ph.receiptNo || ph.reference || ph.ref)) || ref;
       if (amt > 0) {
         rowsOut.push({
           date: ph.date || fallDate,
           type: "Payment",
-          ref: ref,
+          ref: payRef,
           detail: verb + (method ? (" via " + method) : ""),
           debit: 0,
           credit: amt,
+          sourceKind: sourceKind,
+          sourceId: sourceId,
         });
       } else {
         rowsOut.push({
           date: ph.date || fallDate,
           type: "Refund",
-          ref: ref,
+          ref: payRef,
           detail: (ph.note || verb + " refund") + (method ? (" via " + method) : ""),
           debit: Math.abs(amt),
           credit: 0,
+          sourceKind: sourceKind,
+          sourceId: sourceId,
         });
       }
       histSum += amt;
@@ -5839,8 +5912,22 @@ var Statements = function (props) {
         detail: verb + " (recorded)",
         debit: 0,
         credit: gap,
+        sourceKind: sourceKind,
+        sourceId: sourceId,
       });
     }
+  };
+
+  var matchOtherManual = function (row, nameFields) {
+    if (!row || !selected) return false;
+    if (selected.id && row.partyId && String(row.partyId) === String(selected.id)) return true;
+    if (row.partyKind && row.partyKind !== "other" && row.partyKind !== "others") return false;
+    if (row.customerId || row.supplierId) return false;
+    var i;
+    for (i = 0; i < nameFields.length; i++) {
+      if (namesMatch(row[nameFields[i]], selected.name)) return true;
+    }
+    return false;
   };
 
   /* -- Build full ledger (all-time), then apply date range with opening BF -- */
@@ -5865,6 +5952,8 @@ var Statements = function (props) {
           detail: itemDetail(s.items),
           debit: originalTotal,
           credit: 0,
+          sourceKind: "sale",
+          sourceId: s.id,
         });
         pushPaymentRows(rows, {
           history: s.paymentHistory,
@@ -5872,13 +5961,14 @@ var Statements = function (props) {
           ref: ref,
           date: s.date,
           verb: "Payment received",
+          sourceKind: "sale",
+          sourceId: s.id,
         });
       });
       (state.salesReturns || []).forEach(function (r) {
         var matchId = selected.id && r.customerId && String(r.customerId) === String(selected.id);
         var matchName = !r.customerId && namesMatch(r.customerName || r.customer, selected.name);
         if (!matchId && !matchName) return;
-        /* Skip orphan return if parent sale is voided */
         var parent = (state.sales || []).find(function (s) {
           return s && (s.id === r.invoiceId || (s.invoiceNo && s.invoiceNo === r.invoiceNo));
         });
@@ -5886,25 +5976,33 @@ var Statements = function (props) {
         rows.push({
           date: r.date,
           type: "Return",
-          ref: r.invoiceNo || r.returnId || String(r.id || "").slice(0, 8),
+          ref: r.returnId || r.invoiceNo || String(r.id || "").slice(0, 8),
           detail: (r.productName || "Sales return") + (r.reason ? (" · " + r.reason) : ""),
           debit: 0,
           credit: Number(r.amount) || 0,
+          sourceKind: parent ? "sale" : "",
+          sourceId: parent ? parent.id : "",
         });
       });
       (S.get("tc3_manualReceivables", []) || []).forEach(function (mr) {
         if (!mr) return;
-        var matchId = selected.id && mr.customerId && String(mr.customerId) === String(selected.id);
+        var matchId = selected.id && (
+          (mr.customerId && String(mr.customerId) === String(selected.id))
+          || (mr.partyId && String(mr.partyId) === String(selected.id) && (!mr.partyKind || mr.partyKind === "customer"))
+        );
         var matchName = namesMatch(mr.person || mr.customer || mr.customerName, selected.name);
         if (!matchId && !matchName) return;
-        var ref = mr.ref || mr.note || (mr._isOpening ? "Opening" : String(mr.id || "").slice(0, 8));
+        if (mr.partyKind === "other" || mr.partyKind === "others" || mr.partyKind === "supplier") return;
+        var ref = manualDocRef(mr);
         rows.push({
           date: mr.date || mr.dueDate || "",
           type: mr._isOpening ? "Opening" : "Charge",
           ref: ref,
-          detail: mr.note || (mr._isOpening ? "Opening balance" : "Manual receivable"),
+          detail: mr.note || (mr._isOpening ? "Opening balance" : "Bill"),
           debit: Number(mr.amount) || 0,
           credit: 0,
+          sourceKind: "manual-ar",
+          sourceId: mr.id,
         });
         pushPaymentRows(rows, {
           history: mr.paymentHistory,
@@ -5912,9 +6010,11 @@ var Statements = function (props) {
           ref: ref,
           date: mr.date || mr.dueDate || "",
           verb: "Payment received",
+          sourceKind: "manual-ar",
+          sourceId: mr.id,
         });
       });
-    } else {
+    } else if (mode === "supplier") {
       activePurchases(state.purchases || []).forEach(function (p) {
         var matchId = selected.id && p.supplierId && String(p.supplierId) === String(selected.id);
         var matchName = !p.supplierId && namesMatch(p.supplier, selected.name);
@@ -5923,7 +6023,6 @@ var Statements = function (props) {
           return r.purchaseId === p.id || (p.invoiceNo && r.purchaseNo === p.invoiceNo);
         });
         var returnedTotal = purReturns.reduce(function (a, r) { return a + (Number(r.amount) || 0); }, 0);
-        /* Show original purchase invoice value; returns appear as separate credit lines */
         var originalTotal = (Number(p.total) || 0) + returnedTotal;
         var ref = p.invoiceNo || String(p.id || "").slice(0, 8);
         rows.push({
@@ -5933,6 +6032,8 @@ var Statements = function (props) {
           detail: itemDetail(p.items || p.stock),
           debit: originalTotal,
           credit: 0,
+          sourceKind: "purchase",
+          sourceId: p.id,
         });
         pushPaymentRows(rows, {
           history: p.paymentHistory,
@@ -5940,6 +6041,8 @@ var Statements = function (props) {
           ref: ref,
           date: p.date,
           verb: "Payment made",
+          sourceKind: "purchase",
+          sourceId: p.id,
         });
       });
       (state.purchaseReturns || []).forEach(function (r) {
@@ -5951,25 +6054,33 @@ var Statements = function (props) {
         rows.push({
           date: r.date,
           type: "Return",
-          ref: r.purchaseNo || r.returnId || String(r.id || "").slice(0, 8),
+          ref: r.returnId || r.purchaseNo || String(r.id || "").slice(0, 8),
           detail: (r.productName || "Purchase return") + (r.reason ? (" · " + r.reason) : ""),
           debit: 0,
           credit: Number(r.amount) || 0,
+          sourceKind: parent ? "purchase" : "",
+          sourceId: parent ? parent.id : "",
         });
       });
       (S.get("tc3_manualPayables", []) || []).forEach(function (mp) {
         if (!mp) return;
-        var matchId = selected.id && mp.supplierId && String(mp.supplierId) === String(selected.id);
+        var matchId = selected.id && (
+          (mp.supplierId && String(mp.supplierId) === String(selected.id))
+          || (mp.partyId && String(mp.partyId) === String(selected.id) && (!mp.partyKind || mp.partyKind === "supplier"))
+        );
         var matchName = namesMatch(mp.source || mp.supplier || mp.person, selected.name);
         if (!matchId && !matchName) return;
-        var ref = mp.ref || mp.note || (mp._isOpening ? "Opening" : String(mp.id || "").slice(0, 8));
+        if (mp.partyKind === "other" || mp.partyKind === "others" || mp.partyKind === "customer") return;
+        var ref = manualDocRef(mp);
         rows.push({
           date: mp.date || mp.dueDate || "",
           type: mp._isOpening ? "Opening" : "Charge",
           ref: ref,
-          detail: mp.note || (mp._isOpening ? "Opening balance" : "Manual payable"),
+          detail: mp.note || (mp._isOpening ? "Opening balance" : "Bill"),
           debit: Number(mp.amount) || 0,
           credit: 0,
+          sourceKind: "manual-ap",
+          sourceId: mp.id,
         });
         pushPaymentRows(rows, {
           history: mp.paymentHistory,
@@ -5977,6 +6088,56 @@ var Statements = function (props) {
           ref: ref,
           date: mp.date || mp.dueDate || "",
           verb: "Payment made",
+          sourceKind: "manual-ap",
+          sourceId: mp.id,
+        });
+      });
+    } else {
+      /* Other contacts — Money In/Out + manual AR/AP linked to others */
+      (S.get("tc3_manualReceivables", []) || []).forEach(function (mr) {
+        if (!matchOtherManual(mr, ["person", "customer", "customerName", "source"])) return;
+        var ref = manualDocRef(mr);
+        rows.push({
+          date: mr.date || mr.dueDate || "",
+          type: mr._isOpening ? "Opening" : "Charge",
+          ref: ref,
+          detail: mr.note || mr.type || (mr._isOpening ? "Opening balance" : "Bill"),
+          debit: Number(mr.amount) || 0,
+          credit: 0,
+          sourceKind: "manual-ar",
+          sourceId: mr.id,
+        });
+        pushPaymentRows(rows, {
+          history: mr.paymentHistory,
+          paidTotal: (mr.paymentHistory || []).reduce(function (a, p) { return a + (Number(p.amount) || 0); }, 0),
+          ref: ref,
+          date: mr.date || mr.dueDate || "",
+          verb: "Payment received",
+          sourceKind: "manual-ar",
+          sourceId: mr.id,
+        });
+      });
+      (S.get("tc3_manualPayables", []) || []).forEach(function (mp) {
+        if (!matchOtherManual(mp, ["source", "person", "supplier"])) return;
+        var ref = manualDocRef(mp);
+        rows.push({
+          date: mp.date || mp.dueDate || "",
+          type: mp._isOpening ? "Opening" : "Charge",
+          ref: ref,
+          detail: mp.note || mp.type || (mp._isOpening ? "Opening balance" : "Bill"),
+          debit: Number(mp.amount) || 0,
+          credit: 0,
+          sourceKind: "manual-ap",
+          sourceId: mp.id,
+        });
+        pushPaymentRows(rows, {
+          history: mp.paymentHistory,
+          paidTotal: (mp.paymentHistory || []).reduce(function (a, p) { return a + (Number(p.amount) || 0); }, 0),
+          ref: ref,
+          date: mp.date || mp.dueDate || "",
+          verb: "Payment made",
+          sourceKind: "manual-ap",
+          sourceId: mp.id,
         });
       });
     }
@@ -6023,28 +6184,90 @@ var Statements = function (props) {
   var totalCredit = filtered.reduce(function (a, r) { return a + (r.credit || 0); }, 0);
   var netBalance = totalDebit - totalCredit;
 
+  var closeStmtDoc = function () {
+    setDocView(null);
+    setDocKind("");
+    setReceiptView(null);
+    setPrintFmtOpen(false);
+    setPrintTarget(null);
+  };
+
+  var openStmtDoc = function (r) {
+    if (!r || !r.sourceKind || !r.sourceId) return;
+    var id = String(r.sourceId);
+    setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+    if (r.sourceKind === "sale") {
+      var sale = (state.sales || []).find(function (s) { return s && String(s.id) === id; });
+      if (!sale) { showAlert("Invoice not found."); return; }
+      setReceiptView(null);
+      setDocKind("sale");
+      setDocView(sale);
+      return;
+    }
+    if (r.sourceKind === "purchase") {
+      var pur = (state.purchases || []).find(function (p) { return p && String(p.id) === id; });
+      if (!pur) { showAlert("Purchase not found."); return; }
+      setReceiptView(null);
+      setDocKind("purchase");
+      setDocView(pur);
+      return;
+    }
+    if (r.sourceKind === "manual-ar") {
+      var mr = (S.get("tc3_manualReceivables", []) || []).find(function (x) { return x && String(x.id) === id; });
+      if (!mr) { showAlert("Receipt not found."); return; }
+      setDocView(null);
+      setDocKind("");
+      setReceiptMode("out");
+      setReceiptView(mr);
+      return;
+    }
+    if (r.sourceKind === "manual-ap") {
+      var mp = (S.get("tc3_manualPayables", []) || []).find(function (x) { return x && String(x.id) === id; });
+      if (!mp) { showAlert("Receipt not found."); return; }
+      setDocView(null);
+      setDocKind("");
+      setReceiptMode("in");
+      setReceiptView(mp);
+    }
+  };
+
+  var printStmtDocById = function (elId, title, fmt) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    var isA5 = fmt === "a5";
+    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
+    var thermalBodyW = fmt === "thermal58" ? "218px" : "302px";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : "8mm";
+    var bodyW = isThermal
+      ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}"
+      : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW
+      + "@page{size:" + pageSize + " portrait;margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var w = window.open("", "_blank", "width=900,height=760");
+    if (!w) return;
+    w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>" + escapeHtml(title || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
+    w.document.close();
+    setTimeout(function () { w.focus(); w.print(); }, 500);
+  };
+
   /* -- Print statement -- */
   var printStatement = function () {
     if (!selected) return;
-    var shopName = (state.settings && state.settings.shopName) || "Techon ERP";
-    var shopAddr = (state.settings && state.settings.address) || "";
-    var shopPhone = (state.settings && state.settings.phone) || "";
-    var accent = (state.settings && state.settings.invoiceAccentColor) || "#0d47a1";
-    var periodLabel = (dateFrom || dateTo) ? ("Period: " + (dateFrom ? fmtDate(dateFrom) : "Start") + " - " + (dateTo ? fmtDate(dateTo) : "Today")) : "All Time";
+    var settings = state.settings || {};
+    var accent = "#0d1b3e";
+    var periodLabel = (dateFrom || dateTo) ? ((dateFrom ? fmtDate(dateFrom) : "Start") + " - " + (dateTo ? fmtDate(dateTo) : "Today")) : "All Time";
     var html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Statement - " + escapeHtml(selected.name) + "</title>";
-    html += "<style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff;padding:32px 36px;}";
-    html += ".hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;padding-bottom:16px;border-bottom:2px solid " + accent + ";}";
-    html += ".shop-name{font-size:20px;font-weight:900;color:" + accent + ";text-transform:uppercase;letter-spacing:-0.02em;}";
-    html += ".shop-sub{font-size:11px;color:#555;margin-top:3px;}";
-    html += ".stmt-title{font-size:18px;font-weight:800;color:#111;text-align:right;}";
-    html += ".stmt-sub{font-size:11px;color:#666;text-align:right;margin-top:3px;}";
-    html += ".party-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-start;}";
+    html += "<style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#111;background:#fff;padding:16mm 14mm;}";
+    html += ".stmt-wrap{max-width:182mm;margin:0 auto;}";
+    html += ".party-box{background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 16px;margin:0 0 20px;display:flex;justify-content:space-between;align-items:flex-start;}";
     html += ".party-name{font-size:15px;font-weight:800;color:#0d1b3e;}";
     html += ".party-sub{font-size:11px;color:#555;margin-top:3px;}";
     html += ".bal-box{text-align:right;}";
     html += ".bal-label{font-size:10px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.06em;}";
     html += ".bal-val{font-size:20px;font-weight:900;color:" + (netBalance > 0 ? "#dc2626" : "#16a34a") + ";margin-top:2px;}";
-    html += "table{width:100%;border-collapse:collapse;margin-bottom:20px;}";
+    html += ".stmt-sub{font-size:11px;color:#666;margin-top:3px;}";
+    html += "table{width:100%;margin:0 0 20px;border-collapse:collapse;}";
     html += "thead tr{background:" + accent + ";color:#fff;}";
     html += "th{padding:9px 11px;font-size:11px;font-weight:700;text-align:left;}th.r{text-align:right;}";
     html += "td{padding:8px 11px;font-size:11px;border-bottom:1px solid #f0f0f0;}td.r{text-align:right;}td.bold{font-weight:700;}";
@@ -6053,201 +6276,571 @@ var Statements = function (props) {
     html += ".type-payment{color:#16a34a;font-weight:700;}";
     html += ".type-return{color:#d97706;font-weight:700;}";
     html += ".totals-row td{font-weight:800;border-top:2px solid " + accent + ";background:#f0f4ff;font-size:12px;}";
-    html += ".footer{text-align:center;font-size:10px;color:#aaa;margin-top:20px;padding-top:12px;border-top:1px solid #e5e7eb;}";
-    html += "@media print{body{padding:16px;}}</style></head><body>";
-    html += "<div class='hdr'><div><div class='shop-name'>" + escapeHtml(shopName) + "</div>";
-    if (shopAddr) html += "<div class='shop-sub'>" + escapeHtml(shopAddr) + "</div>";
-    if (shopPhone) html += "<div class='shop-sub'>Tel: " + escapeHtml(shopPhone) + "</div>";
-    html += "</div><div><div class='stmt-title'>" + (mode === "customer" ? "Customer" : "Supplier") + " Statement</div>";
-    html += "<div class='stmt-sub'>" + escapeHtml(periodLabel) + "</div>";
-    html += "<div class='stmt-sub'>Printed: " + new Date().toLocaleString() + "</div></div></div>";
+    html += ".footer{text-align:center;font-size:10px;color:#aaa;margin:20px 0 0;padding-top:12px;border-top:1px solid #e5e7eb;}";
+    html += "@media print{body{padding:0;}.stmt-wrap{max-width:100%;}}</style></head><body><div class='stmt-wrap'>";
+    html += buildDocPrintHeaderHtml({
+      settings: settings,
+      title: modeLabel + " Statement",
+      escapeHtml: escapeHtml,
+      showTopbar: true,
+      metaRows: [
+        { label: "Party:", value: selected.name },
+        { label: "Period:", value: periodLabel },
+      ],
+    });
     html += "<div class='party-box'><div><div class='party-name'>" + escapeHtml(selected.name) + "</div>";
     if (selected.phone) html += "<div class='party-sub'>" + escapeHtml(selected.phone) + "</div>";
     if (selected.address) html += "<div class='party-sub'>" + escapeHtml(selected.address) + "</div>";
-    html += "</div><div class='bal-box'><div class='bal-label'>Outstanding Balance</div><div class='bal-val'>" + cur + " " + fmtNum(Math.abs(netBalance)) + (netBalance <= 0 ? " CR" : "") + "</div></div></div>";
-    html += "<table><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Details</th><th class='r'>Debit (" + cur + ")</th><th class='r'>Credit (" + cur + ")</th><th class='r'>Balance (" + cur + ")</th></tr></thead><tbody>";
+    html += "</div><div class='bal-box'><div class='bal-label'>Balance</div><div class='bal-val'>" + cur + " " + fmtNum(Math.abs(netBalance)) + "</div>";
+    html += "<div class='stmt-sub'>" + escapeHtml(netBalance > 0 ? "Still to pay" : (netBalance < 0 ? "Extra paid" : "Settled")) + "</div></div></div>";
+    html += "<table><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>Details</th><th class='r'>" + escapeHtml(colInLabel) + " (" + cur + ")</th><th class='r'>" + escapeHtml(colOutLabel) + " (" + cur + ")</th><th class='r'>Balance (" + cur + ")</th></tr></thead><tbody>";
     withBalance.forEach(function (r) {
       var typeClass = r.type === "Invoice" || r.type === "Purchase" || r.type === "Charge" || r.type === "Opening" ? "type-invoice" : r.type === "Payment" ? "type-payment" : "type-return";
       html += "<tr><td>" + escapeHtml(fmtDate(r.date)) + "</td>";
-      html += "<td><span class='" + typeClass + "'>" + escapeHtml(r.type) + "</span></td>";
+      html += "<td><span class='" + typeClass + "'>" + escapeHtml(simpleTypeLabel(r.type)) + "</span></td>";
       html += "<td class='bold'>" + escapeHtml(r.ref) + "</td>";
       html += "<td style='max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'>" + escapeHtml(r.detail) + "</td>";
       html += "<td class='r'>" + (r.debit > 0 ? fmtNum(r.debit) : "-") + "</td>";
       html += "<td class='r' style='color:#16a34a;'>" + (r.credit > 0 ? fmtNum(r.credit) : "-") + "</td>";
-      html += "<td class='r bold' style='color:" + (r.runningBalance > 0 ? "#dc2626" : "#16a34a") + ";'>" + fmtNum(Math.abs(r.runningBalance)) + (r.runningBalance <= 0 ? " CR" : "") + "</td></tr>";
+      html += "<td class='r bold' style='color:" + (r.runningBalance > 0 ? "#dc2626" : "#16a34a") + ";'>" + fmtNum(Math.abs(r.runningBalance)) + "</td></tr>";
     });
-    html += "<tr class='totals-row'><td colspan='4'>TOTALS</td><td class='r'>" + fmtNum(totalDebit) + "</td><td class='r'>" + fmtNum(totalCredit) + "</td><td class='r' style='color:" + (netBalance > 0 ? "#dc2626" : "#16a34a") + ";'>" + fmtNum(Math.abs(netBalance)) + (netBalance <= 0 ? " CR" : "") + "</td></tr>";
+    html += "<tr class='totals-row'><td colspan='4'>TOTALS</td><td class='r'>" + fmtNum(totalDebit) + "</td><td class='r'>" + fmtNum(totalCredit) + "</td><td class='r' style='color:" + (netBalance > 0 ? "#dc2626" : "#16a34a") + ";'>" + fmtNum(Math.abs(netBalance)) + "</td></tr>";
     html += "</tbody></table>";
-    html += "<div class='footer' style='font-size:8px;font-weight:400;color:#000'>Powered By Techon Computers | +94 70 1234678</div></body></html>";
-    var w = window.open("", "_blank", "width=900,height=700");
-    if (!w) return;
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    setTimeout(function () { w.print(); }, 400);
+    html += "<div class='footer' style='font-size:8px;font-weight:400;color:#000'>Powered By Techon Computers | +94 70 1234678</div></div></body></html>";
+    setStmtPreview({
+      html: html,
+      title: modeLabel + " Statement — " + (selected.name || ""),
+      subtitle: periodLabel,
+      filename: "Statement-" + (selected.name || "account"),
+    });
   };
 
-  var TH2 = function (p) { return <th style={{ padding: "10px 12px", textAlign: p.right ? "right" : "left", fontWeight: 700, fontSize: 12, background: "linear-gradient(90deg,#0d47a1,#1565c0)", color: "#fff", whiteSpace: "nowrap" }}>{p.children}</th>; };
+  var TH2 = function (p) {
+    return <th className={p.right ? "is-num" : undefined}>{p.children}</th>;
+  };
+
+  var periodLabel = (dateFrom || dateTo)
+    ? ((dateFrom ? fmtDate(dateFrom) : "Start") + " → " + (dateTo ? fmtDate(dateTo) : "Today"))
+    : "All time";
+
+  var colInLabel = mode === "customer" ? "Invoice" : (mode === "supplier" ? "Purchase" : "Bill");
+  var colOutLabel = "Payment";
+  var balanceHint = !selected ? "select a party"
+    : (netBalance > 0 ? "still to pay" : (netBalance < 0 ? "extra paid" : "settled"));
+
+  var simpleTypeLabel = function (t) {
+    if (t === "Invoice") return "Invoice";
+    if (t === "Purchase") return "Purchase";
+    if (t === "Payment") return "Payment";
+    if (t === "Return") return "Return";
+    if (t === "Refund") return "Refund";
+    if (t === "Opening") return "Opening";
+    if (t === "Charge") return "Bill";
+    return t || "—";
+  };
+
+  var typeClass = function (t) {
+    if (t === "Payment" || t === "Refund") return "is-payment";
+    if (t === "Return") return "is-return";
+    if (t === "Opening") return "is-opening";
+    if (t === "Charge") return "is-charge";
+    return "is-invoice";
+  };
 
   return (
-    <div style={{ padding: "20px 24px", maxWidth: 1100, margin: "0 auto" }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: C.text, letterSpacing: "-0.03em" }}>Account Statements</div>
-          <div style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Accurate ledger for customers and suppliers — invoices, purchases, payments, returns, and opening balances</div>
-        </div>
-        {selected && withBalance.length > 0 && (
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <Btn col="blue" onClick={printStatement}>Print Statement</Btn>
-            <WABtn title="Share Statement via WhatsApp" onClick={function () { shareAnyReport(printStatement, "Statement-" + (selected || "account")); }} />
+    <div className="erp-page erp-arap-modern is-stmt">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">ST</div>
+            <div>
+              <h1 className="erp-arap-header-title">Account Statements</h1>
+              <p className="erp-arap-header-sub">Customer, supplier &amp; other statements</p>
+            </div>
           </div>
-        )}
+          <div className="erp-arap-kpi-row" aria-label="Party counts">
+            <div className={"erp-arap-kpi is-blue" + (mode === "customer" ? " is-on" : "")} role="button" tabIndex={0}
+              onClick={function () { switchMode("customer"); }}
+              onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); switchMode("customer"); } }}
+              title="Show customer statements">
+              <span className="erp-arap-kpi-lbl">Customers</span>
+              <span className="erp-arap-kpi-val">{customers.length}</span>
+              <span className="erp-arap-kpi-sub">parties</span>
+            </div>
+            <div className={"erp-arap-kpi is-orange" + (mode === "supplier" ? " is-on" : "")} role="button" tabIndex={0}
+              onClick={function () { switchMode("supplier"); }}
+              onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); switchMode("supplier"); } }}
+              title="Show supplier statements">
+              <span className="erp-arap-kpi-lbl">Suppliers</span>
+              <span className="erp-arap-kpi-val">{suppliers.length}</span>
+              <span className="erp-arap-kpi-sub">parties</span>
+            </div>
+            <div className={"erp-arap-kpi is-purple" + (mode === "other" ? " is-on" : "")} role="button" tabIndex={0}
+              onClick={function () { switchMode("other"); }}
+              onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); switchMode("other"); } }}
+              title="Show other contact statements">
+              <span className="erp-arap-kpi-lbl">Others</span>
+              <span className="erp-arap-kpi-val">{othersList.length}</span>
+              <span className="erp-arap-kpi-sub">contacts</span>
+            </div>
+            <div className={"erp-arap-kpi " + (netBalance > 0 ? "is-red" : "is-green")}>
+              <span className="erp-arap-kpi-lbl">Balance</span>
+              <span className="erp-arap-kpi-val">{selected ? (cur + " " + fmtNum(Math.abs(netBalance))) : "—"}</span>
+              <span className="erp-arap-kpi-sub">{balanceHint}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="erp-stmt-controls">
+          <div className="erp-stmt-field erp-stmt-type-field">
+            <label>Party type</label>
+            <div className="erp-stmt-seg" role="tablist" aria-label="Party type">
+              {[["customer", "Customer"], ["supplier", "Supplier"], ["other", "Others"]].map(function (opt) {
+                var active = mode === opt[0];
+                return (
+                  <button
+                    key={opt[0]}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    className={active ? "is-active" : ""}
+                    onClick={function () { switchMode(opt[0]); }}
+                  >
+                    {opt[1]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="erp-stmt-field is-grow" ref={partyPickRef}>
+            <label>Search {mode === "other" ? "contact" : modeLabel.toLowerCase()}</label>
+            <div className="erp-stmt-search-wrap">
+              <input
+                type="text"
+                className="erp-arap-field erp-stmt-search"
+                value={partyQuery}
+                placeholder={"Type to search " + (mode === "other" ? "contacts" : (mode + "s")) + "…"}
+                autoComplete="off"
+                onFocus={function () { setPartyDropOpen(true); }}
+                onChange={function (e) {
+                  var v = e.target.value;
+                  setPartyQuery(v);
+                  setPartyDropOpen(true);
+                  setPartyDropIdx(0);
+                  if (selected && !namesMatch(v, selected.name)) setSelId("");
+                }}
+                onKeyDown={function (e) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setPartyDropOpen(true);
+                    setPartyDropIdx(function (i) { return Math.min((i < 0 ? -1 : i) + 1, partySuggestions.length - 1); });
+                    return;
+                  }
+                  if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setPartyDropIdx(function (i) { return Math.max(i - 1, 0); });
+                    return;
+                  }
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    var pick = partySuggestions[partyDropIdx >= 0 ? partyDropIdx : 0];
+                    if (pick) pickParty(pick);
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    setPartyDropOpen(false);
+                    setPartyDropIdx(-1);
+                  }
+                }}
+              />
+              {selId ? (
+                <button type="button" className="erp-stmt-search-clear" title="Clear" onClick={clearParty}>×</button>
+              ) : (
+                <span className="erp-stmt-search-ico" aria-hidden="true">⌕</span>
+              )}
+              {partyDropOpen ? (
+                <div className="erp-stmt-drop" role="listbox">
+                  {partySuggestions.length === 0 ? (
+                    <div className="erp-stmt-drop-empty">No matches</div>
+                  ) : (
+                    partySuggestions.map(function (p, idx) {
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          role="option"
+                          aria-selected={selId === p.id}
+                          className={"erp-stmt-drop-item" + (idx === partyDropIdx ? " is-active" : "") + (selId === p.id ? " is-picked" : "")}
+                          onMouseDown={function (e) { e.preventDefault(); pickParty(p); }}
+                        >
+                          <span className="erp-stmt-drop-name">{p.name}</span>
+                          {p.phone ? <span className="erp-stmt-drop-phone">{p.phone}</span> : null}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </div>
+          <div className="erp-stmt-field">
+            <label>From date</label>
+            <input type="date" className="erp-arap-field" value={dateFrom} onChange={function (e) { setDateFrom(e.target.value); }} />
+          </div>
+          <div className="erp-stmt-field">
+            <label>To date</label>
+            <input type="date" className="erp-arap-field" value={dateTo} onChange={function (e) { setDateTo(e.target.value); }} />
+          </div>
+          {(dateFrom || dateTo) ? (
+            <button type="button" className="erp-stmt-clear" onClick={function () { setDateFrom(""); setDateTo(""); }}>Clear dates</button>
+          ) : null}
+        </div>
       </div>
 
-      {/* Controls */}
-      <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, padding: "16px 20px", marginBottom: 20, display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end" }}>
-        {/* Mode toggle */}
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>Statement Type</div>
-          <div style={{ display: "flex", border: "1.5px solid " + C.border, borderRadius: 8, overflow: "hidden" }}>
-            {[["customer", "Customer"], ["supplier", "Supplier"]].map(function (opt) {
-              var active = mode === opt[0];
-              return <button key={opt[0]} onClick={function () { setMode(opt[0]); setSelId(""); }}
-                style={{ padding: "8px 18px", border: "none", cursor: "pointer", fontWeight: active ? 700 : 500, fontSize: 13,
-                  background: active ? C.accent : "#fff", color: active ? "#fff" : C.textMd, fontFamily: "inherit", transition: "all .15s" }}>{opt[1]}</button>;
-            })}
+      {selected ? (
+        <React.Fragment>
+          <div className="erp-stmt-party">
+            <div>
+              <div className="erp-stmt-party-name">{selected.name}</div>
+              <div className="erp-stmt-party-sub">{modeLabel}{selected.phone ? " · " + selected.phone : ""}</div>
+              {selected.address ? <div className="erp-stmt-party-sub">{selected.address}</div> : null}
+              <div className="erp-stmt-party-sub">{periodLabel}</div>
+            </div>
+            {withBalance.length > 0 ? (
+              <div className="erp-stmt-party-actions">
+                <Btn col="cyan" onClick={printStatement}>Print / PDF</Btn>
+                <WABtn title="Share Statement via WhatsApp" onClick={printStatement} />
+              </div>
+            ) : null}
           </div>
-        </div>
-        {/* Party selector */}
-        <div style={{ flex: 1, minWidth: 200 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>{mode === "customer" ? "Select Customer" : "Select Supplier"}</div>
-          <select value={selId} onChange={function (e) { setSelId(e.target.value); }}
-            style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, background: "#fff", color: C.text, outline: "none", cursor: "pointer", fontFamily: "inherit" }}>
-            <option value="">- Select {mode === "customer" ? "a customer" : "a supplier"} -</option>
-            {people.map(function (p) { return <option key={p.id} value={p.id}>{p.name}{p.phone ? "  -  " + p.phone : ""}</option>; })}
-          </select>
-        </div>
-        {/* Date range */}
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>From Date</div>
-          <input type="date" value={dateFrom} onChange={function (e) { setDateFrom(e.target.value); }}
-            style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text }} />
-        </div>
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>To Date</div>
-          <input type="date" value={dateTo} onChange={function (e) { setDateTo(e.target.value); }}
-            style={{ border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 12px", fontSize: 13, outline: "none", fontFamily: "inherit", background: "#fff", color: C.text }} />
-        </div>
-        {(dateFrom || dateTo) && (
-          <button type="button" onClick={function () { setDateFrom(""); setDateTo(""); }} style={{ alignSelf: "flex-end", padding: "9px 14px", background: "#f1f5f9", border: "1.5px solid " + C.border, borderRadius: 8, fontSize: 12, fontWeight: 700, color: C.textMd, cursor: "pointer", fontFamily: "inherit" }}>Clear dates</button>
-        )}
-      </div>
 
-      {/* Party summary card */}
-      {selected && (
-        <div style={{ background: "linear-gradient(135deg,#0d47a1,#1565c0)", borderRadius: 12, padding: "16px 22px", marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 18, fontWeight: 900, color: "#fff" }}>{selected.name}</div>
-            {selected.phone && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginTop: 3 }}>{selected.phone}</div>}
-            {selected.address && <div style={{ fontSize: 12, color: "rgba(255,255,255,0.75)", marginTop: 2 }}>{selected.address}</div>}
+          <div className="erp-stmt-stat-row">
+            <StatCard
+              label={mode === "customer" ? "Total invoices" : (mode === "supplier" ? "Total purchases" : "Total charges")}
+              value={totalDebit}
+              accent="#2563eb"
+              valueColor="#1d4ed8"
+              icon="📄"
+              sub={withBalance.length + " transaction" + (withBalance.length === 1 ? "" : "s")}
+            />
+            <StatCard
+              label="Total payments"
+              value={totalCredit}
+              accent="#16a34a"
+              valueColor="#15803d"
+              icon="✓"
+              sub="Paid in this period"
+            />
+            <StatCard
+              label="Balance"
+              value={Math.abs(netBalance)}
+              accent={netBalance > 0 ? "#dc2626" : "#16a34a"}
+              valueColor={netBalance > 0 ? "#b91c1c" : "#15803d"}
+              icon={netBalance > 0 ? "⚠" : "✓"}
+              sub={netBalance > 0 ? "Still to pay" : (netBalance < 0 ? "Extra paid" : "Settled")}
+            />
           </div>
-          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-            {[
-              ["Total " + (mode === "customer" ? "Billed" : "Purchased"), totalDebit, "#93c5fd"],
-              ["Total Paid", totalCredit, "#86efac"],
-              ["Outstanding", Math.abs(netBalance), netBalance > 0 ? "#fca5a5" : "#86efac"]
-            ].map(function (stat) {
-              return <div key={stat[0]} style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "0.07em" }}>{stat[0]}</div>
-                <div style={{ fontSize: 18, fontWeight: 900, color: stat[2], marginTop: 2 }}>{cur} {fmtNum(stat[1])}{stat[0] === "Outstanding" && netBalance <= 0 ? " CR" : ""}</div>
-              </div>;
-            })}
-          </div>
-        </div>
-      )}
+        </React.Fragment>
+      ) : null}
 
-      {/* No selection state */}
-      {!selected && (
-        <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, padding: "60px 20px", textAlign: "center" }}>
-          <EmptyStateGlyph icon={mode === "customer" ? "customers" : "suppliers"} size={52} marginBottom={14} />
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.text, marginBottom: 6 }}>Select a {mode === "customer" ? "customer" : "supplier"}</div>
-          <div style={{ fontSize: 13, color: C.muted }}>Choose from the dropdown above to view their full account statement.</div>
+      {!selected ? (
+        <div className="erp-stmt-empty">
+          <EmptyStateGlyph icon={mode === "customer" ? "customers" : (mode === "supplier" ? "suppliers" : "customers")} size={52} marginBottom={4} />
+          <div className="erp-stmt-empty-title">Search a {mode === "other" ? "contact" : modeLabel.toLowerCase()}</div>
+          <div className="erp-stmt-empty-sub">Type a name or phone above to open their account statement with running balance.</div>
         </div>
-      )}
+      ) : null}
 
-      {/* Transactions table */}
-      {selected && withBalance.length === 0 && (
-        <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, padding: "50px 20px", textAlign: "center" }}>
-          <EmptyStateGlyph icon="invoices" size={48} marginBottom={12} />
-          <div style={{ fontSize: 15, fontWeight: 700, color: C.text, marginBottom: 6 }}>No transactions found</div>
-          <div style={{ fontSize: 13, color: C.muted }}>No records for {selected.name}{(dateFrom || dateTo) ? " in this date range" : ""}.</div>
+      {selected && withBalance.length === 0 ? (
+        <div className="erp-stmt-empty">
+          <EmptyStateGlyph icon="invoices" size={48} marginBottom={4} />
+          <div className="erp-stmt-empty-title">No transactions found</div>
+          <div className="erp-stmt-empty-sub">No records for {selected.name}{(dateFrom || dateTo) ? " in this date range" : ""}.</div>
         </div>
-      )}
+      ) : null}
 
-      {selected && withBalance.length > 0 && (
-        <div style={{ background: "#fff", border: "1.5px solid " + C.border, borderRadius: 12, overflow: "hidden" }}>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      {selected && withBalance.length > 0 ? (
+        <div className="erp-stmt-table-wrap">
+          <div className="erp-stmt-table-scroll">
+            <table className="erp-stmt-table">
               <thead>
                 <tr>
                   <TH2>Date</TH2>
                   <TH2>Type</TH2>
                   <TH2>Reference</TH2>
                   <TH2>Details</TH2>
-                  <TH2 right>Debit ({cur})</TH2>
-                  <TH2 right>Credit ({cur})</TH2>
-                  <TH2 right>Balance ({cur})</TH2>
+                  <TH2 right>{colInLabel}</TH2>
+                  <TH2 right>{colOutLabel}</TH2>
+                  <TH2 right>Balance</TH2>
                 </tr>
               </thead>
               <tbody>
                 {withBalance.map(function (r, i) {
-                  var typeColor = r.type === "Invoice" || r.type === "Purchase" || r.type === "Charge" ? C.accent
-                    : r.type === "Payment" ? C.green
-                    : r.type === "Opening" ? "#6366f1"
-                    : "#d97706";
-                  var typeBg = r.type === "Invoice" || r.type === "Purchase" || r.type === "Charge" ? C.accentSoft
-                    : r.type === "Payment" ? "#dcfce7"
-                    : r.type === "Opening" ? "#eef2ff"
-                    : "#fef9c3";
                   return (
-                    <tr key={i} style={{ borderBottom: "1px solid " + C.border, background: i % 2 === 0 ? "#fff" : "#fafbff" }}>
-                      <td style={{ padding: "10px 12px", color: C.textMd, fontSize: 12, whiteSpace: "nowrap" }}>{r.date ? fmtDate(r.date) : "—"}</td>
-                      <td style={{ padding: "10px 12px" }}>
-                        <span style={{ display: "inline-block", padding: "3px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: typeBg, color: typeColor }}>{r.type}</span>
+                    <tr key={i}>
+                      <td style={{ whiteSpace: "nowrap", color: "#64748b" }}>{r.date ? fmtDate(r.date) : "—"}</td>
+                      <td>
+                        <span className={"erp-stmt-type " + typeClass(r.type)}>{simpleTypeLabel(r.type)}</span>
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 700, color: C.text, whiteSpace: "nowrap" }}>{r.ref}</td>
-                      <td style={{ padding: "10px 12px", color: C.textMd, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.detail}>{r.detail}</td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.debit > 0 ? C.red : C.muted }}>{r.debit > 0 ? fmtNum(r.debit) : "-"}</td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 600, color: r.credit > 0 ? C.green : C.muted }}>{r.credit > 0 ? fmtNum(r.credit) : "-"}</td>
-                      <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 800, color: r.runningBalance > 0 ? C.red : C.green }}>
-                        {fmtNum(Math.abs(r.runningBalance))}{r.runningBalance <= 0 ? <span style={{ fontSize: 10, marginLeft: 3 }}>CR</span> : ""}
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {r.sourceKind && r.sourceId ? (
+                          <button
+                            type="button"
+                            className="erp-stmt-ref-btn"
+                            title="Open document"
+                            onClick={function () { openStmtDoc(r); }}
+                          >
+                            {r.ref || "—"}
+                          </button>
+                        ) : (
+                          <span style={{ fontWeight: 700 }}>{r.ref || "—"}</span>
+                        )}
+                      </td>
+                      <td style={{ color: "#64748b", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.detail}>{r.detail}</td>
+                      <td style={{ textAlign: "right", fontWeight: 650, color: r.debit > 0 ? "#b91c1c" : "#94a3b8" }}>{r.debit > 0 ? fmtNum(r.debit) : "—"}</td>
+                      <td style={{ textAlign: "right", fontWeight: 650, color: r.credit > 0 ? "#15803d" : "#94a3b8" }}>{r.credit > 0 ? fmtNum(r.credit) : "—"}</td>
+                      <td style={{ textAlign: "right", fontWeight: 850, color: r.runningBalance > 0 ? "#b91c1c" : "#15803d" }}>
+                        {fmtNum(Math.abs(r.runningBalance))}
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
               <tfoot>
-                <tr style={{ background: "linear-gradient(90deg,#f0f4ff,#e8eeff)", borderTop: "2px solid " + C.accent }}>
-                  <td colSpan={4} style={{ padding: "11px 12px", fontWeight: 800, fontSize: 13, color: C.text }}>TOTALS</td>
-                  <td style={{ padding: "11px 12px", textAlign: "right", fontWeight: 800, color: C.red }}>{fmtNum(totalDebit)}</td>
-                  <td style={{ padding: "11px 12px", textAlign: "right", fontWeight: 800, color: C.green }}>{fmtNum(totalCredit)}</td>
-                  <td style={{ padding: "11px 12px", textAlign: "right", fontWeight: 900, fontSize: 14, color: netBalance > 0 ? C.red : C.green }}>
-                    {fmtNum(Math.abs(netBalance))}{netBalance <= 0 ? <span style={{ fontSize: 10, marginLeft: 3 }}>CR</span> : ""}
+                <tr>
+                  <td colSpan={4}>TOTALS</td>
+                  <td style={{ textAlign: "right", color: "#b91c1c" }}>{fmtNum(totalDebit)}</td>
+                  <td style={{ textAlign: "right", color: "#15803d" }}>{fmtNum(totalCredit)}</td>
+                  <td style={{ textAlign: "right", color: netBalance > 0 ? "#b91c1c" : "#15803d", fontSize: 13.5 }}>
+                    {fmtNum(Math.abs(netBalance))}
                   </td>
                 </tr>
               </tfoot>
             </table>
           </div>
-          <div style={{ padding: "12px 16px", background: "#f8fafc", borderTop: "1px solid " + C.border, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-            <div style={{ fontSize: 12, color: C.muted }}>{withBalance.length} transaction{withBalance.length !== 1 ? "s" : ""}{(dateFrom || dateTo) ? " in selected period" : " - all time"}</div>
+          <div className="erp-stmt-foot">
+            <div className="erp-stmt-foot-meta">
+              {withBalance.length} transaction{withBalance.length !== 1 ? "s" : ""} · {periodLabel}
+            </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <Btn col="blue" onClick={printStatement}>Print / Save PDF</Btn>
-              <WABtn title="Share Statement via WhatsApp" onClick={function () { shareAnyReport(printStatement, "Statement-" + (selected || "account")); }} />
+              <WABtn title="Share Statement via WhatsApp" onClick={printStatement} />
             </div>
           </div>
         </div>
-      )}
+      ) : null}
+
+      {docView && docKind === "sale" ? (
+        <div className="erp-si-fv" role="dialog" aria-modal="true" aria-label="View and print invoice">
+          <div className="erp-si-fv-bar">
+            <div className="erp-si-fv-bar-left">
+              <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+              <div className="erp-si-fv-meta">
+                <span className="erp-si-fv-kicker">View &amp; Print</span>
+                <div className="erp-si-fv-meta-main">
+                  <span className="erp-si-fv-inv">{docView.invoiceNo || String(docView.id || "").slice(0, 8)}</span>
+                  <span className="erp-si-fv-sub">{docView.customerName || "Walk-in"} · {fmtDate(docView.date)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="erp-si-fv-tools">
+              <span className="erp-si-fv-tool-label">Format</span>
+              <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                {invPrintFmtOptions.map(function (item) {
+                  var v = item[0]; var lbl = item[1];
+                  return (
+                    <button key={v} type="button" className={"erp-si-fv-fmt" + (docFmt === v ? " is-active" : "")} onClick={function () { setDocFmt(v); }}>{lbl}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="erp-si-fv-actions">
+              <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("sale"); setPrintFmtOpen(true); }}>Print</button>
+              <button type="button" className="erp-si-fv-btn is-close" onClick={closeStmtDoc} aria-label="Close">✕</button>
+            </div>
+          </div>
+          <div className="erp-si-fv-stage">
+            <div id={"stmt-inv-preview-" + docView.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+              {(docFmt === "thermal58" || docFmt === "thermal80")
+                ? <InvoiceThermal inv={docView} settings={state.settings} invoiceLang="en" width={docFmt === "thermal58" ? 218 : 302} />
+                : <InvoiceA4 inv={docView} settings={state.settings} invoiceLang="en" size={(docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt} />}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {docView && docKind === "purchase" ? (
+        <div className="erp-si-fv is-purchase" role="dialog" aria-modal="true" aria-label="View and print purchase invoice">
+          <div className="erp-si-fv-bar">
+            <div className="erp-si-fv-bar-left">
+              <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+              <div className="erp-si-fv-meta">
+                <span className="erp-si-fv-kicker">View &amp; Print</span>
+                <div className="erp-si-fv-meta-main">
+                  <span className="erp-si-fv-inv">{docView.invoiceNo || String(docView.id || "").slice(0, 8)}</span>
+                  <span className="erp-si-fv-sub">{docView.supplier || "Supplier"} · {fmtDateFull(docView.date)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="erp-si-fv-tools">
+              <span className="erp-si-fv-tool-label">Format</span>
+              <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                {invPrintFmtOptions.map(function (item) {
+                  var v = item[0]; var lbl = item[1];
+                  return (
+                    <button key={v} type="button" className={"erp-si-fv-fmt" + (docFmt === v ? " is-active" : "")} onClick={function () { setDocFmt(v); }}>{lbl}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="erp-si-fv-actions">
+              <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("purchase"); setPrintFmtOpen(true); }}>Print</button>
+              <button type="button" className="erp-si-fv-btn is-close" onClick={closeStmtDoc} aria-label="Close">✕</button>
+            </div>
+          </div>
+          <div className="erp-si-fv-stage">
+            <div id={"stmt-pur-preview-" + docView.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+              <PurchaseInvoiceDoc
+                pur={docView}
+                settings={state.settings}
+                size={(docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt}
+                fmtDateFull={fmtDateFull}
+                fmtNum={fmtNum}
+                getCurrencySymbol={getCurrencySymbol}
+                fmtStock={fmtStock}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {receiptView ? (function () {
+        var rcp = receiptView;
+        var rcpNo = rcp.receiptNo || rcp.reference || String(rcp.id || "").slice(0, 8);
+        var sheetSize = (docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt;
+        var isOut = receiptMode === "out";
+        return (
+          <div className="erp-si-fv is-receipt" role="dialog" aria-modal="true" aria-label="View and print receipt">
+            <div className="erp-si-fv-bar">
+              <div className="erp-si-fv-bar-left">
+                <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+                <div className="erp-si-fv-meta">
+                  <span className="erp-si-fv-kicker">View &amp; Print</span>
+                  <div className="erp-si-fv-meta-main">
+                    <span className="erp-si-fv-inv">{rcpNo}</span>
+                    <span className="erp-si-fv-sub">{(isOut ? "Money Out" : "Money In") + " · " + (rcp.person || rcp.source || "Party") + " · " + fmtDateFull(rcp.date)}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="erp-si-fv-tools">
+                <span className="erp-si-fv-tool-label">Format</span>
+                <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                  {invPrintFmtOptions.map(function (item) {
+                    var v = item[0]; var lbl = item[1];
+                    return (
+                      <button key={v} type="button" className={"erp-si-fv-fmt" + (docFmt === v ? " is-active" : "")} onClick={function () { setDocFmt(v); }}>{lbl}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="erp-si-fv-actions">
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () {
+                    if (rcp._isOpening) {
+                      showAlert("Opening balance entries are edited from Accounts → Opening Balance.");
+                      return;
+                    }
+                    if (rcp.thirdPartyRepairId) {
+                      showAlert("This receipt is linked to a 3rd party repair. Edit it from Repairs.");
+                      return;
+                    }
+                    setReceiptView(null);
+                    setEditReceipt(rcp);
+                  }}
+                >Edit</button>
+                <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("receipt"); setPrintFmtOpen(true); }}>Print</button>
+                <button type="button" className="erp-si-fv-btn is-close" onClick={closeStmtDoc} aria-label="Close">✕</button>
+              </div>
+            </div>
+            <div className="erp-si-fv-stage">
+              <div id={"stmt-rcp-preview-" + rcp.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+                <MoneyReceiptDoc
+                  receipt={rcp}
+                  mode={isOut ? "out" : "in"}
+                  size={sheetSize}
+                  settings={state.settings}
+                  fmtDateFull={fmtDateFull}
+                  fmtNum={fmtNum}
+                  getCurrencySymbol={getCurrencySymbol}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })() : null}
+
+      {editReceipt ? (
+        <MoneyInOutModal
+          mode={receiptMode === "out" ? "out" : "in"}
+          editRecord={editReceipt}
+          S={S}
+          today={today}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+          showAlert={showAlert}
+          addAudit={addAudit}
+          setState={props.setState}
+          onClose={function () { setEditReceipt(null); }}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          getCurrencySymbol={getCurrencySymbol}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+          zIndex={13000}
+        />
+      ) : null}
+
+      <PrintFormatChooser
+        open={printFmtOpen}
+        settings={state.settings}
+        thermalId={invThermalFmt}
+        title={printTarget === "receipt" ? "Print receipt" : (printTarget === "purchase" ? "Print purchase" : "Print invoice")}
+        hint="Choose A4, A5, or Thermal for your printer."
+        onClose={function () { setPrintFmtOpen(false); setPrintTarget(null); }}
+        onSelect={function (fmt) {
+          setPrintFmtOpen(false);
+          var target = printTarget;
+          setPrintTarget(null);
+          if (target === "sale" && docView) printStmtDocById("stmt-inv-preview-" + docView.id, "Invoice " + (docView.invoiceNo || ""), fmt);
+          else if (target === "purchase" && docView) printStmtDocById("stmt-pur-preview-" + docView.id, "Purchase " + (docView.invoiceNo || ""), fmt);
+          else if (target === "receipt" && receiptView) printStmtDocById("stmt-rcp-preview-" + receiptView.id, "Receipt " + (receiptView.receiptNo || ""), fmt);
+        }}
+      />
+
+      {stmtPreview ? (
+        <UniversalPrintPreview
+          open
+          badge="ST"
+          kicker="Print preview"
+          title={stmtPreview.title}
+          subtitle={stmtPreview.subtitle}
+          filename={stmtPreview.filename || "Statement"}
+          html={stmtPreview.html}
+          settings={state.settings}
+          WABtn={WABtn}
+          showAlert={showAlert}
+          shareViaWhatsApp={shareViaWhatsApp}
+          PRINT_FONT_LINK={PRINT_FONT_LINK}
+          escapeHtml={escapeHtml}
+          onClose={function () { setStmtPreview(null); }}
+        />
+      ) : null}
     </div>
   );
 };
@@ -7106,7 +7699,9 @@ var LoginScreen = function (props) {
       verifyLoginPassword(pw, user).then(function (r) {
         if (r.ok) { finishLogin(r.user || user); return; }
         tryMainServerLogin(pw).then(function (mainOk) {
-          if (mainOk) finishMainAdminLogin();
+          /* Admin password on a cashier/manager username → stay as that user (not elevate to admin). */
+          if (mainOk && !isPrimaryAdminUser(user)) finishLogin(user);
+          else if (mainOk) finishMainAdminLogin();
           else loginFailed();
         });
       }).catch(function () {
@@ -7778,6 +8373,10 @@ function App(props) {
   var [settingsPwEntry, setSettingsPwEntry] = useState("");
   var [settingsPwErr, setSettingsPwErr] = useState("");
   var settingsPwBypassRef = useRef(false);
+  var settingsPwInputRef = useRef(null);
+  /** After admin password, non-admin/counter can use top menus + toolbar customize until logout/lock. */
+  var [shellElevated, setShellElevated] = useState(false);
+  var [shellElevatePendingMenu, setShellElevatePendingMenu] = useState(null);
   var [masterPwEntry, setMasterPwEntry] = useState("");
   var [pinSupportMode, setPinSupportMode] = useState(false);
   var [supportChallengeCode, setSupportChallengeCode] = useState("");
@@ -7793,6 +8392,7 @@ function App(props) {
   var [loginScreenKey, setLoginScreenKey] = useState(0);
   var [erpMenuOpen, setErpMenuOpen] = useState(null);
   var [moneyModalMode, setMoneyModalMode] = useState(null);
+  var [showCalculator, setShowCalculator] = useState(false);
   var [toolbarCustomizeOpen, setToolbarCustomizeOpen] = useState(false);
   var [toolbarDraftKeys, setToolbarDraftKeys] = useState(null);
   var [shellAppVersion, setShellAppVersion] = useState("2.0.3");
@@ -7836,7 +8436,10 @@ function App(props) {
       var raw = sessionStorage.getItem("tc3_current_user");
       if (raw) {
         var parsed = JSON.parse(raw);
-        if (parsed && parsed.username) setCurrentUser(parsed);
+        if (parsed && parsed.username) {
+          setCurrentUser(parsed);
+          setSessionActor(parsed);
+        }
       }
     } catch (e) {}
   }, []);
@@ -7846,10 +8449,32 @@ function App(props) {
   }, []);
 
   useEffect(function () {
+    /* Only admins/managers may persist settings. Cashier login must not rewrite tc3_settings
+       (was showing "Permission denied: settings changes require admin/manager access."). */
     if (!loggedIn || isNetworkClient) return;
+    var actor = getSessionActor();
+    if (actor && !hasPermission(actor, "settings.view")) return;
     var h = S.get("tc3_apppass", "");
     if (h) syncMainAdminPassHashToSettings(h);
   }, [loggedIn, isNetworkClient]);
+
+  /* Focus password field when Settings/admin unlock modal opens (autoFocus alone loses to menu click). */
+  useEffect(function () {
+    if (!settingsPwModal) return;
+    var focusPw = function () {
+      var el = settingsPwInputRef.current;
+      if (el && typeof el.focus === "function") {
+        el.focus();
+        if (typeof el.select === "function") el.select();
+      }
+    };
+    var t0 = setTimeout(focusPw, 0);
+    var t1 = setTimeout(focusPw, 50);
+    return function () {
+      clearTimeout(t0);
+      clearTimeout(t1);
+    };
+  }, [settingsPwModal]);
 
   /* Vite dev loads http://127.0.0.1 - a different web origin than file:// in the packaged app, so IDB/LS are empty vs .exe */
   useEffect(function () {
@@ -8503,6 +9128,9 @@ function App(props) {
     setSettingsPwPending(null);
     setSettingsPwEntry("");
     setSettingsPwErr("");
+    setShellElevated(false);
+    setShellElevatePendingMenu(null);
+    setErpMenuOpen(null);
     _setActive("pos");
     var actor = user || {
       id: "legacy-admin",
@@ -8513,6 +9141,7 @@ function App(props) {
     setBusinessType(ensureDefaultBusinessType());
     setCurrentUser(actor);
     try {
+      setSessionActor(actor);
       sessionStorage.setItem("tc3_current_user", JSON.stringify(actor));
     } catch (e) {}
     addAudit("User Login", actor.username || actor.name || "unknown", { role: actor.role || ROLE_ADMIN });
@@ -8531,8 +9160,12 @@ function App(props) {
     setSettingsPwPending(null);
     setSettingsPwEntry("");
     setSettingsPwErr("");
+    setShellElevated(false);
+    setShellElevatePendingMenu(null);
+    setErpMenuOpen(null);
     _setActive("pos");
     try {
+      setSessionActor(null);
       sessionStorage.removeItem("tc3_current_user");
       sessionStorage.setItem("tc3_force_login_once", "1");
     } catch (e) {}
@@ -8638,13 +9271,34 @@ function App(props) {
     setSettingsPwPending(pendingNav || "settings");
     setSettingsPwEntry("");
     setSettingsPwErr("");
+    setShellElevatePendingMenu(null);
     setSettingsPwModal(true);
   };
   var verifySettingsUnlockPassword = function (input) {
     return verifyAdminPassword(input);
   };
   var settingsUnlockIsStaff = normalizeRole(normalizedCurrentUser && normalizedCurrentUser.role) !== ROLE_ADMIN;
+  /** Cashier / manager / counter PC: top menus stay greyed (except Settings); Settings + toolbar customize need admin password. */
+  var shellNeedsAdminGate = isNetworkClient || settingsUnlockIsStaff;
+  /* Menus stay locked for staff/counter — elevation must not re-enable Menu/Transactions/etc. */
+  var shellMenusLocked = !!shellNeedsAdminGate;
+  var requestShellElevation = function (pendingAction) {
+    if (pendingAction === "__customize_toolbar__") {
+      if (!shellNeedsAdminGate) {
+        setToolbarDraftKeys(getToolbarKeys(state.settings));
+        setToolbarCustomizeOpen(true);
+        return;
+      }
+      setShellElevatePendingMenu(null);
+      setSettingsPwPending("__customize_toolbar__");
+      setSettingsPwEntry("");
+      setSettingsPwErr("");
+      setSettingsPwModal(true);
+      return;
+    }
+  };
   var submitSettingsPassword = function () {
+    var pending = settingsPwPending;
     if (!settingsPwEntry) {
       setSettingsPwErr(isNetworkClient
         ? "Enter the main PC admin password."
@@ -8654,18 +9308,25 @@ function App(props) {
     verifySettingsUnlockPassword(settingsPwEntry).then(function (ok) {
       if (!ok) {
         setSettingsPwErr(isNetworkClient
-          ? "Incorrect main PC password. Counter login passwords cannot open Settings."
+          ? "Incorrect main PC password. Counter login passwords cannot unlock this."
           : (settingsUnlockIsStaff
-            ? "Incorrect administrator password. Your own login password cannot open Settings."
+            ? "Incorrect administrator password. Your own login password cannot unlock this."
             : "Incorrect password."));
         setSettingsPwEntry("");
         return;
       }
-      var dest = settingsPwPending || "settings";
       setSettingsPwModal(false);
       setSettingsPwPending(null);
       setSettingsPwEntry("");
       setSettingsPwErr("");
+      setShellElevatePendingMenu(null);
+      if (pending === "__customize_toolbar__") {
+        setToolbarDraftKeys(getToolbarKeys(state.settings));
+        setToolbarCustomizeOpen(true);
+        return;
+      }
+      /* Settings (and any other password-gated page) — never unlock the menubar. */
+      var dest = pending || "settings";
       settingsPwBypassRef.current = true;
       setActive(dest);
     });
@@ -8685,6 +9346,9 @@ function App(props) {
         return;
       }
       settingsPwBypassRef.current = false;
+      /* Settings is always allowed on counter after admin password (same as cashier/manager). */
+      _setActive("settings");
+      return;
     }
     if (isNetworkClient) {
       var allowedClient = clientPosPages;
@@ -8804,6 +9468,9 @@ function App(props) {
   var lockToSalesMode = function () {
     if (isNetworkServer) return;
     setIsAdminMode(false);
+    setShellElevated(false);
+    setShellElevatePendingMenu(null);
+    setErpMenuOpen(null);
     if (!isNetworkClient && !isStartupFlowSatisfied()) {
       showAlert("Please add your shop name and contact details in Settings before using sales mode.");
       setActive(_landingNav());
@@ -9204,6 +9871,8 @@ function App(props) {
     return NAV_ITEMS.filter(function (n) {
       if (ids.indexOf(n.id) < 0) return false;
       if (isNetworkClient) {
+        /* Settings always stays in the top bar (admin-password gate), like cashier/manager. */
+        if (n.id === "settings") return true;
         if (clientPosPages.indexOf(n.id) < 0) return false;
         if (!canAccessPageByRole(normalizedCurrentUser, n.id)) return false;
         return true;
@@ -9252,11 +9921,7 @@ function App(props) {
       return;
     }
     if (action === "calc") {
-      try {
-        if (window.electronAPI && typeof window.electronAPI.openCalculator === "function") {
-          window.electronAPI.openCalculator();
-        }
-      } catch (e) { /* ignore */ }
+      setShowCalculator(true);
       return;
     }
     if (action === "money_in") {
@@ -9268,8 +9933,7 @@ function App(props) {
       return;
     }
     if (action === "customize_toolbar") {
-      setToolbarDraftKeys(getToolbarKeys(state.settings));
-      setToolbarCustomizeOpen(true);
+      requestShellElevation("__customize_toolbar__");
       return;
     }
     if (action === "switch_user") {
@@ -9401,6 +10065,8 @@ function App(props) {
         showAdminToggle={shellShowAdminToggle}
         onAdminToggle={function () { if (isAdminMode) { lockToSalesMode(); } else { var hasPin = state && state.settings && state.settings.adminPin && state.settings.adminPin.length >= 4; if (hasPin) { setPinModal(true); setPinEntry(""); setPinError(""); } else { setIsAdminMode(true); } } }}
         adminToggleLabel={shellAdminToggleLabel}
+        menusLocked={shellMenusLocked}
+        onRequestMenuUnlock={null}
         HeaderKeysHint={HeaderKeysHint}
       >
         <div style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
@@ -9750,6 +10416,8 @@ function App(props) {
         />
       )}
 
+      <AppCalculator open={showCalculator} onClose={function () { setShowCalculator(false); }} />
+
       {toolbarCustomizeOpen && (
         <Modal
           title="Customize Toolbar"
@@ -10046,18 +10714,25 @@ function App(props) {
       <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(10,22,50,0.72)", backdropFilter: "blur(8px)", zIndex: 100015, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
         <div style={modalShellStyle({ width: 400, maxWidth: "calc(100vw - 32px)" })}>
           <div style={modalHeaderBarStyle()}>
-            <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>Settings password</div>
-            <CloseIconButton onClick={function () { setSettingsPwModal(false); setSettingsPwPending(null); setSettingsPwEntry(""); setSettingsPwErr(""); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#fff" }}>
+              {settingsPwPending === "__customize_toolbar__" ? "Admin password required" : "Settings password"}
+            </div>
+            <CloseIconButton onClick={function () { setSettingsPwModal(false); setSettingsPwPending(null); setSettingsPwEntry(""); setSettingsPwErr(""); setShellElevatePendingMenu(null); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
           </div>
           <div style={modalBodyStyle({ padding: "22px 24px 24px" })}>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 18, lineHeight: 1.55 }}>
-            {isNetworkClient
-              ? "Enter the main PC admin password. Counter login passwords cannot open Settings."
-              : (settingsUnlockIsStaff
-                ? "Enter the administrator password to open Settings. Your own login password cannot unlock Settings."
-                : "Enter your admin password to open Settings.")}
+            {settingsPwPending === "__customize_toolbar__"
+              ? (isNetworkClient
+                ? "Enter the main PC admin password to customize the toolbar."
+                : "Enter the administrator password to customize the toolbar.")
+              : (isNetworkClient
+                ? "Enter the main PC admin password. Counter login passwords cannot open Settings."
+                : (settingsUnlockIsStaff
+                  ? "Enter the administrator password to open Settings. Your own login password cannot unlock Settings."
+                  : "Enter your admin password to open Settings."))}
           </div>
           <input
+            ref={settingsPwInputRef}
             type="password"
             autoFocus
             value={settingsPwEntry}
@@ -10069,7 +10744,7 @@ function App(props) {
           {settingsPwErr ? <div style={{ background: "#fde8ed", color: C.red, borderRadius: 9, padding: "8px 12px", fontSize: 13, fontWeight: 600, marginBottom: 12 }}>{settingsPwErr}</div> : null}
           <div style={{ display: "flex", gap: 10 }}>
             <button type="button" onClick={submitSettingsPassword} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "none", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Unlock</button>
-            <button type="button" onClick={function () { setSettingsPwModal(false); setSettingsPwPending(null); setSettingsPwEntry(""); setSettingsPwErr(""); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1.5px solid " + C.border, background: "#fff", color: C.textMd, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+            <button type="button" onClick={function () { setSettingsPwModal(false); setSettingsPwPending(null); setSettingsPwEntry(""); setSettingsPwErr(""); setShellElevatePendingMenu(null); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "1.5px solid " + C.border, background: "#fff", color: C.textMd, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
           </div>
           </div>
         </div>

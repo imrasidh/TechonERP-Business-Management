@@ -289,6 +289,48 @@ body {
   color: #ffffff;
 }
 
+/* Cashier / manager: greyed menus are inert — Settings stays active */
+.erp-menu-bar.is-staff-locked .erp-menu-btn.is-locked,
+.erp-menu-bar.is-staff-locked .erp-menu-btn.is-locked:disabled,
+.erp-menu-item.is-locked > .erp-menu-btn {
+  color: rgba(255, 255, 255, 0.34);
+  opacity: 0.65;
+  cursor: default;
+  pointer-events: none;
+}
+.erp-menu-bar.is-staff-locked .erp-menu-btn.is-locked .erp-menu-caret {
+  opacity: 0.3;
+}
+.erp-menu-bar.is-staff-locked .erp-menu-btn.is-locked:hover,
+.erp-menu-bar.is-staff-locked .erp-menu-btn.is-locked:disabled:hover {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.34);
+}
+/* Settings (unlocked) — readable on purple bar; never force white-on-white when open */
+.erp-menu-bar.is-staff-locked .erp-menu-item:not(.is-locked):not(.open) > .erp-menu-btn {
+  color: #ffffff !important;
+  font-weight: 600;
+  background: transparent !important;
+}
+.erp-menu-bar.is-staff-locked .erp-menu-item:not(.is-locked).open > .erp-menu-btn,
+.erp-menu-bar.is-staff-locked .erp-menu-item:not(.is-locked) > .erp-menu-btn:hover {
+  background: rgba(255, 255, 255, 0.18) !important;
+  color: #ffffff !important;
+}
+.erp-app-root .erp-menu-bar .erp-menu-dropdown button,
+.erp-app-root .erp-menu-bar .erp-menu-flyout button {
+  color: #1f2a3a !important;
+  background: transparent !important;
+  background-image: none !important;
+}
+.erp-app-root .erp-menu-bar .erp-menu-dropdown button:hover,
+.erp-app-root .erp-menu-bar .erp-menu-dropdown button.active,
+.erp-app-root .erp-menu-bar .erp-menu-flyout button:hover,
+.erp-app-root .erp-menu-bar .erp-menu-flyout button.active {
+  background: #e8f0fb !important;
+  color: #1e3a8a !important;
+}
+
 .erp-menu-btn:focus,
 .erp-menu-btn:focus-visible,
 .erp-menu-bar .erp-page-header-link:focus,
@@ -327,12 +369,12 @@ body {
   top: calc(100% - 1px);
   left: 0;
   min-width: 196px;
-  background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
+  background: #ffffff;
   border: 1px solid #7a93b5;
   border-radius: 0 0 4px 4px;
   box-shadow: 0 6px 16px rgba(26, 55, 100, 0.22), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
   z-index: 50;
-  padding: 5px 0 6px;
+  padding: 4px 0;
   overflow: visible;
 }
 
@@ -352,17 +394,21 @@ body {
   width: 100%;
   gap: 16px;
   padding-right: 12px !important;
+  border-radius: 0 !important;
 }
 
 .erp-menu-flyout-parent.open,
-.erp-menu-flyout-row.open > .erp-menu-flyout-parent {
-  background: linear-gradient(90deg, #e8f0fb 0%, #dce8f8 100%);
-  color: #0f3d8c;
+.erp-menu-flyout-row.open > .erp-menu-flyout-parent,
+.erp-menu-flyout-parent:hover {
+  background: #e8f0fb !important;
+  color: #1e3a8a !important;
+  font-weight: 600;
 }
 
 .erp-menu-flyout-parent.open::before,
-.erp-menu-flyout-row.open > .erp-menu-flyout-parent::before {
-  background: #316ac5;
+.erp-menu-flyout-row.open > .erp-menu-flyout-parent::before,
+.erp-menu-flyout-parent:hover::before {
+  background: #2a5298;
 }
 
 .erp-menu-flyout-caret {
@@ -374,15 +420,15 @@ body {
 
 .erp-menu-flyout {
   position: absolute;
-  top: -5px;
+  top: -4px;
   left: calc(100% - 2px);
   min-width: 180px;
-  background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
+  background: #ffffff;
   border: 1px solid #7a93b5;
-  border-radius: 4px;
+  border-radius: 0 0 4px 4px;
   box-shadow: 0 6px 16px rgba(26, 55, 100, 0.22), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
   z-index: 60;
-  padding: 5px 0 6px;
+  padding: 4px 0;
   animation: erpMenuDropIn 0.12s ease-out;
 }
 
@@ -391,36 +437,46 @@ body {
   display: block;
   width: 100%;
   border: none;
+  border-radius: 0 !important;
   background: transparent;
   text-align: left;
-  padding: 7px 28px 7px 16px;
+  padding: 8px 28px 8px 16px;
+  margin: 0;
   font-family: var(--erp-font);
   font-size: 12px;
-  font-weight: 400;
+  font-weight: 500;
   color: #1f2a3a;
-  cursor: default;
+  cursor: pointer;
   white-space: nowrap;
   line-height: 1.25;
+  box-shadow: none !important;
+  transform: none !important;
+  filter: none !important;
 }
 
 .erp-menu-flyout button::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 2px;
-  bottom: 2px;
+  top: 0;
+  bottom: 0;
   width: 3px;
-  border-radius: 0 2px 2px 0;
+  border-radius: 0;
   background: transparent;
 }
 
-.erp-menu-flyout button:hover {
-  background: linear-gradient(90deg, #e8f0fb 0%, #dce8f8 100%);
-  color: #0f3d8c;
+.erp-menu-flyout button:hover,
+.erp-menu-flyout button.active,
+.erp-menu-dropdown .erp-menu-flyout button.active {
+  background: #e8f0fb !important;
+  color: #1e3a8a !important;
+  font-weight: 600;
 }
 
-.erp-menu-flyout button:hover::before {
-  background: #316ac5;
+.erp-menu-flyout button:hover::before,
+.erp-menu-flyout button.active::before,
+.erp-menu-dropdown .erp-menu-flyout button.active::before {
+  background: #2a5298;
 }
 
 .erp-menu-item.open .erp-menu-dropdown {
@@ -444,45 +500,44 @@ body {
   display: block;
   width: 100%;
   border: none;
+  border-radius: 0 !important;
   background: transparent;
   text-align: left;
-  padding: 7px 28px 7px 16px;
+  padding: 8px 28px 8px 16px;
+  margin: 0;
   font-family: var(--erp-font);
   font-size: 12px;
-  font-weight: 400;
+  font-weight: 500;
   color: #1f2a3a;
-  cursor: default;
+  cursor: pointer;
   white-space: nowrap;
   line-height: 1.25;
+  box-shadow: none !important;
+  transform: none !important;
+  filter: none !important;
 }
 
 .erp-menu-dropdown button::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 2px;
-  bottom: 2px;
+  top: 0;
+  bottom: 0;
   width: 3px;
-  border-radius: 0 2px 2px 0;
+  border-radius: 0;
   background: transparent;
 }
 
-.erp-menu-dropdown button:hover {
-  background: linear-gradient(90deg, #e8f0fb 0%, #dce8f8 100%);
-  color: #0f3d8c;
-}
-
-.erp-menu-dropdown button:hover::before {
-  background: #316ac5;
-}
-
+.erp-menu-dropdown button:hover,
 .erp-menu-dropdown button.active {
-  background: #316ac5;
-  color: #ffffff;
+  background: #e8f0fb !important;
+  color: #1e3a8a !important;
+  font-weight: 600;
 }
 
+.erp-menu-dropdown button:hover::before,
 .erp-menu-dropdown button.active::before {
-  background: #1a4fa0;
+  background: #2a5298;
 }
 
 .erp-menu-dropdown button:disabled {
@@ -623,6 +678,15 @@ body {
   line-height: 1;
   border: 1px solid rgba(0, 0, 0, 0.06);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.erp-toolbar-icon.is-svg {
+  font-size: 0;
+}
+
+.erp-toolbar-icon.is-svg svg {
+  display: block;
+  flex-shrink: 0;
 }
 
 .erp-toolbar-btn:hover .erp-toolbar-icon {
@@ -1546,6 +1610,14 @@ body {
   font-size: 13px;
   flex-shrink: 0;
   border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.erp-tb-catalog-ico.is-svg {
+  font-size: 0;
+}
+
+.erp-tb-catalog-ico.is-svg svg {
+  display: block;
 }
 
 .erp-tb-catalog-name {

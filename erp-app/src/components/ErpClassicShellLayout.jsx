@@ -1,5 +1,6 @@
 import React from "react";
 import { ErpClassicMenuBar } from "./ErpClassicMenuBar.jsx";
+import { ToolbarGlyph, toolbarIconColor } from "./ToolbarGlyph.jsx";
 
 export function ErpClassicShellLayout(props) {
   var p = props;
@@ -37,6 +38,8 @@ export function ErpClassicShellLayout(props) {
   var onAdminToggle = p.onAdminToggle;
   var adminToggleLabel = p.adminToggleLabel;
   var HeaderKeysHint = p.HeaderKeysHint;
+  var menusLocked = !!p.menusLocked;
+  var onRequestMenuUnlock = p.onRequestMenuUnlock;
 
   /* Top nav: Menu replaces Dashboard only; other section menus stay */
   var navMenus = [];
@@ -53,7 +56,21 @@ export function ErpClassicShellLayout(props) {
       return { label: it.label, pageId: it.id };
     });
 
-    /* Always use parent → children (even for single-page groups like Reports/Settings) */
+    /* Single-page flat groups (Settings): one click → navigate, no empty-looking dropdown */
+    if (group.flat && childItems.length === 1) {
+      navMenus.push({
+        id: group.label,
+        label: group.label,
+        flat: true,
+        pageId: childItems[0].pageId,
+      });
+      menuLauncherItems.push({
+        label: group.label,
+        pageId: childItems[0].pageId,
+      });
+      return;
+    }
+
     navMenus.push({
       id: group.label,
       label: group.label,
@@ -88,6 +105,8 @@ export function ErpClassicShellLayout(props) {
         showAdminToggle={showAdminToggle}
         onAdminToggle={onAdminToggle}
         adminToggleLabel={adminToggleLabel}
+        menusLocked={menusLocked}
+        onRequestMenuUnlock={onRequestMenuUnlock}
       />
 
       <div className="erp-toolbar">
@@ -108,7 +127,13 @@ export function ErpClassicShellLayout(props) {
                   else onNavigate(navId);
                 }}
               >
-                <span className="erp-toolbar-icon" style={{ background: tb.bg || "#f0f0f0" }} aria-hidden="true">{tb.icon}</span>
+                <span
+                  className={"erp-toolbar-icon" + (String(tb.icon || "").indexOf("svg:") === 0 ? " is-svg" : "")}
+                  style={{ background: tb.bg || "#f0f0f0", color: toolbarIconColor(tb.key) || undefined }}
+                  aria-hidden="true"
+                >
+                  <ToolbarGlyph icon={tb.icon} color={toolbarIconColor(tb.key) || "#334155"} />
+                </span>
                 <span className="erp-toolbar-label">{tb.label}</span>
               </button>
             </React.Fragment>

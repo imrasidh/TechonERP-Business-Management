@@ -291,8 +291,12 @@ var BarcodePrinter = function (props) {
           /* Clamp barcode inside label boundaries */
           var bcX = Math.min(el.x, labelWmm - el.w); var bcY = Math.min(el.y, labelHmm - el.h);
           var bcH = Math.min(el.h, labelHmm - bcY);
+          var bcValPrint = it.barcode || it.id.slice(0, 8);
+          var boxWmm = Math.max(2, el.w);
+          var approxModsP = Math.max(40, String(bcValPrint).length * 11 + 35);
+          var barModP = Math.max(0.7, Math.min(3.5, (boxWmm * 3.7795 - 2) / approxModsP));
           var svgId = "bc_" + idx + "_" + Math.random().toString(36).slice(2, 7);
-          html += "<div style=\"position:absolute;left:" + (bcX / labelWmm * 100).toFixed(2) + "%;top:" + (bcY / labelHmm * 100).toFixed(2) + "%;width:" + (el.w / labelWmm * 100).toFixed(2) + "%;height:" + (bcH / labelHmm * 100).toFixed(2) + "%;overflow:hidden;display:flex;align-items:center;justify-content:center;\"><svg id=\"" + svgId + "\" data-val=\"" + escapeHtml(it.barcode || it.id.slice(0, 8)) + "\" data-h=\"" + Math.max(8, Math.round(bcH * 3.7795 - 4)) + "\"></svg></div>";
+          html += "<div style=\"position:absolute;left:" + (bcX / labelWmm * 100).toFixed(2) + "%;top:" + (bcY / labelHmm * 100).toFixed(2) + "%;width:" + (el.w / labelWmm * 100).toFixed(2) + "%;height:" + (bcH / labelHmm * 100).toFixed(2) + "%;overflow:hidden;display:flex;align-items:center;justify-content:center;\"><svg id=\"" + svgId + "\" style=\"width:100%;height:100%;\" preserveAspectRatio=\"none\" data-val=\"" + escapeHtml(bcValPrint) + "\" data-h=\"" + Math.max(8, Math.round(bcH * 3.7795 - 2)) + "\" data-bw=\"" + barModP.toFixed(2) + "\"></svg></div>";
           return;
         }
         var pct = function(v, total) { return (v / total * 100).toFixed(2) + "%"; };
@@ -301,7 +305,7 @@ var BarcodePrinter = function (props) {
       html += "</div>";
     });
     html += "<script src=\"https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js\"><\/script>";
-    html += "<script>window.onload=function(){setTimeout(function(){document.querySelectorAll('svg[data-val]').forEach(function(s){try{JsBarcode(s,s.getAttribute('data-val'),{format:'CODE128',width:1.2,height:parseInt(s.getAttribute('data-h')||20),displayValue:false,margin:0});}catch(e){}});setTimeout(function(){window.print();},400);},600);};<\/script>";
+    html += "<script>window.onload=function(){setTimeout(function(){document.querySelectorAll('svg[data-val]').forEach(function(s){try{JsBarcode(s,s.getAttribute('data-val'),{format:'CODE128',width:parseFloat(s.getAttribute('data-bw')||1.2),height:parseInt(s.getAttribute('data-h')||20),displayValue:false,margin:0});s.setAttribute('preserveAspectRatio','none');s.style.width='100%';s.style.height='100%';}catch(e){}});setTimeout(function(){window.print();},400);},600);};<\/script>";
     html += "</body></html>";
     w.document.write(html); w.document.close();
   };
@@ -320,16 +324,21 @@ var BarcodePrinter = function (props) {
     else if (el.type === "productid") elContent = "ID: " + (product.productId || "");
     else if (el.type === "customtext") elContent = el.customText || "Custom Text";
     else if (el.type === "barcode") {
+      var boxWpx = Math.max(8, el.w * MM_TO_PX);
+      var boxHpx = Math.max(10, el.h * MM_TO_PX);
+      /* Scale bar module width so the CODE128 graphic tracks element width */
+      var approxMods = Math.max(40, String(bcVal).length * 11 + 35);
+      var barMod = Math.max(0.7, Math.min(3.5, (boxWpx - 2) / approxMods));
       return (
         <div key={el.id}
           onMouseDown={forPrint ? null : function (e) { onElMouseDown(el.id, e); }}
           style={{ position: "absolute", left: el.x * MM_TO_PX, top: el.y * MM_TO_PX,
-            width: el.w * MM_TO_PX, height: el.h * MM_TO_PX,
+            width: boxWpx, height: boxHpx,
             display: "flex", alignItems: "center", justifyContent: "center",
             cursor: forPrint ? "default" : "move",
             outline: (!forPrint && selectedEl === el.id) ? "2px solid #0077e6" : "none",
-            boxSizing: "border-box" }}>
-          <JsBarcodeWidget value={bcVal} width={1.2} height={Math.max(10, el.h * MM_TO_PX - 4)} />
+            boxSizing: "border-box", overflow: "hidden" }}>
+          <JsBarcodeWidget value={bcVal} width={barMod} height={Math.max(8, boxHpx - 2)} fill />
         </div>
       );
     }
@@ -372,47 +381,86 @@ var BarcodePrinter = function (props) {
   };
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* ── Tab Bar ── */}
-      <div style={{ display: "flex", gap: 6 }}>
-        {[["print", "🖨️ Print Labels"], ["design", "🎨 Label Design"]].map(function (t) {
-          return <button key={t[0]} onClick={function () { setTab(t[0]); setMsg(null); }}
-            style={{ padding: "9px 20px", borderRadius: 9, border: "2px solid " + (tab === t[0] ? C.accent : C.border),
-              background: tab === t[0] ? C.accentSoft : "#fff", color: tab === t[0] ? C.accent : C.muted,
-              fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{t[1]}</button>;
-        })}
+    <div className="erp-page erp-arap-modern is-bc">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">BC</div>
+            <div>
+              <h1 className="erp-arap-header-title">Barcodes</h1>
+              <p className="erp-arap-header-sub">Print labels · design layout</p>
+            </div>
+          </div>
+          <div className="erp-arap-kpi-row" aria-label="Barcode summary">
+            <div className="erp-arap-kpi is-blue">
+              <span className="erp-arap-kpi-lbl">Queue</span>
+              <span className="erp-arap-kpi-val">{printQueue.length}</span>
+              <span className="erp-arap-kpi-sub">products</span>
+            </div>
+            <div className="erp-arap-kpi is-green">
+              <span className="erp-arap-kpi-lbl">Labels</span>
+              <span className="erp-arap-kpi-val">{fmtSumQty(printQueue.reduce(function (a, r) { return a + r.qty; }, 0))}</span>
+              <span className="erp-arap-kpi-sub">to print</span>
+            </div>
+            <div className="erp-arap-kpi is-purple">
+              <span className="erp-arap-kpi-lbl">Design</span>
+              <span className="erp-arap-kpi-val">{activeDesign.labelW}×{activeDesign.labelH}</span>
+              <span className="erp-arap-kpi-sub">mm · {activeDesign.name}</span>
+            </div>
+          </div>
+        </div>
+        <div className="erp-arap-tabs" role="tablist" aria-label="Barcode tools">
+          {[["print", "Print Labels"], ["design", "Label Design"]].map(function (t) {
+            var active = tab === t[0];
+            return (
+              <button
+                key={t[0]}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={"erp-arap-tab" + (active ? " is-active" : "")}
+                onClick={function () { setTab(t[0]); setMsg(null); }}
+              >
+                <span>{t[1]}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* ══════════════════════════════════════════════════════
           TAB 1: PRINT LABELS
       ══════════════════════════════════════════════════════ */}
       {tab === "print" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 14 }}>
+        <div className="erp-arap-body erp-arap-split">
           {/* LEFT: Excel-style queue */}
-          <Card>
-            <CardTitle sub="Search products and set how many labels to print">🖨️ Print Labels</CardTitle>
+          <div className="erp-arap-panel">
+            <div className="erp-arap-panel-title">
+              <h2>Print queue</h2>
+              <span>Search products and set label counts</span>
+            </div>
 
             {msg && (
-              <div style={{ background: msg.type === "error" ? C.dangerSoft : "#fef3e2",
+              <div style={{ margin: "8px 10px 0", background: msg.type === "error" ? C.dangerSoft : "#fef3e2",
                 color: msg.type === "error" ? C.red : "#d97706",
-                borderRadius: 9, padding: "10px 14px", fontSize: 13, fontWeight: 600, marginBottom: 14 }}>
+                borderRadius: 8, padding: "8px 12px", fontSize: 12.5, fontWeight: 600 }}>
                 {msg.text}
               </div>
             )}
 
             {/* Excel grid */}
-            <div style={{ border: "1.5px solid " + C.border, borderRadius: 10, overflow: "visible", marginBottom: 14 }}>
+            <div className="erp-arap-queue" style={{ margin: "8px 10px" }}>
               {/* Header */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 36px", background: "#f1f5f9", padding: "7px 10px", gap: 8, borderRadius: "8px 8px 0 0" }}>
+              <div className="erp-arap-queue-head">
                 {["PRODUCT", "LABELS", ""].map(function (h, i) {
-                  return <div key={i} style={{ fontSize: 10, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>{h}</div>;
+                  return <span key={i}>{h}</span>;
                 })}
               </div>
 
               {/* Existing rows */}
               {printQueue.map(function (row, idx) {
                 return (
-                  <div key={row.prod.id} style={{ display: "grid", gridTemplateColumns: "1fr 80px 36px", padding: "7px 10px", gap: 8, alignItems: "center", borderTop: "1px solid " + C.borderLight, background: idx % 2 === 0 ? "#fff" : "#fafbff" }}>
+                  <div key={row.prod.id} className="erp-arap-queue-row">
                     <div>
                       <div style={{ fontWeight: 700, fontSize: 12, color: C.text }}>{row.prod.name}</div>
                       <div style={{ fontSize: 10, color: C.muted }}>ID: {row.prod.productId} · {row.prod.barcode}</div>
@@ -430,7 +478,7 @@ var BarcodePrinter = function (props) {
               })}
 
               {/* Input row */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 36px", padding: "7px 10px", gap: 8, alignItems: "center", borderTop: "1.5px dashed " + C.border, background: "#f0f9ff" }}>
+              <div className="erp-arap-queue-row erp-arap-queue-input">
                 <div style={{ position: "relative" }} ref={printSearchRef}>
                   <input id="brc-search" value={printSearch}
                     onChange={function (e) { setPrintSearch(e.target.value); setShowPrintDrop(true); setPrintSearchIdx(-1); }}
@@ -480,8 +528,8 @@ var BarcodePrinter = function (props) {
             </div>
 
             {/* Total & Action */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: 13, color: C.muted }}>
+            <div className="erp-arap-foot" style={{ borderTop: "none" }}>
+              <div style={{ fontSize: 12.5, color: C.muted }}>
                 {printQueue.length > 0
                   ? <span><strong style={{ color: C.text }}>{fmtSumQty(printQueue.reduce(function (a, r) { return a + r.qty; }, 0))}</strong> labels · {printQueue.length} product(s)</span>
                   : "Search products above to add to queue"}
@@ -494,17 +542,20 @@ var BarcodePrinter = function (props) {
                   setMsg(null); setPreviewItems(items);
                 }} disabled={printQueue.length === 0}>Preview</Btn>
                 <Btn col="green" onClick={handlePrint} disabled={printQueue.length === 0}>
-                  🖨️ Print {printQueue.length > 0 ? "(" + fmtSumQty(printQueue.reduce(function (a, r) { return a + r.qty; }, 0)) + ")" : ""}
+                  Print {printQueue.length > 0 ? "(" + fmtSumQty(printQueue.reduce(function (a, r) { return a + r.qty; }, 0)) + ")" : ""}
                 </Btn>
               </div>
             </div>
-          </Card>
+          </div>
 
           {/* RIGHT: Preview */}
-          <Card>
-            <CardTitle sub={previewItems.length ? previewItems.length + " label(s)" : "No preview yet"}>📋 Preview</CardTitle>
+          <div className="erp-arap-panel">
+            <div className="erp-arap-panel-title">
+              <h2>Preview</h2>
+              <span>{previewItems.length ? previewItems.length + " label(s)" : "No preview yet"}</span>
+            </div>
             {previewItems.length > 0 ? (
-              <div style={{ maxHeight: 520, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ maxHeight: 520, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: "8px 10px 12px" }}>
                 {previewItems.slice(0, 15).map(function (item, idx) {
                   return (
                     <div key={idx} style={{ width: activeDesign.labelW * MM_TO_PX, height: activeDesign.labelH * MM_TO_PX, background: activeDesign.bgColor || "#fff",
@@ -517,27 +568,28 @@ var BarcodePrinter = function (props) {
                 {previewItems.length > 15 && <div style={{ color: C.muted, fontSize: 12, textAlign: "center", padding: 8 }}>+{previewItems.length - 15} more labels...</div>}
               </div>
             ) : (
-              <div style={{ textAlign: "center", padding: 40, color: C.muted, fontSize: 13 }}>
+              <div style={{ textAlign: "center", padding: 32, color: C.muted, fontSize: 13 }}>
                 Add products and click Preview to see labels
               </div>
             )}
-          </Card>
+          </div>
         </div>
       )}
 
 
       {tab === "design" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 14, alignItems: "start" }}>
+        <div className="erp-arap-body erp-bc-design">
           
           {/* LEFT: Canvas - Sticky so it stays visible while scrolling right panel */}
-          <div style={{ position: "sticky", top: 14, alignSelf: "start" }}>
-          <Card>
-            <CardTitle sub={"Label: " + activeDesign.labelW + "mm × " + activeDesign.labelH + "mm — drag elements to reposition"}>
-              🎨 Designer Canvas
-            </CardTitle>
+          <div className="erp-bc-canvas-wrap">
+          <div className="erp-arap-panel erp-bc-panel">
+            <div className="erp-arap-panel-title">
+              <h2>Designer canvas</h2>
+              <span>{activeDesign.labelW}mm × {activeDesign.labelH}mm — drag to reposition</span>
+            </div>
 
             {/* Design selector */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, margin: "8px 10px 10px" }}>
               {/* Row 1: selector + action buttons */}
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <select value={activeDesignId} onChange={function (e) { setActiveDesignId(e.target.value); setSelectedEl(null); setRenameMode(false); setNewDesignMode(false); }}
@@ -545,32 +597,30 @@ var BarcodePrinter = function (props) {
                   {designs.map(function (d) { return <option key={d.id} value={d.id}>{d.name}</option>; })}
                 </select>
                 {/* Save */}
-                <button onClick={function () {
+                <button type="button" className={"erp-arap-bc-tool is-save" + (designSaved ? " is-ok" : "")} onClick={function () {
                   var ns = designs.map(function (d) { return d.id === activeDesignId ? Object.assign({}, d) : d; });
                   saveDesigns(ns);
                   setDesignSaved(true);
                   setTimeout(function () { setDesignSaved(false); }, 2000);
-                }} style={{ padding: "7px 14px", borderRadius: 8, border: "none", background: designSaved ? "#dcfce7" : "linear-gradient(135deg,#0891b2,#0e7490)", color: designSaved ? "#16a34a" : "#fff", fontSize: 12, fontWeight: 800, cursor: "pointer", whiteSpace: "nowrap" }}>
+                }}>
                   {designSaved ? "✓ Saved!" : "💾 Save"}
                 </button>
                 {/* Rename */}
-                <button onClick={function () { setRenameMode(true); setRenameName(activeDesign.name); setNewDesignMode(false); }}
-                  style={{ padding: "7px 12px", borderRadius: 8, border: "1.5px solid " + C.border, background: "#fff", color: C.text, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                <button type="button" className="erp-arap-bc-tool" onClick={function () { setRenameMode(true); setRenameName(activeDesign.name); setNewDesignMode(false); }}>
                   ✏️ Rename
                 </button>
                 {/* New */}
-                <button onClick={function () { setNewDesignMode(true); setNewDesignName("Design " + (designs.length + 1)); setRenameMode(false); }}
-                  style={{ padding: "7px 12px", borderRadius: 8, border: "none", background: "linear-gradient(135deg,#2979ff,#4f9eff)", color: "#fff", fontSize: 12, fontWeight: 800, cursor: "pointer" }}>
+                <button type="button" className="erp-arap-bc-tool is-new" onClick={function () { setNewDesignMode(true); setNewDesignName("Design " + (designs.length + 1)); setRenameMode(false); }}>
                   + New
                 </button>
                 {/* Delete */}
                 {designs.length > 1 && (
-                  <button onClick={function () {
+                  <button type="button" className="erp-arap-bc-tool is-del" onClick={function () {
                     showConfirm("Delete design \"" + activeDesign.name + "\"?", function () {
                       var nd = designs.filter(function (d) { return d.id !== activeDesignId; });
                       saveDesigns(nd); setActiveDesignId(nd[0].id);
                     });
-                  }} style={{ padding: "7px 12px", borderRadius: 8, border: "none", background: "#fee2e2", color: "#dc2626", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  }}>
                     🗑 Del
                   </button>
                 )}
@@ -597,7 +647,7 @@ var BarcodePrinter = function (props) {
                     var newD = Object.assign({}, JSON.parse(JSON.stringify(activeDesign)), { id: uid(), name: nm });
                     var nd = designs.concat([newD]); saveDesigns(nd); setActiveDesignId(newD.id); setNewDesignMode(false);
                   }} style={{ padding: "5px 14px", borderRadius: 6, border: "none", background: C.accent, color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Create</button>
-                  <button onClick={function () { setNewDesignMode(false); }} style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+                  <button type="button" className="erp-arap-bc-mini" onClick={function () { setNewDesignMode(false); }}>Cancel</button>
                 </div>
               )}
 
@@ -618,7 +668,7 @@ var BarcodePrinter = function (props) {
                     var nm = renameName.trim(); if (!nm) return;
                     updateActiveDesign({ name: nm }); setRenameMode(false);
                   }} style={{ padding: "5px 14px", borderRadius: 6, border: "none", background: "#f59e0b", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Save</button>
-                  <button onClick={function () { setRenameMode(false); }} style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid " + C.border, background: "#fff", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+                  <button type="button" className="erp-arap-bc-mini" onClick={function () { setRenameMode(false); }}>Cancel</button>
                 </div>
               )}
             </div>
@@ -630,14 +680,14 @@ var BarcodePrinter = function (props) {
               onMouseUp={onCanvasMouseUp}
               onMouseLeave={onCanvasMouseUp}
               style={{ display: "flex", justifyContent: "center", alignItems: "center",
-                padding: "28px 0", background: "#e8ecf0", borderRadius: 10,
-                minHeight: 520, overflow: "hidden", position: "relative",
+                padding: "28px 0", background: "#e8ecf0", borderRadius: 10, margin: "0 10px",
+                minHeight: 420, overflow: "hidden", position: "relative",
                 cursor: spaceHeld ? (isPanning ? "grabbing" : "grab") : "default" }}>
               {/* Zoom controls + indicator */}
               <div style={{ position: "absolute", top: 8, right: 10, display: "flex", gap: 4, alignItems: "center", zIndex: 10 }}>
-                <button onClick={zoomOut} style={{ width: 26, height: 26, borderRadius: 6, border: "1.5px solid #ccc", background: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
-                <button onClick={zoomReset} style={{ minWidth: 48, height: 26, borderRadius: 6, border: "1.5px solid #ccc", background: "#fff", fontWeight: 700, fontSize: 11, cursor: "pointer" }}>{Math.round(zoom * 100)}%</button>
-                <button onClick={zoomIn}  style={{ width: 26, height: 26, borderRadius: 6, border: "1.5px solid #ccc", background: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                <button type="button" className="erp-arap-bc-zoom" onClick={zoomOut}>−</button>
+                <button type="button" className="erp-arap-bc-zoom is-pct" onClick={zoomReset}>{Math.round(zoom * 100)}%</button>
+                <button type="button" className="erp-arap-bc-zoom" onClick={zoomIn}>+</button>
               </div>
               {/* Zoomable/pannable canvas container */}
               <div style={{ transform: "translate(" + pan.x + "px," + pan.y + "px) scale(" + zoom + ")", transformOrigin: "center center", transition: isPanning ? "none" : "transform 0.05s" }}>
@@ -660,14 +710,13 @@ var BarcodePrinter = function (props) {
               </div>
             </div>
 
-            {/* Add element buttons */}
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: 10, padding: "0 10px 10px" }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Add Element</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {ELEMENT_TYPES.map(function (et) {
                   var exists = activeDesign.elements.find(function (el) { return el.type === et.type && el.type !== "customtext"; });
                   return (
-                    <button key={et.type} onClick={function () { addElement(et.type); }}
+                    <button key={et.type} type="button" onClick={function () { addElement(et.type); }}
                       style={{ padding: "5px 12px", borderRadius: 6, border: "1.5px solid " + C.border,
                         background: exists && et.type !== "customtext" ? "#f1f5f9" : "#fff",
                         color: exists && et.type !== "customtext" ? C.muted : C.text,
@@ -678,16 +727,16 @@ var BarcodePrinter = function (props) {
                 })}
               </div>
             </div>
-          </Card>
+          </div>
           </div>
 
           {/* RIGHT: Properties Panel */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div className="erp-bc-side">
             
             {/* Label Size */}
-            <Card>
-              <CardTitle>📐 Label Size</CardTitle>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div className="erp-arap-panel erp-bc-panel">
+              <div className="erp-arap-panel-title"><h2>Label size</h2></div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "0 10px 10px" }}>
                 {/* Quick sizes */}
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase" }}>Quick Select</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
@@ -728,12 +777,12 @@ var BarcodePrinter = function (props) {
                     </select></div>
                 </div>
               </div>
-            </Card>
+            </div>
 
             {/* Cost Code Configuration */}
-            <Card>
-              <CardTitle>🔑 Cost Code Configuration</CardTitle>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div className="erp-arap-panel erp-bc-panel">
+              <div className="erp-arap-panel-title"><h2>Cost code</h2></div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "0 10px 10px" }}>
                 <div style={{ fontSize: 11, color: C.muted, marginBottom: 3 }}>
                   Secret 10-letter code word for encoding product costs on labels
                 </div>
@@ -774,13 +823,16 @@ var BarcodePrinter = function (props) {
                   </Btn>
                 )}
               </div>
-            </Card>
+            </div>
 
             {/* Element Properties */}
             {selEl && (
-              <Card>
-                <CardTitle sub={"Selected: " + selEl.label}>⚙️ Element Properties</CardTitle>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div className="erp-arap-panel erp-bc-panel">
+                <div className="erp-arap-panel-title">
+                  <h2>Element</h2>
+                  <span>{selEl.label}</span>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "0 10px 10px" }}>
                   {/* Position */}
                   <div style={{ display: "flex", gap: 6 }}>
                     <div style={{ flex: 1 }}><div style={{ fontSize: 10, color: C.muted, marginBottom: 2 }}>X (mm)</div>
@@ -854,7 +906,7 @@ var BarcodePrinter = function (props) {
                     </button>
                   </div>
                 </div>
-              </Card>
+              </div>
             )}
 
           </div>

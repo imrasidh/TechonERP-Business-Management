@@ -356,6 +356,48 @@
   padding: 4px;
 }
 
+/* Universal preview: real paper box (do not stretch to stage width) */
+.erp-univ-fv .erp-si-fv-sheet.erp-univ-fv-sheet.is-a4,
+.erp-univ-fv .erp-univ-fv-sheet.is-a4 {
+  width: 794px !important;
+  min-width: 794px !important;
+  max-width: 794px !important;
+  min-height: 1123px;
+}
+
+.erp-univ-fv .erp-si-fv-sheet.erp-univ-fv-sheet.is-a5,
+.erp-univ-fv .erp-univ-fv-sheet.is-a5 {
+  width: 560px !important;
+  min-width: 560px !important;
+  max-width: 560px !important;
+  min-height: 794px;
+}
+
+.erp-univ-fv .erp-si-fv-sheet.erp-univ-fv-sheet.is-thermal80,
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal80 {
+  width: 310px !important;
+  min-width: 310px !important;
+  max-width: 310px !important;
+  min-height: 0;
+  padding: 6px;
+}
+
+.erp-univ-fv .erp-si-fv-sheet.erp-univ-fv-sheet.is-thermal58,
+.erp-univ-fv .erp-univ-fv-sheet.is-thermal58 {
+  width: 230px !important;
+  min-width: 230px !important;
+  max-width: 230px !important;
+  min-height: 0;
+  padding: 4px;
+}
+
+.erp-univ-fv .erp-univ-fv-react-doc {
+  width: 100% !important;
+  max-width: 100% !important;
+  display: block !important;
+  background: #fff;
+}
+
 @media (max-width: 900px) {
   .erp-si-fv-bar {
     grid-template-columns: 1fr;

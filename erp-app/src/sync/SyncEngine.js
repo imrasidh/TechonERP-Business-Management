@@ -77,6 +77,7 @@ export const NETWORK_KV_KEYS = [
   'tc3_raw_material_usage',
   'tc3_raw_material_counts',
   'tc3_users',
+  'tc3_repair3p_product_seq',
 ];
 
 const SYNC_KEY_SET = {};

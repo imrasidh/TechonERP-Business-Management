@@ -66,6 +66,25 @@ var EnhancedPayables = function (props) {
     return true;
   };
 
+  var openEditMoneyInReceipt = function (row) {
+    var rcp = (row && row._manualObj) ? row._manualObj : row;
+    if (!rcp || !rcp.id) {
+      showAlert("Receipt not found.");
+      return;
+    }
+    if (rcp._isOpening) {
+      showAlert("Opening balance entries are edited from Accounts → Opening Balance.");
+      return;
+    }
+    if (rcp.thirdPartyRepairId) {
+      showAlert("This receipt is linked to a 3rd party repair. Edit it from Repairs.");
+      return;
+    }
+    setViewItem(null);
+    setReceiptView(null);
+    setEditReceipt(rcp);
+  };
+
   var [ptab, setPtab] = useState("all");
   var [search, setSearch] = useState("");
   var [addModal, setAddModal] = useState(false);
@@ -79,6 +98,7 @@ var EnhancedPayables = function (props) {
   var [viewItem, setViewItem] = useState(null);
   var [docView, setDocView] = useState(null); /* purchase object for purchase invoice */
   var [receiptView, setReceiptView] = useState(null); /* manual money-in receipt */
+  var [editReceipt, setEditReceipt] = useState(null); /* manual money-in for MoneyInOutModal edit */
   var [docFmt, setDocFmt] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
   var [printFmtOpen, setPrintFmtOpen] = useState(false);
   var [pendingPrintFmt, setPendingPrintFmt] = useState(null);
@@ -428,7 +448,8 @@ var EnhancedPayables = function (props) {
             </div>
           </div>
           <button type="button" className="erp-arap-add is-in" onClick={function () { setAddModal(true); }}>
-            <span className="erp-arap-add-ico">↑</span> Money In
+            <span className="erp-arap-add-ico" aria-hidden="true">↑</span>
+            <span>Money In</span>
           </button>
         </div>
         <div className="erp-arap-tabs" role="tablist" aria-label="Payable filters">
@@ -517,6 +538,7 @@ var EnhancedPayables = function (props) {
                       <td style={actBtnCellStyle}>
                         <ActBtnGroup>
                           <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
+                          {e._type === "manual" ? <ActBtn tone="blue" title="Edit Money In receipt" onClick={function () { openEditMoneyInReceipt(e); }} /> : null}
                           {hasPendChq ? <span className="erp-arap-pend" title="Has pending cheque(s)">🕐</span> : null}
                           {isOut ? <ActBtn tone="orange" icon="pay" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
                           {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }} /> : null}
@@ -564,6 +586,36 @@ var EnhancedPayables = function (props) {
           customers={state.customers || []}
           suppliers={state.suppliers || []}
           others={state.others || []}
+        />
+      )}
+
+      {editReceipt && (
+        <MoneyInOutModal
+          mode="in"
+          editRecord={editReceipt}
+          S={S}
+          today={today}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+          showAlert={showAlert}
+          addAudit={addAudit}
+          setState={setState}
+          onClose={function () { setEditReceipt(null); }}
+          onSaved={function (updated) {
+            if (viewItem && viewItem.id === (updated && updated.id)) {
+              setViewItem(null);
+            }
+          }}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          getCurrencySymbol={getCurrencySymbol}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+          zIndex={13000}
         />
       )}
 
@@ -792,6 +844,13 @@ var EnhancedPayables = function (props) {
                     View actual purchase
                   </button>
                 ) : null}
+                {!isPur ? (
+                  <button type="button" className="erp-arap-doc-btn is-pay-tone" onClick={function () {
+                    openEditMoneyInReceipt(viewItem);
+                  }}>
+                    Edit receipt
+                  </button>
+                ) : null}
                 {isOut ? (
                   <button type="button" className="erp-arap-doc-btn is-pay is-pay-tone" onClick={function () { setViewItem(null); setSplitPayModal(viewItem); }}>
                     Record payment
@@ -918,6 +977,11 @@ var EnhancedPayables = function (props) {
                 </div>
               </div>
               <div className="erp-si-fv-actions">
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () { openEditMoneyInReceipt(rcp); }}
+                >Edit</button>
                 <button
                   type="button"
                   className="erp-si-fv-btn is-print"

@@ -104,8 +104,8 @@
   cursor: not-allowed !important;
 }
 
-/* Shared motion — any class-based ERP control */
-.erp-app-root button[class*="erp-"]:not(:disabled):not([aria-disabled="true"]),
+/* Shared motion — any class-based ERP control (exclude settings tabs — instant switch) */
+.erp-app-root button[class*="erp-"]:not(:disabled):not([aria-disabled="true"]):not(.erp-set-tab),
 .erp-app-root .erp-dialog-btn:not(:disabled),
 .erp-app-root .erp-pin-key:not(:disabled) {
   -webkit-tap-highlight-color: transparent;
@@ -119,9 +119,20 @@
 }
 
 /* Default press — scale down slightly */
-.erp-app-root button:active:not(:disabled):not([aria-disabled="true"]):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-pos-order-card):not(.erp-pos-table-btn) {
+.erp-app-root button:active:not(:disabled):not([aria-disabled="true"]):not(.erp-md-summary-row):not(.erp-md-stock-row):not(.erp-pos-order-card):not(.erp-pos-table-btn):not(.erp-set-tab):not(.erp-menu-btn):not(.erp-toolbar-btn) {
   transform: scale(var(--erp-press-scale)) !important;
   filter: brightness(0.96);
+}
+
+/* Settings tabs — no press / transition / animation */
+.erp-app-root button.erp-set-tab,
+.erp-app-root .erp-set-modern button.erp-set-tab,
+.erp-app-root button.erp-set-tab:active:not(:disabled),
+.erp-app-root .erp-set-modern button.erp-set-tab:active:not(:disabled) {
+  transition: none !important;
+  transform: none !important;
+  filter: none !important;
+  animation: none !important;
 }
 
 /* Full-width row buttons — brightness only */
@@ -222,8 +233,9 @@
 
 .erp-app-root .erp-menu-dropdown button:active:not(:disabled),
 .erp-app-root .erp-menu-flyout button:active:not(:disabled) {
-  transform: scale(0.98) !important;
-  filter: brightness(0.94);
+  transform: none !important;
+  filter: none !important;
+  background: #dce8f8 !important;
 }
 
 /* Collapsible section headers */

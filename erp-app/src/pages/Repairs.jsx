@@ -16,6 +16,14 @@ import {
   getForeignInvoiceEditLock,
   releaseInvoiceEditLock,
 } from "../utils/invoiceEditLocks.js";
+import {
+  defaultRepair3pProductName,
+  nextRepair3pCode,
+  peekRepair3pCode,
+  isRepair3pInternalProduct,
+  isRepair3pSoldProduct,
+} from "../utils/repair3pProduct.js";
+import { buildDocPrintHeaderHtml } from "../components/DocPrintHeader.jsx";
 
 var Repairs = function (props) {
   var state = props.state;
@@ -116,6 +124,8 @@ var Repairs = function (props) {
   var [suppSearch, setSuppSearch] = useState("");
   var [thirdPartySupplierFilter, setThirdPartySupplierFilter] = useState("");
   var [recordsStatusFilter, setRecordsStatusFilter] = useState("");
+  var [repairProductFilter, setRepairProductFilter] = useState(""); /* "" | available | sold */
+  var [editRepairProduct, setEditRepairProduct] = useState(null);
   var THIRD_PARTY_PAGE_SIZE = LIST_PAGE_SIZE;
   var RECORDS_PAGE_SIZE = LIST_PAGE_SIZE;
   var [sendSuppSearch, setSendSuppSearch] = useState("");
@@ -128,17 +138,15 @@ var Repairs = function (props) {
   });
 
   var TABS = [
-    { id: "active", label: "Active Bills", status: "Accepted" },
+    { id: "active", label: "Active", status: "Accepted" },
     { id: "thirdparty", label: "3rd Party", status: "Third Party" },
     { id: "ready", label: "Ready", status: "Ready" },
     { id: "delivered", label: "Delivered", status: "Delivered" },
     { id: "returned", label: "Returned", status: "Returned" },
+    { id: "products", label: "Products", status: "Products" },
     { id: "records", label: "All Records", status: "Records" }
   ];
   var DEVICE_TYPES = ["Laptop", "Desktop", "Printer", "Monitor", "Phone", "Tablet", "Server", "Network Device", "Other"];
-  var STATUS_COLORS = { Accepted: "#c2410c", "Third Party": "#7c3aed", Ready: "#047857", Delivered: "#1d4ed8", Returned: "#b91c1c", Records: "#0f766e" };
-  var STATUS_BG    = { Accepted: "#fff7ed", "Third Party": "#f5f3ff", Ready: "#ecfdf5", Delivered: "#eff6ff", Returned: "#fef2f2", Records: "#f0fdfa" };
-  var STATUS_ICONS = { Accepted: "📥", "Third Party": "🏢", Ready: "✅", Delivered: "📦", Returned: "↩️", Records: "📊" };
   var STATUS_DISPLAY = { Accepted: "Active", "Third Party": "3rd Party", Ready: "Ready", Delivered: "Delivered", Returned: "Returned", Records: "All Records" };
   /* Always use the PC's local calendar day for status events (send 3P / ready / etc).
      Never reuse Date In / accepted date for those events. */
@@ -209,6 +217,32 @@ var Repairs = function (props) {
       thirdPartyCost: tp.amount != null ? Number(tp.amount) : "",
       thirdPartySell: tp.sellAmount != null ? Number(tp.sellAmount) : ""
     };
+  };
+  /** Ready tab: prefer actual 3P / product cost+sell over bill estimate. */
+  var getDeviceActualAmounts = function (repair, device) {
+    var d = device || {};
+    var tp = d.thirdParty || {};
+    var cost = null;
+    var sell = null;
+    var fromActual = false;
+    if (tp.amount != null && tp.amount !== "") {
+      cost = Number(tp.amount) || 0;
+      fromActual = true;
+    }
+    if (tp.sellAmount != null && tp.sellAmount !== "") {
+      sell = Number(tp.sellAmount) || 0;
+      fromActual = true;
+    }
+    if ((cost == null || sell == null) && tp.productId) {
+      var p = (state.products || []).find(function (x) { return x.id === tp.productId; });
+      if (p) {
+        if (cost == null) { cost = Number(p.cost) || 0; fromActual = true; }
+        if (sell == null) { sell = Number(p.price) || 0; fromActual = true; }
+      }
+    }
+    if (cost == null) cost = Number(d.estimatedCost != null ? d.estimatedCost : (repair && (repair.estimatedCost != null ? repair.estimatedCost : repair.cost)) || 0) || 0;
+    if (sell == null) sell = Number(d.sellAmount != null ? d.sellAmount : (repair && repair.sellAmount) || 0) || 0;
+    return { cost: cost, sell: sell, fromActual: fromActual };
   };
   var deviceStatusLabel = function (status) {
     var st = status || "Accepted";
@@ -481,12 +515,17 @@ var Repairs = function (props) {
       showAlert("This device has no supplier recorded from Send to 3rd Party. Send it again with a supplier selected.");
       return;
     }
-    var autoProductName = defaultThirdPartyProductName(repair, d, deviceIndex);
+    var existingProd = tp.productId
+      ? ((state.products || []).find(function (x) { return x.id === tp.productId; }) || null)
+      : null;
+    var autoProductName = (existingProd && existingProd.name)
+      || tp.productName
+      || defaultRepair3pProductName(peekRepair3pCode(S), repair, d);
     setThirdPartyReceiveForm({
       supplierId: supplierId,
       supplierName: supplierName,
       supplierPhone: supplierPhone,
-      productName: tp.productName || autoProductName,
+      productName: autoProductName,
       costAmount: tp.amount != null ? String(tp.amount) : "",
       sellAmount: tp.sellAmount != null ? String(tp.sellAmount) : "",
       payMode: tp.payMode || (tp.paid === false ? "unpaid" : "paid"),
@@ -870,7 +909,7 @@ var Repairs = function (props) {
     return created;
   };
   var defaultThirdPartyProductName = function (repair, device, idx) {
-    return "3P Repair - " + (repair.customer || "Customer") + " - " + (device.deviceType || "Device") + (device.brand ? " " + device.brand : "") + (device.modelNo ? " " + device.modelNo : "") + " - Bill#" + String(repair.id || "").slice(0, 8).toUpperCase() + " - D" + (idx + 1);
+    return defaultRepair3pProductName(peekRepair3pCode(S), repair, device || {});
   };
   var ensureThirdPartyProduct = function (repair, deviceIndex, form) {
     var products = (state.products || []).slice();
@@ -881,15 +920,17 @@ var Repairs = function (props) {
     if (tp.productId) {
       p = products.find(function (x) { return x.id === tp.productId; }) || null;
     }
-    var name = String(form.productName || "").trim() || defaultThirdPartyProductName(repair, d, deviceIndex);
     var cost = parseFloat(form.costAmount) || 0;
     var sell = parseFloat(form.sellAmount) || 0;
     if (!p) {
+      var code = nextRepair3pCode(S);
+      var name = String(form.productName || "").trim() || defaultRepair3pProductName(code, repair, d);
+      if (!name.startsWith("#")) name = code + " " + name;
       p = {
         id: uid(),
-        productId: "RP3P-" + String(repair.id || "").slice(0, 8).toUpperCase() + "-" + (deviceIndex + 1),
+        productId: code,
         name: name,
-        barcode: "3P-" + String(uid()).slice(-8),
+        barcode: code.replace(/^#/, "R3P-"),
         category: "Repair 3rd Party",
         unit: "Pcs",
         type: "stock",
@@ -898,18 +939,22 @@ var Repairs = function (props) {
         stock: 1,
         _repair3pOneTime: true,
         _repairInternal: true,
+        _repairSold: false,
         _repairId: repair.id,
         _repairDeviceIndex: deviceIndex
       };
       products.push(p);
     } else {
+      var keepCode = String(p.productId || "").trim();
+      var editName = String(form.productName || "").trim() || p.name || defaultRepair3pProductName(keepCode || peekRepair3pCode(S), repair, d);
       p = Object.assign({}, p, {
-        name: name,
+        name: editName,
         cost: cost,
         price: sell,
         stock: (p.stock || 0) > 0 ? p.stock : 1,
         _repair3pOneTime: true,
         _repairInternal: true,
+        _repairSold: false,
       });
       products = products.map(function (x) { return x.id === p.id ? p : x; });
     }
@@ -1122,7 +1167,15 @@ var Repairs = function (props) {
     if (!tpLines.length) {
       setServiceCost(String(firstReady.estimatedCost != null ? firstReady.estimatedCost : (r.estimatedCost != null ? r.estimatedCost : r.cost || 0)));
     }
-    setConvertDeviceIndexes(readyIndexes.slice());
+    /* Prefer 3P-ready devices when present so Convert doesn't also pull unrelated in-house Ready devices */
+    var defaultIdxs = readyIndexes.slice();
+    if (tpLines.length > 0) {
+      var tpOnly = tpLines.map(function (t) { return t.deviceIndex; }).filter(function (i) {
+        return readyIndexes.indexOf(i) >= 0;
+      });
+      if (tpOnly.length) defaultIdxs = tpOnly;
+    }
+    setConvertDeviceIndexes(defaultIdxs);
     setRepairInternalParts([{
       rowId: uid(),
       productId: "",
@@ -1225,37 +1278,57 @@ var Repairs = function (props) {
       S.set("tc3_repairs", nr);
       setState(function (st) { return Object.assign({}, st, { repairs: nr }); });
     }
-    /* Build invoice lines: 3P products on bill; service line only for in-house work */
-    var tpIncluded = (convertThirdPartyLines || []).filter(function (x) {
-      return x && x.productId && convertDeviceIndexes.indexOf(x.deviceIndex) >= 0;
+    /* Build invoice lines from live repair devices:
+       - 3P devices → product line only
+       - In-house devices → repair service line
+       Never add a blank Rs 0 service line next to 3P products. */
+    var liveRepair = (state.repairs || []).find(function (rep) { return rep && rep.id === r.id; }) || r;
+    allDevices = normalizeRepairDevices(liveRepair);
+    var tpByDevice = {};
+    (convertThirdPartyLines || []).forEach(function (x) {
+      if (x && x.productId != null && x.deviceIndex != null) tpByDevice[x.deviceIndex] = x;
     });
     var tpDeviceIdx = {};
-    tpIncluded.forEach(function (x) { tpDeviceIdx[x.deviceIndex] = true; });
-    var thirdPartyItems = tpIncluded.map(function (x) {
-      return {
-        id: x.productId,
-        name: x.billName || x.productName,
+    var thirdPartyItems = [];
+    selectedIndexes.forEach(function (idx) {
+      var d = allDevices[idx] || {};
+      var tp = d.thirdParty || {};
+      var line = tpByDevice[idx];
+      var productId = (line && line.productId) || tp.productId || "";
+      if (!productId) return;
+      var p = (state.products || []).find(function (x) { return x.id === productId; }) || null;
+      tpDeviceIdx[idx] = true;
+      thirdPartyItems.push({
+        id: productId,
+        name: (line && (line.billName || line.productName)) || (p && p.name) || tp.productName || "Repair 3P",
         qty: 1,
-        price: Number(x.sell || 0),
-        cost: Number(x.cost || 0),
-        barcode: "",
+        price: Number(line && line.sell != null ? line.sell : (tp.sellAmount != null ? tp.sellAmount : (p && p.price) || 0)),
+        cost: Number(line && line.cost != null ? line.cost : (tp.amount != null ? tp.amount : (p && p.cost) || 0)),
+        barcode: (p && p.barcode) || "",
         fromRepairId: r.id
-      };
+      });
     });
     var nonTpIndexes = selectedIndexes.filter(function (idx) { return !tpDeviceIdx[idx]; });
     var invoiceItems = thirdPartyItems.slice();
     if (nonTpIndexes.length > 0) {
-      var svcDevice = allDevices[nonTpIndexes[0]] || blankDevice();
-      var serviceCost = svcCost;
-      invoiceItems.unshift({
-        id: uid(),
-        name: String(convertInvoiceName || "").trim() || ("Repair Service — " + svcDevice.deviceType + (svcDevice.brand ? " " + svcDevice.brand : "") + (svcDevice.modelNo ? " (" + svcDevice.modelNo + ")" : "") + (svcDevice.problem ? " | " + svcDevice.problem : "")),
-        qty: 1,
-        price: svcPrice,
-        cost: serviceCost,
-        barcode: "",
-        fromRepairId: r.id
-      });
+      var hasPricedService = svcPrice > 0 || svcCost > 0;
+      /* Skip empty free service when 3P lines already cover the bill (common when another Ready device was auto-selected). */
+      if (thirdPartyItems.length === 0 || hasPricedService) {
+        var svcDevice = allDevices[nonTpIndexes[0]] || blankDevice();
+        invoiceItems.unshift({
+          id: uid(),
+          name: String(convertInvoiceName || "").trim() || ("Repair Service — " + svcDevice.deviceType + (svcDevice.brand ? " " + svcDevice.brand : "") + (svcDevice.modelNo ? " (" + svcDevice.modelNo + ")" : "") + (svcDevice.problem ? " | " + svcDevice.problem : "")),
+          qty: 1,
+          price: svcPrice,
+          cost: svcCost,
+          barcode: "",
+          fromRepairId: r.id
+        });
+      }
+    }
+    if (!invoiceItems.length) {
+      showAlert("Nothing to invoice. Select a ready device with a 3P product or enter a service sell/cost.");
+      return;
     }
     var prefill = {
       customerName: r.customer,
@@ -1263,7 +1336,10 @@ var Repairs = function (props) {
       customerId: custObj ? custObj.id : "",
       items: invoiceItems,
       fromRepairId: r.id,
-      fromRepairDeviceIndexes: selectedIndexes
+      fromRepairDeviceIndexes: selectedIndexes.filter(function (idx) {
+        if (tpDeviceIdx[idx]) return true;
+        return thirdPartyItems.length === 0 || svcPrice > 0 || svcCost > 0;
+      })
     };
     S.set("tc3_repair_prefill", prefill);
     /* NOTE: Do NOT set status to Delivered here.
@@ -1276,15 +1352,6 @@ var Repairs = function (props) {
   /* ── Shared repair job HTML builder ── */
   var buildRepairJobHtml = function (r, size, deviceIndexes) {
     var settings = (props.state && props.state.settings) || {};
-    var shopName = settings.shopName || "Techon Computers";
-    var shopAddr = settings.address || "";
-    var shopPhone = settings.phone || "";
-    var shopPhone2 = settings.phone2 || "";
-    var shopEmail = settings.email || "";
-    var shopWeb = settings.website || "";
-    var shopBrn = settings.brn || "";
-    var logo = settings.invoiceLogo || "";
-    var logoW = settings.invoiceLogoSize || 80;
     var isA5 = size === "a5";
     var W = isA5 ? "148mm" : "210mm";
     var mw = isA5 ? "560px" : "794px";
@@ -1305,9 +1372,6 @@ var Repairs = function (props) {
       "body { font-family: 'Segoe UI', Arial, sans-serif; background: #fff; color: #111; width: " + W + "; margin: 0 auto; }",
       ".sheet { width: " + mw + "; max-width: 100%; margin: 0 auto; min-height: " + (isA5 ? "794px" : "1123px") + "; display: flex; flex-direction: column; }",
       ".pad { padding-left: 24px; padding-right: 24px; }",
-      ".meta-row { display: flex; justify-content: flex-end; gap: 14px; font-size: " + fs + "px; }",
-      ".meta-label { color: #888; }",
-      ".meta-val { font-weight: 700; color: #111; font-family: monospace; min-width: 100px; text-align: right; }",
       ".rule { margin: 0 24px 14px; border-top: 2px solid " + accent + "; }",
       ".sec-title { font-size: " + (fs + 1) + "px; font-weight: 800; color: " + accent + "; margin-bottom: 6px; }",
       ".bill-line { font-size: " + fs + "px; color: #333; padding: 3px 0; }",
@@ -1332,33 +1396,18 @@ var Repairs = function (props) {
     ].join("\n");
 
     var body = "<style>" + css + "</style><div class='sheet'>";
-
-    /* Header — same structure as sales Invoice A4 */
-    body += "<div class='pad' style='display:flex;justify-content:space-between;align-items:flex-start;padding-top:24px;padding-bottom:16px;'>";
-    body += "<div style='display:flex;flex-direction:column;gap:12px;'>";
-    body += "<div style='display:flex;align-items:center;gap:12px;'>";
-    if (logo) {
-      body += "<img src='" + logo + "' alt='' style='width:" + logoW + "px;height:auto;object-fit:contain;display:block'/>";
-    } else {
-      body += "<div style='font-size:20px;font-weight:900;color:" + accent + ";letter-spacing:-0.02em;text-transform:uppercase;'>" + escapeHtml(shopName) + "</div>";
-    }
-    body += "</div>";
-    body += "<div style='line-height:1.7;'>";
-    body += "<div style='font-size:13px;font-weight:800;color:" + accent + ";text-transform:uppercase;letter-spacing:0.03em;margin-bottom:3px;'>" + escapeHtml(shopName) + "</div>";
-    if (shopAddr) body += "<div style='font-size:" + (fs - 1) + "px;color:#555;'>" + escapeHtml(shopAddr) + "</div>";
-    if (shopPhone) body += "<div style='font-size:" + (fs - 1) + "px;color:#555;'>Phone: " + escapeHtml(shopPhone) + (shopPhone2 ? " / " + escapeHtml(shopPhone2) : "") + "</div>";
-    if (shopEmail) body += "<div style='font-size:" + (fs - 1) + "px;color:#555;'>Email: " + escapeHtml(shopEmail) + "</div>";
-    if (shopWeb) body += "<div style='font-size:" + (fs - 1) + "px;color:#555;'>" + escapeHtml(shopWeb) + "</div>";
-    if (shopBrn) body += "<div style='font-size:" + (fs - 1) + "px;color:#555;'>BRN: " + escapeHtml(shopBrn) + "</div>";
-    body += "</div></div>";
-    body += "<div style='text-align:right;'>";
-    body += "<div style='font-size:18px;font-weight:800;color:" + accent + ";letter-spacing:0.08em;text-transform:uppercase;line-height:1;margin-bottom:10px;'>Job Card</div>";
-    body += "<div style='display:flex;flex-direction:column;gap:3px;font-size:" + fs + "px;'>";
-    body += "<div class='meta-row'><span class='meta-label'>Job No:</span><span class='meta-val'>#" + escapeHtml(jobId) + "</span></div>";
-    body += "<div class='meta-row'><span class='meta-label'>Date In:</span><span class='meta-val' style='font-family:inherit;font-weight:600;'>" + escapeHtml(String(dateIn)) + "</span></div>";
-    body += "<div class='meta-row'><span class='meta-label'>Status:</span><span class='meta-val' style='font-family:inherit;font-weight:700;'>" + escapeHtml(rowStatus || "Accepted") + "</span></div>";
-    body += "</div></div></div>";
-    body += "<div class='rule'></div>";
+    body += buildDocPrintHeaderHtml({
+      settings: settings,
+      title: "Job Card",
+      escapeHtml: escapeHtml,
+      padPx: 24,
+      showTopbar: true,
+      metaRows: [
+        { label: "Job No:", value: "#" + jobId, mono: true },
+        { label: "Date In:", value: String(dateIn) },
+        { label: "Status:", value: rowStatus || "Accepted" },
+      ],
+    });
 
     /* Customer */
     body += "<div class='pad' style='margin-bottom:14px;'>";
@@ -1519,6 +1568,59 @@ var Repairs = function (props) {
 
   var currentTab = TABS.find(function (t) { return t.id === repairTab; }) || TABS[0];
   var q = search.toLowerCase();
+  var listRepairProducts = function () {
+    return (state.products || []).filter(isRepair3pInternalProduct).slice().sort(function (a, b) {
+      var na = parseInt(String(a.productId || "").replace(/\D/g, ""), 10) || 0;
+      var nb = parseInt(String(b.productId || "").replace(/\D/g, ""), 10) || 0;
+      if (nb !== na) return nb - na;
+      return String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || ""));
+    });
+  };
+  var saveRepairProductEdit = function () {
+    if (!editRepairProduct || !editRepairProduct.id) return;
+    var name = String(editRepairProduct.name || "").trim();
+    if (!name) { showAlert("Product name is required."); return; }
+    var existing = (state.products || []).find(function (p) { return p.id === editRepairProduct.id; });
+    if (!existing) { setEditRepairProduct(null); return; }
+    var soldLocked = isRepair3pSoldProduct(existing) || !!editRepairProduct.sold;
+    /* Cost is always locked after 3P receive — supplier payable/payment already posted at that amount. */
+    var cost = Number(existing.cost) || 0;
+    var sell = soldLocked ? (Number(existing.price) || 0) : (parseFloat(editRepairProduct.sell) || 0);
+    var ts = new Date().toISOString();
+    var np = (state.products || []).map(function (p) {
+      if (p.id !== editRepairProduct.id) return p;
+      var patch = { name: name };
+      if (!soldLocked) patch.price = sell;
+      return stampUpdatedAt(Object.assign({}, p, patch), ts);
+    });
+    /* Sync name (+ sell before sold) on linked repair devices; never rewrite cost/payable amount from here. */
+    var nr = (state.repairs || []).map(function (rep) {
+      var devices = normalizeRepairDevices(rep);
+      var changed = false;
+      var nextDevices = devices.map(function (d) {
+        var tp = d.thirdParty || {};
+        if (tp.productId !== editRepairProduct.id) return d;
+        changed = true;
+        var tpPatch = { productName: name };
+        if (!soldLocked) tpPatch.sellAmount = sell;
+        return Object.assign({}, d, {
+          thirdParty: Object.assign({}, tp, tpPatch)
+        });
+      });
+      if (!changed) return rep;
+      return stampUpdatedAt(Object.assign({}, rep, { devices: nextDevices }), ts);
+    });
+    S.set("tc3_products", np);
+    S.set("tc3_repairs", nr);
+    setState(function (st) { return Object.assign({}, st, { products: np, repairs: nr }); });
+    addAudit(
+      "Repair product updated",
+      (editRepairProduct.productId || "") + " | " + name
+        + (soldLocked ? " | sell locked (sold)" : (" | Sell " + sell))
+        + " | cost locked (supplier payable)"
+    );
+    setEditRepairProduct(null);
+  };
   var thirdPartySupplierOptions = repairTab === "thirdparty" ? (function () {
     var map = {};
     flattenRepairDeviceRows().filter(function (row) { return row.status === "Third Party"; }).forEach(function (row) {
@@ -1538,7 +1640,17 @@ var Repairs = function (props) {
     }
     return (tp.supplierId || "") === filterKey;
   };
-  var filtered = repairTab === "active"
+  var allRepairProducts = listRepairProducts();
+  var filtered = repairTab === "products"
+    ? allRepairProducts.filter(function (p) {
+      var sold = isRepair3pSoldProduct(p);
+      if (repairProductFilter === "available" && sold) return false;
+      if (repairProductFilter === "sold" && !sold) return false;
+      if (!q) return true;
+      var blob = [p.productId, p.name, p.barcode, p._repairId].join(" ").toLowerCase();
+      return blob.indexOf(q) >= 0;
+    }).map(function (p) { return { rowKey: p.id, product: p, isProduct: true }; })
+    : repairTab === "active"
     ? sortNewestFirst((state.repairs || []).filter(function (r) {
       return isBillActive(r) && billMatchesSearch(r, q);
     }).map(function (r) { return { rowKey: r.id, repair: r, isBill: true }; }))
@@ -1565,146 +1677,241 @@ var Repairs = function (props) {
       return matchTab && matchQ && matchSupplier;
     });
 
-  var repPager = usePager(filtered, repairTab === "thirdparty" ? THIRD_PARTY_PAGE_SIZE : (repairTab === "records" ? RECORDS_PAGE_SIZE : LIST_PAGE_SIZE));
+  var repPager = usePager(filtered, repairTab === "thirdparty" || repairTab === "products" ? THIRD_PARTY_PAGE_SIZE : (repairTab === "records" ? RECORDS_PAGE_SIZE : LIST_PAGE_SIZE));
 
-  var sheetCell = { padding: "6px 8px", border: "1px solid #d1d5db", fontSize: 12, whiteSpace: "nowrap", verticalAlign: "middle", background: "#fff" };
-  var sheetHead = { padding: "7px 8px", border: "1px solid #94a3b8", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.04em", background: "#e2e8f0", color: "#334155", whiteSpace: "nowrap", position: "sticky", top: 0, zIndex: 1 };
   var fmtSheetDate = function (v) { return v ? fmtDate(v) : "—"; };
+  var cntActive = countActiveBills();
+  var cnt3p = countDevicesByStatus("Third Party");
+  var cntReady = countDevicesByStatus("Ready");
+  var cntDelivered = countDevicesByStatus("Delivered");
+  var cntReturned = countDevicesByStatus("Returned");
+  var cntRecords = buildAllDeviceRecordRows().length;
+  var cntProducts = allRepairProducts.length;
+  var cntProductsAvail = allRepairProducts.filter(function (p) { return !isRepair3pSoldProduct(p); }).length;
+  var tabCountMap = {
+    active: cntActive,
+    thirdparty: cnt3p,
+    ready: cntReady,
+    delivered: cntDelivered,
+    returned: cntReturned,
+    products: cntProducts,
+    records: cntRecords
+  };
+  var goTab = function (tabId) {
+    if (repairTab === "thirdparty" && tabId !== "thirdparty") setThirdPartySupplierFilter("");
+    if (tabId !== "records") setRecordsStatusFilter("");
+    if (tabId !== "products") setRepairProductFilter("");
+    setRepairTab(tabId);
+  };
+  var searchPlaceholder =
+    repairTab === "records" ? "Search all records — customer, bill, device, supplier…"
+      : repairTab === "thirdparty" ? "Search customer, device, problem, supplier…"
+      : repairTab === "products" ? "Search repair product code or name…"
+      : "Search customer, brand, model, problem…";
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-      {/* ── Repair Tabs ── */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {TABS.map(function (tab) {
-          var count = tab.id === "active"
-            ? countActiveBills()
-            : tab.id === "records"
-            ? buildAllDeviceRecordRows().length
-            : countDevicesByStatus(tab.status);
-          var active = repairTab === tab.id;
-          return (
-            <button key={tab.id} onClick={function () {
-              if (repairTab === "thirdparty" && tab.id !== "thirdparty") setThirdPartySupplierFilter("");
-              if (tab.id !== "records") setRecordsStatusFilter("");
-              setRepairTab(tab.id);
-            }}
-              style={{ border: "2px solid " + (active ? (STATUS_COLORS[tab.status] || C.blue) : C.border), background: active ? (STATUS_BG[tab.status] || "#f7f9ff") : "#fff", color: active ? (STATUS_COLORS[tab.status] || C.blue) : C.textMd, borderRadius: 12, padding: "12px 16px", cursor: "pointer", fontWeight: 800, fontSize: 13, minWidth: 140, boxShadow: active ? "0 4px 16px rgba(0,0,0,0.08)" : "none" }}>
-              <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 4 }}>{STATUS_ICONS[tab.status]} {tab.label}</div>
-              <div style={{ fontSize: 22, lineHeight: 1 }}>{count}</div>
-            </button>
-          );
-        })}
+    <div className="erp-page erp-arap-modern is-rep">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">RP</div>
+            <div>
+              <h1 className="erp-arap-header-title">Repairs</h1>
+              <p className="erp-arap-header-sub">Workshop jobs · devices &amp; status</p>
+            </div>
+          </div>
+          <div className="erp-arap-kpi-row" aria-label="Repair overview">
+            <div className="erp-arap-kpi is-orange">
+              <span className="erp-arap-kpi-lbl">Active</span>
+              <span className="erp-arap-kpi-val">{cntActive}</span>
+              <span className="erp-arap-kpi-sub">bills in shop</span>
+            </div>
+            <div className="erp-arap-kpi is-purple">
+              <span className="erp-arap-kpi-lbl">3rd Party</span>
+              <span className="erp-arap-kpi-val">{cnt3p}</span>
+              <span className="erp-arap-kpi-sub">at suppliers</span>
+            </div>
+            <div className="erp-arap-kpi is-green">
+              <span className="erp-arap-kpi-lbl">Ready</span>
+              <span className="erp-arap-kpi-val">{cntReady}</span>
+              <span className="erp-arap-kpi-sub">awaiting pickup</span>
+            </div>
+            <div className="erp-arap-kpi is-blue">
+              <span className="erp-arap-kpi-lbl">Total</span>
+              <span className="erp-arap-kpi-val">{cntRecords}</span>
+              <span className="erp-arap-kpi-sub">{cntDelivered} delivered</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="erp-arap-add is-rep"
+            onClick={function () { setShow(true); setCustSearch(""); setF(BLANK); }}
+          >
+            <span className="erp-arap-add-ico" aria-hidden="true">+</span>
+            <span>New Repair</span>
+          </button>
+        </div>
+        <div className="erp-arap-tabs" role="tablist" aria-label="Repair status tabs">
+          {TABS.map(function (tab) {
+            var active = repairTab === tab.id;
+            var count = tabCountMap[tab.id] || 0;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={"erp-arap-tab" + (active ? " is-active" : "")}
+                onClick={function () { goTab(tab.id); }}
+              >
+                <span>{tab.label}</span>
+                <span className="erp-arap-tab-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* ── Main Table ── */}
-      <Card>
-        <CardTitle
-          sub={filtered.length.toLocaleString() + (repairTab === "active" ? " bills" : " devices")}
-          action={
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              {repairTab === "records" ? (
-                <Btn sm col="green" onClick={function () { exportRepairRecordsCsv(filtered); }}>Export CSV</Btn>
-              ) : null}
-              <Btn sm col="blue" onClick={function () { setShow(true); setCustSearch(""); setF(BLANK); }}>+ New Repair Bill</Btn>
+      <div className="erp-arap-body">
+        <div className="erp-arap-panel">
+          <div className="erp-arap-toolbar">
+            <div className="erp-arap-search-wrap">
+              <input
+                className="erp-arap-field"
+                value={search}
+                onChange={function (e) { setSearch(e.target.value); }}
+                placeholder={searchPlaceholder}
+                aria-label="Search repairs"
+              />
             </div>
-          }
-        >{currentTab.label}</CardTitle>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <Input
-              value={search}
-              onChange={function (e) { setSearch(e.target.value); }}
-              placeholder={
-                repairTab === "records" ? "Search all records — customer, bill, device, supplier..."
-                  : repairTab === "thirdparty" ? "Search customer, device, problem, supplier..."
-                  : "Search customer, brand, model, problem..."
-              }
-            />
+            {repairTab === "records" ? (
+              <div style={{ minWidth: 150, maxWidth: 200 }}>
+                <select
+                  className="erp-arap-field"
+                  value={recordsStatusFilter}
+                  onChange={function (e) { setRecordsStatusFilter(e.target.value); }}
+                  aria-label="Filter by status"
+                >
+                  <option value="">All statuses</option>
+                  <option value="Accepted">Active</option>
+                  <option value="Third Party">3rd Party</option>
+                  <option value="Ready">Ready</option>
+                  <option value="Delivered">Delivered</option>
+                  <option value="Returned">Returned</option>
+                </select>
+              </div>
+            ) : null}
+            {repairTab === "thirdparty" ? (
+              <div style={{ minWidth: 180, maxWidth: 260 }}>
+                <select
+                  className="erp-arap-field"
+                  value={thirdPartySupplierFilter}
+                  onChange={function (e) { setThirdPartySupplierFilter(e.target.value); }}
+                  aria-label="Filter by supplier"
+                >
+                  <option value="">All suppliers ({cnt3p})</option>
+                  {thirdPartySupplierOptions.map(function (opt) {
+                    var cnt = flattenRepairDeviceRows().filter(function (row) {
+                      return row.status === "Third Party" && deviceMatchesThirdPartySupplier(row.device, opt.key);
+                    }).length;
+                    return <option key={opt.key} value={opt.key}>{opt.supplierName} ({cnt})</option>;
+                  })}
+                </select>
+              </div>
+            ) : null}
+            {repairTab === "products" ? (
+              <div style={{ minWidth: 150, maxWidth: 190 }}>
+                <select
+                  className="erp-arap-field"
+                  value={repairProductFilter}
+                  onChange={function (e) { setRepairProductFilter(e.target.value); }}
+                  aria-label="Filter repair products"
+                >
+                  <option value="">All ({cntProducts})</option>
+                  <option value="available">Available ({cntProductsAvail})</option>
+                  <option value="sold">Sold / hidden ({Math.max(0, cntProducts - cntProductsAvail)})</option>
+                </select>
+              </div>
+            ) : null}
+            {search || recordsStatusFilter || thirdPartySupplierFilter || repairProductFilter ? (
+              <button
+                type="button"
+                className="erp-arap-btn-clear"
+                onClick={function () {
+                  setSearch("");
+                  setRecordsStatusFilter("");
+                  setThirdPartySupplierFilter("");
+                  setRepairProductFilter("");
+                }}
+              >Clear</button>
+            ) : null}
+            {repairTab === "records" ? (
+              <button type="button" className="erp-arap-btn-clear" style={{ borderColor: "#a7f3d0", color: "#047857", background: "#ecfdf5" }} onClick={function () { exportRepairRecordsCsv(filtered); }}>
+                Export CSV
+              </button>
+            ) : null}
+            <span className="erp-arap-filter-meta">
+              {currentTab.label} · {filtered.length.toLocaleString()}{" "}
+              {repairTab === "active" ? "bills" : repairTab === "products" ? "products" : "devices"}
+            </span>
           </div>
+
+          <div className="erp-arap-table-wrap">
           {repairTab === "records" ? (
-            <div style={{ minWidth: 180, maxWidth: 220 }}>
-              <Sel value={recordsStatusFilter} onChange={function (e) { setRecordsStatusFilter(e.target.value); }}>
-                <option value="">All statuses</option>
-                <option value="Accepted">Active</option>
-                <option value="Third Party">3rd Party</option>
-                <option value="Ready">Ready</option>
-                <option value="Delivered">Delivered</option>
-                <option value="Returned">Returned</option>
-              </Sel>
-            </div>
-          ) : null}
-          {repairTab === "thirdparty" ? (
-            <div style={{ minWidth: 240, maxWidth: 320 }}>
-              <Sel value={thirdPartySupplierFilter} onChange={function (e) { setThirdPartySupplierFilter(e.target.value); }}>
-                <option value="">All suppliers ({countDevicesByStatus("Third Party")})</option>
-                {thirdPartySupplierOptions.map(function (opt) {
-                  var cnt = flattenRepairDeviceRows().filter(function (row) {
-                    return row.status === "Third Party" && deviceMatchesThirdPartySupplier(row.device, opt.key);
-                  }).length;
-                  return <option key={opt.key} value={opt.key}>{opt.supplierName} ({cnt})</option>;
-                })}
-              </Sel>
-            </div>
-          ) : null}
-        </div>
-        <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
-          {repairTab === "records" ? (
-          <div style={{ maxHeight: "62vh", overflow: "auto", border: "1px solid #94a3b8", borderRadius: 6 }}>
-            <table style={{ width: "100%", minWidth: 1400, borderCollapse: "collapse", fontFamily: "Segoe UI, Arial, sans-serif" }}>
+          <div className="erp-arap-sheet-wrap">
+            <table className="erp-arap-sheet">
               <thead>
                 <tr>
-                  <th style={sheetHead}>Bill #</th>
-                  <th style={sheetHead}>Customer</th>
-                  <th style={sheetHead}>Phone</th>
-                  <th style={sheetHead}>Device</th>
-                  <th style={sheetHead}>Brand / Model</th>
-                  <th style={sheetHead}>Serial / IMEI</th>
-                  <th style={sheetHead}>Problem</th>
-                  <th style={sheetHead}>Status</th>
-                  <th style={sheetHead}>Supplier</th>
-                  <th style={sheetHead}>Accepted</th>
-                  <th style={sheetHead}>Sent 3P</th>
-                  <th style={sheetHead}>Recv 3P</th>
-                  <th style={sheetHead}>Ready</th>
-                  <th style={sheetHead}>Delivered</th>
-                  <th style={sheetHead}>Returned</th>
-                  <th style={Object.assign({}, sheetHead, { textAlign: "right" })}>Est. Cost</th>
-                  <th style={sheetHead}>Tech</th>
+                  <th>Bill #</th>
+                  <th>Customer</th>
+                  <th>Phone</th>
+                  <th>Device</th>
+                  <th>Brand / Model</th>
+                  <th>Serial / IMEI</th>
+                  <th>Problem</th>
+                  <th>Status</th>
+                  <th>Supplier</th>
+                  <th>Accepted</th>
+                  <th>Sent 3P</th>
+                  <th>Recv 3P</th>
+                  <th>Ready</th>
+                  <th>Delivered</th>
+                  <th>Returned</th>
+                  <th style={{ textAlign: "right" }}>Est. Cost</th>
+                  <th>Tech</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 && (
-                  <tr><td colSpan={17} style={Object.assign({}, sheetCell, { textAlign: "center", color: C.muted, padding: 24 })}>No device records found</td></tr>
+                  <tr><td colSpan={17} className="erp-arap-empty">No device records found</td></tr>
                 )}
-                {repPager.slice.map(function (row, i) {
+                {repPager.slice.map(function (row) {
                   var r = row.repair;
                   var d = row.device;
                   var tl = row.timeline || getDeviceTimeline(r, d);
                   var st = row.status;
                   var pill = deviceStatusPill(st);
-                  var zebra = i % 2 === 0 ? "#ffffff" : "#f8fafc";
                   return (
-                    <tr key={row.rowKey} style={{ background: zebra }}>
-                      <td style={Object.assign({}, sheetCell, { background: zebra, fontFamily: "monospace", fontWeight: 700 })}>#{String(r.id || "").slice(0, 8).toUpperCase()}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra, fontWeight: 600 })}>{r.customer || "—"}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{r.phone || "—"}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{d.deviceType || "—"}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{((d.brand || "") + (d.modelNo ? " — " + d.modelNo : "")).trim() || "—"}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra, fontFamily: "monospace", fontSize: 11 })}>{d.serialNo || "—"}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra, whiteSpace: "normal", maxWidth: 180, lineHeight: 1.3 })}>{d.problem || "—"}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>
-                        <span style={{ background: pill.bg, color: pill.fg, border: "1px solid " + pill.bd, borderRadius: 4, padding: "2px 7px", fontSize: 10, fontWeight: 700 }}>{deviceStatusLabel(st)}</span>
+                    <tr key={row.rowKey}>
+                      <td className="erp-arap-ref">#{String(r.id || "").slice(0, 8).toUpperCase()}</td>
+                      <td className="erp-arap-src">{r.customer || "—"}</td>
+                      <td>{r.phone || "—"}</td>
+                      <td>{d.deviceType || "—"}</td>
+                      <td>{((d.brand || "") + (d.modelNo ? " — " + d.modelNo : "")).trim() || "—"}</td>
+                      <td style={{ fontFamily: "ui-monospace, Consolas, monospace", fontSize: 11 }}>{d.serialNo || "—"}</td>
+                      <td style={{ whiteSpace: "normal", maxWidth: 180, lineHeight: 1.3 }}>{d.problem || "—"}</td>
+                      <td>
+                        <span className="erp-arap-status-pill" style={{ background: pill.bg, color: pill.fg, border: "1px solid " + pill.bd }}>{deviceStatusLabel(st)}</span>
                       </td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra, color: tl.supplierName ? "#6d28d9" : C.muted, fontWeight: tl.supplierName ? 600 : 400 })}>{tl.supplierName || "—"}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{fmtSheetDate(tl.acceptedAt)}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{fmtSheetDate(tl.sent3pAt)}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{fmtSheetDate(tl.received3pAt)}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{fmtSheetDate(tl.readyAt)}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{fmtSheetDate(tl.deliveredAt)}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{fmtSheetDate(tl.returnedAt)}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra, textAlign: "right", fontWeight: 700 })}>{getCurrencySymbol()} {fmtNum(r.estimatedCost || r.cost || 0)}</td>
-                      <td style={Object.assign({}, sheetCell, { background: zebra })}>{r.technician || "—"}</td>
+                      <td style={{ color: tl.supplierName ? "#6d28d9" : "#94a3b8", fontWeight: tl.supplierName ? 600 : 400 }}>{tl.supplierName || "—"}</td>
+                      <td>{fmtSheetDate(tl.acceptedAt)}</td>
+                      <td>{fmtSheetDate(tl.sent3pAt)}</td>
+                      <td>{fmtSheetDate(tl.received3pAt)}</td>
+                      <td>{fmtSheetDate(tl.readyAt)}</td>
+                      <td>{fmtSheetDate(tl.deliveredAt)}</td>
+                      <td>{fmtSheetDate(tl.returnedAt)}</td>
+                      <td className="erp-arap-amt">{getCurrencySymbol()} {fmtNum(r.estimatedCost || r.cost || 0)}</td>
+                      <td>{r.technician || "—"}</td>
                     </tr>
                   );
                 })}
@@ -1712,29 +1919,38 @@ var Repairs = function (props) {
             </table>
           </div>
           ) : repairTab === "active" ? (
-          <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
-            <thead><tr style={{ background: "#f7f9ff" }}><TH style={{ width: "12%" }}>Date In</TH><TH style={{ width: "20%" }}>Customer</TH><TH style={{ width: "12%" }}>Bill #</TH><TH style={{ width: "28%" }}>Devices</TH><TH right style={{ width: "14%" }}>Est. Cost</TH><TH style={{ width: "14%" }}>Actions</TH></tr></thead>
+          <table className="erp-arap-table">
+            <thead>
+              <tr>
+                <th style={{ width: "10%" }}>Date In</th>
+                <th style={{ width: "20%" }}>Customer</th>
+                <th style={{ width: "12%" }}>Bill #</th>
+                <th style={{ width: "32%" }}>Devices</th>
+                <th style={{ width: "14%", textAlign: "right" }}>Est. Cost</th>
+                <th style={{ width: "12%" }}>Actions</th>
+              </tr>
+            </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={6} style={{ padding: 20, textAlign: "center", color: C.muted }}>No active repair bills</td></tr>}
-              {repPager.slice.map(function (row, i) {
+              {filtered.length === 0 && <tr><td colSpan={6} className="erp-arap-empty">No active repair bills</td></tr>}
+              {repPager.slice.map(function (row) {
                 var r = row.repair;
                 var devices = normalizeRepairDevices(r);
                 var first = devices[0] || blankDevice();
                 return (
-                  <TR key={row.rowKey} i={i}>
-                    <TD>{fmtDate(r.dateIn || r.date)}</TD>
-                    <TD bold style={{ whiteSpace: "normal", overflow: "hidden", textOverflow: "ellipsis" }}>{r.customer}</TD>
-                    <TD><span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 12 }}>#{r.id.slice(0, 8).toUpperCase()}</span></TD>
-                    <TD style={{ whiteSpace: "normal" }}>
-                      <div style={{ fontWeight: 700, color: C.text }}>{first.deviceType} {first.brand} {first.modelNo}</div>
-                      <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+                  <tr key={row.rowKey} className="table-row-hover">
+                    <td>{fmtDate(r.dateIn || r.date)}</td>
+                    <td className="erp-arap-src" title={r.customer}>{r.customer}</td>
+                    <td className="erp-arap-ref">#{r.id.slice(0, 8).toUpperCase()}</td>
+                    <td>
+                      <div className="erp-arap-device">{first.deviceType} {first.brand} {first.modelNo}</div>
+                      <div className="erp-arap-device-sub">
                         {devices.length} device{devices.length === 1 ? "" : "s"}
                         {devices.length > 1 ? " · " + devices.filter(function (d) { return (d.status || "Accepted") === "Accepted"; }).length + " active" : ""}
                       </div>
-                    </TD>
-                    <TD bold color={C.blue} right>{getCurrencySymbol()} {fmtNum(r.estimatedCost || r.cost || 0)}</TD>
+                    </td>
+                    <td className="erp-arap-amt">{getCurrencySymbol()} {fmtNum(r.estimatedCost || r.cost || 0)}</td>
                     <td style={actBtnCellStyle}>
-                      <ActBtnGroup gap={6}>
+                      <ActBtnGroup gap={4}>
                         <ActBtn tone="cyan" title="View repair bill" onClick={function () { openViewRepair(r, null); }} />
                         <ActBtn tone="blue" title="Edit repair bill" onClick={function () { setEditR(Object.assign({}, r, { devices: normalizeRepairDevices(r) })); }} />
                         <ActBtn tone="red" title="Void repair bill" onClick={function () {
@@ -1747,75 +1963,196 @@ var Repairs = function (props) {
                         }} />
                       </ActBtnGroup>
                     </td>
-                  </TR>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          ) : repairTab === "products" ? (
+          <table className="erp-arap-table" style={{ minWidth: 920, tableLayout: "auto" }}>
+            <thead>
+              <tr>
+                <th style={{ width: 88 }}>Code</th>
+                <th style={{ minWidth: 220 }}>Name</th>
+                <th style={{ width: 100, textAlign: "right" }}>Cost</th>
+                <th style={{ width: 100, textAlign: "right" }}>Sell</th>
+                <th style={{ width: 72, textAlign: "right" }}>Stock</th>
+                <th style={{ width: 110 }}>Status</th>
+                <th style={{ width: 100 }}>Repair</th>
+                <th style={{ width: 72 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 && (
+                <tr><td colSpan={8} className="erp-arap-empty">No repair products yet — they appear when you receive from 3rd Party</td></tr>
+              )}
+              {repPager.slice.map(function (row) {
+                var p = row.product;
+                var sold = isRepair3pSoldProduct(p);
+                return (
+                  <tr key={row.rowKey} className="table-row-hover" style={sold ? { opacity: 0.72 } : undefined}>
+                    <td className="erp-arap-ref" style={{ fontWeight: 800, color: "#0f766e" }}>{p.productId || "—"}</td>
+                    <td style={{ whiteSpace: "normal", fontWeight: 650, color: "#0f172a", lineHeight: 1.3 }}>{p.name || "—"}</td>
+                    <td className="erp-arap-amt">{getCurrencySymbol()} {fmtNum(p.cost || 0)}</td>
+                    <td className="erp-arap-amt" style={{ color: "#047857", fontWeight: 800 }}>{getCurrencySymbol()} {fmtNum(p.price || 0)}</td>
+                    <td className="erp-arap-amt">{fmtNum(p.stock || 0)}</td>
+                    <td>
+                      <span
+                        className="erp-arap-status-pill"
+                        style={sold
+                          ? { background: "#f1f5f9", color: "#64748b", border: "1px solid #cbd5e1" }
+                          : { background: "#ecfdf5", color: "#047857", border: "1px solid #a7f3d0" }}
+                      >
+                        {sold ? "Sold" : "Available"}
+                      </span>
+                    </td>
+                    <td className="erp-arap-ref" style={{ whiteSpace: "nowrap" }}>
+                      {p._repairId ? "#" + String(p._repairId).slice(0, 8).toUpperCase() : "—"}
+                    </td>
+                    <td style={Object.assign({}, actBtnCellStyle, { width: 72, minWidth: 72 })}>
+                      <ActBtnGroup gap={4}>
+                        <ActBtn tone="blue" title="Edit repair product" onClick={function () {
+                          setEditRepairProduct({
+                            id: p.id,
+                            productId: p.productId || "",
+                            name: p.name || "",
+                            cost: String(p.cost != null ? p.cost : ""),
+                            sell: String(p.price != null ? p.price : ""),
+                            sold: sold
+                          });
+                        }} />
+                      </ActBtnGroup>
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
           ) : (
-          <table style={{ width: "100%", minWidth: repairTab === "thirdparty" ? 980 : 900, borderCollapse: "collapse" }}>
+          <table className="erp-arap-table" style={{ minWidth: repairTab === "thirdparty" ? 980 : 900, tableLayout: "auto" }}>
             <thead>
-              <tr style={{ background: "#f7f9ff" }}>
-                <TH style={{ width: 78 }}>Date In</TH>
-                <TH style={{ width: 120 }}>Customer</TH>
-                <TH style={{ width: 96 }}>Bill #</TH>
-                <TH style={{ minWidth: 160 }}>Device</TH>
-                {repairTab === "thirdparty" ? <TH style={{ width: 150 }}>Supplier</TH> : null}
-                <TH style={{ minWidth: 140 }}>Problem</TH>
-                <TH right style={{ width: 110 }}>Est. Cost</TH>
-                <TH style={{ width: 150 }}>Status</TH>
-                <TH style={{ width: 88 }}>Actions</TH>
+              <tr>
+                <th style={{ width: 78 }}>Date In</th>
+                <th style={{ width: 120 }}>Customer</th>
+                <th style={{ width: 96 }}>Bill #</th>
+                <th style={{ minWidth: 160 }}>Device</th>
+                {repairTab === "thirdparty" ? <th style={{ width: 150 }}>Supplier</th> : null}
+                <th style={{ minWidth: 140 }}>Problem</th>
+                <th style={{ width: repairTab === "ready" ? 118 : 100, textAlign: "right" }}>
+                  {repairTab === "ready" ? "Cost / Sell" : "Est. Cost"}
+                </th>
+                <th style={{ width: 150 }}>Status</th>
+                <th style={{ width: 88 }}>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && <tr><td colSpan={repairTab === "thirdparty" ? 9 : 8} style={{ padding: 20, textAlign: "center", color: C.muted }}>No devices in {currentTab.label.toLowerCase()}{thirdPartySupplierFilter ? " for this supplier" : ""}</td></tr>}
-              {repPager.slice.map(function (row, i) {
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={repairTab === "thirdparty" ? 9 : 8} className="erp-arap-empty">
+                    No devices in {currentTab.label.toLowerCase()}{thirdPartySupplierFilter ? " for this supplier" : ""}
+                  </td>
+                </tr>
+              )}
+              {repPager.slice.map(function (row) {
                 var r = row.repair;
                 var d = row.device;
                 var tp = d.thirdParty || {};
+                var readyAmt = repairTab === "ready" ? getDeviceActualAmounts(r, d) : null;
                 return (
-                  <TR key={row.rowKey} i={i}>
-                    <TD style={{ whiteSpace: "nowrap" }}>{fmtDate(r.dateIn || r.date)}</TD>
-                    <TD bold style={{ whiteSpace: "normal", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis" }}>{r.customer}</TD>
-                    <TD style={{ whiteSpace: "nowrap" }}><span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 12 }}>#{r.id.slice(0, 8).toUpperCase()}</span></TD>
-                    <TD style={{ whiteSpace: "normal" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                        <span style={{ background: C.accentSoft, color: C.accent, padding: "2px 8px", borderRadius: 5, fontSize: 11, fontWeight: 700 }}>{d.deviceType}</span>
-                        <span style={{ fontWeight: 600, color: C.text, fontSize: 12 }}>{d.brand}{d.modelNo ? " — " + d.modelNo : ""}</span>
+                  <tr key={row.rowKey} className="table-row-hover">
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtDate(r.dateIn || r.date)}</td>
+                    <td className="erp-arap-src" title={r.customer}>{r.customer}</td>
+                    <td className="erp-arap-ref" style={{ whiteSpace: "nowrap" }}>#{r.id.slice(0, 8).toUpperCase()}</td>
+                    <td style={{ whiteSpace: "normal" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                        <span className="erp-arap-chip">{d.deviceType}</span>
+                        <span style={{ fontWeight: 600, color: "#0f172a", fontSize: 12 }}>{d.brand}{d.modelNo ? " — " + d.modelNo : ""}</span>
                       </div>
-                      {d.serialNo ? <div style={{ fontSize: 10, color: C.muted, marginTop: 3, fontFamily: "monospace" }}>{d.serialNo}</div> : null}
-                    </TD>
+                      {d.serialNo ? <div className="erp-arap-device-sub" style={{ fontFamily: "ui-monospace, Consolas, monospace" }}>{d.serialNo}</div> : null}
+                    </td>
                     {repairTab === "thirdparty" ? (
-                      <TD style={{ whiteSpace: "normal" }}>
-                        <div style={{ fontWeight: 700, color: "#6d28d9", fontSize: 12, lineHeight: 1.35 }}>{tp.supplierName || "—"}</div>
-                        {tp.supplierPhone ? <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>{tp.supplierPhone}</div> : null}
-                        {tp.sentAt ? <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Sent {fmtDate(tp.sentAt)}</div> : null}
-                      </TD>
+                      <td style={{ whiteSpace: "normal" }}>
+                        <div className="erp-arap-supp">{tp.supplierName || "—"}</div>
+                        {tp.supplierPhone ? <div className="erp-arap-device-sub">{tp.supplierPhone}</div> : null}
+                        {tp.sentAt ? <div className="erp-arap-device-sub">Sent {fmtDate(tp.sentAt)}</div> : null}
+                      </td>
                     ) : null}
-                    <TD style={{ whiteSpace: "normal", maxWidth: 220, lineHeight: 1.35, fontSize: 12 }}>{d.problem || "—"}</TD>
-                    <TD bold color={C.blue} right style={{ whiteSpace: "nowrap" }}>{getCurrencySymbol()} {fmtNum(r.estimatedCost || r.cost || 0)}</TD>
-                    <td style={{ padding: "8px 10px", verticalAlign: "middle", whiteSpace: "nowrap" }}>
+                    <td style={{ whiteSpace: "normal", maxWidth: 220, lineHeight: 1.35, fontSize: 12 }}>{d.problem || "—"}</td>
+                    <td className="erp-arap-amt" style={{ whiteSpace: "nowrap" }}>
+                      {readyAmt ? (
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 1, lineHeight: 1.25 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#475569" }}>
+                            C {getCurrencySymbol()} {fmtNum(readyAmt.cost)}
+                          </span>
+                          <span style={{ fontSize: 12, fontWeight: 800, color: "#047857" }}>
+                            S {getCurrencySymbol()} {fmtNum(readyAmt.sell)}
+                          </span>
+                        </div>
+                      ) : (
+                        <span>{getCurrencySymbol()} {fmtNum(r.estimatedCost || r.cost || 0)}</span>
+                      )}
+                    </td>
+                    <td style={{ verticalAlign: "middle", whiteSpace: "nowrap" }}>
                       <RepairStatusSelect
                         currentStatus={row.status}
                         compact
                         onAction={function (action) { handleDeviceStatusAction(r, row.deviceIndex, action); }}
                       />
                     </td>
-                    <td style={{ ...actBtnCellStyle, width: 88, minWidth: 88, whiteSpace: "nowrap" }}>
+                    <td style={Object.assign({}, actBtnCellStyle, { width: 88, minWidth: 88, whiteSpace: "nowrap" })}>
                       <ActBtnGroup gap={4}>
                         <ActBtn tone="cyan" title="View device" onClick={function () { openViewRepair(r, [row.deviceIndex]); }} />
                         <ActBtn tone="blue" title="Edit repair bill" onClick={function () { setEditR(Object.assign({}, r, { devices: normalizeRepairDevices(r) })); }} />
                       </ActBtnGroup>
                     </td>
-                  </TR>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
           )}
+          </div>
+
+          <div className="erp-arap-foot">
+            <div className="erp-arap-pager-wrap">
+              <Pager pager={repPager} />
+            </div>
+          </div>
         </div>
-        <Pager pager={repPager} />
-      </Card>
+
+        {(state.repairDeleteLog || []).length > 0 ? (
+          <div className="erp-arap-deleted">
+            <div className="erp-arap-deleted-head">
+              Deleted history
+              <span>{(state.repairDeleteLog || []).length} records</span>
+            </div>
+            <div className="erp-arap-deleted-body">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Deleted On</th>
+                    <th>Customer</th>
+                    <th>Device</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(state.repairDeleteLog || []).slice().reverse().map(function (l) {
+                    return (
+                      <tr key={l.id}>
+                        <td>{fmtDateFull(l.date)}</td>
+                        <td className="erp-arap-src">{l.customer}</td>
+                        <td>{l.device}</td>
+                        <td>{l.reason}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
+      </div>
 
       {voidSaleTarget && (
         <Modal title={"Void Invoice — " + (voidSaleTarget.invoiceNo || voidSaleTarget.id.slice(0, 8))} onClose={function () { setVoidSaleTarget(null); setVoidReason(""); }}>
@@ -1885,92 +2222,110 @@ var Repairs = function (props) {
       )}
 
       {thirdPartyReceiveModal && !thirdPartySplitModal && (
-        <Modal title="Receive From 3rd Party Repair Center" onClose={function () { setThirdPartyReceiveModal(null); }} wide zIndex={1100}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: "min(900px, 95vw)" }}>
-            <div style={{ background: C.accentSoft, border: "1px solid #c7ddff", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: C.accent, fontWeight: 600 }}>
-              Purchase-style receive: create one-time product, record supplier payable/payment, then move this device to <strong>Ready</strong>.
+        <Modal
+          className="erp-rep-3p-recv-modal"
+          title="Receive from 3rd Party"
+          subtitle="Create repair product · record payable · move to Ready"
+          onClose={function () { setThirdPartyReceiveModal(null); }}
+          medium
+          zIndex={1100}
+          closeRound
+        >
+          <div className="erp-rep-3p-recv">
+            <div className="erp-rep-3p-recv-hint">
+              <span>One-time repair product + supplier payable, then device becomes <strong>Ready</strong>.</span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1.1fr 1fr", gap: 12 }}>
-              <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px" }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
-                  Supplier (from Send to 3rd Party)
+
+            <div className="erp-rep-3p-recv-sup">
+              <div className="erp-rep-3p-recv-sup-main">
+                <div className="erp-rep-3p-recv-sup-name">{thirdPartyReceiveForm.supplierName || "—"}</div>
+                <div className="erp-rep-3p-recv-sup-meta">
+                  {[
+                    thirdPartyReceiveForm.supplierPhone || "",
+                    thirdPartyReceiveModal.sentAt ? ("Sent " + fmtDateFull(thirdPartyReceiveModal.sentAt)) : ""
+                  ].filter(Boolean).join(" · ") || "From Send to 3rd Party"}
                 </div>
-                <div style={{ marginBottom: 10, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "12px 14px" }}>
-                  <div style={{ fontWeight: 800, fontSize: 16, color: "#166534" }}>{thirdPartyReceiveForm.supplierName || "—"}</div>
-                  {thirdPartyReceiveForm.supplierPhone ? <div style={{ fontSize: 13, color: C.textMd, marginTop: 4 }}>{thirdPartyReceiveForm.supplierPhone}</div> : null}
-                  {thirdPartyReceiveModal.sentAt ? <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Sent on {fmtDateFull(thirdPartyReceiveModal.sentAt)}</div> : null}
-                  <div style={{ fontSize: 11, color: "#166534", marginTop: 8, fontWeight: 600 }}>Auto-filled — same supplier selected when device was sent out.</div>
-                </div>
-                <Sel label="Payment Mode" value={thirdPartyReceiveForm.payMode} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { payMode: e.target.value }); }); }}>
+              </div>
+              <span className="erp-rep-3p-recv-sup-tag">Auto supplier</span>
+            </div>
+
+            <div className="erp-rep-3p-recv-grid">
+              <div className="erp-rep-3p-recv-card">
+                <div className="erp-rep-3p-recv-card-title">Payment</div>
+                <Sel label="Payment mode" value={thirdPartyReceiveForm.payMode} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { payMode: e.target.value }); }); }}>
                   <option value="paid">Fully Paid</option>
                   <option value="partial">Partial Paid</option>
                   <option value="unpaid">Unpaid</option>
                 </Sel>
                 {thirdPartyReceiveForm.payMode !== "unpaid" ? (
-                  <div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                     {(thirdPartyReceiveForm.splitRows && thirdPartyReceiveForm.splitRows.length > 0) ? (
-                      <div>
-                        <div style={{ fontSize: 11, fontWeight: 700, color: "#0369a1", textTransform: "uppercase", marginBottom: 6 }}>Payment Method</div>
-                        <div style={{ background: "#f0f9f4", borderRadius: 9, padding: "10px 12px", border: "1px solid #9ee8ce", marginBottom: 6 }}>
+                      <>
+                        <div className="erp-rep-3p-recv-pay-list">
                           {thirdPartyReceiveForm.splitRows.map(function (r, i) {
                             return (
-                              <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
-                                <span style={{ color: C.textMd }}>{r.method === "Cheque" ? "🏷 " : r.method === "Bank" ? "🏦 " : "💵 "}{r.method}{r.method === "Cheque" && r.chequeNo ? " #" + r.chequeNo : ""}</span>
-                                <strong style={{ color: r.method === "Cheque" ? "#d97706" : C.green }}>{getCurrencySymbol()} {fmtNum(parseFloat(r.amount) || 0)}{r.method === "Cheque" ? " (pending)" : ""}</strong>
+                              <div key={i} className={"erp-rep-3p-recv-pay-line" + (r.method === "Cheque" ? " is-cheque" : "")}>
+                                <span>{r.method}{r.method === "Cheque" && r.chequeNo ? " #" + r.chequeNo : ""}</span>
+                                <strong>{getCurrencySymbol()} {fmtNum(parseFloat(r.amount) || 0)}{r.method === "Cheque" ? " · pending" : ""}</strong>
                               </div>
                             );
                           })}
                         </div>
-                        <button onClick={function () { setThirdPartySplitModal(true); }} style={{ width: "100%", padding: "8px", borderRadius: 8, border: "1.5px dashed #0369a1", background: "#e0f2fe", color: "#0369a1", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>✏️ Edit Payment</button>
-                      </div>
+                        <button type="button" className="erp-rep-3p-recv-pay-btn is-edit" onClick={function () { setThirdPartySplitModal(true); }}>
+                          Edit payment
+                        </button>
+                        <div className="erp-rep-3p-recv-paid">
+                          Paid now:{" "}
+                          <strong>
+                            {getCurrencySymbol()}{" "}
+                            {fmtNum((thirdPartyReceiveForm.splitRows || []).reduce(function (a, r) {
+                              return r.method !== "Cheque" ? a + (parseFloat(r.amount) || 0) : a;
+                            }, 0))}
+                          </strong>
+                        </div>
+                      </>
                     ) : (
-                      <button onClick={function () { setThirdPartySplitModal(true); }}
-                        style={{ width: "100%", padding: "11px", borderRadius: 9, border: "2px solid #0369a1", background: "#0369a1", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                        💰 Set Payment Method
+                      <button type="button" className="erp-rep-3p-recv-pay-btn" onClick={function () { setThirdPartySplitModal(true); }}>
+                        Set payment method
                       </button>
                     )}
-                    {thirdPartyReceiveForm.splitRows && thirdPartyReceiveForm.splitRows.length > 0 ? (
-                      <div style={{ marginTop: 6, fontSize: 12, color: C.textMd }}>
-                        Paid now: <strong style={{ color: C.green }}>{getCurrencySymbol()} {fmtNum((thirdPartyReceiveForm.splitRows || []).reduce(function (a, r) { return r.method !== "Cheque" ? a + (parseFloat(r.amount) || 0) : a; }, 0))}</strong>
-                      </div>
-                    ) : null}
                   </div>
                 ) : null}
-                <Input label="Note / Receipt No." value={thirdPartyReceiveForm.note} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} placeholder="Optional note" />
+                <Input label="Note / receipt no." value={thirdPartyReceiveForm.note} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }} placeholder="Optional" />
               </div>
-              <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px" }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
-                  Product & Amount
+
+              <div className="erp-rep-3p-recv-card">
+                <div className="erp-rep-3p-recv-card-title">Product & amount</div>
+                <Input label="Product name" value={thirdPartyReceiveForm.productName} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { productName: e.target.value }); }); }} />
+                <div className="erp-rep-3p-recv-row2">
+                  <Input label="Cost" type="number" value={thirdPartyReceiveForm.costAmount} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { costAmount: e.target.value }); }); }} />
+                  <Input label="Sell" type="number" value={thirdPartyReceiveForm.sellAmount} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { sellAmount: e.target.value }); }); }} />
                 </div>
-                <Input label="Product Name (internal only)" value={thirdPartyReceiveForm.productName} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { productName: e.target.value }); }); }} />
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <Input label="Cost Amount" type="number" value={thirdPartyReceiveForm.costAmount} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { costAmount: e.target.value }); }); }} />
-                  <Input label="Sell Amount" type="number" value={thirdPartyReceiveForm.sellAmount} onChange={function (e) { setThirdPartyReceiveForm(function (x) { return Object.assign({}, x, { sellAmount: e.target.value }); }); }} />
-                </div>
-                <div style={{ marginTop: 10, background: "#ecfdf5", border: "1px dashed #86efac", borderRadius: 8, padding: "10px 12px", fontSize: 12.5 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                    <span style={{ color: "#166534" }}>Cost</span>
-                    <strong style={{ color: "#166534" }}>{getCurrencySymbol()} {fmtNum(parseFloat(thirdPartyReceiveForm.costAmount) || 0)}</strong>
+                <div className="erp-rep-3p-recv-totals">
+                  <div className="erp-rep-3p-recv-tot">
+                    <span>Cost</span>
+                    <b>{getCurrencySymbol()} {fmtNum(parseFloat(thirdPartyReceiveForm.costAmount) || 0)}</b>
                   </div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "#166534" }}>Sell (invoice line)</span>
-                    <strong style={{ color: "#166534" }}>{getCurrencySymbol()} {fmtNum(parseFloat(thirdPartyReceiveForm.sellAmount) || 0)}</strong>
+                  <div className="erp-rep-3p-recv-tot">
+                    <span>Sell</span>
+                    <b>{getCurrencySymbol()} {fmtNum(parseFloat(thirdPartyReceiveForm.sellAmount) || 0)}</b>
                   </div>
                 </div>
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <RepairActionGroup gap={6}>
-              <RepairActionBtn tone="ready" onClick={function () { saveThirdPartyReceived(false); }}>Save & Move to Ready</RepairActionBtn>
-              <RepairActionBtn tone="print" onClick={function () { saveThirdPartyReceived(true); }}>Save + Print Barcode</RepairActionBtn>
-              <RepairActionBtn tone="neutral" onClick={function () { setThirdPartyReceiveModal(null); }}>Cancel</RepairActionBtn>
-            </RepairActionGroup>
+
+            <div className="erp-rep-3p-recv-actions">
+              <RepairActionGroup gap={6}>
+                <RepairActionBtn tone="ready" onClick={function () { saveThirdPartyReceived(false); }}>Save & Ready</RepairActionBtn>
+                <RepairActionBtn tone="print" onClick={function () { saveThirdPartyReceived(true); }}>Save + Barcode</RepairActionBtn>
+                <RepairActionBtn tone="neutral" onClick={function () { setThirdPartyReceiveModal(null); }}>Cancel</RepairActionBtn>
+              </RepairActionGroup>
             </div>
           </div>
         </Modal>
       )}
       {thirdPartyBarcodeItems && (
-        <Modal title={"Print 3rd Party Barcode — " + thirdPartyBarcodeItems.length + " label"} onClose={function () { setThirdPartyBarcodeItems(null); }} wide>
+        <Modal title={"Print 3rd Party Barcode — " + thirdPartyBarcodeItems.length + " label"} onClose={function () { setThirdPartyBarcodeItems(null); }} wide zIndex={13000}>
           <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }} className="no-print">
           <RepairActionGroup gap={6}>
             <RepairActionBtn tone="print" onClick={printThirdPartyBarcodeLabels}>Print Label</RepairActionBtn>
@@ -1978,6 +2333,67 @@ var Repairs = function (props) {
           </RepairActionGroup>
           </div>
           <BarcodeLabelSheet items={thirdPartyBarcodeItems} shopName={state.settings.shopName} barcodeSettings={state.settings} />
+        </Modal>
+      )}
+      {editRepairProduct && (
+        <Modal
+          className="erp-rep-3p-recv-modal"
+          title={"Repair product · " + (editRepairProduct.productId || "")}
+          subtitle={
+            editRepairProduct.sold
+              ? "Sold — cost & sell locked"
+              : "Cost locked (supplier payable) · sell editable until sold"
+          }
+          onClose={function () { setEditRepairProduct(null); }}
+          compact
+          zIndex={1100}
+          closeRound
+        >
+          <div className="erp-rep-3p-recv">
+            <div className="erp-rep-3p-recv-sup">
+              <div className="erp-rep-3p-recv-sup-main">
+                <div className="erp-rep-3p-recv-sup-name">{editRepairProduct.productId || "—"}</div>
+                <div className="erp-rep-3p-recv-sup-meta">
+                  Cost matches what was paid/owed to the supplier on receive — change payables separately if needed.
+                </div>
+              </div>
+              <span className="erp-rep-3p-recv-sup-tag">{editRepairProduct.sold ? "Sold" : "Available"}</span>
+            </div>
+            <div className="erp-rep-3p-recv-card">
+              <Input
+                label="Product name"
+                value={editRepairProduct.name}
+                onChange={function (e) {
+                  setEditRepairProduct(function (x) { return Object.assign({}, x, { name: e.target.value }); });
+                }}
+              />
+              <div className="erp-rep-3p-recv-row2">
+                <Input
+                  label="Cost (supplier)"
+                  type="number"
+                  value={editRepairProduct.cost}
+                  disabled
+                  onChange={function () {}}
+                />
+                <Input
+                  label="Sell"
+                  type="number"
+                  value={editRepairProduct.sell}
+                  disabled={!!editRepairProduct.sold}
+                  onChange={function (e) {
+                    if (editRepairProduct.sold) return;
+                    setEditRepairProduct(function (x) { return Object.assign({}, x, { sell: e.target.value }); });
+                  }}
+                />
+              </div>
+            </div>
+            <div className="erp-rep-3p-recv-actions">
+              <RepairActionGroup gap={6}>
+                <RepairActionBtn tone="ready" onClick={saveRepairProductEdit}>Save</RepairActionBtn>
+                <RepairActionBtn tone="neutral" onClick={function () { setEditRepairProduct(null); }}>Cancel</RepairActionBtn>
+              </RepairActionGroup>
+            </div>
+          </div>
         </Modal>
       )}
       {thirdPartySplitModal && (
@@ -2005,21 +2421,6 @@ var Repairs = function (props) {
           }}
           onClose={function () { setThirdPartySplitModal(false); }}
         />
-      )}
-
-      {/* ── Deleted Repairs Log ── */}
-      {(state.repairDeleteLog || []).length > 0 && (
-        <Card>
-          <CardTitle sub="Deleted repair records with reasons">Deleted Repairs History</CardTitle>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr style={{ background: "#fff5f5" }}><TH>Deleted On</TH><TH>Customer</TH><TH>Device</TH><TH>Reason</TH></tr></thead>
-            <tbody>
-              {(state.repairDeleteLog || []).slice().reverse().map(function (l, i) {
-                return <TR key={l.id} i={i}><TD>{fmtDateFull(l.date)}</TD><TD bold>{l.customer}</TD><TD>{l.device}</TD><TD>{l.reason}</TD></TR>;
-              })}
-            </tbody>
-          </table>
-        </Card>
       )}
 
       {/* ── NEW REPAIR MODAL ── */}
@@ -2129,172 +2530,198 @@ var Repairs = function (props) {
         var viewIndexSet = {};
         if (viewDeviceOnly) viewDeviceIndexes.forEach(function (i) { viewIndexSet[i] = true; });
         var viewHasReady = viewEntries.some(function (e) { return (e.device.status || "Accepted") === "Ready"; });
+        var primaryStatus = (firstView.status || viewR.status || "Accepted");
+        var alertTone =
+          primaryStatus === "Ready" ? "is-ready"
+            : primaryStatus === "Third Party" ? "is-third"
+            : primaryStatus === "Delivered" ? "is-delivered"
+            : primaryStatus === "Returned" ? "is-returned"
+            : "is-active";
+        var alertTitle =
+          primaryStatus === "Ready" ? "Ready for pickup / invoice"
+            : primaryStatus === "Third Party" ? "At 3rd party repair"
+            : primaryStatus === "Delivered" ? "Delivered to customer"
+            : primaryStatus === "Returned" ? "Returned device"
+            : "Active in workshop";
+        var jobNo = "#" + String(viewR.id || "").slice(0, 8).toUpperCase();
+        var brandModel = (((firstView.brand || viewR.brand || "") + " " + (firstView.modelNo || viewR.modelNo || "")).trim()) || "—";
         return (
-        <Modal title={"🔧 Repair Job — " + viewR.customer + (viewDeviceOnly && viewEntries.length === 1 ? (" · " + (firstView.deviceType || "Device")) : "")} onClose={closeViewRepair} wide>
-          {/* Header strip */}
-          <div style={{ background: "linear-gradient(135deg, #0d1b3e, #1a3580)", borderRadius: 10, padding: "16px 20px", color: "#fff", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 17 }}>{viewR.customer}</div>
-              <div style={{ opacity: 0.75, fontSize: 12, marginTop: 2 }}>{viewR.phone}</div>
+        <Modal
+          className="erp-arap-view-modal is-rep"
+          title={"Repair · " + (viewR.customer || "Job")}
+          subtitle={jobNo + (viewDeviceOnly && viewEntries.length === 1 ? (" · " + (firstView.deviceType || "Device")) : (" · " + viewEntries.length + " device" + (viewEntries.length === 1 ? "" : "s")))}
+          onClose={closeViewRepair}
+          wide
+          closeRound
+        >
+          <div className="erp-rep-view">
+            <div className={"erp-rep-view-alert " + alertTone}>
+              <div>
+                <strong>{alertTitle}</strong>
+                <span>{viewR.customer}{viewR.phone ? " · " + viewR.phone : ""}</span>
+              </div>
+              <b>{getCurrencySymbol()} {fmtNum(viewR.estimatedCost || viewR.cost || 0)}</b>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", flexWrap: "wrap" }}>
-                {viewEntries.map(function (e, idx) {
-                  var p = deviceStatusPill(e.device.status || "Accepted");
-                  return <span key={idx} style={{ background: p.bg, color: p.fg, border: "1px solid " + p.bd, borderRadius: 999, padding: "4px 11px", fontSize: 11, fontWeight: 700 }}>{p.label}</span>;
+
+            <div className="erp-rep-view-grid">
+              <div className="erp-rep-view-card">
+                <div className="erp-rep-view-card-title">Customer</div>
+                <div className="erp-rep-view-name">{viewR.customer || "—"}</div>
+                {viewR.phone ? <div className="erp-rep-view-muted">{viewR.phone}</div> : null}
+                <div className="erp-rep-view-muted">In {fmtDateFull(viewR.dateIn || viewR.date)}{viewR.dateOut ? " · Out " + fmtDateFull(viewR.dateOut) : ""}</div>
+                <div className="erp-rep-view-chips">
+                  {viewEntries.map(function (e, idx) {
+                    var p = deviceStatusPill(e.device.status || "Accepted");
+                    return (
+                      <span key={idx} className="erp-rep-view-chip" style={{ background: p.bg, color: p.fg, borderColor: p.bd }}>
+                        {p.label}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="erp-rep-view-card">
+                <div className="erp-rep-view-card-title">Job summary</div>
+                <div className="erp-rep-view-kv">
+                  <div><span>Job #</span><b className="is-teal">{jobNo}</b></div>
+                  <div><span>Est. cost</span><b className="is-teal">{getCurrencySymbol()} {fmtNum(viewR.estimatedCost || viewR.cost || 0)}</b></div>
+                  <div><span>Device</span><b>{firstView.deviceType || viewR.deviceType || "—"}</b></div>
+                  <div><span>Brand / Model</span><b title={brandModel}>{brandModel}</b></div>
+                  <div><span>Technician</span><b>{viewR.technician || "—"}</b></div>
+                  <div><span>Expected out</span><b>{viewR.dateOut ? fmtDateFull(viewR.dateOut) : "—"}</b></div>
+                </div>
+              </div>
+            </div>
+
+            <div className="erp-rep-view-devices">
+              <div className="erp-rep-view-card-title">{viewDeviceOnly ? (viewEntries.length === 1 ? "Device" : "Selected devices") : "Devices in this bill"}</div>
+              {viewEntries.map(function (entry, listIdx) {
+                var d = entry.device;
+                var idx = entry.index;
+                var st = d.status || "Accepted";
+                return (
+                  <div key={idx} className="erp-rep-view-device">
+                    <div className="erp-rep-view-device-top">
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="erp-rep-view-device-title">{listIdx + 1}. {d.deviceType} {d.brand} {d.modelNo}</div>
+                        {d.serialNo ? <div className="erp-rep-view-device-sn">S/N · IMEI: {d.serialNo}</div> : null}
+                        <div className="erp-rep-view-device-prob">{d.problem || "—"}</div>
+                        {(d.thirdParty && d.thirdParty.supplierName) ? (
+                          <div className="erp-rep-view-device-3p">
+                            3P: {d.thirdParty.supplierName}
+                            {d.thirdParty.sentAt && !d.thirdParty.receivedAt ? " · sent " + fmtDateFull(d.thirdParty.sentAt) : ""}
+                            {d.thirdParty.receivedAt ? " · received " + fmtDateFull(d.thirdParty.receivedAt) : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                      {deviceStatusBadge(st, false)}
+                    </div>
+                    <div className="erp-rep-view-device-actions">
+                      {renderDeviceStatusActions(viewR, idx, st)}
+                    </div>
+                  </div>
+                );
+              })}
+              {!viewDeviceOnly ? (
+                <div className="erp-rep-view-bulk">
+                  <span className="erp-rep-view-bulk-lbl">All devices</span>
+                  {getRepairBulkStatusOptions().map(function (opt) {
+                    var a = styleForAction(opt.value);
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        className="erp-rep-view-bulk-btn"
+                        onClick={function () {
+                          if (!viewR) return;
+                          if (opt.value === "Third Party") {
+                            var idxs = normalizeRepairDevices(viewR).map(function (d, i) {
+                              return (d.status || "Accepted") === "Accepted" ? i : -1;
+                            }).filter(function (i) { return i >= 0; });
+                            openThirdPartySendModal(viewR, idxs);
+                            return;
+                          }
+                          updateAllDeviceStatuses(viewR, opt.value);
+                        }}
+                        style={{
+                          border: "1px solid " + a.border,
+                          background: a.bg,
+                          color: a.color,
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+
+            {((viewR && viewR.returnedLog && viewR.returnedLog.length > 0) || viewEntries.some(function (e) { return (e.device.status || "Accepted") === "Returned"; })) ? (
+              <div className="erp-rep-view-note is-return">
+                <div className="erp-rep-view-note-title">Returned devices</div>
+                {(function () {
+                  var live = normalizeRepairDevices(viewR).map(function (d, idx) {
+                    if ((d.status || "Accepted") !== "Returned") return null;
+                    if (viewDeviceOnly && !viewIndexSet[idx]) return null;
+                    return { id: "live_" + idx, date: viewR.dateOut || viewR.dateIn || viewR.date || today(), deviceIndex: idx, device: Object.assign({}, d) };
+                  }).filter(Boolean);
+                  var log = Array.isArray(viewR.returnedLog) ? viewR.returnedLog.slice() : [];
+                  if (viewDeviceOnly) log = log.filter(function (e) { return viewIndexSet[e.deviceIndex]; });
+                  var all = log.concat(live);
+                  var seen = {};
+                  return all.filter(function (e) {
+                    var key = (e && e.deviceIndex) + "|" + ((e && e.date) || "") + "|" + ((e && e.device && e.device.modelNo) || "");
+                    if (seen[key]) return false;
+                    seen[key] = 1;
+                    return true;
+                  });
+                })().map(function (e, idx) {
+                  var d = (e && e.device) || {};
+                  return (
+                    <div key={(e && e.id) || idx} className="erp-rep-view-ret-row">
+                      <div>
+                        <div className="erp-rep-view-device-title">{d.deviceType} {d.brand} {d.modelNo}</div>
+                        <div className="erp-rep-view-device-prob">{d.problem || "No issue note"}</div>
+                      </div>
+                      <div className="erp-rep-view-muted">{e.date ? fmtDateFull(e.date) : ""}</div>
+                    </div>
+                  );
                 })}
               </div>
-              <div style={{ opacity: 0.6, fontSize: 10, marginTop: 4 }}>Job #{viewR.id.slice(0, 8).toUpperCase()}{viewDeviceOnly ? " · Device " + (viewEntries.length === 1 ? (viewEntries[0].index + 1) : viewEntries.map(function (e) { return e.index + 1; }).join(", ")) : ""}</div>
-            </div>
-          </div>
-          {/* Detail grid */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
-            {[
-              ["Device", firstView.deviceType || viewR.deviceType, C.accent],
-              ["Brand / Model", (((firstView.brand || viewR.brand || "—") + " " + (firstView.modelNo || viewR.modelNo || "")).trim()), C.text],
-              ["Est. Cost", getCurrencySymbol() + " " + fmtNum(viewR.estimatedCost || viewR.cost || 0), C.green],
-              ["Date In", fmtDateFull(viewR.dateIn || viewR.date), C.text],
-              ["Expected Out", viewR.dateOut ? fmtDateFull(viewR.dateOut) : "—", C.text],
-              ["Technician", viewR.technician || "—", C.text],
-            ].map(function (x, i) {
-              return (
-                <div key={i} style={{ background: "#f7f9ff", borderRadius: 8, padding: "10px 12px" }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}>{x[0]}</div>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: x[2] }}>{x[1]}</div>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", marginBottom: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>{viewDeviceOnly ? (viewEntries.length === 1 ? "Device" : "Selected Devices") : "Devices in this bill"}</div>
-            {viewEntries.map(function (entry, listIdx) {
-              var d = entry.device;
-              var idx = entry.index;
-              var st = d.status || "Accepted";
-              return (
-                <div key={idx} style={{ background: "#fff", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", marginBottom: listIdx === viewEntries.length - 1 ? 0 : 8 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{listIdx + 1}. {d.deviceType} {d.brand} {d.modelNo}</div>
-                      {d.serialNo ? <div style={{ fontSize: 11, color: C.muted, marginTop: 2, fontFamily: "monospace" }}>S/N · IMEI: {d.serialNo}</div> : null}
-                      <div style={{ fontSize: 12, color: C.textMd, marginTop: 3, lineHeight: 1.45 }}>{d.problem || "—"}</div>
-                      {(d.thirdParty && d.thirdParty.supplierName) ? (
-                        <div style={{ fontSize: 11, color: "#6d28d9", marginTop: 4, fontWeight: 600 }}>
-                          3P: {d.thirdParty.supplierName}{d.thirdParty.sentAt && !d.thirdParty.receivedAt ? " · sent " + fmtDateFull(d.thirdParty.sentAt) : ""}{d.thirdParty.receivedAt ? " · received " + fmtDateFull(d.thirdParty.receivedAt) : ""}
-                        </div>
-                      ) : null}
-                    </div>
-                    {deviceStatusBadge(st, false)}
-                  </div>
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #f1f5f9" }}>
-                    {renderDeviceStatusActions(viewR, idx, st)}
-                  </div>
-                </div>
-              );
-            })}
-            {!viewDeviceOnly ? (
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed " + C.border, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: C.muted }}>All devices:</span>
-              {getRepairBulkStatusOptions().map(function (opt) {
-                var a = styleForAction(opt.value);
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={function () {
-                      if (!viewR) return;
-                      if (opt.value === "Third Party") {
-                        var idxs = normalizeRepairDevices(viewR).map(function (d, i) {
-                          return (d.status || "Accepted") === "Accepted" ? i : -1;
-                        }).filter(function (i) { return i >= 0; });
-                        openThirdPartySendModal(viewR, idxs);
-                        return;
-                      }
-                      updateAllDeviceStatuses(viewR, opt.value);
-                    }}
-                    style={{
-                      height: 26,
-                      padding: "0 10px",
-                      borderRadius: 6,
-                      border: "1px solid " + a.border,
-                      background: a.bg,
-                      color: a.color,
-                      fontSize: 11,
-                      fontWeight: 700,
-                      fontFamily: "inherit",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
             ) : null}
-          </div>
-          {((viewR && viewR.returnedLog && viewR.returnedLog.length > 0) || viewEntries.some(function (e) { return (e.device.status || "Accepted") === "Returned"; })) && (
-            <div style={{ background: "#f9fafb", border: "1px dashed #9ca3af", borderRadius: 9, padding: "12px 14px", marginBottom: 10 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
-                Returned Devices Record
+
+            <div className="erp-rep-view-note is-problem">
+              <div className="erp-rep-view-note-title">Problem reported</div>
+              <div className="erp-rep-view-note-body">{firstView.problem || viewR.problem || "—"}</div>
+            </div>
+
+            {viewR.description ? (
+              <div className="erp-rep-view-note">
+                <div className="erp-rep-view-note-title">Notes / description</div>
+                <div className="erp-rep-view-note-body is-soft">{viewR.description}</div>
               </div>
-              {(function () {
-                var live = normalizeRepairDevices(viewR).map(function (d, idx) {
-                  if ((d.status || "Accepted") !== "Returned") return null;
-                  if (viewDeviceOnly && !viewIndexSet[idx]) return null;
-                  return { id: "live_" + idx, date: viewR.dateOut || viewR.dateIn || viewR.date || today(), deviceIndex: idx, device: Object.assign({}, d) };
-                }).filter(Boolean);
-                var log = Array.isArray(viewR.returnedLog) ? viewR.returnedLog.slice() : [];
-                if (viewDeviceOnly) log = log.filter(function (e) { return viewIndexSet[e.deviceIndex]; });
-                var all = log.concat(live);
-                var seen = {};
-                return all.filter(function (e) {
-                  var key = (e && e.deviceIndex) + "|" + ((e && e.date) || "") + "|" + ((e && e.device && e.device.modelNo) || "");
-                  if (seen[key]) return false;
-                  seen[key] = 1;
-                  return true;
-                });
-              })().map(function (e, idx, arr) {
-                var d = (e && e.device) || {};
-                return (
-                  <div key={(e && e.id) || idx} style={{ padding: "8px 0", borderBottom: idx === arr.length - 1 ? "none" : "1px dashed " + C.border }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 800, color: C.text }}>{d.deviceType} {d.brand} {d.modelNo}</div>
-                      <div style={{ fontSize: 11, color: C.muted, fontWeight: 700 }}>{e.date ? fmtDateFull(e.date) : ""}</div>
-                    </div>
-                    <div style={{ fontSize: 12, color: C.textMd, marginTop: 2 }}>{d.problem || "No issue note"}</div>
-                  </div>
-                );
-              })}
+            ) : null}
+
+            {viewR.accessories ? (
+              <div className="erp-rep-view-note">
+                <div className="erp-rep-view-note-title">Accessories received</div>
+                <div className="erp-rep-view-note-body is-soft">{viewR.accessories}</div>
+              </div>
+            ) : null}
+
+            <div className="erp-rep-view-actions">
+              <RepairActionGroup gap={6}>
+                <RepairActionBtn tone="edit" onClick={function () { closeViewRepair(); setEditR(Object.assign({}, viewR, { devices: normalizeRepairDevices(viewR) })); }}>Edit</RepairActionBtn>
+                {viewHasReady ? (
+                  <RepairActionBtn tone="invoice" onClick={function () { closeViewRepair(); openConvertModal(viewR, viewDeviceIndexes); }}>Convert to Invoice</RepairActionBtn>
+                ) : null}
+                <RepairActionBtn tone="print" onClick={function () { printRepairJob(viewR, "a4", viewDeviceIndexes); }}>Print A4</RepairActionBtn>
+                <RepairActionBtn tone="thirdParty" onClick={function () { printRepairJob(viewR, "a5", viewDeviceIndexes); }}>Print A5</RepairActionBtn>
+                <WABtn title="Share Job Card via WhatsApp" onClick={function () { whatsappRepairJob(viewR, "a4", viewDeviceIndexes); }} />
+                <RepairActionBtn tone="neutral" onClick={closeViewRepair}>Close</RepairActionBtn>
+              </RepairActionGroup>
             </div>
-          )}
-          {/* Problem */}
-          <div style={{ background: "#fff8e1", border: "1.5px solid #fcd34d", borderRadius: 9, padding: "12px 14px", marginBottom: 10 }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#92400e", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Problem Reported</div>
-            <div style={{ fontWeight: 700, color: C.text, fontSize: 14 }}>{firstView.problem || viewR.problem}</div>
-          </div>
-          {viewR.description && (
-            <div style={{ background: "#f0f4ff", borderRadius: 9, padding: "12px 14px", marginBottom: 10 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Notes / Description</div>
-              <div style={{ color: C.textMd, fontSize: 13, lineHeight: 1.6 }}>{viewR.description}</div>
-            </div>
-          )}
-          {viewR.accessories && (
-            <div style={{ background: "#f0f4ff", borderRadius: 9, padding: "12px 14px", marginBottom: 10 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Accessories Received</div>
-              <div style={{ color: C.textMd, fontSize: 13 }}>{viewR.accessories}</div>
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, paddingTop: 12, borderTop: "1px solid " + C.border }}>
-            <RepairActionGroup gap={6}>
-              <RepairActionBtn tone="edit" onClick={function () { closeViewRepair(); setEditR(Object.assign({}, viewR, { devices: normalizeRepairDevices(viewR) })); }}>Edit</RepairActionBtn>
-              {viewHasReady ? (
-                <RepairActionBtn tone="invoice" onClick={function () { closeViewRepair(); openConvertModal(viewR, viewDeviceIndexes); }}>Convert to Invoice</RepairActionBtn>
-              ) : null}
-              <RepairActionBtn tone="print" onClick={function () { printRepairJob(viewR, "a4", viewDeviceIndexes); }}>Print A4</RepairActionBtn>
-              <RepairActionBtn tone="thirdParty" onClick={function () { printRepairJob(viewR, "a5", viewDeviceIndexes); }}>Print A5</RepairActionBtn>
-              <WABtn title="Share Job Card via WhatsApp" onClick={function () { whatsappRepairJob(viewR, "a4", viewDeviceIndexes); }} />
-              <RepairActionBtn tone="neutral" onClick={closeViewRepair}>Close</RepairActionBtn>
-            </RepairActionGroup>
           </div>
         </Modal>
         );
@@ -2430,9 +2857,21 @@ var Repairs = function (props) {
           return { d: d, idx: idx, ready: (d.status || "Accepted") === "Ready" };
         }).filter(function (x) { return x.ready; });
         var showDevicePick = readyDeviceRows.length > 1;
-        var hasTpLines = (convertThirdPartyLines || []).length > 0;
+        var tpLineByDevice = {};
+        (convertThirdPartyLines || []).forEach(function (ln) {
+          if (ln && ln.deviceIndex != null) tpLineByDevice[ln.deviceIndex] = ln;
+        });
+        var selectedTpLines = (convertDeviceIndexes || []).map(function (idx) {
+          return tpLineByDevice[idx] || null;
+        }).filter(Boolean);
+        var selectedInHouseIndexes = (convertDeviceIndexes || []).filter(function (idx) {
+          return !tpLineByDevice[idx];
+        });
+        var hasTpLines = selectedTpLines.length > 0;
+        var hasInHouse = selectedInHouseIndexes.length > 0;
         var inHouseProductName = (function () {
-          var idx = (convertDeviceIndexes || [])[0];
+          var idx = selectedInHouseIndexes[0];
+          if (idx == null) idx = (convertDeviceIndexes || [])[0];
           var d = normalizeRepairDevices(convertModal)[idx >= 0 ? idx : 0] || blankDevice();
           return d.deviceType + (d.brand ? " " + d.brand : "") + (d.modelNo ? " (" + d.modelNo + ")" : "");
         })();
@@ -2443,6 +2882,7 @@ var Repairs = function (props) {
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {readyDeviceRows.map(function (row) {
                   var checked = convertDeviceIndexes.indexOf(row.idx) >= 0;
+                  var isTp = !!tpLineByDevice[row.idx];
                   return (
                     <label key={row.idx} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, padding: "6px 10px", border: "1px solid " + C.border, borderRadius: 8, background: checked ? "#f0fdf4" : "#fff", cursor: "pointer" }}>
                       <input type="checkbox" checked={checked} onChange={function (e) {
@@ -2455,21 +2895,25 @@ var Repairs = function (props) {
                         });
                       }} />
                       {row.d.deviceType} {row.d.brand} {row.d.modelNo}
+                      {isTp ? <span style={{ color: "#6d28d9", fontSize: 10, fontWeight: 800 }}>3P</span> : null}
                     </label>
                   );
                 })}
               </div>
             ) : null}
-            {hasTpLines ? (convertThirdPartyLines || []).map(function (ln, idx) {
-              if (convertDeviceIndexes.indexOf(ln.deviceIndex) < 0) return null;
+            {hasTpLines ? selectedTpLines.map(function (ln) {
+              var idx = (convertThirdPartyLines || []).indexOf(ln);
+              if (idx < 0) idx = (convertThirdPartyLines || []).findIndex(function (x) { return x && x.deviceIndex === ln.deviceIndex; });
               return (
-                <div key={idx} style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px" }}>
+                <div key={ln.deviceIndex} style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px" }}>
                   <Input label="Product name" value={ln.productName || ""} disabled />
                   <Input label="Invoice name" value={ln.billName || ""} onChange={function (e) {
                     var v = e.target.value;
                     setConvertThirdPartyLines(function (arr) {
                       var n = (arr || []).slice();
-                      n[idx] = Object.assign({}, n[idx], { billName: v });
+                      var at = n.findIndex(function (x) { return x && x.deviceIndex === ln.deviceIndex; });
+                      if (at < 0) return n;
+                      n[at] = Object.assign({}, n[at], { billName: v });
                       return n;
                     });
                   }} />
@@ -2479,14 +2923,17 @@ var Repairs = function (props) {
                       var v = parseFloat(e.target.value) || 0;
                       setConvertThirdPartyLines(function (arr) {
                         var n = (arr || []).slice();
-                        n[idx] = Object.assign({}, n[idx], { sell: v });
+                        var at = n.findIndex(function (x) { return x && x.deviceIndex === ln.deviceIndex; });
+                        if (at < 0) return n;
+                        n[at] = Object.assign({}, n[at], { sell: v });
                         return n;
                       });
                     }} />
                   </div>
                 </div>
               );
-            }) : (
+            }) : null}
+            {hasInHouse ? (
               <div style={{ background: "#f8fafc", border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px" }}>
                 <Input label="Product name" value={inHouseProductName} disabled />
                 <Input label="Invoice name" value={convertInvoiceName} onChange={function (e) { setConvertInvoiceName(e.target.value); }} />
@@ -2494,8 +2941,16 @@ var Repairs = function (props) {
                   <Input label="Cost" type="number" value={serviceCost} onChange={function (e) { setServiceCost(e.target.value); }} />
                   <Input label="Sell price" type="number" value={servicePrice} onChange={function (e) { setServicePrice(e.target.value); }} placeholder="Optional" />
                 </div>
+                {hasTpLines ? (
+                  <div style={{ marginTop: 8, fontSize: 11, color: C.muted, fontWeight: 600 }}>
+                    In-house service line is added only when sell or cost is greater than 0.
+                  </div>
+                ) : null}
               </div>
-            )}
+            ) : null}
+            {!hasTpLines && !hasInHouse ? (
+              <div style={{ fontSize: 12, color: C.muted, fontWeight: 600 }}>Select at least one ready device.</div>
+            ) : null}
             <div style={{ borderTop: "1px solid " + C.borderLight, paddingTop: 12 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, marginBottom: 4 }}>Internal stock used</div>
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>Search parts by product name, barcode, or product ID. Only items with stock are shown.</div>

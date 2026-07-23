@@ -962,3 +962,16 @@
   justify-content: flex-end;
 }
 
+.erp-app-root .erp-page-content .erp-si-row-x,
+.erp-app-root .erp-modal-body .erp-si-row-x {
+  background: #fde8ed !important;
+  color: #b91c1c !important;
+  border: none !important;
+  border-radius: 6px !important;
+  padding: 4px 10px !important;
+  cursor: pointer !important;
+  font-weight: 700 !important;
+  font-size: 12px !important;
+  font-family: inherit !important;
+}
+

@@ -8,6 +8,7 @@ import {
   removeToolbarKey,
   TOOLBAR_PINNED_KEYS,
 } from "../utils/toolbarConfig.js";
+import { ToolbarGlyph, toolbarIconColor } from "./ToolbarGlyph.jsx";
 
 var GROUP_LABELS = {
   main: "Main",
@@ -139,8 +140,12 @@ export default function ToolbarCustomizePanel(props) {
                     onChange(removeToolbarKey(keys, key));
                   }}
                 >
-                  <span className="erp-toolbar-icon" style={{ background: item.bg || "#f0f0f0" }} aria-hidden="true">
-                    {item.icon}
+                  <span
+                    className={"erp-toolbar-icon" + (String(item.icon || "").indexOf("svg:") === 0 ? " is-svg" : "")}
+                    style={{ background: item.bg || "#f0f0f0", color: toolbarIconColor(item.key) || undefined }}
+                    aria-hidden="true"
+                  >
+                    <ToolbarGlyph icon={item.icon} color={toolbarIconColor(item.key) || "#334155"} />
                   </span>
                   <span className="erp-toolbar-label">{item.label}</span>
                   {!pinned ? <span className="erp-tb-mock-x" aria-hidden="true">×</span> : null}
@@ -179,11 +184,11 @@ export default function ToolbarCustomizePanel(props) {
                         onClick={function () { toggleKey(item.key); }}
                       >
                         <span
-                          className="erp-tb-catalog-ico"
-                          style={{ background: item.bg || "#f1f5f9" }}
+                          className={"erp-tb-catalog-ico" + (String(item.icon || "").indexOf("svg:") === 0 ? " is-svg" : "")}
+                          style={{ background: item.bg || "#f1f5f9", color: toolbarIconColor(item.key) || undefined }}
                           aria-hidden="true"
                         >
-                          {item.icon}
+                          <ToolbarGlyph icon={item.icon} size={14} color={toolbarIconColor(item.key) || "#334155"} />
                         </span>
                         <span className="erp-tb-catalog-name">{item.label}</span>
                         <span className="erp-tb-catalog-mark" aria-hidden="true">{on ? "✓" : "+"}</span>

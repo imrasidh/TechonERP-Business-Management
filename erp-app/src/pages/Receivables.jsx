@@ -71,6 +71,7 @@ var EnhancedReceivables = function (props) {
   var [editItem, setEditItem] = useState(null);
   var [docView, setDocView] = useState(null); /* sale object for View & Print */
   var [receiptView, setReceiptView] = useState(null); /* manual money-out receipt */
+  var [editReceipt, setEditReceipt] = useState(null);
   var [docFmt, setDocFmt] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
   var [docWarranty, setDocWarranty] = useState(false);
   var [printFmtOpen, setPrintFmtOpen] = useState(false);
@@ -184,6 +185,25 @@ var EnhancedReceivables = function (props) {
       return false;
     }
     return true;
+  };
+
+  var openEditMoneyOutReceipt = function (row) {
+    var rcp = (row && row._manualObj) ? row._manualObj : row;
+    if (!rcp || !rcp.id) {
+      showAlert("Receipt not found.");
+      return;
+    }
+    if (rcp._isOpening) {
+      showAlert("Opening balance entries are edited from Accounts → Opening Balance.");
+      return;
+    }
+    if (rcp.thirdPartyRepairId) {
+      showAlert("This receipt is linked to a 3rd party repair. Edit it from Repairs.");
+      return;
+    }
+    setViewItem(null);
+    setReceiptView(null);
+    setEditReceipt(rcp);
   };
 
   /* ── processSplitSale: handles split/multi-method payments on sales invoices ── */
@@ -490,7 +510,8 @@ var EnhancedReceivables = function (props) {
             </div>
           </div>
           <button type="button" className="erp-arap-add is-out" onClick={function () { setAddModal(true); }}>
-            <span className="erp-arap-add-ico">↓</span> Money Out
+            <span className="erp-arap-add-ico" aria-hidden="true">↓</span>
+            <span>Money Out</span>
           </button>
         </div>
         <div className="erp-arap-tabs" role="tablist" aria-label="Receivable filters">
@@ -579,6 +600,7 @@ var EnhancedReceivables = function (props) {
                       <td style={actBtnCellStyle}>
                         <ActBtnGroup>
                           <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
+                          {e._type === "manual" ? <ActBtn tone="blue" title="Edit Money Out receipt" onClick={function () { openEditMoneyOutReceipt(e); }} /> : null}
                           {hasPendChq ? <span className="erp-arap-pend" title="Has pending cheque(s)">🕐</span> : null}
                           {isOut ? <ActBtn tone="green" icon="pay" title="Record payment" wide onClick={function () { setSplitPayModal(e); }}>Pay</ActBtn> : null}
                           {e._type === "manual" ? <ActBtn tone="red" title="Delete entry" onClick={function () { deleteManual(e.id); }} /> : null}
@@ -629,6 +651,36 @@ var EnhancedReceivables = function (props) {
         />
       )}
 
+      {editReceipt && (
+        <MoneyInOutModal
+          mode="out"
+          editRecord={editReceipt}
+          S={S}
+          today={today}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+          showAlert={showAlert}
+          addAudit={addAudit}
+          setState={setState}
+          onClose={function () { setEditReceipt(null); }}
+          onSaved={function (updated) {
+            if (viewItem && viewItem.id === (updated && updated.id)) {
+              setViewItem(null);
+            }
+          }}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          getCurrencySymbol={getCurrencySymbol}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+          zIndex={13000}
+        />
+      )}
+
       {/* Payment Modal */}
       {payModal && (
         <Modal title={"Record Payment — " + payModal.source} onClose={function () { setPayModal(null); }} medium>
@@ -641,9 +693,16 @@ var EnhancedReceivables = function (props) {
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, color: C.textMd, textTransform: "uppercase", marginBottom: 5 }}>Received Via</div>
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-                {[["Cash", "💵 Cash", "#1b5e20", "#f0f9f4"], ["Bank", "🏦 Bank", "#1565c0", "#e8f0fe"], ["Cheque", "🏷 Cheque", "#7c3aed", "#f5f3ff"]].map(function (opt) {
+                {[["Cash", "💵 Cash", "cash"], ["Bank", "🏦 Bank", "bank"], ["Cheque", "🏷 Cheque", "cheque"]].map(function (opt) {
                   var active = (payMethod || "Cash") === opt[0];
-                  return <button key={opt[0]} onClick={function () { setPayMethod(opt[0]); }} style={{ flex: 1, padding: "9px 8px", borderRadius: 9, border: "2px solid " + (active ? opt[2] : C.border), background: active ? opt[3] : "#fff", color: active ? opt[2] : C.textMd, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>{opt[1]}</button>;
+                  return (
+                    <button
+                      key={opt[0]}
+                      type="button"
+                      className={"erp-arap-method-btn is-" + opt[2] + (active ? " is-active" : "")}
+                      onClick={function () { setPayMethod(opt[0]); }}
+                    >{opt[1]}</button>
+                  );
                 })}
               </div>
             </div>
@@ -656,11 +715,11 @@ var EnhancedReceivables = function (props) {
                   <Input label="Bank Name" value={chqForm.bank} onChange={function (e) { setChqForm(function (x) { return Object.assign({}, x, { bank: e.target.value }); }); }} placeholder="e.g. HNB" />
                   <Input label="Amount (Rs) *" type="number" value={chqForm.amount} onChange={function (e) { setChqForm(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }} placeholder="0" />
                   <Input label="Due Date *" type="date" value={chqForm.due} onChange={function (e) { setChqForm(function (x) { return Object.assign({}, x, { due: e.target.value }); }); }} />
-                  <button onClick={function () {
+                  <button type="button" className="erp-arap-method-add" onClick={function () {
                     if (!chqForm.no.trim() || !parseFloat(chqForm.amount)) { showAlert("Enter cheque number and amount."); return; }
                     setChequeList(function (l) { return l.concat([Object.assign({}, chqForm, { id: uid() })]); });
                     setChqForm({ no: "", bank: "", amount: "", due: today() });
-                  }} style={{ padding: "10px 18px", background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, fontWeight: 700, cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}>+ Add</button>
+                  }}>+ Add</button>
                 </div>
                 {/* Cheque list */}
                 {chequeList.length > 0 && (
@@ -672,7 +731,7 @@ var EnhancedReceivables = function (props) {
                           {c.bank && <span style={{ fontSize: 12, color: C.muted }}>{c.bank}</span>}
                           <span style={{ fontSize: 13, fontWeight: 700, color: C.green, marginLeft: "auto" }}>{getCurrencySymbol()} {fmtNum(parseFloat(c.amount) || 0)}</span>
                           <span style={{ fontSize: 12, color: C.muted }}>Due: {c.due}</span>
-                          <button onClick={function () { setChequeList(function (l) { return l.filter(function (_, j) { return j !== i; }); }); }} style={{ background: "#fde8ed", color: C.red, border: "none", borderRadius: 5, padding: "2px 8px", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>✕</button>
+                          <button type="button" className="erp-arap-method-x" onClick={function () { setChequeList(function (l) { return l.filter(function (_, j) { return j !== i; }); }); }}>✕</button>
                         </div>
                       );
                     })}
@@ -702,7 +761,7 @@ var EnhancedReceivables = function (props) {
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontWeight: 700, color: isNegative ? C.red : C.green }}>{getCurrencySymbol()} {fmtNum(ph.amount)}</span>
                         {(ph.amount || 0) > 0 && !isReversal && (
-                          <button onClick={function () {
+                          <button type="button" className="erp-arap-method-rev" onClick={function () {
                             showConfirm("Reverse this payment of " + getCurrencySymbol() + " " + fmtNum(ph.amount) + "?\n\nA correction entry will be added to cancel it out.", function () {
                               var manRecs = S.get("tc3_manualReceivables", []);
                               var updated = manRecs.map(function (r) {
@@ -718,7 +777,7 @@ var EnhancedReceivables = function (props) {
                               setSplitPayModal(null); setPayModal(null);
                               showAlert("✅ Payment reversed. A correction entry has been added.");
                             });
-                          }} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 5, border: "1px solid " + C.border, background: "#fff", color: C.red, cursor: "pointer", fontWeight: 700, fontFamily: "inherit" }}>↩ Reverse</button>
+                          }}>↩ Reverse</button>
                         )}
                       </div>
                     </div>
@@ -946,6 +1005,13 @@ var EnhancedReceivables = function (props) {
                     View actual invoice
                   </button>
                 ) : null}
+                {!isSale ? (
+                  <button type="button" className="erp-arap-doc-btn" onClick={function () {
+                    openEditMoneyOutReceipt(viewItem);
+                  }}>
+                    Edit receipt
+                  </button>
+                ) : null}
                 {isOut ? (
                   <button type="button" className="erp-arap-doc-btn is-pay" onClick={function () { setViewItem(null); setSplitPayModal(viewItem); }}>
                     Record payment
@@ -1099,6 +1165,11 @@ var EnhancedReceivables = function (props) {
                 </div>
               </div>
               <div className="erp-si-fv-actions">
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () { openEditMoneyOutReceipt(rcp); }}
+                >Edit</button>
                 <button
                   type="button"
                   className="erp-si-fv-btn is-print"

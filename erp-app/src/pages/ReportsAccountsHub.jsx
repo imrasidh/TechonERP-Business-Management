@@ -1,10 +1,9 @@
 import React, { useState } from "react";
-import { createPortal } from "react-dom";
 import { round2 } from "../utils/moneyRound.js";
 import { activeSalesReturns } from "../utils/voidInvoice.js";
 import { sumRawMaterialKitchenCostInRange } from "../utils/ingredientUsageCost.js";
-import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
-import { applyPageFormatToHtml, resolveThermalFormat } from "../utils/printFormat.js";
+import { buildDocPrintHeaderHtml, DOC_PRINT_ACCENT } from "../components/DocPrintHeader.jsx";
+import UniversalPrintPreview from "../components/UniversalPrintPreview.jsx";
 
 /**
  * Report Generate: pick report → set period → Generate → A4 print preview
@@ -46,7 +45,6 @@ var ReportsAccountsHub = function (props) {
   var [selectedId, setSelectedId] = useState("summary");
   var [preview, setPreview] = useState(null);
   var [genBusy, setGenBusy] = useState(false);
-  var [printFmtOpen, setPrintFmtOpen] = useState(false);
 
   var REPORTS = [
     { id: "summary", label: "Business Performance Report", date: "period", group: "Summary" },
@@ -107,26 +105,13 @@ var ReportsAccountsHub = function (props) {
 
   var wrapA4 = function (title, rangeLabel, bodyHtml) {
     var settings = state.settings || {};
-    var shopName = settings.shopName || "Techon ERP";
-    var addr = settings.address || "";
-    var phone = settings.phone || "";
-    var phone2 = settings.phone2 || "";
-    var email = settings.email || "";
-    var brn = settings.brn || "";
     var printedOn = new Date().toLocaleString();
-    var accent = "#0d1b3e";
+    var accent = DOC_PRINT_ACCENT;
     var css = "";
     css += "*{margin:0;padding:0;box-sizing:border-box;}";
     css += "body{font-family:'Segoe UI',Arial,Helvetica,sans-serif;color:#111;background:#fff;padding:16mm 14mm;}";
     css += "@page{size:A4;margin:12mm;}";
     css += ".sheet{max-width:182mm;margin:0 auto;}";
-    css += ".topbar{height:6px;background:" + accent + ";margin:-16mm -14mm 12px;width:calc(100% + 28mm);}";
-    css += ".letterhead{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;padding-bottom:10px;border-bottom:2.5px solid " + accent + ";margin-bottom:12px;}";
-    css += ".shop{font-size:20px;font-weight:800;color:" + accent + ";text-transform:uppercase;letter-spacing:-.02em;}";
-    css += ".meta{font-size:11px;color:#555;line-height:1.45;margin-top:3px;}";
-    css += ".doc-right{text-align:right;}";
-    css += ".doc-title{font-size:14px;font-weight:800;color:" + accent + ";text-transform:uppercase;letter-spacing:.04em;}";
-    css += ".doc-sub{font-size:11px;color:#444;margin-top:3px;}";
     css += ".period-box{background:#f4f6fa;border:1px solid #d8dee9;padding:7px 11px;margin-bottom:12px;font-size:12px;}";
     css += ".period-box b{color:" + accent + ";}";
     css += ".off-stmt{width:100%;border-collapse:collapse;margin:0 0 12px;border:1.5px solid " + accent + ";}";
@@ -189,19 +174,17 @@ var ReportsAccountsHub = function (props) {
     css += ".sign .box{border-top:1px solid #999;padding-top:6px;font-size:11px;color:#555;}";
     css += ".footer{margin-top:18px;padding-top:9px;border-top:1px solid #d8dee9;text-align:center;font-size:10px;color:#888;}";
     css += ".empty{text-align:center;padding:28px;color:#888;font-size:12px;}";
-    css += "@media print{body{padding:0;}.topbar{margin:0 0 10px;width:100%;}}";
+    css += "@media print{body{padding:0;}}";
 
     var html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>" + escapeHtml(title) + "</title>" + PRINT_FONT_LINK + "<style>" + css + "</style></head><body><div class='sheet'>";
-    html += "<div class='topbar'></div>";
-    html += "<div class='letterhead'><div>";
-    html += "<div class='shop'>" + escapeHtml(shopName) + "</div><div class='meta'>";
-    if (addr) html += escapeHtml(addr) + "<br/>";
-    if (phone) html += "Tel: " + escapeHtml(phone) + (phone2 ? " / " + escapeHtml(phone2) : "") + "<br/>";
-    if (email) html += "Email: " + escapeHtml(email) + "<br/>";
-    if (brn) html += "BRN: " + escapeHtml(brn);
-    html += "</div></div>";
-    html += "<div class='doc-right'><div class='doc-title'>" + escapeHtml(title) + "</div>";
-    html += "<div class='doc-sub'>Printed: " + escapeHtml(printedOn) + "</div></div></div>";
+    html += buildDocPrintHeaderHtml({
+      settings: settings,
+      title: title,
+      escapeHtml: escapeHtml,
+      printedOn: printedOn,
+      showTopbar: true,
+      showLogo: false,
+    });
     if (rangeLabel) html += "<div class='period-box'><b>Reporting period:</b> " + escapeHtml(rangeLabel) + "</div>";
     html += bodyHtml;
     html += "<div class='sign'><div class='box'>Prepared by</div><div class='box'>Authorised / Checked by</div></div>";
@@ -521,52 +504,7 @@ var ReportsAccountsHub = function (props) {
     setGenBusy(false);
   };
 
-  var closePreview = function () { setPreview(null); setPrintFmtOpen(false); };
-
-  var printPreview = function () {
-    if (!preview || !preview.html) return;
-    setPrintFmtOpen(true);
-  };
-
-  var doPrintWithFormat = function (fmt) {
-    setPrintFmtOpen(false);
-    if (!preview || !preview.html) return;
-    var html = applyPageFormatToHtml(preview.html, fmt);
-    if (typeof openPrintWindow === "function") openPrintWindow(html, { width: 920, height: 1100, delay: 400 });
-  };
-
-  var sharePreviewWhatsApp = function () {
-    if (!preview || !preview.html) return;
-    if (typeof shareViaWhatsApp !== "function") {
-      showAlert("WhatsApp sharing is only available in the desktop app.");
-      return;
-    }
-    var body = preview.html.replace(/^[\s\S]*?<body[^>]*>/i, "").replace(/<\/body>[\s\S]*$/i, "");
-    var headMatch = preview.html.match(/<style[^>]*>[\s\S]*?<\/style>/gi);
-    var headStyles = headMatch ? headMatch.join("") : "";
-    shareViaWhatsApp(body || preview.html, preview.filename || "TechonReport", "", {
-      headStyles: headStyles,
-      pageFormat: "A4",
-    });
-  };
-
-  var savePreviewPdf = function () {
-    if (!preview || !preview.html) return;
-    if (!(window.electronAPI && typeof window.electronAPI.printHtml === "function")) {
-      showAlert("Save as PDF is only available in the desktop app. You can also use Print → Save as PDF.");
-      return;
-    }
-    showAlert("Saving PDF — please wait…");
-    window.electronAPI.printHtml({ html: preview.html, pdfOnly: true }).then(function (res) {
-      if (res && res.ok) {
-        showAlert("PDF saved" + (res.path ? ":\n" + res.path : "."));
-      } else {
-        showAlert("Save PDF failed: " + ((res && res.message) || "Unknown error"));
-      }
-    }).catch(function (err) {
-      showAlert("Save PDF failed: " + (err && err.message ? err.message : "Unknown error"));
-    });
-  };
+  var closePreview = function () { setPreview(null); };
 
   var showPeriodChips = selected.date === "period";
   var showDay = selected.date === "day" || (showPeriodChips && acctPeriod === "daily");
@@ -581,45 +519,23 @@ var ReportsAccountsHub = function (props) {
   });
 
   var previewUi = preview ? (
-    <div className="erp-si-fv erp-rpt-fv" role="dialog" aria-modal="true" aria-label="Report print preview">
-      <div className="erp-si-fv-bar">
-        <div className="erp-si-fv-bar-left">
-          <span className="erp-si-fv-badge">RPT</span>
-          <div className="erp-si-fv-meta">
-            <div className="erp-si-fv-kicker">Print preview</div>
-            <div className="erp-si-fv-meta-main">
-              <span className="erp-si-fv-inv">{preview.title}</span>
-              {preview.period ? <span className="erp-si-fv-sub">{preview.period}</span> : null}
-            </div>
-          </div>
-        </div>
-        <div className="erp-si-fv-actions">
-          <button type="button" className="erp-si-fv-btn is-print" onClick={printPreview}>Print</button>
-          <button type="button" className="erp-si-fv-btn is-convert" onClick={savePreviewPdf}>Save PDF</button>
-          {WABtn ? (
-            <WABtn title="Share as PDF via WhatsApp" onClick={sharePreviewWhatsApp} />
-          ) : (
-            <button type="button" className="erp-si-fv-btn is-print" onClick={sharePreviewWhatsApp}>WhatsApp</button>
-          )}
-          <button type="button" className="erp-si-fv-btn is-close" onClick={closePreview} aria-label="Close">✕</button>
-        </div>
-      </div>
-      <div className="erp-si-fv-stage">
-        <div className="erp-si-fv-sheet is-paper erp-rpt-fv-sheet">
-          <iframe title="Report preview" className="erp-rpt-fv-iframe" srcDoc={preview.html} />
-        </div>
-      </div>
-      <PrintFormatChooser
-        open={printFmtOpen}
-        settings={state.settings}
-        thermalId={resolveThermalFormat(state.settings)}
-        title="Print report"
-        hint="Choose printer paper size for this report."
-        onClose={function () { setPrintFmtOpen(false); }}
-        onSelect={doPrintWithFormat}
-        zIndex={13000}
-      />
-    </div>
+    <UniversalPrintPreview
+      open
+      badge="RPT"
+      kicker="Print preview"
+      title={preview.title}
+      subtitle={preview.period || ""}
+      filename={preview.filename || "TechonReport"}
+      html={preview.html}
+      settings={state.settings}
+      WABtn={WABtn}
+      showAlert={showAlert}
+      shareViaWhatsApp={shareViaWhatsApp}
+      PRINT_FONT_LINK={PRINT_FONT_LINK}
+      escapeHtml={escapeHtml}
+      openPrintWindow={openPrintWindow}
+      onClose={closePreview}
+    />
   ) : null;
 
   return (
@@ -727,7 +643,7 @@ var ReportsAccountsHub = function (props) {
         <div className="erp-rpt-gen-empty-sub">Select a report above and click Generate to open the print preview.</div>
       </div>
 
-      {previewUi && typeof document !== "undefined" ? createPortal(previewUi, document.body) : null}
+      {previewUi}
     </div>
   );
 };

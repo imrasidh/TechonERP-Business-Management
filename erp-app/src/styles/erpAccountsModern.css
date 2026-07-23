@@ -1737,10 +1737,10 @@
   background: #f8fafc;
 }
 
-.erp-acc-choice-btn.is-active.tone-green { border-color: #16a34a; background: #f0fdf4; color: #15803d; }
-.erp-acc-choice-btn.is-active.tone-red { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
-.erp-acc-choice-btn.is-active.tone-blue { border-color: #2563eb; background: #eff6ff; color: #1d4ed8; }
-.erp-acc-choice-btn.is-active.tone-purple { border-color: #7c3aed; background: #f5f3ff; color: #6d28d9; }
+.erp-acc-choice-btn.is-active.tone-green { border-color: #16a34a !important; background: #f0fdf4 !important; color: #15803d !important; }
+.erp-acc-choice-btn.is-active.tone-red { border-color: #dc2626 !important; background: #fef2f2 !important; color: #b91c1c !important; }
+.erp-acc-choice-btn.is-active.tone-blue { border-color: #2563eb !important; background: #eff6ff !important; color: #1d4ed8 !important; }
+.erp-acc-choice-btn.is-active.tone-purple { border-color: #7c3aed !important; background: #f5f3ff !important; color: #6d28d9 !important; }
 
 .erp-acc-hint {
   border-radius: 9px;
@@ -1902,11 +1902,103 @@
   box-shadow: none !important;
   cursor: pointer !important;
   font-family: inherit !important;
+  color: #64748b !important;
+}
+
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-choice-btn:hover:not(.is-active),
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-choice-btn:hover:not(.is-active) {
+  border-color: #cbd5e1 !important;
+  background: #f8fafc !important;
+  color: #475569 !important;
 }
 
 .erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-choice-btn.is-active,
 .erp-app-root .erp-page-content .erp-acc-modern .erp-acc-choice-btn.is-active {
   font-weight: 700 !important;
+}
+
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-choice-btn.is-active.tone-green,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-choice-btn.is-active.tone-green {
+  border-color: #16a34a !important;
+  background: #f0fdf4 !important;
+  color: #15803d !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-choice-btn.is-active.tone-red,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-choice-btn.is-active.tone-red {
+  border-color: #dc2626 !important;
+  background: #fef2f2 !important;
+  color: #b91c1c !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-choice-btn.is-active.tone-blue,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-choice-btn.is-active.tone-blue {
+  border-color: #2563eb !important;
+  background: #eff6ff !important;
+  color: #1d4ed8 !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-choice-btn.is-active.tone-purple,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-choice-btn.is-active.tone-purple {
+  border-color: #7c3aed !important;
+  background: #f5f3ff !important;
+  color: #6d28d9 !important;
+}
+
+/* Opening Balance row actions */
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-ob-remove,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-ob-remove {
+  background: #fde8ed !important;
+  border: none !important;
+  border-radius: 6px !important;
+  padding: 4px 9px !important;
+  color: #b91c1c !important;
+  font-weight: 700 !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  font-family: inherit !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-ob-remove.is-outline,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-ob-remove.is-outline {
+  background: #fff !important;
+  border: 1px solid #b91c1c !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-ob-remove.is-purple,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-ob-remove.is-purple {
+  background: #fff !important;
+  border: 1px solid #6a1b9a !important;
+  color: #6a1b9a !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-ob-select,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-ob-select {
+  background: #1d4ed8 !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 8px !important;
+  padding: 7px 14px !important;
+  font-weight: 700 !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+  font-family: inherit !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-ob-plus,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-ob-plus {
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 6px !important;
+  border: none !important;
+  background: #1d4ed8 !important;
+  color: #fff !important;
+  font-weight: 800 !important;
+  font-size: 16px !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  padding: 0 !important;
+}
+.erp-app-root .erp-core-scope .erp-acc-modern .erp-acc-ob-plus:disabled,
+.erp-app-root .erp-page-content .erp-acc-modern .erp-acc-ob-plus:disabled {
+  background: #cbd5e1 !important;
+  cursor: default !important;
 }
 
 .erp-acc-section-title {

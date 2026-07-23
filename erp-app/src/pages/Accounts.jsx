@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, startTransition } from "react";
+import { LIST_PAGE_SIZE } from "../utils/listPage.js";
 import { round2 } from "../accounting/generalLedger.js";
 import { validateSnapshotIntegrity } from "../accounting/financialSnapshot.js";
 import { buildReconciliationReport } from "../accounting/reconciliationReport.js";
@@ -22,6 +23,7 @@ import {
   isGlassSheetProductForm,
 } from "../utils/glassProduct.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { buildDocPrintHeaderHtml } from "../components/DocPrintHeader.jsx";
 import { evaluateProductNameMatch, checkProductName } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
 import AddNewProductModal, { blankNewProductForm } from "../components/AddNewProductModal.jsx";
@@ -72,6 +74,200 @@ function tcGroupJournalByTransaction(lines) {
   return Object.keys(m).sort().map(function (k) { return m[k]; });
 }
 
+var EMPTY_CASH_BOOK = [];
+var CASH_BOOK_PAGE_SIZE = Math.max(LIST_PAGE_SIZE, 50);
+
+/** Build cash/bank movement rows for the Cash Book tab (pure; no React). */
+function buildCashBookEntries(opts) {
+  var state = opts.state || {};
+  var S = opts.S;
+  var getCurrencySymbol = opts.getCurrencySymbol;
+  var fmtNum = opts.fmtNum;
+  var todayFn = opts.today;
+  var entries = [];
+
+  var obSnap = S.get("tc3_openBal", null);
+  if (obSnap && obSnap.completed) {
+    var obDate = obSnap.date || todayFn();
+    var obTotal = (obSnap.cash || 0) + (obSnap.bank || 0);
+    if (obTotal !== 0) {
+      entries.push({
+        id: "ob_seed", date: obDate, sortKey: obDate + "_000_ob",
+        type: "Opening Balance",
+        typeGroup: "opening",
+        description: "Opening Balance — Cash: " + getCurrencySymbol() + " " + fmtNum(obSnap.cash || 0) + " | Bank: " + getCurrencySymbol() + " " + fmtNum(obSnap.bank || 0),
+        account: "All",
+        moneyIn: obTotal,
+        moneyOut: 0,
+      });
+    }
+  }
+
+  S.get("tc3_capLedger", []).forEach(function (e) {
+    if (e._isOpening || e.cashMethod === "Opening") return;
+    entries.push({
+      id: "cap_" + e.id, date: e.date, sortKey: e.date + "_cap_" + e.id,
+      type: e.type === "invest" ? "Capital Investment" : "Capital Withdrawal",
+      typeGroup: "capital",
+      description: e.note || e.ref || (e.type === "invest" ? "Capital invested" : "Capital withdrawn"),
+      account: e.cashMethod || "Cash",
+      moneyIn: e.type === "invest" ? e.amount : 0,
+      moneyOut: e.type === "withdraw" ? e.amount : 0,
+    });
+  });
+
+  (state.sales || []).forEach(function (s) {
+    (s.paymentHistory || []).forEach(function (ph) {
+      entries.push({
+        id: "sale_" + ph.id, date: ph.date || s.date, sortKey: (ph.date || s.date) + "_sale_" + ph.id,
+        type: "Sale Payment",
+        typeGroup: "sales",
+        description: "Invoice " + (s.invoiceNo || s.id.slice(0, 8)) + " — " + (s.customerName || "Walk-in"),
+        account: ph.cashMethod || "Cash",
+        moneyIn: ph.amount,
+        moneyOut: 0,
+      });
+    });
+  });
+
+  (state.purchases || []).forEach(function (p) {
+    (p.paymentHistory || []).forEach(function (ph) {
+      entries.push({
+        id: "purch_" + ph.id, date: ph.date || p.date || "", sortKey: (ph.date || p.date || "") + "_purch_" + ph.id,
+        type: "Purchase Payment",
+        typeGroup: "purchases",
+        description: "PO " + (p.invoiceNo || p.id.slice(0, 8)) + " — " + (p.supplierName || "Supplier"),
+        account: ph.cashMethod || "Cash",
+        moneyIn: 0,
+        moneyOut: ph.amount,
+      });
+    });
+  });
+
+  (state.expenses || []).forEach(function (e) {
+    var acct = e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" || e.payMode === "Cheque" ? "Bank" : "Cash");
+    entries.push({
+      id: "exp_" + e.id, date: e.date, sortKey: e.date + "_exp_" + e.id,
+      type: "Expense",
+      typeGroup: "expenses",
+      description: (e.category || "Expense") + (e.description ? " — " + e.description : ""),
+      account: acct,
+      moneyIn: 0,
+      moneyOut: e.amount,
+    });
+  });
+
+  (state.assets || []).forEach(function (a) {
+    if (a._isOpening || a.cashMethod === "Opening") return;
+    entries.push({
+      id: "ast_" + a.id, date: a.date || "", sortKey: (a.date || "") + "_ast_" + a.id,
+      type: "Asset Purchase",
+      typeGroup: "assets",
+      description: (a.category || "Asset") + " — " + a.name,
+      account: a.cashMethod || "Cash",
+      moneyIn: 0,
+      moneyOut: a.amount,
+    });
+  });
+
+  S.get("tc3_manualPayables", []).forEach(function (mp) {
+    if (!mp._isOpening) {
+      entries.push({
+        id: "mpay_" + mp.id, date: mp.date, sortKey: mp.date + "_mpay_" + mp.id,
+        type: mp.type || "Borrowed Money",
+        typeGroup: "borrowed",
+        description: (mp.source || mp.type || "Borrowed") + (mp.note ? " — " + mp.note : ""),
+        account: mp.paymentMethod || "Cash",
+        moneyIn: mp.amount,
+        moneyOut: 0,
+      });
+    }
+    (mp.paymentHistory || []).forEach(function (ph) {
+      entries.push({
+        id: "mpay_rep_" + ph.id, date: ph.date || mp.date, sortKey: (ph.date || mp.date) + "_mpayrep_" + ph.id,
+        type: "Payable Repayment",
+        typeGroup: "repayment",
+        description: "Repayment — " + (mp.source || mp.type || ""),
+        account: ph.cashMethod || "Cash",
+        moneyIn: 0,
+        moneyOut: ph.amount,
+      });
+    });
+  });
+
+  S.get("tc3_manualReceivables", []).forEach(function (mr) {
+    if (!mr._isOpening) {
+      entries.push({
+        id: "mrec_" + mr.id, date: mr.date, sortKey: mr.date + "_mrec_" + mr.id,
+        type: mr.type || "Loan Given",
+        typeGroup: "loanout",
+        description: (mr.person || mr.type || "Loan given") + (mr.note ? " — " + mr.note : ""),
+        account: mr.paymentMethod || "Cash",
+        moneyIn: 0,
+        moneyOut: mr.amount,
+      });
+    }
+    (mr.paymentHistory || []).forEach(function (ph) {
+      entries.push({
+        id: "mrec_rep_" + ph.id, date: ph.date || mr.date, sortKey: (ph.date || mr.date) + "_mrecrep_" + ph.id,
+        type: "Receivable Collection",
+        typeGroup: "received",
+        description: "Collection — " + (mr.person || mr.type || ""),
+        account: ph.cashMethod || "Cash",
+        moneyIn: ph.amount,
+        moneyOut: 0,
+      });
+    });
+  });
+
+  S.get("tc3_profitDist", []).forEach(function (pd) {
+    entries.push({
+      id: "pd_" + pd.id, date: pd.date, sortKey: pd.date + "_pd_" + pd.id,
+      type: "Profit Distribution",
+      typeGroup: "profdist",
+      description: "Distributed to " + (pd.partner || pd.name || "Partner"),
+      account: pd.paymentMethod || "Cash",
+      moneyIn: 0,
+      moneyOut: pd.amount,
+    });
+  });
+
+  (state.salesReturns || []).forEach(function (r) {
+    if (!r.isRefund || !r.refundAmount) return;
+    entries.push({
+      id: "sret_" + r.id, date: r.date, sortKey: r.date + "_sret_" + r.id,
+      type: "Sales Return Refund",
+      typeGroup: "returns",
+      description: "Refund to customer — " + (r.customer || "Walk-in") + " | " + (r.invoiceNo || "") + " | " + (r.productName || "") + (r.reason ? " (" + r.reason + ")" : ""),
+      account: r.refundMethod || "Cash",
+      moneyIn: 0,
+      moneyOut: r.refundAmount,
+    });
+  });
+
+  (state.purchaseReturns || []).forEach(function (r) {
+    if (!r.isRefund || !r.refundAmount) return;
+    entries.push({
+      id: "pret_" + r.id, date: r.date, sortKey: r.date + "_pret_" + r.id,
+      type: "Purchase Return Refund",
+      typeGroup: "returns",
+      description: "Refund from supplier — " + (r.supplier || "") + " | " + (r.purchaseNo || "") + " | " + (r.productName || "") + (r.reason ? " (" + r.reason + ")" : ""),
+      account: r.refundMethod || "Cash",
+      moneyIn: r.refundAmount,
+      moneyOut: 0,
+    });
+  });
+
+  entries.sort(function (a, b) { return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0; });
+
+  var running = 0;
+  for (var i = 0; i < entries.length; i++) {
+    running += entries[i].moneyIn - entries[i].moneyOut;
+    entries[i].balance = running;
+  }
+  return entries;
+}
+
 /* ═══════════════════════════════════════════════════════════
    ACCOUNTS PAGE — Overview, Capital, Profit Distribution, Assets
    ═══════════════════════════════════════════════════════════ */
@@ -108,6 +304,8 @@ var Accounts = function (props) {
   var escapeHtml = props.escapeHtml;
   var shareViaWhatsApp = props.shareViaWhatsApp;
   var getCashBalances = props.getCashBalances;
+  var usePager = props.usePager;
+  var Pager = props.Pager;
   var getNetCOGS = props.getNetCOGS;
   var getTotalSupplierPayable = props.getTotalSupplierPayable;
   var getTotalReceivableDerived = props.getTotalReceivableDerived;
@@ -150,65 +348,121 @@ var Accounts = function (props) {
   var getProfitDist = function () { return S.get("tc3_profitDist", []); };
   var ACATS = ["Shop Interior", "Advance Payment / Deposit", "Rent Deposit", "Equipment / Machinery", "Computers / Electronics", "Printer / Scanner", "Networking Equipment", "Furniture & Fixtures", "Vehicle", "Security System (CCTV)", "Electrical / UPS", "Software / Licenses", "Tools / Instruments", "Renovation / Improvements", "Other"];
 
-  /* ── Overview tab state ── */
+  /* ── Overview metrics (skip when not on Overview/Profit — expensive on large data) ── */
   var balances = getCashBalances(state);
-  var liveSalesAc = activeSales(state.sales);
-  var livePurchasesAc = activePurchases(state.purchases);
-  var totalReceivable = typeof getTotalReceivableDerived === "function"
-    ? getTotalReceivableDerived(state)
-    : (function () {
-      var fromSales = liveSalesAc.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
-      var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
-        var paid = (mr.paymentHistory || []).reduce(function (s, p) { return s + p.amount; }, 0);
-        return a + Math.max(0, mr.amount - paid);
-      }, 0);
-      return fromSales + fromManual;
-    })();
-  var totalPayable = typeof getTotalPayableDerived === "function"
-    ? getTotalPayableDerived(state)
-    : (function () {
-      var fromSupp = getTotalSupplierPayable(state.purchases); // BUG8 FIX: computed from purchases, not stale supplier.payable
-      var fromManual = S.get("tc3_manualPayables", []).reduce(function (a, mp) {
-        var paid = (mp.paymentHistory || []).reduce(function (s, p) { return s + p.amount; }, 0);
-        return a + Math.max(0, mp.amount - paid);
-      }, 0);
-      return fromSupp + fromManual;
-    })();
-  var totalRevenue = liveSalesAc.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0);
-  var totalCOGS = getNetCOGS(liveSalesAc, state.salesReturns); /* Bug 3 fix: net COGS after returns */
-  var totalExpenses = state.expenses.reduce(function (a, e) { return a + e.amount; }, 0);
-  var totalAssets = (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
-  var netCapital = getCapLedger().reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
-  var totalProfitDist = getProfitDist().reduce(function (a, pd) { return a + pd.amount; }, 0);
-  var grossProfit = totalRevenue - totalCOGS;
-  /* BUG5 FIX: Only add repair revenue for jobs NOT converted to a POS invoice.
-     Invoiced repairs (via convertToInvoice → POS) have cost:0 and their full
-     charge is already captured in totalRevenue/grossProfit above.
-     Adding all repair revenue here would double-count invoiced repairs. */
-  var totalRepairRevenue = state.repairs.reduce(function (a, r) {
-    if (r.status !== "Delivered") return a;
-    /* If this repair has a corresponding sale (fromRepairId on the sale), skip it */
-    var alreadyInvoiced = liveSalesAc.some(function (s) {
-      if (s.fromRepairId === r.id) return true;
-      return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
-    });
-    return alreadyInvoiced ? a : a + (r.estimatedCost || r.cost || 0);
-  }, 0);
-  /* Theoretical stock reconciliation — catches direct edits, damage, deletions and WAC rounding in one formula */
   var acObSnap = S.get("tc3_openBal", null);
-  var acObStockVal = (acObSnap && acObSnap.completed) ? (acObSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
-  var acTotalPurchasesVal = livePurchasesAc.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
-  var acTotalPurchaseReturnsVal = activePurchaseReturns(state.purchases, state.purchaseReturns).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
-  var acTotalDamageVal = (state.damageLog || []).reduce(function (a, d) {
-    var prod = (state.products || []).find(function (p) { return p.id === d.productId; });
-    var uc = (d.cost != null ? d.cost : (prod && prod.cost)) || 0;
-    return a + (Number(d.qty) || 0) * (Number(uc) || 0);
-  }, 0);
-  var acTheoreticalStock = acObStockVal + acTotalPurchasesVal - totalCOGS - acTotalPurchaseReturnsVal - acTotalDamageVal;
-  var acStockCostValue = state.products.filter(function (p) { return p.status !== "inactive"; }).reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
-  var acManualStockAdj = acStockCostValue - acTheoreticalStock;
-  var netProfit = grossProfit + totalRepairRevenue - totalExpenses + acManualStockAdj;
-  var availableProfit = netProfit - totalProfitDist;
+  var ovMetrics = useMemo(function () {
+    if (atab !== "overview" && atab !== "profit") {
+      return {
+        totalReceivable: 0,
+        totalPayable: 0,
+        totalRevenue: 0,
+        totalCOGS: 0,
+        totalExpenses: 0,
+        totalAssets: 0,
+        netCapital: 0,
+        totalProfitDist: 0,
+        grossProfit: 0,
+        totalRepairRevenue: 0,
+        netProfit: 0,
+        availableProfit: 0,
+        acStockCostValue: 0,
+        acManualStockAdj: 0,
+      };
+    }
+    var liveSalesAc = activeSales(state.sales);
+    var livePurchasesAc = activePurchases(state.purchases);
+    var totalReceivable = typeof getTotalReceivableDerived === "function"
+      ? getTotalReceivableDerived(state)
+      : (function () {
+        var fromSales = liveSalesAc.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
+        var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
+          var paid = (mr.paymentHistory || []).reduce(function (s, p) { return s + p.amount; }, 0);
+          return a + Math.max(0, mr.amount - paid);
+        }, 0);
+        return fromSales + fromManual;
+      })();
+    var totalPayable = typeof getTotalPayableDerived === "function"
+      ? getTotalPayableDerived(state)
+      : (function () {
+        var fromSupp = getTotalSupplierPayable(state.purchases);
+        var fromManual = S.get("tc3_manualPayables", []).reduce(function (a, mp) {
+          var paid = (mp.paymentHistory || []).reduce(function (s, p) { return s + p.amount; }, 0);
+          return a + Math.max(0, mp.amount - paid);
+        }, 0);
+        return fromSupp + fromManual;
+      })();
+    var totalRevenue = liveSalesAc.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0);
+    var totalCOGS = getNetCOGS(liveSalesAc, state.salesReturns);
+    var totalExpenses = (state.expenses || []).reduce(function (a, e) { return a + e.amount; }, 0);
+    var totalAssets = (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
+    var netCapital = getCapLedger().reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
+    var totalProfitDist = getProfitDist().reduce(function (a, pd) { return a + pd.amount; }, 0);
+    var grossProfit = totalRevenue - totalCOGS;
+    var totalRepairRevenue = (state.repairs || []).reduce(function (a, r) {
+      if (r.status !== "Delivered") return a;
+      var alreadyInvoiced = liveSalesAc.some(function (s) {
+        if (s.fromRepairId === r.id) return true;
+        return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
+      });
+      return alreadyInvoiced ? a : a + (r.estimatedCost || r.cost || 0);
+    }, 0);
+    var acObStockVal = (acObSnap && acObSnap.completed) ? (acObSnap.stock || []).reduce(function (a, s) { return a + s.cost * s.qty; }, 0) : 0;
+    var acTotalPurchasesVal = livePurchasesAc.reduce(function (a, p) { return a + (p.items || []).reduce(function (b, it) { return b + deriveLineStockValue(it); }, 0); }, 0);
+    var acTotalPurchaseReturnsVal = activePurchaseReturns(state.purchases, state.purchaseReturns).reduce(function (a, r) { return a + (r.qty || 0) * (r.cost || 0); }, 0);
+    var acTotalDamageVal = (state.damageLog || []).reduce(function (a, d) {
+      var prod = (state.products || []).find(function (p) { return p.id === d.productId; });
+      var uc = (d.cost != null ? d.cost : (prod && prod.cost)) || 0;
+      return a + (Number(d.qty) || 0) * (Number(uc) || 0);
+    }, 0);
+    var acTheoreticalStock = acObStockVal + acTotalPurchasesVal - totalCOGS - acTotalPurchaseReturnsVal - acTotalDamageVal;
+    var acStockCostValue = (state.products || []).filter(function (p) { return p.status !== "inactive"; }).reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
+    var acManualStockAdj = acStockCostValue - acTheoreticalStock;
+    var netProfit = grossProfit + totalRepairRevenue - totalExpenses + acManualStockAdj;
+    var availableProfit = netProfit - totalProfitDist;
+    return {
+      totalReceivable: totalReceivable,
+      totalPayable: totalPayable,
+      totalRevenue: totalRevenue,
+      totalCOGS: totalCOGS,
+      totalExpenses: totalExpenses,
+      totalAssets: totalAssets,
+      netCapital: netCapital,
+      totalProfitDist: totalProfitDist,
+      grossProfit: grossProfit,
+      totalRepairRevenue: totalRepairRevenue,
+      netProfit: netProfit,
+      availableProfit: availableProfit,
+      acStockCostValue: acStockCostValue,
+      acManualStockAdj: acManualStockAdj,
+    };
+  }, [
+    atab,
+    state.sales,
+    state.purchases,
+    state.expenses,
+    state.assets,
+    state.salesReturns,
+    state.purchaseReturns,
+    state.repairs,
+    state.products,
+    state.damageLog,
+    acObSnap,
+  ]);
+  var totalReceivable = ovMetrics.totalReceivable;
+  var totalPayable = ovMetrics.totalPayable;
+  var totalRevenue = ovMetrics.totalRevenue;
+  var totalCOGS = ovMetrics.totalCOGS;
+  var totalExpenses = ovMetrics.totalExpenses;
+  var totalAssets = ovMetrics.totalAssets;
+  var netCapital = ovMetrics.netCapital;
+  var totalProfitDist = ovMetrics.totalProfitDist;
+  var grossProfit = ovMetrics.grossProfit;
+  var totalRepairRevenue = ovMetrics.totalRepairRevenue;
+  var netProfit = ovMetrics.netProfit;
+  var availableProfit = ovMetrics.availableProfit;
+  var acStockCostValue = ovMetrics.acStockCostValue;
+  var acManualStockAdj = ovMetrics.acManualStockAdj;
 
   /* ── Opening Balance tab state ── */
   var loadOB = function () { return S.get("tc3_openBal", { completed: false, date: today(), cash: 0, bank: 0, receivables: [], payables: [], stock: [], assets: [], capital: 0 }); };
@@ -419,6 +673,44 @@ var Accounts = function (props) {
   var [glAuditOpen, setGlAuditOpen] = useState(false);
   var [glDebugGroupLimit, setGlDebugGroupLimit] = useState(50);
 
+  /* Cash Book: build only while the tab is open; paginate so DOM stays light */
+  var cashBookEntries = useMemo(function () {
+    if (atab !== "ledger") return EMPTY_CASH_BOOK;
+    return buildCashBookEntries({
+      state: state,
+      S: S,
+      getCurrencySymbol: getCurrencySymbol,
+      fmtNum: fmtNum,
+      today: today,
+    });
+  }, [
+    atab,
+    state.sales,
+    state.purchases,
+    state.expenses,
+    state.assets,
+    state.salesReturns,
+    state.purchaseReturns,
+    state.settings,
+  ]);
+
+  var cashBookFiltered = useMemo(function () {
+    if (atab !== "ledger") return EMPTY_CASH_BOOK;
+    return cashBookEntries.filter(function (e) {
+      if (ledgerFrom && e.date < ledgerFrom) return false;
+      if (ledgerTo && e.date > ledgerTo) return false;
+      if (ledgerType !== "all" && e.typeGroup !== ledgerType) return false;
+      if (ledgerAcct !== "all" && (e.account || "Cash") !== ledgerAcct) return false;
+      return true;
+    });
+  }, [atab, cashBookEntries, ledgerFrom, ledgerTo, ledgerType, ledgerAcct]);
+
+  var cashBookPager = usePager(cashBookFiltered, CASH_BOOK_PAGE_SIZE);
+
+  useEffect(function () {
+    if (cashBookPager && typeof cashBookPager.reset === "function") cashBookPager.reset();
+  }, [ledgerFrom, ledgerTo, ledgerType, ledgerAcct, atab]);
+
   useEffect(function () {
     setGlAcctLinesVisible(80);
   }, [glSelAcct, atab]);
@@ -559,47 +851,80 @@ var Accounts = function (props) {
   var totalLiquid = balances.cash + balances.bank;
   var totalFixedAssets = (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
   var obDone = !!(acObSnap && acObSnap.completed);
-  var tbOverview = typeof getTrialBalanceSnapshot === "function" ? getTrialBalanceSnapshot() : { balanced: true };
+  /* Trial balance is expensive — only compute on Overview (header) / GL tab does its own */
+  var tbOverview = (atab === "overview" && typeof getTrialBalanceSnapshot === "function")
+    ? getTrialBalanceSnapshot()
+    : { balanced: true };
   var glErrOverview = isMeaningfulGlLastError(S.get("tc3_gl_last_error", null));
 
-  var AccTabHead = function (headProps) {
-    var hp = headProps;
-    return (
-      <div className={"erp-acc-tab-head tone-" + (hp.tone || "blue")}>
-        <span className="erp-acc-tab-head-icon" aria-hidden="true">{hp.icon}</span>
-        <div className="erp-acc-tab-head-text">
-          <div className="erp-acc-tab-head-title">{hp.title}</div>
-          {hp.sub ? <div className="erp-acc-tab-head-sub">{hp.sub}</div> : null}
-        </div>
-        {hp.extra ? <div className="erp-acc-tab-head-extra">{hp.extra}</div> : null}
-      </div>
-    );
-  };
-
-  var AccChoiceRow = function (choiceProps) {
-    var cp = choiceProps;
-    return (
-      <div>
-        {cp.label ? <div className="erp-acc-field-label">{cp.label}</div> : null}
-        <div className="erp-acc-choice-row">
-          {(cp.options || []).map(function (opt) {
-            var id = opt[0];
-            var label = opt[1];
-            var tone = opt[2] || "blue";
-            var active = cp.value === id;
-            return (
-              <button
-                key={id}
-                type="button"
-                className={"erp-acc-choice-btn tone-" + tone + (active ? " is-active" : "")}
-                onClick={function () { cp.onChange(id); }}
-              >{label}</button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
+  /* Keep Acc* helpers as stable component types (useRef) so AccFold bodies
+     do not remount on every Accounts keystroke / state update. */
+  var accUiDepsRef = useRef({ Card: Card });
+  accUiDepsRef.current = { Card: Card };
+  var accUiRef = useRef(null);
+  if (!accUiRef.current) {
+    accUiRef.current = {
+      AccTabHead: function AccTabHead(headProps) {
+        var hp = headProps;
+        return (
+          <div className={"erp-acc-tab-head tone-" + (hp.tone || "blue")}>
+            <span className="erp-acc-tab-head-icon" aria-hidden="true">{hp.icon}</span>
+            <div className="erp-acc-tab-head-text">
+              <div className="erp-acc-tab-head-title">{hp.title}</div>
+              {hp.sub ? <div className="erp-acc-tab-head-sub">{hp.sub}</div> : null}
+            </div>
+            {hp.extra ? <div className="erp-acc-tab-head-extra">{hp.extra}</div> : null}
+          </div>
+        );
+      },
+      AccChoiceRow: function AccChoiceRow(choiceProps) {
+        var cp = choiceProps;
+        return (
+          <div>
+            {cp.label ? <div className="erp-acc-field-label">{cp.label}</div> : null}
+            <div className="erp-acc-choice-row">
+              {(cp.options || []).map(function (opt) {
+                var id = opt[0];
+                var label = opt[1];
+                var tone = opt[2] || "blue";
+                var active = cp.value === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={"erp-acc-choice-btn tone-" + tone + (active ? " is-active" : "")}
+                    onClick={function () { cp.onChange(id); }}
+                  >{label}</button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      },
+      AccFold: function AccFold(foldProps) {
+        var fp = foldProps;
+        var FoldCard = accUiDepsRef.current.Card;
+        return (
+          <FoldCard pad={0} className={"erp-acc-fold-card" + (fp.tone ? " tone-" + fp.tone : "")}>
+            <button type="button" className="erp-acc-fold-head" onClick={fp.onToggle} aria-expanded={!!fp.open}>
+              <div className="erp-acc-fold-text">
+                <div className="erp-acc-fold-title">{fp.title}</div>
+                {fp.sub ? <div className="erp-acc-fold-sub">{fp.sub}</div> : null}
+              </div>
+              <div className="erp-acc-fold-meta">
+                {fp.badge || null}
+                <span className={"erp-acc-fold-chevron" + (fp.open ? " is-open" : "")} aria-hidden="true">›</span>
+              </div>
+            </button>
+            {fp.open ? <div className="erp-acc-fold-body">{fp.children}</div> : null}
+          </FoldCard>
+        );
+      }
+    };
+  }
+  var AccTabHead = accUiRef.current.AccTabHead;
+  var AccChoiceRow = accUiRef.current.AccChoiceRow;
+  var AccFold = accUiRef.current.AccFold;
 
   var glAccountTypeClass = function (type) {
     var t = String(type || "").toLowerCase();
@@ -609,25 +934,6 @@ var Accounts = function (props) {
     if (t.indexOf("income") >= 0 || t.indexOf("revenue") >= 0) return "is-income";
     if (t.indexOf("expense") >= 0 || t.indexOf("cogs") >= 0) return "is-expense";
     return "is-neutral";
-  };
-
-  var AccFold = function (foldProps) {
-    var fp = foldProps;
-    return (
-      <Card pad={0} className={"erp-acc-fold-card" + (fp.tone ? " tone-" + fp.tone : "")}>
-        <button type="button" className="erp-acc-fold-head" onClick={fp.onToggle} aria-expanded={!!fp.open}>
-          <div className="erp-acc-fold-text">
-            <div className="erp-acc-fold-title">{fp.title}</div>
-            {fp.sub ? <div className="erp-acc-fold-sub">{fp.sub}</div> : null}
-          </div>
-          <div className="erp-acc-fold-meta">
-            {fp.badge || null}
-            <span className={"erp-acc-fold-chevron" + (fp.open ? " is-open" : "")} aria-hidden="true">›</span>
-          </div>
-        </button>
-        {fp.open ? <div className="erp-acc-fold-body">{fp.children}</div> : null}
-      </Card>
-    );
   };
 
   return (
@@ -662,7 +968,9 @@ var Accounts = function (props) {
                       aria-selected={atab === t[0]}
                       title={t[2]}
                       className={"erp-acc-tab" + (atab === t[0] ? " is-active" : "")}
-                      onClick={function () { setAtab(t[0]); }}
+                      onClick={function () {
+                        startTransition(function () { setAtab(t[0]); });
+                      }}
                     >{t[1]}</button>
                   );
                 })}
@@ -809,221 +1117,9 @@ var Accounts = function (props) {
 
       {/* ── LEDGER ── */}
       {atab === "ledger" && (function () {
-
-        /* ── Build ledger entries from ALL sources ── */
-        var entries = [];
-
-        /* 0. Opening Balance seed row (if setup is complete) */
-        var obSnap = S.get("tc3_openBal", null);
-        if (obSnap && obSnap.completed) {
-          var obDate = obSnap.date || today();
-          var obTotal = (obSnap.cash || 0) + (obSnap.bank || 0);
-          if (obTotal !== 0) {
-            entries.push({
-              id: "ob_seed", date: obDate, sortKey: obDate + "_000_ob",
-              type: "Opening Balance",
-              typeGroup: "opening",
-              description: "Opening Balance — Cash: " + getCurrencySymbol() + " " + fmtNum(obSnap.cash || 0) + " | Bank: " + getCurrencySymbol() + " " + fmtNum(obSnap.bank || 0),
-              account: "All",
-              moneyIn: obTotal,
-              moneyOut: 0,
-            });
-          }
-        }
-
-        /* 1. Capital investments / withdrawals */
-        S.get("tc3_capLedger", []).forEach(function (e) {
-          if (e._isOpening || e.cashMethod === "Opening") return;
-          entries.push({
-            id: "cap_" + e.id, date: e.date, sortKey: e.date + "_cap_" + e.id,
-            type: e.type === "invest" ? "Capital Investment" : "Capital Withdrawal",
-            typeGroup: "capital",
-            description: e.note || e.ref || (e.type === "invest" ? "Capital invested" : "Capital withdrawn"),
-            account: e.cashMethod || "Cash",
-            moneyIn: e.type === "invest" ? e.amount : 0,
-            moneyOut: e.type === "withdraw" ? e.amount : 0,
-          });
-        });
-
-        /* 2. Sales payments (from paymentHistory) */
-        (state.sales || []).forEach(function (s) {
-          (s.paymentHistory || []).forEach(function (ph) {
-            entries.push({
-              id: "sale_" + ph.id, date: ph.date || s.date, sortKey: (ph.date || s.date) + "_sale_" + ph.id,
-              type: "Sale Payment",
-              typeGroup: "sales",
-              description: "Invoice " + (s.invoiceNo || s.id.slice(0, 8)) + " — " + (s.customerName || "Walk-in"),
-              account: ph.cashMethod || "Cash",
-              moneyIn: ph.amount,
-              moneyOut: 0,
-            });
-          });
-        });
-
-        /* 3. Purchase payments (from paymentHistory) */
-        (state.purchases || []).forEach(function (p) {
-          (p.paymentHistory || []).forEach(function (ph) {
-            entries.push({
-              id: "purch_" + ph.id, date: ph.date || p.date || "", sortKey: (ph.date || p.date || "") + "_purch_" + ph.id,
-              type: "Purchase Payment",
-              typeGroup: "purchases",
-              description: "PO " + (p.invoiceNo || p.id.slice(0, 8)) + " — " + (p.supplierName || "Supplier"),
-              account: ph.cashMethod || "Cash",
-              moneyIn: 0,
-              moneyOut: ph.amount,
-            });
-          });
-        });
-
-        /* 4. Expenses */
-        (state.expenses || []).forEach(function (e) {
-          var acct = e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" || e.payMode === "Cheque" ? "Bank" : "Cash");
-          entries.push({
-            id: "exp_" + e.id, date: e.date, sortKey: e.date + "_exp_" + e.id,
-            type: "Expense",
-            typeGroup: "expenses",
-            description: (e.category || "Expense") + (e.description ? " — " + e.description : ""),
-            account: acct,
-            moneyIn: 0,
-            moneyOut: e.amount,
-          });
-        });
-
-        /* NOTE: Repair revenue is intentionally NOT added here.
-           Repairs are pure device-tracking tickets. Revenue is only recorded when
-           a repair is converted to a Sales Invoice via POS — that payment then
-           appears in the ledger above via state.sales[].paymentHistory.
-           Adding repair entries here would cause double-counting. */
-
-        /* 6. Asset purchases */
-        (state.assets || []).forEach(function (a) {
-          if (a._isOpening || a.cashMethod === "Opening") return;
-          entries.push({
-            id: "ast_" + a.id, date: a.date || "", sortKey: (a.date || "") + "_ast_" + a.id,
-            type: "Asset Purchase",
-            typeGroup: "assets",
-            description: (a.category || "Asset") + " — " + a.name,
-            account: a.cashMethod || "Cash",
-            moneyIn: 0,
-            moneyOut: a.amount,
-          });
-        });
-
-        /* 7. Manual Payables — initial borrowed/received amount (Money In)
-               Opening payables: skip initial amount (already in ob.cash/bank seed), only show repayments */
-        S.get("tc3_manualPayables", []).forEach(function (mp) {
-          if (!mp._isOpening) {
-            entries.push({
-              id: "mpay_" + mp.id, date: mp.date, sortKey: mp.date + "_mpay_" + mp.id,
-              type: mp.type || "Borrowed Money",
-              typeGroup: "borrowed",
-              description: (mp.source || mp.type || "Borrowed") + (mp.note ? " — " + mp.note : ""),
-              account: mp.paymentMethod || "Cash",
-              moneyIn: mp.amount,
-              moneyOut: 0,
-            });
-          }
-          /* repayments made on this payable = Money Out */
-          (mp.paymentHistory || []).forEach(function (ph) {
-            entries.push({
-              id: "mpay_rep_" + ph.id, date: ph.date || mp.date, sortKey: (ph.date || mp.date) + "_mpayrep_" + ph.id,
-              type: "Payable Repayment",
-              typeGroup: "repayment",
-              description: "Repayment — " + (mp.source || mp.type || ""),
-              account: ph.cashMethod || "Cash",
-              moneyIn: 0,
-              moneyOut: ph.amount,
-            });
-          });
-        });
-
-        /* 8. Manual Receivables — initial loan given (Money Out) + repayments received (Money In)
-               Opening receivables: skip initial outflow (already accounted in opening capital), only show collections */
-        S.get("tc3_manualReceivables", []).forEach(function (mr) {
-          if (!mr._isOpening) {
-            entries.push({
-              id: "mrec_" + mr.id, date: mr.date, sortKey: mr.date + "_mrec_" + mr.id,
-              type: mr.type || "Loan Given",
-              typeGroup: "loanout",
-              description: (mr.person || mr.type || "Loan given") + (mr.note ? " — " + mr.note : ""),
-              account: mr.paymentMethod || "Cash",
-              moneyIn: 0,
-              moneyOut: mr.amount,
-            });
-          }
-          /* repayments received = Money In */
-          (mr.paymentHistory || []).forEach(function (ph) {
-            entries.push({
-              id: "mrec_rep_" + ph.id, date: ph.date || mr.date, sortKey: (ph.date || mr.date) + "_mrecrep_" + ph.id,
-              type: "Receivable Collection",
-              typeGroup: "received",
-              description: "Collection — " + (mr.person || mr.type || ""),
-              account: ph.cashMethod || "Cash",
-              moneyIn: ph.amount,
-              moneyOut: 0,
-            });
-          });
-        });
-
-        /* 9. Profit Distributions */
-        S.get("tc3_profitDist", []).forEach(function (pd) {
-          entries.push({
-            id: "pd_" + pd.id, date: pd.date, sortKey: pd.date + "_pd_" + pd.id,
-            type: "Profit Distribution",
-            typeGroup: "profdist",
-            description: "Distributed to " + (pd.partner || pd.name || "Partner"),
-            account: pd.paymentMethod || "Cash",
-            moneyIn: 0,
-            moneyOut: pd.amount,
-          });
-        });
-
-        /* 10. Sales Return Refunds — cash paid back to customer */
-        (state.salesReturns || []).forEach(function (r) {
-          if (!r.isRefund || !r.refundAmount) return;
-          entries.push({
-            id: "sret_" + r.id, date: r.date, sortKey: r.date + "_sret_" + r.id,
-            type: "Sales Return Refund",
-            typeGroup: "returns",
-            description: "Refund to customer — " + (r.customer || "Walk-in") + " | " + (r.invoiceNo || "") + " | " + (r.productName || "") + (r.reason ? " (" + r.reason + ")" : ""),
-            account: r.refundMethod || "Cash",
-            moneyIn: 0,
-            moneyOut: r.refundAmount,
-          });
-        });
-
-        /* 11. Purchase Return Refunds — cash received back from supplier */
-        (state.purchaseReturns || []).forEach(function (r) {
-          if (!r.isRefund || !r.refundAmount) return;
-          entries.push({
-            id: "pret_" + r.id, date: r.date, sortKey: r.date + "_pret_" + r.id,
-            type: "Purchase Return Refund",
-            typeGroup: "returns",
-            description: "Refund from supplier — " + (r.supplier || "") + " | " + (r.purchaseNo || "") + " | " + (r.productName || "") + (r.reason ? " (" + r.reason + ")" : ""),
-            account: r.refundMethod || "Cash",
-            moneyIn: r.refundAmount,
-            moneyOut: 0,
-          });
-        });
-
-        /* ── Sort all entries oldest → newest ── */
-        entries.sort(function (a, b) { return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0; });
-
-        /* ── Compute running balance BEFORE filtering (full history) ── */
-        var running = 0;
-        entries.forEach(function (e) {
-          running += e.moneyIn - e.moneyOut;
-          e.balance = running;
-        });
-
-        /* ── Apply filters ── */
-        var filtered = entries.filter(function (e) {
-          if (ledgerFrom && e.date < ledgerFrom) return false;
-          if (ledgerTo && e.date > ledgerTo) return false;
-          if (ledgerType !== "all" && e.typeGroup !== ledgerType) return false;
-          if (ledgerAcct !== "all" && (e.account || "Cash") !== ledgerAcct) return false;
-          return true;
-        });
+        var entries = cashBookEntries;
+        var filtered = cashBookFiltered;
+        var pageRows = cashBookPager.slice || filtered;
 
         /* ── Summary totals for filtered range ── */
         var filteredIn = filtered.reduce(function (a, e) { return a + e.moneyIn; }, 0);
@@ -1033,9 +1129,15 @@ var Accounts = function (props) {
 
         /* ── Print function ── */
         var printLedger = function () {
-          var shopName = state.settings.shopName || "Techon ERP";
-          var css = "body{font-family:'Plus Jakarta Sans',Arial,sans-serif;padding:20px;color:#111;font-size:12px;}h3{margin:14px 0 6px;font-size:12px;font-weight:800;color:#1a237e;text-transform:uppercase;letter-spacing:.07em;padding:5px 10px;background:#e8eeff;border-left:4px solid #2255d4;}.hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0d1b3e;padding-bottom:12px;margin-bottom:14px;}.shop{font-size:18px;font-weight:900;color:#0d1b3e;}.sub{font-size:11px;color:#666;margin-top:2px;}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0 14px;}.card{background:#f8faff;border-radius:6px;padding:8px 10px;border:1px solid #e0e7ff;}.clbl{font-size:9px;color:#888;text-transform:uppercase;}.cval{font-size:15px;font-weight:800;margin-top:2px;}table{width:100%;border-collapse:collapse;}th{background:#1a237e;color:#fff;padding:6px 8px;text-align:left;font-size:10px;}td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10.5px;}tr:nth-child(even){background:#f8faff;}.in{color:#1b5e20;font-weight:700;}.out{color:#b71c1c;font-weight:700;}.bal{font-weight:800;}.neg{color:#b71c1c;}@media print{@page{size:A4 landscape;margin:10mm;}body{padding:0;}}";
-          var h = "<div class='hdr'><div><div class='shop'>" + escapeHtml(shopName) + "</div><div class='sub'>Financial Ledger</div>" + (state.settings.address ? "<div class='sub'>" + escapeHtml(state.settings.address) + "</div>" : "") + "</div><div style='text-align:right'><div class='sub'>Period: " + ledgerFrom + " to " + ledgerTo + "</div><div class='sub'>Printed: " + new Date().toLocaleString() + "</div></div></div>";
+          var css = "body{font-family:'Plus Jakarta Sans',Arial,sans-serif;padding:20px;color:#111;font-size:12px;}h3{margin:14px 0 6px;font-size:12px;font-weight:800;color:#1a237e;text-transform:uppercase;letter-spacing:.07em;padding:5px 10px;background:#e8eeff;border-left:4px solid #2255d4;}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:8px 0 14px;}.card{background:#f8faff;border-radius:6px;padding:8px 10px;border:1px solid #e0e7ff;}.clbl{font-size:9px;color:#888;text-transform:uppercase;}.cval{font-size:15px;font-weight:800;margin-top:2px;}table{width:100%;border-collapse:collapse;}th{background:#1a237e;color:#fff;padding:6px 8px;text-align:left;font-size:10px;}td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10.5px;}tr:nth-child(even){background:#f8faff;}.in{color:#1b5e20;font-weight:700;}.out{color:#b71c1c;font-weight:700;}.bal{font-weight:800;}.neg{color:#b71c1c;}@media print{@page{size:A4 landscape;margin:10mm;}body{padding:0;}}";
+          var h = buildDocPrintHeaderHtml({
+            settings: state.settings || {},
+            title: "Financial Ledger",
+            escapeHtml: escapeHtml,
+            showTopbar: true,
+            showLogo: false,
+            metaRows: [{ label: "Period:", value: ledgerFrom + " to " + ledgerTo }],
+          });
           h += "<div class='cards'>";
           h += "<div class='card'><div class='clbl'>Opening Balance</div><div class='cval'>" + getCurrencySymbol() + " " + Number(openingBal).toLocaleString() + "</div></div>";
           h += "<div class='card'><div class='clbl'>Total Money In</div><div class='cval' style='color:#1b5e20'>" + getCurrencySymbol() + " " + Number(filteredIn).toLocaleString() + "</div></div>";
@@ -1127,7 +1229,6 @@ var Accounts = function (props) {
               <div className="erp-acc-count-badge">Showing {filtered.length} of {entries.length} transactions</div>
             </Card>
 
-            {/* Ledger table */}
             <div className="erp-acc-table-fill">
             <Card pad={0} className="erp-acc-data-card">
               <div className="erp-acc-table-scroll">
@@ -1158,14 +1259,15 @@ var Accounts = function (props) {
                     {filtered.length === 0 && (
                       <tr><td colSpan={8} style={{ textAlign: "center", padding: "32px 0", color: C.muted, fontSize: 13 }}>No transactions found for selected filters.</td></tr>
                     )}
-                    {filtered.map(function (e, i) {
+                    {pageRows.map(function (e, i) {
                       var isIn = e.moneyIn > 0;
                       var isOut = e.moneyOut > 0;
                       var balNeg = e.balance < 0;
                       var typeColor = typeColors[e.type] || C.textMd;
+                      var rowNum = (cashBookPager.start || 1) + i;
                       return (
                         <tr key={e.id} style={{ background: i % 2 === 0 ? "#fff" : "#f8faff", borderBottom: "1px solid " + C.borderLight }}>
-                          <td style={{ padding: "9px 14px", color: C.muted, fontSize: 12 }}>{i + 1}</td>
+                          <td style={{ padding: "9px 14px", color: C.muted, fontSize: 12 }}>{rowNum}</td>
                           <td style={{ padding: "9px 14px", fontWeight: 600, whiteSpace: "nowrap", fontSize: 12.5 }}>{e.date}</td>
                           <td style={{ padding: "9px 14px" }}>
                             <span style={{ background: typeColor + "18", color: typeColor, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{e.type}</span>
@@ -1199,6 +1301,11 @@ var Accounts = function (props) {
                   )}
                 </table>
               </div>
+              {Pager ? (
+                <div className="erp-acc-ledger-pager" style={{ padding: "0 12px 8px" }}>
+                  <Pager pager={cashBookPager} />
+                </div>
+              ) : null}
             </Card>
             </div>
 
@@ -2111,10 +2218,10 @@ var Accounts = function (props) {
                             {already ? (
                               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                 <span style={{ fontSize: 12, color: C.green, fontWeight: 700 }}>Added (qty {already.qty})</span>
-                                <button onClick={function () { setD({ stock: (d.stock || []).filter(function (s) { return s._srcProdId !== p.id; }) }); }} style={{ background: "#fde8ed", border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 11, cursor: "pointer" }}>Remove</button>
+                                <button type="button" className="erp-acc-ob-remove" onClick={function () { setD({ stock: (d.stock || []).filter(function (s) { return s._srcProdId !== p.id; }) }); }}>Remove</button>
                               </div>
                             ) : (
-                              <button onClick={function () {
+                              <button type="button" className="erp-acc-ob-select" onClick={function () {
                                 var qty = window.prompt("Opening quantity for \"" + p.name + "\":");
                                 if (qty === null) return;
                                 var q = parseInt(qty);
@@ -2122,7 +2229,7 @@ var Accounts = function (props) {
                                 var obRow = { name: p.name, barcode: p.barcode, category: p.category, unit: p.unit || "Pcs", bulkUnit: p.bulkUnit || "", bulkConversion: p.bulkConversion || 0, bulkCost: p.bulkCost || 0, bulkPrice: p.bulkPrice || 0, description: p.description || "", cost: p.cost, price: p.price, qty: q, _srcProdId: p.id, _existingProduct: true };
                                 if (Array.isArray(p.units) && p.units.length > 0) obRow.units = p.units;
                                 setD({ stock: (d.stock || []).concat([obRow]) });
-                              }} style={{ background: C.accent, color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontWeight: 700, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>+ Select</button>
+                              }}>+ Select</button>
                             )}
                           </div>
                         );
@@ -2337,7 +2444,7 @@ var Accounts = function (props) {
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                               <span style={{ fontWeight: 800, color: C.green, fontSize: 14 }}>{getCurrencySymbol()} {fmtNum(r.amount)}</span>
-                              <button onClick={function () { setD({ receivables: (d.receivables || []).filter(function (_, j) { return j !== i; }) }); }} style={{ background: "#fde8ed", border: "none", borderRadius: 6, padding: "4px 9px", color: C.red, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>x</button>
+                              <button type="button" className="erp-acc-ob-remove" onClick={function () { setD({ receivables: (d.receivables || []).filter(function (_, j) { return j !== i; }) }); }}>x</button>
                             </div>
                           </div>
                         );
@@ -2373,7 +2480,7 @@ var Accounts = function (props) {
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                               <span style={{ fontWeight: 800, color: C.red, fontSize: 14 }}>{getCurrencySymbol()} {fmtNum(p.amount)}</span>
-                              <button onClick={function () { setD({ payables: (d.payables || []).filter(function (_, j) { return j !== i; }) }); }} style={{ background: "#fff", border: "1px solid " + C.red, borderRadius: 6, padding: "4px 9px", color: C.red, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>x</button>
+                              <button type="button" className="erp-acc-ob-remove is-outline" onClick={function () { setD({ payables: (d.payables || []).filter(function (_, j) { return j !== i; }) }); }}>x</button>
                             </div>
                           </div>
                         );
@@ -2425,7 +2532,7 @@ var Accounts = function (props) {
                                     <TD>{getCurrencySymbol()} {fmtNum(s.price)}</TD>
                                     <TD color={C.orange}>{getCurrencySymbol()} {fmtNum(s.cost * s.qty)}</TD>
                                     <td style={{ padding: "8px 10px" }}>
-                                      <button onClick={function () { setD({ stock: (d.stock || []).filter(function (_, j) { return j !== i; }) }); }} style={{ background: "#fde8ed", border: "none", borderRadius: 6, padding: "4px 8px", color: C.red, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>x</button>
+                                      <button type="button" className="erp-acc-ob-remove" onClick={function () { setD({ stock: (d.stock || []).filter(function (_, j) { return j !== i; }) }); }}>x</button>
                                     </td>
                                   </TR>
                                 );
@@ -2540,7 +2647,7 @@ var Accounts = function (props) {
                             }}
                             placeholder="Sell"
                             style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
-                          <button onClick={function () {
+                          <button type="button" className="erp-acc-ob-plus" onClick={function () {
                             if (!obStockSearch.trim()) return;
                             var qty = parseInt(obStockQty, 10) || 1;
                             var cost = parseFloat(obStockCost) || 0;
@@ -2557,8 +2664,7 @@ var Accounts = function (props) {
                             }
                             setObStockSearch(""); setObStockQty("1"); setObStockCost(""); setObStockSell("");
                             setTimeout(function () { var si = document.getElementById("ob-stock-search"); if (si) si.focus(); }, 50);
-                          }} disabled={!obStockSearch.trim()}
-                            style={{ width: 28, height: 28, borderRadius: 6, border: "none", background: obStockSearch.trim() ? "linear-gradient(135deg,#0077e6,#2255d4)" : C.border, color: "#fff", fontWeight: 800, fontSize: 16, cursor: obStockSearch.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                          }} disabled={!obStockSearch.trim()}>+</button>
                         </div>
                       </div>
                       <div style={{ fontSize: 11.5, color: C.muted }}>💡 Tip: Search existing product or type a new name. Tab through Qty → Cost → Sell → Enter to add.</div>
@@ -2586,7 +2692,7 @@ var Accounts = function (props) {
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                               <span style={{ fontWeight: 800, color: "#6a1b9a", fontSize: 14 }}>{getCurrencySymbol()} {fmtNum(a.value)}</span>
-                              <button onClick={function () { setD({ assets: (d.assets || []).filter(function (_, j) { return j !== i; }) }); }} style={{ background: "#fff", border: "1px solid #6a1b9a", borderRadius: 6, padding: "4px 9px", color: "#6a1b9a", fontWeight: 700, fontSize: 12, cursor: "pointer" }}>x</button>
+                              <button type="button" className="erp-acc-ob-remove is-purple" onClick={function () { setD({ assets: (d.assets || []).filter(function (_, j) { return j !== i; }) }); }}>x</button>
                             </div>
                           </div>
                         );
@@ -2642,14 +2748,14 @@ var Accounts = function (props) {
                         </div>
                         <div style={{ display: "flex", gap: 8 }}>
                           <Btn col="gray" onClick={function () { setObStep(5); }}>Back</Btn>
-                          <button onClick={function () { obCommit(d); showAlert("Opening Balance saved successfully!"); }} style={{ flex: 1, padding: "13px", background: "linear-gradient(135deg,#1b5e20,#2e7d32)", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 900, cursor: "pointer", fontFamily: "inherit" }}>
+                          <Btn col="green" full onClick={function () { obCommit(d); showAlert("Opening Balance saved successfully!"); }}>
                             Save Opening Balance
-                          </button>
+                          </Btn>
                         </div>
                         {obData.completed && (
-                          <button onClick={function () { setObEditMode(false); setObDraft(null); setObStep(1); }} style={{ padding: "10px", background: "#f0f4ff", color: C.textMd, border: "1.5px solid " + C.border, borderRadius: 9, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                          <Btn col="gray" full onClick={function () { setObEditMode(false); setObDraft(null); setObStep(1); }}>
                             Cancel Edit
-                          </button>
+                          </Btn>
                         )}
                       </div>
                     </Card>

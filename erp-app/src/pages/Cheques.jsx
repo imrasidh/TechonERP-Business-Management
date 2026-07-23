@@ -14,6 +14,11 @@ import {
   loadFreshSaleForPayment,
   pushKeysNow,
 } from "../utils/concurrencyGuards.js";
+import { PurchaseInvoiceDoc } from "../components/PurchaseInvoiceDoc.jsx";
+import { MoneyReceiptDoc } from "../components/MoneyReceiptDoc.jsx";
+import { MoneyInOutModal } from "../components/MoneyInOutModal.jsx";
+import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
+import { resolveThermalFormat } from "../utils/printFormat.js";
 
 /* ─── CHEQUE REGISTER PAGE ────────────────────────────────────────────────── */
 var Cheques = React.memo(function (props) {
@@ -36,12 +41,22 @@ var Cheques = React.memo(function (props) {
   var Btn = props.Btn;
   var Modal = props.Modal;
   var Input = props.Input;
+  var Sel = props.Sel;
   var TH = props.TH;
   var TR = props.TR;
   var TD = props.TD;
   var usePager = props.usePager;
   var Pager = props.Pager;
   var checkPeriodClose = props.checkPeriodClose;
+  var InvoiceA4 = props.InvoiceA4;
+  var InvoiceThermal = props.InvoiceThermal;
+  var WABtn = props.WABtn;
+  var fmtDate = props.fmtDate || function (d) { return d || "—"; };
+  var fmtDateFull = props.fmtDateFull || fmtDate;
+  var fmtStock = props.fmtStock || function (q) { return q; };
+  var escapeHtml = props.escapeHtml || function (s) { return String(s == null ? "" : s); };
+  var PRINT_FONT_LINK = props.PRINT_FONT_LINK || "";
+  var shareViaWhatsApp = props.shareViaWhatsApp;
 
   var [tab, setTab] = useState("all");
   var [search, setSearch] = useState("");
@@ -49,23 +64,128 @@ var Cheques = React.memo(function (props) {
   var [reissueForm, setReissueForm] = useState({ chequeNo: "", dueDate: "", bankName: "" });
   var [addModal, setAddModal] = useState(null); /* "incoming" | "outgoing" */
   var [addForm, setAddForm] = useState({ chequeNo: "", bankName: "", amount: "", dueDate: today(), partyName: "", note: "", partyType: "customer" });
+  var [docView, setDocView] = useState(null); /* sale | purchase */
+  var [docKind, setDocKind] = useState(""); /* sale | purchase */
+  var [receiptView, setReceiptView] = useState(null);
+  var [receiptMode, setReceiptMode] = useState("in"); /* in = money in (payable), out = money out (receivable) */
+  var [editReceipt, setEditReceipt] = useState(null);
+  var [docFmt, setDocFmt] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
+  var [printFmtOpen, setPrintFmtOpen] = useState(false);
+  var [printTarget, setPrintTarget] = useState(null); /* sale | purchase | receipt */
 
   var cheques = sortNewestFirst(state.cheques || []);
   var todayStr = today();
+  var invThermalFmt = resolveThermalFormat(state.settings || {});
+  var invPrintFmtOptions = [
+    ["a4", "A4"],
+    ["a5", "A5"],
+    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
+  ];
+
+  var resolveLinkedDoc = function (ch) {
+    if (!ch) return null;
+    if (ch.type === "incoming" && ch.saleId) {
+      var sale = (state.sales || []).find(function (s) { return s.id === ch.saleId; });
+      if (sale) return { kind: "sale", label: sale.invoiceNo || ch.invoiceNo || "Invoice", doc: sale };
+    }
+    if (ch.type === "outgoing" && ch.purchaseId) {
+      var pur = (state.purchases || []).find(function (p) { return p.id === ch.purchaseId; });
+      if (pur) return { kind: "purchase", label: pur.invoiceNo || ch.purchaseNo || "Purchase", doc: pur };
+    }
+    if (ch.type === "incoming" && ch.manualReceivableId) {
+      var mr = (S.get("tc3_manualReceivables", []) || []).find(function (r) { return r.id === ch.manualReceivableId; });
+      if (mr) return { kind: "receipt-out", label: mr.receiptNo || mr.reference || "Receipt", doc: mr };
+    }
+    if (ch.type === "outgoing" && (ch.manualPayableId || ch.thirdPartyRepairId)) {
+      var mp = (S.get("tc3_manualPayables", []) || []).find(function (p) {
+        if (ch.manualPayableId && p.id === ch.manualPayableId) return true;
+        if (!ch.manualPayableId && ch.thirdPartyRepairId && p.thirdPartyRepairId === ch.thirdPartyRepairId) return true;
+        return false;
+      });
+      if (mp) return { kind: "receipt-in", label: mp.receiptNo || mp.reference || "Receipt", doc: mp };
+    }
+    /* Fallback by invoice/purchase number text */
+    if (ch.invoiceNo) {
+      var saleByNo = (state.sales || []).find(function (s) { return String(s.invoiceNo || "") === String(ch.invoiceNo); });
+      if (saleByNo) return { kind: "sale", label: saleByNo.invoiceNo, doc: saleByNo };
+    }
+    if (ch.purchaseNo) {
+      var purByNo = (state.purchases || []).find(function (p) { return String(p.invoiceNo || "") === String(ch.purchaseNo); });
+      if (purByNo) return { kind: "purchase", label: purByNo.invoiceNo, doc: purByNo };
+    }
+    return null;
+  };
+
+  var openLinkedDoc = function (ch) {
+    var linked = resolveLinkedDoc(ch);
+    if (!linked) {
+      showAlert("No linked invoice or receipt found for this cheque.");
+      return;
+    }
+    setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+    if (linked.kind === "sale") {
+      setReceiptView(null);
+      setDocKind("sale");
+      setDocView(linked.doc);
+      return;
+    }
+    if (linked.kind === "purchase") {
+      setReceiptView(null);
+      setDocKind("purchase");
+      setDocView(linked.doc);
+      return;
+    }
+    setDocView(null);
+    setDocKind("");
+    setReceiptMode(linked.kind === "receipt-out" ? "out" : "in");
+    setReceiptView(linked.doc);
+  };
+
+  var printDocById = function (elId, title, fmt) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    var isA5 = fmt === "a5";
+    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
+    var thermalBodyW = fmt === "thermal58" ? "218px" : "302px";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : "8mm";
+    var bodyW = isThermal ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}" : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pageSize + " portrait;margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var w = window.open("", "_blank", "width=900,height=760");
+    if (!w) return;
+    w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>" + escapeHtml(title || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
+    w.document.close();
+    setTimeout(function () { w.focus(); w.print(); }, 500);
+  };
 
   /* Status badge */
   var ChequeStatusBadge = function (bp) {
     var s = bp.status; var due = bp.due;
     var overdue = s === "Pending" && due < todayStr;
     var dueSoon = s === "Pending" && due >= todayStr && (new Date(due) - new Date(todayStr)) / 86400000 <= 7;
-    if (s === "Cleared") return <span style={{ background: "#e6f7f2", color: "#0a7a53", border: "1px solid #9ee8ce", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>✅ Cleared</span>;
-    if (s === "Bounced") return <span style={{ background: "#fde8ed", color: "#c0152e", border: "1px solid #f9a8ba", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>↩ Bounced</span>;
-    if (overdue) return <span style={{ background: "#fde8ed", color: "#c0152e", border: "1px solid #f9a8ba", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700, animation: "pulse 1s infinite" }}>🔴 Overdue</span>;
-    if (dueSoon) return <span style={{ background: "#fff3e0", color: "#b45309", border: "1px solid #f7c97a", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>🟡 Due Soon</span>;
-    return <span style={{ background: "#e8eeff", color: "#1a47c2", border: "1px solid #a8bcf0", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>⏳ Pending</span>;
+    if (s === "Cleared") return <span className="erp-chq-status is-cleared">Cleared</span>;
+    if (s === "Bounced") return <span className="erp-chq-status is-bounced">Bounced</span>;
+    if (overdue) return <span className="erp-chq-status is-overdue">Overdue</span>;
+    if (dueSoon) return <span className="erp-chq-status is-soon">Due soon</span>;
+    return <span className="erp-chq-status is-pending">Pending</span>;
   };
 
-  var TABS = [["all", "All"], ["pending", "Pending"], ["overdue", "Overdue"], ["cleared", "Cleared"], ["bounced", "Bounced"]];
+  var pendingOut = cheques.filter(function (c) { return c.type === "outgoing" && c.status === "Pending"; }).reduce(function (a, c) { return a + c.amount; }, 0);
+  var pendingIn = cheques.filter(function (c) { return c.type === "incoming" && c.status === "Pending"; }).reduce(function (a, c) { return a + c.amount; }, 0);
+  var overdueCount = cheques.filter(function (c) { return c.status === "Pending" && c.dueDate < todayStr; }).length;
+  var pendingOutCount = cheques.filter(function (c) { return c.type === "outgoing" && c.status === "Pending"; }).length;
+  var pendingInCount = cheques.filter(function (c) { return c.type === "incoming" && c.status === "Pending"; }).length;
+  var clearedCount = cheques.filter(function (c) { return c.status === "Cleared"; }).length;
+  var bouncedCount = cheques.filter(function (c) { return c.status === "Bounced"; }).length;
+  var pendingTabCount = cheques.filter(function (c) { return c.status === "Pending"; }).length;
+
+  var TABS = [
+    ["all", "All", cheques.length],
+    ["pending", "Pending", pendingTabCount],
+    ["overdue", "Overdue", overdueCount],
+    ["cleared", "Cleared", clearedCount],
+    ["bounced", "Bounced", bouncedCount]
+  ];
 
   var filtered = cheques.filter(function (ch) {
     var q = search.toLowerCase().trim();
@@ -79,11 +199,6 @@ var Cheques = React.memo(function (props) {
     return matchQ && matchTab;
   });
   var chqPager = usePager(filtered, LIST_PAGE_SIZE);
-
-  /* Totals */
-  var pendingOut = cheques.filter(function (c) { return c.type === "outgoing" && c.status === "Pending"; }).reduce(function (a, c) { return a + c.amount; }, 0);
-  var pendingIn  = cheques.filter(function (c) { return c.type === "incoming" && c.status === "Pending"; }).reduce(function (a, c) { return a + c.amount; }, 0);
-  var overdueCount = cheques.filter(function (c) { return c.status === "Pending" && c.dueDate < todayStr; }).length;
 
   /* ── Mark Cleared ── */
   var markCleared = function (ch) {
@@ -318,148 +433,440 @@ var Cheques = React.memo(function (props) {
   };
 
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-      {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-        <StatCard label="To Pay (Outgoing)" value={pendingOut} accent={C.red} icon="📤" sub={cheques.filter(function (c) { return c.type === "outgoing" && c.status === "Pending"; }).length + " pending cheques"} />
-        <StatCard label="To Receive (Incoming)" value={pendingIn} accent={C.green} icon="📥" sub={cheques.filter(function (c) { return c.type === "incoming" && c.status === "Pending"; }).length + " pending cheques"} />
-        <StatCard label="Overdue" money={false} value={overdueCount} accent={overdueCount > 0 ? C.red : C.muted} icon="🔴" sub="past due date" />
-        <StatCard label="Total Cheques" money={false} value={cheques.length} accent={C.purple} icon="🏷" sub={cheques.filter(function (c) { return c.status === "Cleared"; }).length + " cleared"} />
+    <div className="erp-page erp-arap-modern is-chq">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">CQ</div>
+            <div>
+              <h1 className="erp-arap-header-title">Cheques</h1>
+              <p className="erp-arap-header-sub">Register · clear · bounce · re-issue</p>
+            </div>
+          </div>
+          <div className="erp-arap-kpi-row" aria-label="Cheque overview">
+            <div className="erp-arap-kpi is-red">
+              <span className="erp-arap-kpi-lbl">To pay</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(pendingOut)}</span>
+              <span className="erp-arap-kpi-sub">{pendingOutCount} outgoing</span>
+            </div>
+            <div className="erp-arap-kpi is-green">
+              <span className="erp-arap-kpi-lbl">To receive</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(pendingIn)}</span>
+              <span className="erp-arap-kpi-sub">{pendingInCount} incoming</span>
+            </div>
+            <div className={"erp-arap-kpi " + (overdueCount > 0 ? "is-red" : "is-orange")}>
+              <span className="erp-arap-kpi-lbl">Overdue</span>
+              <span className="erp-arap-kpi-val">{overdueCount}</span>
+              <span className="erp-arap-kpi-sub">past due date</span>
+            </div>
+            <div className="erp-arap-kpi is-purple">
+              <span className="erp-arap-kpi-lbl">Total</span>
+              <span className="erp-arap-kpi-val">{cheques.length}</span>
+              <span className="erp-arap-kpi-sub">{clearedCount} cleared</span>
+            </div>
+          </div>
+        </div>
+        {overdueCount > 0 ? (
+          <div className="erp-chq-alert">
+            <strong>{overdueCount} overdue</strong>
+            <span>Past due date — update status soon.</span>
+            <button type="button" className="erp-chq-alert-btn" onClick={function () { setTab("overdue"); }}>View overdue</button>
+          </div>
+        ) : null}
+        <div className="erp-arap-tabs" role="tablist" aria-label="Cheque status tabs">
+          {TABS.map(function (t) {
+            var active = tab === t[0];
+            return (
+              <button
+                key={t[0]}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={"erp-arap-tab" + (active ? " is-active" : "")}
+                onClick={function () { setTab(t[0]); }}
+              >
+                <span>{t[1]}</span>
+                <span className="erp-arap-tab-count">{t[2]}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Overdue alert banner */}
-      {overdueCount > 0 && (
-        <div style={{ background: "#fde8ed", border: "1.5px solid #f9a8ba", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 22 }}>🔴</span>
-          <div>
-            <div style={{ fontWeight: 800, color: C.red, fontSize: 14 }}>{overdueCount} cheque{overdueCount > 1 ? "s" : ""} overdue!</div>
-            <div style={{ fontSize: 12, color: "#b91c1c" }}>These cheques are past their due date. Please update status immediately.</div>
+      <div className="erp-arap-body">
+        <div className="erp-arap-panel">
+          <div className="erp-arap-toolbar">
+            <div className="erp-arap-search-wrap">
+              <input
+                className="erp-arap-field"
+                value={search}
+                onChange={function (e) { setSearch(e.target.value); }}
+                placeholder="Search cheque #, party, bank, invoice…"
+                aria-label="Search cheques"
+              />
+            </div>
+            {search ? (
+              <button type="button" className="erp-arap-btn-clear" onClick={function () { setSearch(""); }}>Clear</button>
+            ) : null}
+            <span className="erp-arap-filter-meta">
+              {(TABS.find(function (t) { return t[0] === tab; }) || TABS[0])[1]} · {filtered.length.toLocaleString()} cheques
+            </span>
           </div>
-          <Btn sm col="red" onClick={function () { setTab("overdue"); }} style={{ marginLeft: "auto" }}>View Overdue</Btn>
-        </div>
-      )}
 
-      <Card>
-        <CardTitle sub={filtered.length + " cheques"}>Cheque Register</CardTitle>
-
-        {/* Tabs + Search */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 4 }}>
-            {TABS.map(function (t) {
-              var isA = tab === t[0];
-              return <button key={t[0]} onClick={function () { setTab(t[0]); }} style={{ padding: "6px 14px", borderRadius: 8, border: "1.5px solid " + (isA ? C.blue : C.border), background: isA ? C.accentSoft : "#fff", fontWeight: 700, fontSize: 12, color: isA ? C.blue : C.textMd, cursor: "pointer" }}>{t[1]}</button>;
-            })}
-          </div>
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <Input placeholder="Search cheque #, party, bank..." value={search} onChange={function (e) { setSearch(e.target.value); }} />
-          </div>
-        </div>
-
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr>
-              <TH>Type</TH><TH>Cheque #</TH><TH>Bank</TH><TH>Party</TH><TH>Linked To</TH>
-              <TH>Amount</TH><TH>Due Date</TH><TH>Status</TH><TH>Actions</TH>
-            </tr></thead>
-            <tbody>
-              {chqPager.slice.map(function (ch, i) {
-                var party = ch.type === "outgoing" ? (ch.supplierName || ch.partyName || "—") : (ch.customerName || ch.partyName || "—");
-                var linked = ch.type === "outgoing" ? (ch.purchaseNo || "—") : (ch.invoiceNo || "—");
-                var daysLeft = Math.ceil((new Date(ch.dueDate) - new Date(todayStr)) / 86400000);
-                return (
-                  <TR key={ch.id} i={i}>
-                    <td style={{ padding: "10px 14px" }}>
-                      {ch.type === "outgoing"
-                        ? <span style={{ background: "#fde8ed", color: C.red, border: "1px solid #f9a8ba", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>📤 Out</span>
-                        : <span style={{ background: "#e6f7f2", color: C.green, border: "1px solid #9ee8ce", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>📥 In</span>
-                      }
+          <div className="erp-arap-table-wrap">
+            <table className="erp-arap-table" style={{ minWidth: 920, tableLayout: "auto" }}>
+              <thead>
+                <tr>
+                  <th style={{ width: 64 }}>Type</th>
+                  <th style={{ width: 96 }}>Cheque #</th>
+                  <th style={{ width: 100 }}>Bank</th>
+                  <th style={{ minWidth: 120 }}>Party</th>
+                  <th style={{ width: 100 }}>Linked</th>
+                  <th style={{ width: 100, textAlign: "right" }}>Amount</th>
+                  <th style={{ width: 100 }}>Due</th>
+                  <th style={{ width: 92 }}>Status</th>
+                  <th style={{ width: 88 }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="erp-arap-empty">
+                      {search ? "No cheques match your search." : "No cheques in this tab. Cheque payments from Sales / Purchases appear here."}
                     </td>
-                    <TD bold color={C.purple}>{ch.chequeNo}</TD>
-                    <TD color={C.muted}>{ch.bankName || "—"}</TD>
-                    <TD bold>{party}</TD>
-                    <TD color={C.blue}>{linked}</TD>
-                    <TD bold color={ch.type === "outgoing" ? C.red : C.green}>{getCurrencySymbol()} {fmtNum(ch.amount)}</TD>
-                    <td style={{ padding: "10px 14px" }}>
-                      <div style={{ fontWeight: 700, fontSize: 13 }}>{ch.dueDate}</div>
-                      {ch.status === "Pending" && <div style={{ fontSize: 11, color: daysLeft < 0 ? C.red : daysLeft <= 7 ? C.orange : C.muted, fontWeight: 600 }}>{daysLeft < 0 ? Math.abs(daysLeft) + "d overdue" : daysLeft === 0 ? "Due today!" : daysLeft + "d left"}</div>}
-                    </td>
-                    <td style={{ padding: "10px 14px" }}><ChequeStatusBadge status={ch.status} due={ch.dueDate} /></td>
-                    <td style={actBtnCellStyle}>
-                      <ActBtnGroup>
+                  </tr>
+                )}
+                {chqPager.slice.map(function (ch) {
+                  var party = ch.type === "outgoing" ? (ch.supplierName || ch.partyName || "—") : (ch.customerName || ch.partyName || "—");
+                  var linkedMeta = resolveLinkedDoc(ch);
+                  var linkedLabel = linkedMeta
+                    ? linkedMeta.label
+                    : (ch.type === "outgoing" ? (ch.purchaseNo || "") : (ch.invoiceNo || "")) || "—";
+                  var daysLeft = Math.ceil((new Date(ch.dueDate) - new Date(todayStr)) / 86400000);
+                  return (
+                    <tr key={ch.id} className="table-row-hover">
+                      <td>
+                        {ch.type === "outgoing"
+                          ? <span className="erp-chq-type is-out">Out</span>
+                          : <span className="erp-chq-type is-in">In</span>}
+                      </td>
+                      <td className="erp-arap-ref" style={{ color: "#4338ca", fontWeight: 800 }}>{ch.chequeNo}</td>
+                      <td style={{ color: "#64748b", fontSize: 11.5 }}>{ch.bankName || "—"}</td>
+                      <td className="erp-arap-src" title={party}>{party}</td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        {linkedMeta ? (
+                          <button
+                            type="button"
+                            className="erp-arap-inv-link is-chq"
+                            title="Open original invoice / receipt"
+                            onClick={function () { openLinkedDoc(ch); }}
+                          >
+                            {linkedLabel}
+                          </button>
+                        ) : (
+                          <span style={{ color: "#94a3b8" }}>{linkedLabel}</span>
+                        )}
+                      </td>
+                      <td className="erp-arap-amt" style={{ color: ch.type === "outgoing" ? "#b91c1c" : "#047857", fontWeight: 800 }}>
+                        {getCurrencySymbol()} {fmtNum(ch.amount)}
+                      </td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <div style={{ fontWeight: 700, fontSize: 12 }}>{ch.dueDate}</div>
                         {ch.status === "Pending" ? (
-                          <React.Fragment>
-                            <ActBtn tone="green" icon="clear" title="Clear cheque" onClick={function () { setActionModal({ cheque: ch, action: "clear" }); }} />
-                            <ActBtn tone="red" icon="return" title="Mark bounced" onClick={function () { markBounced(ch); }} />
-                          </React.Fragment>
+                          <div
+                            className="erp-chq-due-sub"
+                            style={{ color: daysLeft < 0 ? "#b91c1c" : daysLeft <= 7 ? "#c2410c" : "#94a3b8" }}
+                          >
+                            {daysLeft < 0 ? Math.abs(daysLeft) + "d overdue" : daysLeft === 0 ? "Due today" : daysLeft + "d left"}
+                          </div>
                         ) : null}
-                        {ch.status === "Bounced" && !ch.replacedByChequeid ? (
-                          <ActBtn tone="blue" icon="refresh" title="Re-issue cheque" onClick={function () { setActionModal({ cheque: ch, action: "reissue_prompt" }); }} />
-                        ) : null}
-                        {ch.status === "Bounced" && ch.replacedByChequeid ? (
-                          <span style={{ fontSize: 11, color: C.muted }}>Re-issued</span>
-                        ) : null}
-                        {!ch.purchaseId && !ch.saleId ? (
-                          <ActBtn tone="red" title="Delete standalone cheque" onClick={function () { deleteStandalone(ch.id); }} />
-                        ) : null}
-                      </ActBtnGroup>
-                    </td>
-                  </TR>
-                );
-              })}
-              {filtered.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 32, color: C.muted }}>
-                {search ? "No cheques match your search." : "No cheques in this category. Record payment by Cheque in Purchases or Sales."}
-              </td></tr>}
-            </tbody>
-          </table>
+                      </td>
+                      <td><ChequeStatusBadge status={ch.status} due={ch.dueDate} /></td>
+                      <td style={Object.assign({}, actBtnCellStyle, { width: 88, minWidth: 88, whiteSpace: "nowrap" })}>
+                        <ActBtnGroup gap={4}>
+                          {ch.status === "Pending" ? (
+                            <React.Fragment>
+                              <ActBtn tone="green" icon="clear" title="Clear cheque" onClick={function () { setActionModal({ cheque: ch, action: "clear" }); }} />
+                              <ActBtn tone="red" icon="return" title="Mark bounced" onClick={function () { markBounced(ch); }} />
+                            </React.Fragment>
+                          ) : null}
+                          {ch.status === "Bounced" && !ch.replacedByChequeid ? (
+                            <ActBtn tone="blue" icon="refresh" title="Re-issue cheque" onClick={function () { setActionModal({ cheque: ch, action: "reissue_prompt" }); }} />
+                          ) : null}
+                          {ch.status === "Bounced" && ch.replacedByChequeid ? (
+                            <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>Re-issued</span>
+                          ) : null}
+                          {!ch.purchaseId && !ch.saleId ? (
+                            <ActBtn tone="red" title="Delete standalone cheque" onClick={function () { deleteStandalone(ch.id); }} />
+                          ) : null}
+                        </ActBtnGroup>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="erp-arap-foot">
+            <div className="erp-arap-pager-wrap">
+              <Pager pager={chqPager} />
+            </div>
+          </div>
         </div>
-        <Pager pager={chqPager} />
-      </Card>
+      </div>
 
-      {/* ── Action Modal — Confirm Clear ── */}
       {actionModal && actionModal.action === "clear" && (
-        <Modal title={"Clear Cheque #" + actionModal.cheque.chequeNo} onClose={function () { setActionModal(null); }}>
-          <div style={{ background: "#f7f9ff", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div><div style={{ fontSize: 10, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Cheque #</div><div style={{ fontWeight: 800 }}>{actionModal.cheque.chequeNo}</div></div>
-              <div><div style={{ fontSize: 10, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Amount</div><div style={{ fontWeight: 800, fontSize: 18, color: C.blue }}>{getCurrencySymbol()} {fmtNum(actionModal.cheque.amount)}</div></div>
-              <div><div style={{ fontSize: 10, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Party</div><div style={{ fontWeight: 700 }}>{actionModal.cheque.supplierName || actionModal.cheque.customerName || "—"}</div></div>
-              <div><div style={{ fontSize: 10, color: C.muted, fontWeight: 700, textTransform: "uppercase" }}>Due Date</div><div style={{ fontWeight: 700 }}>{actionModal.cheque.dueDate}</div></div>
+        <Modal
+          className="erp-arap-view-modal is-chq"
+          title={"Clear cheque · #" + actionModal.cheque.chequeNo}
+          subtitle={(actionModal.cheque.type === "outgoing" ? "Outgoing" : "Incoming") + " · bank balance will update"}
+          onClose={function () { setActionModal(null); }}
+          compact
+          closeRound
+        >
+          <div className="erp-arap-view">
+            <div className={"erp-arap-view-alert " + (actionModal.cheque.type === "outgoing" ? "is-due" : "is-ok")}>
+              <div>
+                <strong>{actionModal.cheque.type === "outgoing" ? "Deduct from bank" : "Add to bank"}</strong>
+                <span>{actionModal.cheque.supplierName || actionModal.cheque.customerName || "—"} · due {actionModal.cheque.dueDate}</span>
+              </div>
+              <b>{getCurrencySymbol()} {fmtNum(actionModal.cheque.amount)}</b>
             </div>
-          </div>
-          <div style={{ background: actionModal.cheque.type === "outgoing" ? "#fde8ed" : "#e6f7f2", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontWeight: 700, color: actionModal.cheque.type === "outgoing" ? C.red : C.green, fontSize: 14 }}>
-            {actionModal.cheque.type === "outgoing" ? "📤 " + getCurrencySymbol() + " " + fmtNum(actionModal.cheque.amount) + " will be DEDUCTED from your Bank balance." : "📥 " + getCurrencySymbol() + " " + fmtNum(actionModal.cheque.amount) + " will be ADDED to your Bank balance."}
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn col="green" full onClick={function () { markCleared(actionModal.cheque); }}>✅ Confirm — Mark Cleared</Btn>
-            <Btn col="gray" onClick={function () { setActionModal(null); }}>Cancel</Btn>
+            <div className="erp-arap-view-actions">
+              <Btn col="green" onClick={function () { markCleared(actionModal.cheque); }}>Confirm clear</Btn>
+              <Btn col="gray" onClick={function () { setActionModal(null); }}>Cancel</Btn>
+            </div>
           </div>
         </Modal>
       )}
 
-      {/* ── Action Modal — Re-issue after Bounce ── */}
       {actionModal && actionModal.action === "reissue_prompt" && (
-        <Modal title={"Re-issue Cheque — #" + actionModal.cheque.chequeNo + " Bounced"} onClose={function () { setActionModal(null); setReissueForm({ chequeNo: "", dueDate: "", bankName: "" }); }}>
-          <div style={{ background: "#fde8ed", borderRadius: 10, padding: "12px 16px", marginBottom: 14, fontSize: 13, color: C.red, fontWeight: 700 }}>
-            ↩ Cheque #{actionModal.cheque.chequeNo} for {getCurrencySymbol()} {fmtNum(actionModal.cheque.amount)} bounced. Issue a replacement cheque:
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <Input label="New Cheque No *" value={reissueForm.chequeNo} onChange={function (e) { setReissueForm(function (x) { return Object.assign({}, x, { chequeNo: e.target.value }); }); }} placeholder="New cheque number" />
-              <Input label="Bank Name" value={reissueForm.bankName || actionModal.cheque.bankName || ""} onChange={function (e) { setReissueForm(function (x) { return Object.assign({}, x, { bankName: e.target.value }); }); }} />
+        <Modal
+          className="erp-arap-view-modal is-chq"
+          title={"Re-issue · #" + actionModal.cheque.chequeNo}
+          subtitle={"Bounced · amount " + getCurrencySymbol() + " " + fmtNum(actionModal.cheque.amount)}
+          onClose={function () { setActionModal(null); setReissueForm({ chequeNo: "", dueDate: "", bankName: "" }); }}
+          compact
+          closeRound
+        >
+          <div className="erp-arap-view">
+            <div className="erp-arap-view-alert is-due">
+              <div>
+                <strong>Issue replacement cheque</strong>
+                <span>Original #{actionModal.cheque.chequeNo} bounced</span>
+              </div>
             </div>
-            <Input label="New Due Date *" type="date" value={reissueForm.dueDate} onChange={function (e) { setReissueForm(function (x) { return Object.assign({}, x, { dueDate: e.target.value }); }); }} />
-            <div style={{ fontSize: 12, color: C.muted }}>Amount stays the same: {getCurrencySymbol()} {fmtNum(actionModal.cheque.amount)}</div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <Btn col="blue" full onClick={function () { reissueCheque(actionModal.cheque); }}>🔄 Issue Replacement Cheque</Btn>
-            <Btn col="gray" onClick={function () { setActionModal(null); setReissueForm({ chequeNo: "", dueDate: "", bankName: "" }); }}>Skip</Btn>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <Input label="New cheque no *" value={reissueForm.chequeNo} onChange={function (e) { setReissueForm(function (x) { return Object.assign({}, x, { chequeNo: e.target.value }); }); }} placeholder="New number" />
+                <Input label="Bank" value={reissueForm.bankName || actionModal.cheque.bankName || ""} onChange={function (e) { setReissueForm(function (x) { return Object.assign({}, x, { bankName: e.target.value }); }); }} />
+              </div>
+              <Input label="New due date *" type="date" value={reissueForm.dueDate} onChange={function (e) { setReissueForm(function (x) { return Object.assign({}, x, { dueDate: e.target.value }); }); }} />
+            </div>
+            <div className="erp-arap-view-actions">
+              <Btn col="blue" onClick={function () { reissueCheque(actionModal.cheque); }}>Issue replacement</Btn>
+              <Btn col="gray" onClick={function () { setActionModal(null); setReissueForm({ chequeNo: "", dueDate: "", bankName: "" }); }}>Skip</Btn>
+            </div>
           </div>
         </Modal>
       )}
 
-      {/* ── Add Standalone Cheque Modal ── */}
+      {/* View & Print — sales invoice */}
+      {docView && docKind === "sale" && InvoiceA4 ? (
+        <div className="erp-si-fv" role="dialog" aria-modal="true" aria-label="View and print invoice">
+          <div className="erp-si-fv-bar">
+            <div className="erp-si-fv-bar-left">
+              <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+              <div className="erp-si-fv-meta">
+                <span className="erp-si-fv-kicker">View &amp; Print</span>
+                <div className="erp-si-fv-meta-main">
+                  <span className="erp-si-fv-inv">{docView.invoiceNo || docView.id.slice(0, 8)}</span>
+                  <span className="erp-si-fv-sub">{docView.customerName || "Walk-in"} · {fmtDate(docView.date)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="erp-si-fv-tools">
+              <span className="erp-si-fv-tool-label">Format</span>
+              <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                {invPrintFmtOptions.map(function (item) {
+                  var v = item[0]; var lbl = item[1];
+                  return (
+                    <button key={v} type="button" className={"erp-si-fv-fmt" + (docFmt === v ? " is-active" : "")} onClick={function () { setDocFmt(v); }}>{lbl}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="erp-si-fv-actions">
+              <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("sale"); setPrintFmtOpen(true); }}>Print</button>
+              <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setDocView(null); setDocKind(""); }} aria-label="Close">✕</button>
+            </div>
+          </div>
+          <div className="erp-si-fv-stage">
+            <div id={"chq-inv-preview-" + docView.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+              {(docFmt === "thermal58" || docFmt === "thermal80") && InvoiceThermal
+                ? <InvoiceThermal inv={docView} settings={state.settings} invoiceLang="en" width={docFmt === "thermal58" ? 218 : 302} />
+                : <InvoiceA4 inv={docView} settings={state.settings} invoiceLang="en" size={(docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt} />}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
+      {/* View & Print — purchase invoice */}
+      {docView && docKind === "purchase" ? (
+        <div className="erp-si-fv is-purchase" role="dialog" aria-modal="true" aria-label="View and print purchase invoice">
+          <div className="erp-si-fv-bar">
+            <div className="erp-si-fv-bar-left">
+              <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+              <div className="erp-si-fv-meta">
+                <span className="erp-si-fv-kicker">View &amp; Print</span>
+                <div className="erp-si-fv-meta-main">
+                  <span className="erp-si-fv-inv">{docView.invoiceNo || docView.id.slice(0, 8)}</span>
+                  <span className="erp-si-fv-sub">{docView.supplier || "Supplier"} · {fmtDateFull(docView.date)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="erp-si-fv-tools">
+              <span className="erp-si-fv-tool-label">Format</span>
+              <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                {invPrintFmtOptions.map(function (item) {
+                  var v = item[0]; var lbl = item[1];
+                  return (
+                    <button key={v} type="button" className={"erp-si-fv-fmt" + (docFmt === v ? " is-active" : "")} onClick={function () { setDocFmt(v); }}>{lbl}</button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="erp-si-fv-actions">
+              <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("purchase"); setPrintFmtOpen(true); }}>Print</button>
+              <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setDocView(null); setDocKind(""); }} aria-label="Close">✕</button>
+            </div>
+          </div>
+          <div className="erp-si-fv-stage">
+            <div id={"chq-pur-preview-" + docView.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+              <PurchaseInvoiceDoc
+                pur={docView}
+                settings={state.settings}
+                size={(docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt}
+                fmtDateFull={fmtDateFull}
+                fmtNum={fmtNum}
+                getCurrencySymbol={getCurrencySymbol}
+                fmtStock={fmtStock}
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* View & Print — money receipt */}
+      {receiptView ? (function () {
+        var rcp = receiptView;
+        var rcpNo = rcp.receiptNo || rcp.reference || (rcp.id || "").slice(0, 8);
+        var sheetSize = (docFmt === "thermal58" || docFmt === "thermal80") ? "a4" : docFmt;
+        var isOut = receiptMode === "out";
+        return (
+          <div className="erp-si-fv is-receipt" role="dialog" aria-modal="true" aria-label="View and print receipt">
+            <div className="erp-si-fv-bar">
+              <div className="erp-si-fv-bar-left">
+                <span className="erp-si-fv-badge" aria-hidden="true">VP</span>
+                <div className="erp-si-fv-meta">
+                  <span className="erp-si-fv-kicker">View &amp; Print</span>
+                  <div className="erp-si-fv-meta-main">
+                    <span className="erp-si-fv-inv">{rcpNo}</span>
+                    <span className="erp-si-fv-sub">{(isOut ? "Money Out" : "Money In") + " · " + (rcp.person || rcp.source || "Party") + " · " + fmtDateFull(rcp.date)}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="erp-si-fv-tools">
+                <span className="erp-si-fv-tool-label">Format</span>
+                <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                  {invPrintFmtOptions.map(function (item) {
+                    var v = item[0]; var lbl = item[1];
+                    return (
+                      <button key={v} type="button" className={"erp-si-fv-fmt" + (docFmt === v ? " is-active" : "")} onClick={function () { setDocFmt(v); }}>{lbl}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="erp-si-fv-actions">
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () {
+                    if (rcp._isOpening) {
+                      showAlert("Opening balance entries are edited from Accounts → Opening Balance.");
+                      return;
+                    }
+                    if (rcp.thirdPartyRepairId) {
+                      showAlert("This receipt is linked to a 3rd party repair. Edit it from Repairs.");
+                      return;
+                    }
+                    setReceiptView(null);
+                    setEditReceipt(rcp);
+                  }}
+                >Edit</button>
+                <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("receipt"); setPrintFmtOpen(true); }}>Print</button>
+                <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setReceiptView(null); }} aria-label="Close">✕</button>
+              </div>
+            </div>
+            <div className="erp-si-fv-stage">
+              <div id={"chq-rcp-preview-" + rcp.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+                <MoneyReceiptDoc
+                  receipt={rcp}
+                  mode={isOut ? "out" : "in"}
+                  size={sheetSize}
+                  settings={state.settings}
+                  fmtDateFull={fmtDateFull}
+                  fmtNum={fmtNum}
+                  getCurrencySymbol={getCurrencySymbol}
+                />
+              </div>
+            </div>
+          </div>
+        );
+      })() : null}
+
+      {editReceipt ? (
+        <MoneyInOutModal
+          mode={receiptMode === "out" ? "out" : "in"}
+          editRecord={editReceipt}
+          S={S}
+          today={today}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+          showAlert={showAlert}
+          addAudit={addAudit}
+          setState={setState}
+          onClose={function () { setEditReceipt(null); }}
+          Modal={Modal}
+          Input={Input}
+          Sel={Sel}
+          Btn={Btn}
+          C={C}
+          getCurrencySymbol={getCurrencySymbol}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+          zIndex={13000}
+        />
+      ) : null}
+
+      <PrintFormatChooser
+        open={printFmtOpen}
+        settings={state.settings}
+        thermalId={invThermalFmt}
+        title={printTarget === "receipt" ? "Print receipt" : (printTarget === "purchase" ? "Print purchase" : "Print invoice")}
+        hint="Choose A4, A5, or Thermal for your printer."
+        onClose={function () { setPrintFmtOpen(false); setPrintTarget(null); }}
+        onSelect={function (fmt) {
+          setPrintFmtOpen(false);
+          var target = printTarget;
+          setPrintTarget(null);
+          if (target === "sale" && docView) printDocById("chq-inv-preview-" + docView.id, "Invoice " + (docView.invoiceNo || ""), fmt);
+          else if (target === "purchase" && docView) printDocById("chq-pur-preview-" + docView.id, "Purchase " + (docView.invoiceNo || ""), fmt);
+          else if (target === "receipt" && receiptView) printDocById("chq-rcp-preview-" + receiptView.id, "Receipt " + (receiptView.receiptNo || ""), fmt);
+        }}
+      />
     </div>
   );
 });

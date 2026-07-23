@@ -17,6 +17,7 @@ import { deriveInventoryEconomics, isInventoryReconcileOk } from "../accounting/
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 import { activeSales, activePurchases, activeSalesReturns, activePurchaseReturns } from "../utils/voidInvoice.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { buildDocPrintHeaderHtml } from "../components/DocPrintHeader.jsx";
 import ReportsAccountsHub from "./ReportsAccountsHub.jsx";
 
 var Reports = React.memo(function (props) {
@@ -78,6 +79,16 @@ var Reports = React.memo(function (props) {
   var Modal = props.Modal;
   var Input = props.Input;
   var WABtn = props.WABtn;
+  var rptLetterhead = function (title, extraMeta) {
+    return buildDocPrintHeaderHtml({
+      settings: state.settings || {},
+      title: title,
+      escapeHtml: escapeHtml,
+      showTopbar: true,
+      showLogo: false,
+      metaRows: Array.isArray(extraMeta) ? extraMeta : [],
+    });
+  };
   var [tab, setTab] = useState("overview");
   var [mainTab, setMainTab] = useState("overview"); /* overview | accounts | integrity | invrecon */
   var [acctType, setAcctType] = useState("summary"); /* summary|sales|purchases|expenses|assets|repairs|parties|pnl */
@@ -379,7 +390,7 @@ var Reports = React.memo(function (props) {
         + "<td style='font-weight:700;color:" + (r.consumedCost != null && r.consumedCost < 0 ? "#b71c1c" : "#1b5e20") + "'>" + (r.consumedCost != null ? getCurrencySymbol() + " " + fmtNum(r.consumedCost) : "-") + "</td>"
         + "</tr>";
     }).join("");
-    var html = "<div class='header'><div><div class='shop'>" + escapeHtml(shopName) + "</div><div class='title'>Raw Material Consumption Report - " + escapeHtml(dateLabel) + "</div></div><div style='text-align:right;font-size:12px;color:#666;'>Printed: " + new Date().toLocaleString() + "</div></div>";
+    var html = rptLetterhead("Raw Material Consumption Report", [{ label: "Period:", value: dateLabel }]);
     html += "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;'>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Raw Materials</div><div style='font-size:22px;font-weight:800;'>" + rawMaterialProductsRpt.length + "</div></div>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Consumed Cost</div><div style='font-size:22px;font-weight:800;color:#1b5e20;'>" + getCurrencySymbol() + " " + fmtNum(rawConsumedReplayCostRpt) + "</div></div>";
@@ -620,7 +631,7 @@ var Reports = React.memo(function (props) {
     var rows = daySales.map(function (s, i) {
       return "<tr><td>" + (i + 1) + "</td><td>" + escapeHtml(s.invoiceNo || s.id.slice(0, 8)) + "</td><td>" + escapeHtml(s.customerName || "Walk-in") + "</td><td>" + s.items.length + " items</td><td>" + getCurrencySymbol() + " " + Number(s.total || 0).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(s.totalTax || 0).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(s.paid || 0).toLocaleString() + "</td><td style='color:" + (s.balance > 0 ? "#e03151" : "#0f9e6e") + "'>" + getCurrencySymbol() + " " + Number(Math.max(0, s.total - (s.paid || 0))).toLocaleString() + "</td></tr>";
     }).join("");
-    var html = "<div class='header'><div><div class='shop'>" + escapeHtml(shopName) + "</div><div class='title'>📅 Daily Sales Report — " + escapeHtml(reportDate) + "</div></div><div style='text-align:right;font-size:12px;color:#666;'>Printed: " + new Date().toLocaleString() + "</div></div>";
+    var html = rptLetterhead("Daily Sales Report", [{ label: "Date:", value: reportDate }]);
     html += "<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px;'>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Sales Count</div><div style='font-size:22px;font-weight:800;'>" + daySales.length + "</div></div>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Revenue</div><div style='font-size:22px;font-weight:800;' class='blue'>" + getCurrencySymbol() + " " + Number(daySalesTotal).toLocaleString() + "</div></div>";
@@ -638,7 +649,7 @@ var Reports = React.memo(function (props) {
     var rows = monthSales.map(function (s, i) {
       return "<tr><td>" + (i + 1) + "</td><td>" + escapeHtml(s.date) + "</td><td>" + escapeHtml(s.invoiceNo || s.id.slice(0, 8)) + "</td><td>" + escapeHtml(s.customerName || "Walk-in") + "</td><td>" + getCurrencySymbol() + " " + Number(s.total || 0).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(s.totalTax || 0).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(s.paid || 0).toLocaleString() + "</td></tr>";
     }).join("");
-    var html = "<div class='header'><div><div class='shop'>" + escapeHtml(shopName) + "</div><div class='title'>📆 Monthly Sales Report — " + escapeHtml(reportMonth) + "</div></div><div style='text-align:right;font-size:12px;color:#666;'>Printed: " + new Date().toLocaleString() + "</div></div>";
+    var html = rptLetterhead("Monthly Sales Report", [{ label: "Month:", value: reportMonth }]);
     html += "<div style='display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px;'>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Orders</div><div style='font-size:22px;font-weight:800;'>" + monthSales.length + "</div></div>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Revenue</div><div style='font-size:22px;font-weight:800;' class='blue'>" + getCurrencySymbol() + " " + Number(monthSalesTotal).toLocaleString() + "</div></div>";
@@ -657,7 +668,7 @@ var Reports = React.memo(function (props) {
       return "<tr><td>" + escapeHtml(p.productId || "—") + "</td><td>" + escapeHtml(p.name) + "</td><td>" + escapeHtml(p.category || "—") + "</td><td style='" + stockColor + ";font-weight:700;'>" + escapeHtml(getBulkDisplayParts(p) ? fmtStockDual(p) : fmtStock(p.stock || 0, p.unit)) + "</td><td>" + getCurrencySymbol() + " " + Number(p.cost || 0).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(p.price || 0).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number((p.price || 0) * (p.stock || 0)).toLocaleString() + "</td></tr>";
     }).join("");
     var totalStockVal = state.products.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0);
-    var html = "<div class='header'><div><div class='shop'>" + escapeHtml(shopName) + "</div><div class='title'>📦 Stock Report</div></div><div style='text-align:right;font-size:12px;color:#666;'>Printed: " + new Date().toLocaleString() + "</div></div>";
+    var html = rptLetterhead("Stock Report");
     html += "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;'>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Total Products</div><div style='font-size:22px;font-weight:800;'>" + state.products.length + "</div></div>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Out of Stock</div><div style='font-size:22px;font-weight:800;color:#e03151;'>" + state.products.filter(function (p) { return (p.stock || 0) === 0; }).length + "</div></div>";
@@ -681,7 +692,7 @@ var Reports = React.memo(function (props) {
       return "<tr><td>" + (i + 1) + "</td><td>" + escapeHtml(c.name) + "</td><td>" + escapeHtml(c.phone || "—") + "</td><td>" + getCurrencySymbol() + " " + Number(c.totalBilled).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(c.totalPaid).toLocaleString() + "</td><td style='" + balColor + ";font-weight:700;'>" + getCurrencySymbol() + " " + Number(c.balance).toLocaleString() + "</td></tr>";
     }).join("");
     var totalBal = custData.reduce(function (a, c) { return a + c.balance; }, 0);
-    var html = "<div class='header'><div><div class='shop'>" + escapeHtml(shopName) + "</div><div class='title'>👥 Customer Balance Report</div></div><div style='text-align:right;font-size:12px;color:#666;'>Printed: " + new Date().toLocaleString() + "</div></div>";
+    var html = rptLetterhead("Customer Balance Report");
     html += "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px;'>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Active Customers</div><div style='font-size:22px;font-weight:800;'>" + custData.length + "</div></div>";
     html += "<div class='card'><div style='font-size:10px;color:#888;text-transform:uppercase;'>Total Receivable</div><div style='font-size:22px;font-weight:800;color:#e03151;'>" + getCurrencySymbol() + " " + Number(totalBal).toLocaleString() + "</div></div>";
@@ -892,10 +903,9 @@ var Reports = React.memo(function (props) {
         }
 
         var printPnL = function () {
-          var shopName = state.settings.shopName || "Techon ERP";
-          var css = "body{font-family:'Plus Jakarta Sans',Arial,sans-serif;padding:20px;color:#111;font-size:13px;}h3{margin:14px 0 6px;font-size:12px;font-weight:800;color:#1a237e;text-transform:uppercase;letter-spacing:.07em;padding:5px 10px;background:#e8eeff;border-left:4px solid #2255d4;}.hdr{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #0d1b3e;padding-bottom:12px;margin-bottom:16px;}.shop{font-size:20px;font-weight:900;color:#0d1b3e;}.sub{font-size:11px;color:#666;margin-top:2px;}.verdict{display:inline-block;padding:8px 22px;border-radius:8px;font-size:18px;font-weight:900;margin:10px 0;border:2px solid;}.pnl{width:480px;border-collapse:collapse;}.pnl td{padding:7px 12px;border-bottom:1px solid #eee;}.ptot{font-weight:900;font-size:15px;border-top:2px solid #2255d4 !important;background:#e8eeff;}.psub{color:#555;}.amt{text-align:right;font-weight:700;}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0;}.card{background:#f8faff;border-radius:6px;padding:10px;border:1px solid #e0e7ff;}.clbl{font-size:9px;color:#888;text-transform:uppercase;}.cval{font-size:16px;font-weight:800;margin-top:3px;}table.dtl{width:100%;border-collapse:collapse;margin:6px 0;font-size:11px;}table.dtl th{background:#1a237e;color:#fff;padding:6px 8px;text-align:left;}table.dtl td{padding:5px 8px;border-bottom:1px solid #eee;}table.dtl tr:nth-child(even){background:#f8faff;}@media print{@page{size:A4;margin:12mm;}body{padding:0;}}";
+          var css = "body{font-family:'Plus Jakarta Sans',Arial,sans-serif;padding:20px;color:#111;font-size:13px;}h3{margin:14px 0 6px;font-size:12px;font-weight:800;color:#1a237e;text-transform:uppercase;letter-spacing:.07em;padding:5px 10px;background:#e8eeff;border-left:4px solid #2255d4;}.verdict{display:inline-block;padding:8px 22px;border-radius:8px;font-size:18px;font-weight:900;margin:10px 0;border:2px solid;}.pnl{width:480px;border-collapse:collapse;}.pnl td{padding:7px 12px;border-bottom:1px solid #eee;}.ptot{font-weight:900;font-size:15px;border-top:2px solid #2255d4 !important;background:#e8eeff;}.psub{color:#555;}.amt{text-align:right;font-weight:700;}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0;}.card{background:#f8faff;border-radius:6px;padding:10px;border:1px solid #e0e7ff;}.clbl{font-size:9px;color:#888;text-transform:uppercase;}.cval{font-size:16px;font-weight:800;margin-top:3px;}table.dtl{width:100%;border-collapse:collapse;margin:6px 0;font-size:11px;}table.dtl th{background:#1a237e;color:#fff;padding:6px 8px;text-align:left;}table.dtl td{padding:5px 8px;border-bottom:1px solid #eee;}table.dtl tr:nth-child(even){background:#f8faff;}@media print{@page{size:A4;margin:12mm;}body{padding:0;}}";
           var vBg = isProfit ? "#e8f5e9" : "#fde8ed"; var vCol = isProfit ? "#1b5e20" : "#b71c1c"; var vBdr = isProfit ? "#a5d6a7" : "#f9a8ba";
-          var h = "<div class='hdr'><div><div class='shop'>" + escapeHtml(shopName) + "</div>" + (state.settings.address ? "<div class='sub'>" + escapeHtml(state.settings.address) + "</div>" : "") + (state.settings.phone ? "<div class='sub'>Tel: " + escapeHtml(state.settings.phone) + "</div>" : "") + "</div><div style='text-align:right'><div style='font-size:16px;font-weight:800;color:#2255d4;'>Profit &amp; Loss Report</div><div class='sub'>" + range.label + "</div><div class='sub'>Printed: " + new Date().toLocaleString() + "</div></div></div>";
+          var h = rptLetterhead("Profit & Loss Report", [{ label: "Period:", value: range.label }]);
           h += "<div class='verdict' style='background:" + vBg + ";color:" + vCol + ";border-color:" + vBdr + "'>" + (isProfit ? "&#x2705; PROFIT" : "&#x274C; LOSS") + " &mdash; " + getCurrencySymbol() + " " + Number(Math.abs(netProfit)).toLocaleString() + "</div>";
           h += "<h3>P&amp;L Statement</h3><table class='pnl'><tbody>";
           h += "<tr><td>Sales Revenue</td><td class='amt' style='color:#1565c0'>" + getCurrencySymbol() + " " + Number(totalRevenue).toLocaleString() + "</td></tr>";
@@ -2125,7 +2135,7 @@ var Reports = React.memo(function (props) {
                     rows += "<tr><td>" + serial + "</td><td>" + escapeHtml(a.date) + "</td><td style='font-weight:600'>" + escapeHtml(a.name) + "</td><td>" + escapeHtml(a.category) + "</td><td style='font-weight:700;color:#e65100'>" + getCurrencySymbol() + " " + Number(a.amount).toLocaleString() + "</td><td>" + escapeHtml(a.note || "-") + "</td></tr>";
                   });
                   var fullAssets = "<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>Assets Register</title><style>" + css2 + "</style></head><body>";
-                  fullAssets += "<div class='hdr'><div><div class='shop'>" + escapeHtml(shopName) + "</div>" + (addr ? "<div class='sub'>" + escapeHtml(addr) + "</div>" : "") + (phone ? "<div class='sub'>Tel: " + escapeHtml(phone) + "</div>" : "") + "</div><div style='text-align:right'><div class='title'>Assets Register</div><div class='sub'>Filter: " + filterLabel + "</div><div class='sub'>Printed: " + new Date().toLocaleString() + "</div></div></div>";
+                  fullAssets += rptLetterhead("Assets Register", [{ label: "Filter:", value: filterLabel }]);
                   fullAssets += "<table><thead><tr><th>#</th><th>Date</th><th>Asset Name</th><th>Category</th><th>Amount</th><th>Note</th></tr></thead><tbody>" + rows + "<tr class='tot'><td colspan='4'>TOTAL (" + filteredA.length + " assets)</td><td>" + getCurrencySymbol() + " " + Number(totalPrint).toLocaleString() + "</td><td></td></tr></tbody></table>";
                   fullAssets += "</body></html>";
                   openPrintWindow(fullAssets, { width: 1000, height: 750, delay: 500 });
@@ -2451,10 +2461,7 @@ var Reports = React.memo(function (props) {
           html += ".footer{text-align:center;font-size:10px;color:#aaa;margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;}";
           html += "@media print{body{padding:16px;}}</style></head><body>";
 
-          html += "<div class='hdr'><div><div class='shop'>" + escapeHtml(shopName) + "</div>";
-          if (addr) html += "<div class='sub'>" + escapeHtml(addr) + "</div>";
-          if (phone) html += "<div class='sub'>Tel: " + escapeHtml(phone) + "</div>";
-          html += "</div><div><div class='title'>Balance Sheet</div><div class='sub'>As at: " + escapeHtml(printedOn) + "</div></div></div>";
+          html += rptLetterhead("Balance Sheet", [{ label: "As at:", value: printedOn }]);
 
           html += "<div class='layout'>";
 
@@ -3037,16 +3044,8 @@ var Reports = React.memo(function (props) {
                 var tblRow = function (cells) { return "<tr>" + cells.map(function (c, i) { return "<td" + (i === 0 ? " style='font-weight:600;'" : "") + ">" + c + "</td>"; }).join("") + "</tr>"; };
                 var badge = function (txt, bg, color) { return "<span style='background:" + bg + ";color:" + color + ";padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;'>" + txt + "</span>"; };
 
-                var html = "<div class='header'><div><div class='shop'>" + escapeHtml(shopName) + "</div>";
-                if (addr) html += "<div class='sub'>" + addr + "</div>";
-                if (phone) html += "<div class='sub'>Tel: " + phone + (phone2 ? " / " + phone2 : "") + "</div>";
-                if (email) html += "<div class='sub'>" + email + "</div>";
-                if (website) html += "<div class='sub'>" + website + "</div>";
-                if (brn) html += "<div class='sub'>BRN: " + brn + "</div>";
-                html += "</div><div style='text-align:right'><div class='title'>Complete Business Report</div>";
-                html += "<div class='sub'>Period: " + rf + " to " + rt + "</div>";
-                html += "<div class='sub'>Printed: " + new Date().toLocaleString() + "</div>";
-                html += "</div></div>" + hr;
+                var html = rptLetterhead("Complete Business Report", [{ label: "Period:", value: rf + " to " + rt }]);
+                html += "<hr/>";
 
                 html += sec("1. PROFIT & LOSS STATEMENT");
                 html += "<table style='width:480px'>";

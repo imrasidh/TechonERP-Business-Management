@@ -75,101 +75,143 @@ var AuditLog = function (props) {
     return "📝";
   };
 
+  var saleEvents = log.filter(function (e) { return e.action.includes("Sale"); }).length;
+  var purchaseEvents = log.filter(function (e) { return e.action.includes("Purchase"); }).length;
+  var paymentEvents = log.filter(function (e) { return e.action.includes("Payment"); }).length;
+  var totalPages = Math.max(1, Math.ceil(filtered.length / AUDIT_PAGE_SIZE));
+
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-        <StatCard money={false} label="Total Entries" value={log.length} accent={C.blue} icon="📋" sub="all recorded actions" />
-        <StatCard money={false} label="Sale Events" value={log.filter(function (e) { return e.action.includes("Sale"); }).length} accent={C.cyan} icon="🧾" sub="creates + edits" />
-        <StatCard money={false} label="Purchase Events" value={log.filter(function (e) { return e.action.includes("Purchase"); }).length} accent={C.purple} icon="🛒" sub="creates + edits" />
-        <StatCard money={false} label="Payment Events" value={log.filter(function (e) { return e.action.includes("Payment"); }).length} accent={C.green} icon="💳" sub="receivables + payables" />
-      </div>
-
-      <Card>
-        <CardTitle
-          sub={filtered.length + " entries"}
-          action={
-            <div style={{ display: "flex", gap: 6 }}>
-              <Btn sm col="gray" onClick={refresh}>↻ Refresh</Btn>
-              <Btn sm col="red" onClick={clearLog}>🗑 Clear Log</Btn>
+    <div className="erp-page erp-arap-modern is-audit">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">AL</div>
+            <div>
+              <h1 className="erp-arap-header-title">Audit Log</h1>
+              <p className="erp-arap-header-sub">Activity trail · sales, purchases &amp; payments</p>
             </div>
-          }
-        >Audit Log</CardTitle>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: 2, minWidth: 200 }}>
-            <Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search action or reference..." />
           </div>
-          <div style={{ display: "flex", gap: 5 }}>
-            {ACTION_TYPES.map(function (t) {
-              return (
-                <button key={t} onClick={function () { setFilterType(t); }}
-                  style={{ padding: "7px 12px", borderRadius: 7, border: "1.5px solid " + (filterType === t ? C.accent : C.border), background: filterType === t ? C.accentSoft : "#fff", color: filterType === t ? C.accent : C.muted, fontWeight: 700, fontSize: 11.5, cursor: "pointer" }}>
-                  {t}
-                </button>
-              );
-            })}
+          <div className="erp-arap-kpi-row" aria-label="Audit totals">
+            <div className="erp-arap-kpi is-slate">
+              <span className="erp-arap-kpi-lbl">Total entries</span>
+              <span className="erp-arap-kpi-val">{log.length}</span>
+              <span className="erp-arap-kpi-sub">all recorded actions</span>
+            </div>
+            <div className="erp-arap-kpi is-blue">
+              <span className="erp-arap-kpi-lbl">Sale events</span>
+              <span className="erp-arap-kpi-val">{saleEvents}</span>
+              <span className="erp-arap-kpi-sub">creates + edits</span>
+            </div>
+            <div className="erp-arap-kpi is-purple">
+              <span className="erp-arap-kpi-lbl">Purchase events</span>
+              <span className="erp-arap-kpi-val">{purchaseEvents}</span>
+              <span className="erp-arap-kpi-sub">creates + edits</span>
+            </div>
+            <div className="erp-arap-kpi is-green">
+              <span className="erp-arap-kpi-lbl">Payment events</span>
+              <span className="erp-arap-kpi-val">{paymentEvents}</span>
+              <span className="erp-arap-kpi-sub">receivables + payables</span>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+            <button type="button" className="erp-arap-btn-clear" onClick={refresh}>Refresh</button>
+            <button type="button" className="erp-arap-add is-out" onClick={clearLog} style={{ background: "linear-gradient(180deg,#f87171 0%,#b91c1c 100%)" }}>
+              <span className="erp-arap-add-ico" aria-hidden="true">×</span>
+              <span>Clear Log</span>
+            </button>
           </div>
         </div>
+        <div className="erp-arap-tabs" role="tablist" aria-label="Audit action filters">
+          {ACTION_TYPES.map(function (t) {
+            var active = filterType === t;
+            return (
+              <button
+                key={t}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={"erp-arap-tab" + (active ? " is-active" : "")}
+                onClick={function () { setFilterType(t); }}
+              >
+                <span>{t}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
-        {filtered.length === 0 ? (
-          <div style={{ padding: "40px 0", textAlign: "center", color: C.muted }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
-            <div style={{ fontWeight: 600 }}>{log.length === 0 ? "No audit entries yet. Actions will be logged as you use the ERP." : "No matching entries found."}</div>
-          </div>
-        ) : (
-          <React.Fragment>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr><TH>Timestamp</TH><TH>Action</TH><TH>Reference</TH><TH>User</TH><TH></TH></tr>
-                </thead>
-                <tbody>
-                  {filtered.slice(auditPage * AUDIT_PAGE_SIZE, (auditPage + 1) * AUDIT_PAGE_SIZE).map(function (e, i) {
-                    var color = ACTION_COLOR(e.action);
-                    return (
-                      <TR key={e.id} i={i} onClick={function () { setViewEntry(e); }} style={{ cursor: "pointer" }}>
-                        <td style={{ padding: "10px 14px", fontSize: 12, color: C.muted, whiteSpace: "nowrap" }}>{e.timestamp}</td>
-                        <td style={{ padding: "10px 14px" }}>
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontSize: 14 }}>{ACTION_ICON(e.action)}</span>
-                            <span style={{ fontWeight: 700, color: color, fontSize: 13 }}>{e.action}</span>
-                          </span>
-                        </td>
-                        <td style={{ padding: "10px 14px" }}>
-                          <span style={{ fontFamily: "monospace", fontSize: 12, background: C.accentSoft, color: C.accent, padding: "2px 8px", borderRadius: 5 }}>{e.reference || "—"}</span>
-                        </td>
-                        <td style={{ padding: "10px 14px", fontSize: 12, color: C.muted }}>{e.user || "Admin"}</td>
-                        <td style={{ padding: "10px 14px", fontSize: 11, color: C.accent }}>View →</td>
-                      </TR>
-                    );
-                  })}
-                </tbody>
-              </table>
+      <div className="erp-arap-body">
+        <div className="erp-arap-panel">
+          <div className="erp-arap-toolbar">
+            <div className="erp-arap-search-wrap">
+              <input
+                className="erp-arap-field"
+                value={search}
+                onChange={function (e) { setSearch(e.target.value); }}
+                placeholder="Search action or reference…"
+                aria-label="Search audit log"
+              />
             </div>
-            {/* Pagination controls */}
-            {filtered.length > AUDIT_PAGE_SIZE && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", marginTop: 8 }}>
-                <div style={{ fontSize: 12, color: C.muted }}>
-                  Showing {auditPage * AUDIT_PAGE_SIZE + 1}–{Math.min((auditPage + 1) * AUDIT_PAGE_SIZE, filtered.length)} of {filtered.length} entries
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={function () { setAuditPage(0); }} disabled={auditPage === 0}
-                    style={{ padding: "6px 12px", borderRadius: 7, border: "1.5px solid " + C.border, background: auditPage === 0 ? C.borderLight : "#fff", cursor: auditPage === 0 ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 12 }}>«</button>
-                  <button onClick={function () { setAuditPage(function (p) { return Math.max(0, p - 1); }); }} disabled={auditPage === 0}
-                    style={{ padding: "6px 14px", borderRadius: 7, border: "1.5px solid " + C.border, background: auditPage === 0 ? C.borderLight : "#fff", cursor: auditPage === 0 ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 12 }}>‹ Prev</button>
-                  <span style={{ padding: "6px 14px", fontSize: 12, fontWeight: 700, color: C.text }}>
-                    Page {auditPage + 1} / {Math.ceil(filtered.length / AUDIT_PAGE_SIZE)}
-                  </span>
-                  <button onClick={function () { setAuditPage(function (p) { return Math.min(Math.ceil(filtered.length / AUDIT_PAGE_SIZE) - 1, p + 1); }); }} disabled={(auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length}
-                    style={{ padding: "6px 14px", borderRadius: 7, border: "1.5px solid " + C.border, background: (auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length ? C.borderLight : "#fff", cursor: (auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 12 }}>Next ›</button>
-                  <button onClick={function () { setAuditPage(Math.ceil(filtered.length / AUDIT_PAGE_SIZE) - 1); }} disabled={(auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length}
-                    style={{ padding: "6px 12px", borderRadius: 7, border: "1.5px solid " + C.border, background: (auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length ? C.borderLight : "#fff", cursor: (auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length ? "not-allowed" : "pointer", fontWeight: 700, fontSize: 12 }}>»</button>
-                </div>
+            {search ? (
+              <button type="button" className="erp-arap-btn-clear" onClick={function () { setSearch(""); }}>Clear</button>
+            ) : null}
+            <span className="erp-arap-filter-meta">{filtered.length} shown · {log.length} total</span>
+          </div>
+          <div className="erp-arap-table-wrap">
+            <table className="erp-arap-table">
+              <thead>
+                <tr>
+                  <th style={{ width: "22%" }}>Timestamp</th>
+                  <th style={{ width: "34%" }}>Action</th>
+                  <th style={{ width: "22%" }}>Reference</th>
+                  <th style={{ width: "12%" }}>User</th>
+                  <th style={{ width: "10%" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="erp-arap-empty">
+                      {log.length === 0 ? "No audit entries yet. Actions will be logged as you use the ERP." : "No matching entries found."}
+                    </td>
+                  </tr>
+                )}
+                {filtered.slice(auditPage * AUDIT_PAGE_SIZE, (auditPage + 1) * AUDIT_PAGE_SIZE).map(function (e) {
+                  var color = ACTION_COLOR(e.action);
+                  return (
+                    <tr key={e.id} className="table-row-hover" style={{ cursor: "pointer" }} onClick={function () { setViewEntry(e); }}>
+                      <td style={{ whiteSpace: "nowrap", color: "#64748b", fontSize: 12 }}>{e.timestamp}</td>
+                      <td>
+                        <span className="erp-arap-action-tone" style={{ color: color }}>
+                          <span aria-hidden="true">{ACTION_ICON(e.action)}</span>
+                          {e.action}
+                        </span>
+                      </td>
+                      <td><span className="erp-arap-ref-pill">{e.reference || "—"}</span></td>
+                      <td style={{ color: "#64748b" }}>{e.user || "Admin"}</td>
+                      <td style={{ color: "var(--arap-accent)", fontWeight: 700, fontSize: 11 }}>View →</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {filtered.length > AUDIT_PAGE_SIZE ? (
+            <div className="erp-arap-foot">
+              <span className="erp-arap-filter-meta">
+                Showing {auditPage * AUDIT_PAGE_SIZE + 1}–{Math.min((auditPage + 1) * AUDIT_PAGE_SIZE, filtered.length)} of {filtered.length}
+              </span>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <button type="button" className="erp-arap-btn-clear" disabled={auditPage === 0} onClick={function () { setAuditPage(0); }}>«</button>
+                <button type="button" className="erp-arap-btn-clear" disabled={auditPage === 0} onClick={function () { setAuditPage(function (p) { return Math.max(0, p - 1); }); }}>Prev</button>
+                <span className="erp-arap-filter-meta">Page {auditPage + 1} / {totalPages}</span>
+                <button type="button" className="erp-arap-btn-clear" disabled={(auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length} onClick={function () { setAuditPage(function (p) { return Math.min(totalPages - 1, p + 1); }); }}>Next</button>
+                <button type="button" className="erp-arap-btn-clear" disabled={(auditPage + 1) * AUDIT_PAGE_SIZE >= filtered.length} onClick={function () { setAuditPage(totalPages - 1); }}>»</button>
               </div>
-            )}
-          </React.Fragment>
-        )}
-      </Card>
+            </div>
+          ) : null}
+        </div>
+      </div>
 
       {viewEntry && (
         <Modal title={"Audit Entry — " + viewEntry.action} onClose={function () { setViewEntry(null); }} medium>

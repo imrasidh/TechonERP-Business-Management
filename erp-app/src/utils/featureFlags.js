@@ -2,7 +2,8 @@
  * Optional module toggles — settings override industry profile defaults.
  * Main PC: admin (mainModuleToggles) and staff/cashier (staffModuleToggles) are separate.
  * Counter PC uses counterModuleToggles.
- * Sales (pos) and Settings always stay on; every other sidebar screen is toggleable.
+ * Sales (pos) and Settings always stay on; core ERP screens stay on.
+ * Settings → Modules only exposes optional POS / COD extras.
  */
 import { hydrateCategoryGroupSettings } from "./categoryGroups.js";
 import { COMPUTER_SHOP_EDITION } from "../productionConfig.js";
@@ -10,7 +11,17 @@ import { COMPUTER_SHOP_EDITION } from "../productionConfig.js";
 /** Nav page ids that cannot be disabled. */
 export var CORE_NAV_IDS = ["pos", "settings"];
 
-/** Every toggleable screen/feature with a short description for Settings → Modules. */
+/**
+ * Module ids still shown in Settings → Modules.
+ * Everything else in MODULE_TOGGLE_DEFS stays permanently enabled.
+ */
+export var SETTINGS_OPTIONAL_MODULE_IDS = ["freeItems", "coddatabase", "codCostProfit"];
+
+export function isSettingsOptionalModule(moduleId) {
+  return SETTINGS_OPTIONAL_MODULE_IDS.indexOf(moduleId) >= 0 || moduleId === "codSalesTrack";
+}
+
+/** Every toggleable screen/feature (runtime + Settings). Settings UI filters via SETTINGS_OPTIONAL_MODULE_IDS. */
 export var MODULE_TOGGLE_DEFS = [
   { id: "dashboard", label: "Dashboard", group: "Main", blurb: "Business overview — today's sales, stock alerts, and quick stats." },
   { id: "invoices", label: "Invoices", group: "Main", blurb: "Browse, reprint, and edit saved invoices and receipts." },
@@ -28,11 +39,11 @@ export var MODULE_TOGGLE_DEFS = [
   { id: "reports", label: "Reports", group: "Insight", blurb: "Profit, stock, tax, and other business analytics reports." },
   { id: "barcodeprint", label: "Barcodes", group: "Insight", blurb: "Design label layouts and print product barcode stickers.", profileKey: "barcode" },
   { id: "auditlog", label: "Audit Log", group: "Insight", blurb: "Who changed what and when — security and traceability." },
-  { id: "freeItems", label: "Free items (complimentary)", group: "POS options", blurb: "Allow complimentary gift lines on the Sales screen.", navId: null },
+  { id: "freeItems", label: "Free items (complimentary)", group: "POS", blurb: "Allow complimentary gift lines on the Sales screen.", navId: null },
   { id: "posLineComments", label: "Line comments (serial / note)", group: "POS options", blurb: "Show a comment field on each Sales cart line for serial numbers, IMEI, or notes.", navId: null },
   { id: "codSalesTrack", label: "COD track (Sales)", group: "POS options", blurb: "Show COD / delivery tracking fields on the Sales screen. Saved sales copy into COD Database when enabled.", navId: null },
-  { id: "coddatabase", label: "COD Database (tracker)", group: "COD Database", blurb: "Sidebar page for COD and delivery order tracking, status, and address labels.", navId: "coddatabase" },
-  { id: "codCostProfit", label: "Costs & profit", group: "COD Database", blurb: "Costs & profit tab — order costs, shop & partner balances, withdrawals, and partner settings. COD-only; does not touch main ERP accounts.", navId: null, parentModule: "coddatabase" },
+  { id: "coddatabase", label: "COD Tracker", group: "COD", blurb: "COD and delivery order tracking page, status updates, and address labels. Also enables COD fields on Sales.", navId: "coddatabase" },
+  { id: "codCostProfit", label: "Costs & profit", group: "COD", blurb: "Costs & profit tab — order costs, shop & partner balances, withdrawals, and partner settings.", navId: null, parentModule: "coddatabase" },
 ];
 
 function defaultForModule(id, businessType, profile) {
@@ -186,6 +197,13 @@ export function getModuleTogglesForTerminal(settings, businessType, profile, net
 }
 
 export function isModuleEnabled(settings, businessType, profile, moduleId, netRole, userRole) {
+  /* Core ERP screens are always available — Settings only toggles POS/COD extras. */
+  if (!isSettingsOptionalModule(moduleId) && moduleId !== "posLineComments") return true;
+  if (moduleId === "posLineComments") {
+    var togglesPc = getModuleTogglesForTerminal(settings, businessType, profile, netRole, userRole);
+    if (togglesPc.posLineComments === true || togglesPc.posLineComments === false) return togglesPc.posLineComments === true;
+    return !!COMPUTER_SHOP_EDITION;
+  }
   var toggles = getModuleTogglesForTerminal(settings, businessType, profile, netRole, userRole);
   return toggles[moduleId] === true;
 }
@@ -265,10 +283,19 @@ export function hydrateFeatureFlagDefaults(settings, businessType, profile) {
 function packToggleForm(formToggles) {
   var toggles = {};
   MODULE_TOGGLE_DEFS.forEach(function (m) {
-    toggles[m.id] = formToggles[m.id] === true;
+    if (isSettingsOptionalModule(m.id)) {
+      toggles[m.id] = formToggles[m.id] === true;
+    } else if (m.id === "posLineComments") {
+      /* Hidden from Settings — keep computer-shop default / existing value. */
+      if (formToggles[m.id] === true || formToggles[m.id] === false) toggles[m.id] = formToggles[m.id] === true;
+      else toggles[m.id] = !!COMPUTER_SHOP_EDITION;
+    } else {
+      toggles[m.id] = true;
+    }
   });
-  /* COD Database without POS track is useless — keep both aligned on save. */
+  /* COD Tracker without POS track is useless — keep both aligned on save. */
   if (toggles.coddatabase) toggles.codSalesTrack = true;
+  if (!toggles.coddatabase) toggles.codCostProfit = false;
   return toggles;
 }
 

@@ -10,7 +10,7 @@ export var ROLE_LABELS = {
 
 /** Shown in Settings → User Management when creating a cashier account. */
 export var CASHIER_ACCESS_SUMMARY =
-  "POS and day-to-day screens; void/edit invoice details and settings are admin-only (enforced in storage writes)";
+  "POS and day-to-day screens; void/edit invoice details and settings are admin-only. Admin password also opens cashier/manager logins.";
 
 var ROLE_PERMISSIONS = {
   admin: {

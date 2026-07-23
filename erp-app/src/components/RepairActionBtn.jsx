@@ -22,10 +22,13 @@ export function RepairActionBtn(props) {
   delete rest.tone;
   delete rest.sm;
   delete rest.children;
+  var extraClass = rest.className || "";
+  delete rest.className;
   return (
     <button
       {...rest}
       type={props.type != null ? props.type : "button"}
+      className={"erp-rep-action-btn tone-" + tone + (sm ? " is-sm" : "") + (extraClass ? " " + extraClass : "")}
       style={{
         height: sm ? "auto" : 32,
         minHeight: sm ? 28 : 32,

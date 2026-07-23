@@ -498,6 +498,25 @@ export function mergeSettingsFromServer(local, remote) {
   return out;
 }
 
+/** Document keys (not id-row arrays): keep local while saving, else newest updatedAt wins. */
+function mergeDocumentPreferRecentLocal(local, remote, storageKey) {
+  if (local === undefined || local === null) return remote;
+  if (remote === undefined || remote === null) return local;
+  if (isRestoreGraceActive()) return local;
+  if (isRecentLocalWrite(storageKey) || isSyncKeyPending(storageKey)) return local;
+  var lt = "";
+  var rt = "";
+  try {
+    lt = String((local && local.updatedAt) || "");
+    rt = String((remote && remote.updatedAt) || "");
+  } catch (_e) {}
+  if (lt || rt) {
+    if (lt > rt) return local;
+    if (rt > lt) return remote;
+  }
+  return remote;
+}
+
 export function mergeServerStateWithLocal(localCache, serverData) {
   if (!serverData || typeof serverData !== "object") {
     return localCache && typeof localCache === "object" ? localCache : serverData;
@@ -514,7 +533,15 @@ export function mergeServerStateWithLocal(localCache, serverData) {
       out[key] = mergeSettingsFromServer(localCache[key], serverData[key]);
       return;
     }
+    if (key === "tc3_codProfitSettings") {
+      out[key] = mergeDocumentPreferRecentLocal(localCache[key], serverData[key], key);
+      return;
+    }
     if (!MERGEABLE_RECORD_ARRAY_KEYS[key]) {
+      if (isRecentLocalWrite(key) || isSyncKeyPending(key)) {
+        if (localCache[key] !== undefined) out[key] = localCache[key];
+        return;
+      }
       if (out[key] === undefined && localCache[key] !== undefined) out[key] = localCache[key];
       return;
     }
@@ -522,5 +549,9 @@ export function mergeServerStateWithLocal(localCache, serverData) {
     var localArr = Array.isArray(localCache[key]) ? localCache[key] : [];
     out[key] = mergeRecordArraysForPull(localArr, remoteArr, key);
   });
+  /* Partners UI reads profit settings; keep legacy partners array aligned. */
+  if (out.tc3_codProfitSettings && typeof out.tc3_codProfitSettings === "object" && Array.isArray(out.tc3_codProfitSettings.shareholders)) {
+    out.tc3_codPartners = out.tc3_codProfitSettings.shareholders.slice();
+  }
   return reconcileMergedVoidReturnState(out, localCache, serverData);
 }

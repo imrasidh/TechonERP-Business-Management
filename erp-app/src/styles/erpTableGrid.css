@@ -1,0 +1,59 @@
+/* Universal record-table grid lines (column + row) across ERP modules */
+
+.erp-app-root .erp-page-content .erp-page table:not(.erp-sale-excel-table):not(.erp-pur-entry-grid),
+.erp-app-root .erp-page-content .erp-arap-table,
+.erp-app-root .erp-page-content .erp-arap-sheet,
+.erp-app-root .erp-page-content .erp-pty-table,
+.erp-app-root .erp-page-content .erp-inv-table,
+.erp-app-root .erp-page-content .erp-inv-products-table,
+.erp-app-root .erp-page-content .erp-inv-activity-table,
+.erp-app-root .erp-page-content .erp-pur-table,
+.erp-app-root .erp-page-content .erp-si-table,
+.erp-app-root .erp-page-content .erp-rpt-table,
+.erp-app-root .erp-page-content .erp-sale-table,
+.erp-app-root .erp-page-content .erp-acc-gl-table {
+  border-collapse: collapse !important;
+  border: 1px solid #d0dae6 !important;
+}
+
+.erp-app-root .erp-page-content .erp-page table:not(.erp-sale-excel-table):not(.erp-pur-entry-grid) thead th,
+.erp-app-root .erp-page-content .erp-arap-table thead th,
+.erp-app-root .erp-page-content .erp-arap-sheet th,
+.erp-app-root .erp-page-content .erp-pty-table thead th,
+.erp-app-root .erp-page-content .erp-inv-table thead th,
+.erp-app-root .erp-page-content .erp-inv-products-table thead th,
+.erp-app-root .erp-page-content .erp-inv-activity-table thead th,
+.erp-app-root .erp-page-content .erp-pur-table thead th,
+.erp-app-root .erp-page-content .erp-si-table thead th,
+.erp-app-root .erp-page-content .erp-rpt-table thead th,
+.erp-app-root .erp-page-content .erp-sale-table thead th,
+.erp-app-root .erp-page-content .erp-acc-modern table thead th,
+.erp-app-root .erp-page-content .erp-acc-gl-table thead th {
+  border: 1px solid #c5d4e8 !important;
+}
+
+.erp-app-root .erp-page-content .erp-page table:not(.erp-sale-excel-table):not(.erp-pur-entry-grid) tbody td,
+.erp-app-root .erp-page-content .erp-arap-table tbody td,
+.erp-app-root .erp-page-content .erp-arap-sheet td,
+.erp-app-root .erp-page-content .erp-pty-table tbody td,
+.erp-app-root .erp-page-content .erp-inv-table tbody td,
+.erp-app-root .erp-page-content .erp-inv-products-table tbody td,
+.erp-app-root .erp-page-content .erp-inv-activity-table tbody td,
+.erp-app-root .erp-page-content .erp-pur-table tbody td,
+.erp-app-root .erp-page-content .erp-si-table tbody td,
+.erp-app-root .erp-page-content .erp-rpt-table tbody td,
+.erp-app-root .erp-page-content .erp-sale-table tbody td,
+.erp-app-root .erp-page-content .erp-acc-modern table tbody td,
+.erp-app-root .erp-page-content .erp-acc-gl-table tbody td {
+  border: 1px solid #e2e8f0 !important;
+}
+
+/* Keep print / invoice preview documents free of forced grid chrome */
+.erp-app-root .erp-page-content .erp-si-fv table,
+.erp-app-root .erp-page-content .erp-si-fv table th,
+.erp-app-root .erp-page-content .erp-si-fv table td,
+.erp-app-root .erp-page-content .erp-rpt-fv table,
+.erp-app-root .erp-page-content .erp-rpt-fv table th,
+.erp-app-root .erp-page-content .erp-rpt-fv table td {
+  border-color: inherit;
+}

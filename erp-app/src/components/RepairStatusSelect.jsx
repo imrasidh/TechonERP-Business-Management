@@ -16,20 +16,32 @@ var STATUS_STYLE = {
   Returned: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
 };
 
+var ACTION_STYLE = {
+  Accepted: { bg: "#fff7ed", color: "#c2410c", border: "#fed7aa" },
+  "Third Party": { bg: "#f5f3ff", color: "#6d28d9", border: "#ddd6fe" },
+  Ready: { bg: "#ecfdf5", color: "#047857", border: "#a7f3d0" },
+  Delivered: { bg: "#eff6ff", color: "#1d4ed8", border: "#bfdbfe" },
+  Returned: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
+  /* Receive from 3P → Ready path */
+  __receive__: { bg: "#ecfdf5", color: "#047857", border: "#a7f3d0" },
+  __invoice__: { bg: "#ecfeff", color: "#0e7490", border: "#a5f3fc" },
+  __void__: { bg: "#fef2f2", color: "#b91c1c", border: "#fecaca" },
+};
+
 var ACTION_COLOR = {
   Accepted: "#c2410c",
   "Third Party": "#6d28d9",
   Ready: "#047857",
   Delivered: "#1d4ed8",
   Returned: "#b91c1c",
-  __receive__: "#6d28d9",
+  __receive__: "#047857",
   __invoice__: "#0e7490",
   __void__: "#b91c1c",
 };
 
 function styleForAction(value) {
-  var color = ACTION_COLOR[value] || (STATUS_STYLE[value] && STATUS_STYLE[value].color) || "#334155";
-  var pal = STATUS_STYLE[value] || STATUS_STYLE.Accepted;
+  var pal = ACTION_STYLE[value] || STATUS_STYLE[value] || { bg: "#f8fafc", color: "#334155", border: "#e2e8f0" };
+  var color = pal.color || ACTION_COLOR[value] || "#334155";
   return { bg: pal.bg || "#f8fafc", color: color, border: pal.border || "#e2e8f0", dot: color };
 }
 
@@ -108,11 +120,11 @@ export function RepairStatusSelect(props) {
     var place = function () {
       if (!btnRef.current) return;
       var rect = btnRef.current.getBoundingClientRect();
-      var width = Math.max(compact ? 118 : 128, rect.width);
+      var width = Math.max(compact ? 132 : 148, rect.width + 8);
       var left = rect.left;
       if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
-      var top = rect.bottom + 2;
-      var approxHeight = 4 + options.length * 28;
+      var top = rect.bottom + 4;
+      var approxHeight = 8 + options.length * 34;
       if (top + approxHeight > window.innerHeight - 8) {
         top = Math.max(8, rect.top - approxHeight - 2);
       }
@@ -148,6 +160,7 @@ export function RepairStatusSelect(props) {
       <button
         ref={btnRef}
         type="button"
+        className="erp-rep-status-btn"
         title={"Status: " + label}
         onClick={function () { setOpen(function (v) { return !v; }); }}
         style={{
@@ -173,6 +186,7 @@ export function RepairStatusSelect(props) {
       </button>
       {open && menuPos ? (
         <div
+          className="erp-rep-status-menu"
           style={{
             position: "fixed",
             top: menuPos.top,
@@ -181,41 +195,64 @@ export function RepairStatusSelect(props) {
             zIndex: 5000,
             background: "#fff",
             border: "1px solid #e2e8f0",
-            borderRadius: 7,
-            boxShadow: "0 6px 16px rgba(15, 23, 42, 0.12)",
-            padding: 3,
+            borderRadius: 9,
+            boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)",
+            padding: 5,
             display: "flex",
             flexDirection: "column",
-            gap: 1,
+            gap: 4,
           }}
         >
           {options.length === 0 ? (
             <div style={{ padding: "6px 8px", fontSize: 11, color: "#64748b" }}>No actions</div>
           ) : (
             options.map(function (opt) {
-              var color = ACTION_COLOR[opt.value] || "#334155";
+              var a = styleForAction(opt.value);
               return (
                 <button
                   key={opt.value}
                   type="button"
+                  className="erp-rep-status-menu-item"
                   onClick={function () { pick(opt.value); }}
                   style={{
                     width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
                     textAlign: "left",
-                    border: "none",
-                    background: "transparent",
-                    color: color,
-                    borderRadius: 5,
-                    padding: "6px 8px",
-                    fontSize: 11.5,
+                    border: "1px solid " + a.border,
+                    background: a.bg,
+                    color: a.color,
+                    borderRadius: 6,
+                    padding: "7px 9px",
+                    fontSize: compact ? 11 : 11.5,
                     fontWeight: 700,
                     fontFamily: "inherit",
                     cursor: "pointer",
                     lineHeight: 1.2,
+                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.65)",
+                    transition: "filter 0.12s ease, transform 0.12s ease",
                   }}
-                  onMouseEnter={function (e) { e.currentTarget.style.background = "#f8fafc"; }}
-                  onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}
+                  onMouseEnter={function (e) {
+                    e.currentTarget.style.filter = "brightness(0.97)";
+                    e.currentTarget.style.transform = "translateY(-0.5px)";
+                  }}
+                  onMouseLeave={function (e) {
+                    e.currentTarget.style.filter = "none";
+                    e.currentTarget.style.transform = "none";
+                  }}
                 >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      background: a.dot || a.color,
+                      flexShrink: 0,
+                      boxShadow: "0 0 0 2px rgba(255,255,255,0.85)",
+                    }}
+                  />
                   {opt.label}
                 </button>
               );

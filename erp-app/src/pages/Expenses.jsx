@@ -103,79 +103,153 @@ var Expenses = function (props) {
   var expPager = usePager(filtered, LIST_PAGE_SIZE);
   var filteredTotal = filtered.reduce(function (a, e) { return a + e.amount; }, 0);
 
+  var topCi = topCat.length ? catInfo(topCat[0]) : null;
+
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 10 }}>
-        <StatCard label="Today" value={todayTotal} accent={C.orange} icon="📅" sub={fmtDate(t)} />
-        <StatCard label="This Month" value={monthTotal} accent={C.purple} icon="📆" sub={thisMonthStr} />
-        <StatCard label="All Time" value={allTotal} accent={C.red} icon="📊" sub={allExp.length + " records"} />
-        <div style={{ background: "#fff", borderRadius: 14, padding: "18px 20px", border: "1.5px solid " + C.border, boxShadow: C.shadowCard }}>
-          <div style={{ fontSize: 10.5, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Top Category</div>
-          {topCat.slice(0, 1).map(function (cn) {
-            var ci = catInfo(cn);
-            return <div key={cn}><div style={{ fontSize: 22, fontWeight: 800, color: ci.color }}>{ci.icon} {ci.name}</div><div style={{ fontSize: 12, color: C.muted, marginTop: 3 }}>{getCurrencySymbol()} {fmtNum(catTotals[cn] || 0)} total</div></div>;
-          })}
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 8 }}>
-        {topCat.map(function (cn) {
-          var ci = catInfo(cn);
-          var pct = allTotal > 0 ? Math.round((catTotals[cn] / allTotal) * 100) : 0;
-          var isActive = filterCat === cn;
-          return (
-            <div key={cn} onClick={function () { setFilterCat(isActive ? "All" : cn); }} style={{ background: isActive ? ci.color + "18" : "#fff", borderRadius: 12, padding: "12px 14px", border: "2px solid " + (isActive ? ci.color : C.border), cursor: "pointer", transition: "all .15s" }}>
-              <div style={{ fontSize: 18, marginBottom: 4 }}>{ci.icon}</div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: isActive ? ci.color : C.textMd, marginBottom: 2 }}>{cn}</div>
-              <div style={{ fontSize: 12, fontWeight: 800, color: isActive ? ci.color : C.text }}>{getCurrencySymbol()} {fmtNum(catTotals[cn] || 0)}</div>
-              <div style={{ marginTop: 6, height: 4, background: C.border, borderRadius: 2 }}>
-                <div style={{ width: pct + "%", height: "100%", background: ci.color, borderRadius: 2 }}></div>
-              </div>
-              <div style={{ fontSize: 10, color: C.muted, marginTop: 3 }}>{pct}% of total</div>
+    <div className="erp-page erp-arap-modern is-exp">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">EX</div>
+            <div>
+              <h1 className="erp-arap-header-title">Expenses</h1>
+              <p className="erp-arap-header-sub">Operating costs · categories &amp; payees</p>
             </div>
-          );
-        })}
-      </div>
-
-      <Card>
-        <CardTitle sub={filtered.length.toLocaleString() + " records — " + getCurrencySymbol() + " " + fmtNum(filteredTotal)} action={<Btn sm col="orange" onClick={function () { setShow(true); }}>+ Add Expense</Btn>}>Expense Records</CardTitle>
-        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: 2 }}><Input value={search} onChange={function (e) { setSearch(e.target.value); }} placeholder="Search description, payee, category..." /></div>
-          <div style={{ flex: 1 }}>
-            <select value={filterCat} onChange={function (e) { setFilterCat(e.target.value); }} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit" }}>
-              <option value="All">All Categories</option>
-              {ECAT_NAMES.map(function (cn) { return <option key={cn}>{cn}</option>; })}
-            </select>
           </div>
-          <div style={{ flex: 1 }}>
-            <input type="month" value={filterMonth} onChange={function (e) { setFilterMonth(e.target.value); }} style={{ width: "100%", border: "1.5px solid " + C.border, borderRadius: 8, padding: "9px 13px", fontSize: 13, fontFamily: "inherit" }} placeholder="Filter month" />
+          <div className="erp-arap-kpi-row" aria-label="Expense totals">
+            <div className="erp-arap-kpi is-orange">
+              <span className="erp-arap-kpi-lbl">Today</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(todayTotal)}</span>
+              <span className="erp-arap-kpi-sub">{fmtDate(t)}</span>
+            </div>
+            <div className="erp-arap-kpi is-purple">
+              <span className="erp-arap-kpi-lbl">This month</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(monthTotal)}</span>
+              <span className="erp-arap-kpi-sub">{thisMonthStr}</span>
+            </div>
+            <div className="erp-arap-kpi is-red">
+              <span className="erp-arap-kpi-lbl">All time</span>
+              <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(allTotal)}</span>
+              <span className="erp-arap-kpi-sub">{allExp.length} records</span>
+            </div>
+            <div className="erp-arap-kpi is-blue">
+              <span className="erp-arap-kpi-lbl">Top category</span>
+              <span className="erp-arap-kpi-val">{topCi ? topCi.name : "—"}</span>
+              <span className="erp-arap-kpi-sub">{topCi ? (getCurrencySymbol() + " " + fmtNum(catTotals[topCat[0]] || 0)) : "no spend yet"}</span>
+            </div>
           </div>
+          <button type="button" className="erp-arap-add" onClick={function () { setShow(true); }}>
+            <span className="erp-arap-add-ico" aria-hidden="true">+</span>
+            <span>Add Expense</span>
+          </button>
         </div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr><TH>Date</TH><TH>Category</TH><TH>Description</TH><TH>Payee</TH><TH>Pay Mode</TH><TH>Ref</TH><TH>Amount</TH><TH></TH></tr></thead>
-          <tbody>
-            {filtered.length === 0 && <tr><td colSpan={8} style={{ padding: 20, textAlign: "center", color: C.muted }}>No expenses found</td></tr>}
-            {expPager.slice.map(function (e, i) {
-              var ci = catInfo(e.category);
+        {topCat.length > 0 ? (
+          <div className="erp-arap-cat-row" aria-label="Top spending categories">
+            {topCat.map(function (cn) {
+              var ci = catInfo(cn);
+              var pct = allTotal > 0 ? Math.round((catTotals[cn] / allTotal) * 100) : 0;
+              var isActive = filterCat === cn;
               return (
-                <TR key={e.id} i={i}>
-                  <TD>{fmtDateFull(e.date)}</TD>
-                  <TD><span style={{ background: ci.color + "18", color: ci.color, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>{ci.icon} {e.category}</span></TD>
-                  <TD bold>{e.description}</TD>
-                  <TD>{e.payee || "—"}</TD>
-                  <TD>{e.payMode || "—"}</TD>
-                  <TD>{e.reference || "—"}</TD>
-                  <TD bold color={C.red}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
-                  <td style={actBtnCellStyle}>
-                    <ActBtn tone="red" title="Delete expense" onClick={function () { setDeleteId(e.id); }} />
-                  </td>
-                </TR>
+                <button
+                  key={cn}
+                  type="button"
+                  className={"erp-arap-cat-chip" + (isActive ? " is-active" : "")}
+                  style={{ color: ci.color }}
+                  onClick={function () { setFilterCat(isActive ? "All" : cn); }}
+                >
+                  <span className="erp-arap-cat-ico" aria-hidden="true">{ci.icon}</span>
+                  <span className="erp-arap-cat-meta">
+                    <span className="erp-arap-cat-name">{cn}</span>
+                    <span className="erp-arap-cat-amt">{getCurrencySymbol()} {fmtNum(catTotals[cn] || 0)} · {pct}%</span>
+                  </span>
+                  <span className="erp-arap-cat-bar" aria-hidden="true"><i style={{ width: pct + "%", background: ci.color }} /></span>
+                </button>
               );
             })}
-          </tbody>
-        </table>
-        <Pager pager={expPager} />
-      </Card>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="erp-arap-body">
+        <div className="erp-arap-panel">
+          <div className="erp-arap-toolbar">
+            <div className="erp-arap-search-wrap">
+              <input
+                className="erp-arap-field"
+                value={search}
+                onChange={function (e) { setSearch(e.target.value); }}
+                placeholder="Search description, payee, category…"
+                aria-label="Search expenses"
+              />
+            </div>
+            <select
+              className="erp-arap-field"
+              value={filterCat}
+              onChange={function (e) { setFilterCat(e.target.value); }}
+              aria-label="Filter category"
+              style={{ maxWidth: 180 }}
+            >
+              <option value="All">All categories</option>
+              {ECAT_NAMES.map(function (cn) { return <option key={cn} value={cn}>{cn}</option>; })}
+            </select>
+            <input
+              className="erp-arap-field"
+              type="month"
+              value={filterMonth}
+              onChange={function (e) { setFilterMonth(e.target.value); }}
+              aria-label="Filter month"
+              style={{ maxWidth: 150 }}
+            />
+            {(search || filterCat !== "All" || filterMonth) ? (
+              <button type="button" className="erp-arap-btn-clear" onClick={function () { setSearch(""); setFilterCat("All"); setFilterMonth(""); }}>Clear</button>
+            ) : null}
+            <span className="erp-arap-filter-meta">{filtered.length} shown · {getCurrencySymbol()} {fmtNum(filteredTotal)}</span>
+          </div>
+          <div className="erp-arap-table-wrap">
+            <table className="erp-arap-table">
+              <thead>
+                <tr>
+                  <th style={{ width: "10%" }}>Date</th>
+                  <th style={{ width: "14%" }}>Category</th>
+                  <th style={{ width: "22%" }}>Description</th>
+                  <th style={{ width: "12%" }}>Payee</th>
+                  <th style={{ width: "11%" }}>Pay Mode</th>
+                  <th style={{ width: "10%" }}>Ref</th>
+                  <th style={{ width: "12%" }}>Amount</th>
+                  <th style={{ width: "9%" }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 && <tr><td colSpan={8} className="erp-arap-empty">No expenses found</td></tr>}
+                {expPager.slice.map(function (e) {
+                  var ci = catInfo(e.category);
+                  return (
+                    <tr key={e.id} className="table-row-hover">
+                      <td>{fmtDateFull(e.date)}</td>
+                      <td>
+                        <span className="erp-arap-badge-cat" style={{ background: ci.color + "18", color: ci.color }}>
+                          <span aria-hidden="true">{ci.icon}</span> {e.category}
+                        </span>
+                      </td>
+                      <td className="erp-arap-src" title={e.description}>{e.description}</td>
+                      <td>{e.payee || "—"}</td>
+                      <td>{e.payMode || "—"}</td>
+                      <td>{e.reference || "—"}</td>
+                      <td className="erp-arap-amt" style={{ color: "#b91c1c", fontWeight: 800 }}>{getCurrencySymbol()} {fmtNum(e.amount)}</td>
+                      <td style={actBtnCellStyle}>
+                        <ActBtn tone="red" title="Delete expense" onClick={function () { setDeleteId(e.id); }} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="erp-arap-foot">
+            <div className="erp-arap-pager-wrap"><Pager pager={expPager} /></div>
+          </div>
+        </div>
+      </div>
 
       {show && (
         <Modal title="Add Expense" onClose={function () { setShow(false); }} wide>

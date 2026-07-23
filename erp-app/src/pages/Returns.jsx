@@ -45,18 +45,85 @@ var Returns = function (props) {
       }
     } catch (e) { /* ignore */ }
   }, []);
+  var salesRetCount = (state.salesReturns || []).length;
+  var purRetCount = (state.purchaseReturns || []).length;
+  var salesHistory = state.salesReturns || [];
+  var purHistory = state.purchaseReturns || [];
+  var salesGoods = salesHistory.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
+  var salesRefunds = salesHistory.filter(function (r) { return r.isRefund; }).reduce(function (a, r) { return a + (r.refundAmount || 0); }, 0);
+  var salesUnits = salesHistory.reduce(function (a, r) { return a + (r.qty || 0); }, 0);
+  var purGoods = purHistory.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
+  var purUnits = purHistory.reduce(function (a, r) { return a + (r.qty || 0); }, 0);
+  var purSuppliers = [...new Set(purHistory.map(function (r) { return r.supplier; }))].length;
+
   return (
-    <div className="erp-page" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "flex", gap: 4, background: "#fff", borderRadius: 12, padding: 5, border: "1.5px solid " + C.border, boxShadow: C.shadowCard, alignSelf: "flex-start" }}>
-        {TABS.map(function (t) {
-          var isA = tab === t[0];
-          return (
-            <button key={t[0]} onClick={function () { setTab(t[0]); }}
-              style={{ background: isA ? "linear-gradient(135deg,#2979ff,#2255d4)" : "transparent", color: isA ? "#fff" : C.textMd, border: "none", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", transition: "all .15s", fontFamily: "inherit", boxShadow: isA ? "0 2px 8px rgba(41,121,255,0.28)" : "none" }}>
-              {t[1]}
-            </button>
-          );
-        })}
+    <div className="erp-page erp-arap-modern is-ret">
+      <div className="erp-arap-chrome">
+        <div className="erp-arap-topbar">
+          <div className="erp-arap-topbar-brand">
+            <div className="erp-arap-brand-ico" aria-hidden="true">RT</div>
+            <div>
+              <h1 className="erp-arap-header-title">Returns</h1>
+              <p className="erp-arap-header-sub">Sales &amp; purchase returns · restock &amp; refunds</p>
+            </div>
+          </div>
+          {tab === "salesreturn" ? (
+            <div className="erp-arap-kpi-row erp-ret-kpis" aria-label="Sales return totals">
+              <div className="erp-arap-kpi is-red">
+                <span className="erp-arap-kpi-lbl">Goods value</span>
+                <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(salesGoods)}</span>
+                <span className="erp-arap-kpi-sub">{salesRetCount} entries</span>
+              </div>
+              <div className="erp-arap-kpi is-orange">
+                <span className="erp-arap-kpi-lbl">Cash refunded</span>
+                <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(salesRefunds)}</span>
+                <span className="erp-arap-kpi-sub">{salesHistory.filter(function (r) { return r.isRefund; }).length} refunds</span>
+              </div>
+              <div className="erp-arap-kpi is-green">
+                <span className="erp-arap-kpi-lbl">Items restocked</span>
+                <span className="erp-arap-kpi-val">{salesUnits}</span>
+                <span className="erp-arap-kpi-sub">total units</span>
+              </div>
+            </div>
+          ) : (
+            <div className="erp-arap-kpi-row erp-ret-kpis" aria-label="Purchase return totals">
+              <div className="erp-arap-kpi is-orange">
+                <span className="erp-arap-kpi-lbl">Purchase returns</span>
+                <span className="erp-arap-kpi-val">{getCurrencySymbol()} {fmtNum(purGoods)}</span>
+                <span className="erp-arap-kpi-sub">{purRetCount} entries</span>
+              </div>
+              <div className="erp-arap-kpi is-purple">
+                <span className="erp-arap-kpi-lbl">Items returned</span>
+                <span className="erp-arap-kpi-val">{purUnits}</span>
+                <span className="erp-arap-kpi-sub">total units</span>
+              </div>
+              <div className="erp-arap-kpi is-blue">
+                <span className="erp-arap-kpi-lbl">Suppliers</span>
+                <span className="erp-arap-kpi-val">{purSuppliers}</span>
+                <span className="erp-arap-kpi-sub">involved</span>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="erp-arap-tabs" role="tablist" aria-label="Return type">
+          {TABS.map(function (t) {
+            var isA = tab === t[0];
+            var count = t[0] === "salesreturn" ? salesRetCount : purRetCount;
+            return (
+              <button
+                key={t[0]}
+                type="button"
+                role="tab"
+                aria-selected={isA}
+                className={"erp-arap-tab" + (isA ? " is-active" : "")}
+                onClick={function () { setTab(t[0]); }}
+              >
+                <span>{t[1]}</span>
+                <span className="erp-arap-tab-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
       {tab === "salesreturn" && <SalesReturnTab
         state={state}
@@ -358,58 +425,66 @@ var SalesReturnTab = function (props) {
     return (r.customer || "").toLowerCase().includes(q) || (r.invoiceNo || "").toLowerCase().includes(q) || (r.productName || "").toLowerCase().includes(q) || (r.returnId || "").toLowerCase().includes(q);
   });
   var histPager = usePager(filteredHistory, LIST_PAGE_SIZE);
-  var totalReturns = history.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
-  var totalRefunds = history.filter(function (r) { return r.isRefund; }).reduce(function (a, r) { return a + (r.refundAmount || 0); }, 0);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-        <StatCard label="Total Returns (goods value)" value={totalReturns} accent={C.red} icon="↩" sub={history.length + " entries · retail value of returned line items"} />
-        <StatCard label="Cash Refunded" value={totalRefunds} accent={C.orange} icon="💸" sub={history.filter(function (r) { return r.isRefund; }).length + " refunds issued"} />
-        <StatCard label="Items Restocked" money={false} value={history.reduce(function (a, r) { return a + (r.qty || 0); }, 0)} accent={C.green} icon="📦" sub="total units returned" />
-      </div>
-
-      {/* Action */}
-      <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Sales Returns</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Process customer returns and refunds</div>
+    <div className="erp-arap-body">
+      <div className="erp-arap-panel">
+        <div className="erp-arap-toolbar">
+          <div className="erp-arap-search-wrap">
+            <input
+              className="erp-arap-field"
+              placeholder="Search customer, invoice, product, return ID…"
+              value={histSearch}
+              onChange={function (e) { setHistSearch(e.target.value); }}
+              aria-label="Search sales returns"
+            />
           </div>
-          <Btn col="red" onClick={openModal}>↩ New Sales Return</Btn>
+          {histSearch ? (
+            <button type="button" className="erp-arap-btn-clear" onClick={function () { setHistSearch(""); }}>Clear</button>
+          ) : null}
+          <span className="erp-arap-filter-meta">{filteredHistory.length} of {history.length}</span>
+          <button type="button" className="erp-arap-add is-sales-ret" onClick={openModal} style={{ marginLeft: "auto" }}>
+            <span className="erp-arap-add-ico" aria-hidden="true">↩</span>
+            <span>New Sales Return</span>
+          </button>
         </div>
-      </Card>
-
-      {/* Return History */}
-      <Card>
-        <CardTitle sub={filteredHistory.length + " of " + history.length + " entries"}>Return History</CardTitle>
-        <Input placeholder="Search customer, invoice, product, return ID..." value={histSearch} onChange={function (e) { setHistSearch(e.target.value); }} style={{ marginBottom: 10 }} />
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><TH>Date</TH><TH>Return ID</TH><TH>Invoice</TH><TH>Customer</TH><TH>Product</TH><TH>Qty</TH><TH>Amount</TH><TH>Reason</TH><TH>Settlement</TH></tr></thead>
+        <div className="erp-arap-table-wrap">
+          <table className="erp-arap-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Return ID</th><th>Invoice</th><th>Customer</th><th>Product</th><th>Qty</th><th>Amount</th><th>Reason</th><th>Settlement</th>
+              </tr>
+            </thead>
             <tbody>
-              {histPager.slice.map(function (r, i) {
+              {histPager.slice.map(function (r) {
                 return (
-                  <TR key={r.id} i={i}>
-                    <TD color={C.muted}>{r.date}</TD>
-                    <TD bold color={C.red}>{r.returnId || r.id.slice(0, 8)}</TD>
-                    <TD color={C.blue}>{r.invoiceNo || "—"}</TD>
-                    <TD>{r.customer || "—"}</TD>
-                    <TD>{r.productName || "Unknown"}</TD>
-                    <TD center>{r.qty}</TD>
-                    <TD bold color={C.red}>{getCurrencySymbol()} {fmtNum(r.amount)}</TD>
-                    <TD color={C.muted} style={{ maxWidth: 160, whiteSpace: "normal" }}><span style={{ fontSize: 12 }}>{r.reason || "—"}</span></TD>
-                    <TD>{r.isRefund ? <span style={{ background: "#e6f7f2", color: C.green, border: "1px solid #9ee8ce", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>Refund ({r.refundMethod})</span> : <span style={{ color: C.muted, fontSize: 12 }}>Balance adj.</span>}</TD>
-                  </TR>
+                  <tr key={r.id} className="table-row-hover">
+                    <td style={{ color: "#64748b" }}>{r.date}</td>
+                    <td style={{ fontWeight: 800, color: "#b91c1c" }}>{r.returnId || r.id.slice(0, 8)}</td>
+                    <td style={{ color: "#2563eb" }}>{r.invoiceNo || "—"}</td>
+                    <td>{r.customer || "—"}</td>
+                    <td className="erp-arap-src" title={r.productName || ""}>{r.productName || "Unknown"}</td>
+                    <td style={{ textAlign: "center" }}>{r.qty}</td>
+                    <td className="erp-arap-amt" style={{ color: "#b91c1c", fontWeight: 800 }}>{getCurrencySymbol()} {fmtNum(r.amount)}</td>
+                    <td style={{ color: "#64748b", maxWidth: 140, whiteSpace: "normal", fontSize: 12 }}>{r.reason || "—"}</td>
+                    <td>
+                      {r.isRefund
+                        ? <span className="erp-arap-badge-cat" style={{ background: "#e6f7f2", color: "#047857" }}>Refund ({r.refundMethod})</span>
+                        : <span style={{ color: "#94a3b8", fontSize: 12 }}>Balance adj.</span>}
+                    </td>
+                  </tr>
                 );
               })}
-              {filteredHistory.length === 0 && <tr><td colSpan={8} style={{ textAlign: "center", padding: 24, color: C.muted }}>No return history yet. Click &quot;New Sales Return&quot; to get started.</td></tr>}
+              {filteredHistory.length === 0 && (
+                <tr><td colSpan={9} className="erp-arap-empty">No return history yet. Click &quot;New Sales Return&quot; to get started.</td></tr>
+              )}
             </tbody>
           </table>
         </div>
-        <Pager pager={histPager} />
-      </Card>
+        <div className="erp-arap-foot">
+          <div className="erp-arap-pager-wrap"><Pager pager={histPager} /></div>
+        </div>
+      </div>
 
       {/* ── MODAL: Step 1 — Invoice Search ── */}
       {modal === "search" && (
@@ -777,66 +852,71 @@ var PurchaseReturnTab = function (props) {
     return (r.supplier || "").toLowerCase().includes(q) || (r.purchaseNo || "").toLowerCase().includes(q) || (r.productName || "").toLowerCase().includes(q) || (r.returnId || "").toLowerCase().includes(q);
   });
   var purHistPager = usePager(filteredHistory, LIST_PAGE_SIZE);
-  var totalReturns = history.reduce(function (a, r) { return a + (r.amount || 0); }, 0);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10 }}>
-        <StatCard label="Total Purchase Returns" value={totalReturns} accent={C.orange} icon="🔄" sub={history.length + " entries"} />
-        <StatCard label="Items Returned" money={false} value={history.reduce(function (a, r) { return a + (r.qty || 0); }, 0)} accent={C.purple} icon="📤" sub="total units" />
-        <StatCard label="Suppliers Involved" money={false} value={[...new Set(history.map(function (r) { return r.supplier; }))].length} accent={C.cyan} icon="🏭" />
-      </div>
-
-      <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 15, color: C.text }}>Purchase Returns</div>
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Return goods to suppliers, adjust stock and payables</div>
+    <div className="erp-arap-body">
+      <div className="erp-arap-panel">
+        <div className="erp-arap-toolbar">
+          <div className="erp-arap-search-wrap">
+            <input
+              className="erp-arap-field"
+              placeholder="Search supplier, purchase no, product, return ID…"
+              value={histSearch}
+              onChange={function (e) { setHistSearch(e.target.value); }}
+              aria-label="Search purchase returns"
+            />
           </div>
-          <Btn col="orange" onClick={openModal}>🔄 New Purchase Return</Btn>
+          {histSearch ? (
+            <button type="button" className="erp-arap-btn-clear" onClick={function () { setHistSearch(""); }}>Clear</button>
+          ) : null}
+          <span className="erp-arap-filter-meta">{filteredHistory.length} of {history.length}</span>
+          <button type="button" className="erp-arap-add" onClick={openModal} style={{ marginLeft: "auto" }}>
+            <span className="erp-arap-add-ico" aria-hidden="true">↻</span>
+            <span>New Purchase Return</span>
+          </button>
         </div>
-        <div
-          style={{ marginTop: 12, padding: "10px 14px", background: "#f0f7ff", border: "1px solid #bfdbfe", borderRadius: 10, fontSize: 12, color: "#1e40af", lineHeight: 1.5 }}
-          title={"Purchase return cost policy: " + (state.settings.purchaseReturnCostMode === "original_cost" ? "original receipt (uses line cost; full layer match reserved)" : "current — uses unit cost on the purchase line (WAC snapshot) for GL; product WAC is not re-blended on return") + ". See Settings → Accounting."}
-        >
-          <strong>Note:</strong> Returning items deducts stock but does not recalculate the current Weighted Average Cost to prevent historical ledger distortion. GL uses the line unit cost from the purchase (see Settings → Purchase return cost).
+        <div className="erp-arap-note" title={"Purchase return cost policy: " + (state.settings.purchaseReturnCostMode === "original_cost" ? "original receipt (uses line cost; full layer match reserved)" : "current — uses unit cost on the purchase line (WAC snapshot) for GL; product WAC is not re-blended on return") + ". See Settings → Accounting."}>
+          <strong>Note:</strong> Returning items deducts stock but does not recalculate Weighted Average Cost. GL uses the purchase line unit cost (see Settings → Purchase return cost).
         </div>
-      </Card>
-
-      <Card>
-        <CardTitle sub={filteredHistory.length + " of " + history.length + " entries"}>Return History</CardTitle>
-        <Input placeholder="Search supplier, purchase no, product, return ID..." value={histSearch} onChange={function (e) { setHistSearch(e.target.value); }} style={{ marginBottom: 10 }} />
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr><TH>Date</TH><TH>Return ID</TH><TH>Purchase #</TH><TH>Supplier</TH><TH>Product</TH><TH>Qty</TH><TH>Amount</TH><TH>Cost basis</TH><TH>Reason</TH></tr></thead>
+        <div className="erp-arap-table-wrap">
+          <table className="erp-arap-table">
+            <thead>
+              <tr>
+                <th>Date</th><th>Return ID</th><th>Purchase #</th><th>Supplier</th><th>Product</th><th>Qty</th><th>Amount</th><th>Cost basis</th><th>Reason</th>
+              </tr>
+            </thead>
             <tbody>
-              {purHistPager.slice.map(function (r, i) {
+              {purHistPager.slice.map(function (r) {
                 return (
-                  <TR key={r.id} i={i}>
-                    <TD color={C.muted}>{r.date}</TD>
-                    <TD bold color={C.orange}>{r.returnId || r.id.slice(0, 8)}</TD>
-                    <TD color={C.blue}>{r.purchaseNo || "—"}</TD>
-                    <TD>{r.supplier || "—"}</TD>
-                    <TD>{r.productName || "Unknown"}</TD>
-                    <TD center>{r.qty}</TD>
-                    <TD bold color={C.orange}>{getCurrencySymbol()} {fmtNum(r.amount)}</TD>
-                    <TD color={C.muted} style={{ fontSize: 11, maxWidth: 220 }}>
+                  <tr key={r.id} className="table-row-hover">
+                    <td style={{ color: "#64748b" }}>{r.date}</td>
+                    <td style={{ fontWeight: 800, color: "#c2410c" }}>{r.returnId || r.id.slice(0, 8)}</td>
+                    <td style={{ color: "#2563eb" }}>{r.purchaseNo || "—"}</td>
+                    <td>{r.supplier || "—"}</td>
+                    <td className="erp-arap-src" title={r.productName || ""}>{r.productName || "Unknown"}</td>
+                    <td style={{ textAlign: "center" }}>{r.qty}</td>
+                    <td className="erp-arap-amt" style={{ color: "#c2410c", fontWeight: 800 }}>{getCurrencySymbol()} {fmtNum(r.amount)}</td>
+                    <td style={{ color: "#64748b", fontSize: 11, maxWidth: 200, whiteSpace: "normal" }}>
                       {state.settings && state.settings.purchaseReturnCostMode === "original_cost"
                         ? (r.costSourceFallbackWac
-                          ? <span style={{ color: "#b45309", fontWeight: 700 }}>Fallback to WAC (source not found)</span>
-                          : <span>Based on purchase #{r.purchaseNo || "?"} line {r.purchaseLineId ? String(r.purchaseLineId).slice(0, 10) : "—"}</span>)
-                        : <span>WAC snapshot (policy)</span>}
-                    </TD>
-                    <TD color={C.muted}><span style={{ fontSize: 12 }}>{r.reason || "—"}</span></TD>
-                  </TR>
+                          ? <span style={{ color: "#b45309", fontWeight: 700 }}>Fallback to WAC</span>
+                          : <span>Purchase #{r.purchaseNo || "?"} line</span>)
+                        : <span>WAC snapshot</span>}
+                    </td>
+                    <td style={{ color: "#64748b", fontSize: 12 }}>{r.reason || "—"}</td>
+                  </tr>
                 );
               })}
-              {filteredHistory.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", padding: 24, color: C.muted }}>No return history yet. Click &quot;New Purchase Return&quot; to get started.</td></tr>}
+              {filteredHistory.length === 0 && (
+                <tr><td colSpan={9} className="erp-arap-empty">No return history yet. Click &quot;New Purchase Return&quot; to get started.</td></tr>
+              )}
             </tbody>
           </table>
         </div>
-        <Pager pager={purHistPager} />
-      </Card>
+        <div className="erp-arap-foot">
+          <div className="erp-arap-pager-wrap"><Pager pager={purHistPager} /></div>
+        </div>
+      </div>
 
       {/* MODAL Step 1 — Purchase Search */}
       {modal === "search" && (

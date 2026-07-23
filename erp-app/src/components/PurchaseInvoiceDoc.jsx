@@ -1,4 +1,5 @@
 import React from "react";
+import { DocPrintHeader, DOC_PRINT_ACCENT } from "./DocPrintHeader.jsx";
 
 /**
  * Formal Purchase Invoice document (mirrors sales InvoiceA4 layout).
@@ -14,10 +15,7 @@ export function PurchaseInvoiceDoc(props) {
 
   var size = props.size || "a4";
   var isA5 = size === "a5";
-  var accent = "#1a4fa0";
-  var shopName = settings.shopName || "TechonERP";
-  var logo = settings.invoiceLogo;
-  var logoW = settings.invoiceLogoSize || 80;
+  var accent = DOC_PRINT_ACCENT;
   var items = pur.items || [];
   var paid = Number(pur.paidAmount || 0);
   var total = Number(pur.total || 0);
@@ -45,46 +43,20 @@ export function PurchaseInvoiceDoc(props) {
         flexDirection: "column",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", padding: "24px " + px + " 16px" }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            {logo ? <img src={logo} alt={shopName} style={{ width: logoW, height: "auto", objectFit: "contain" }} /> : null}
-            {!logo ? <div style={{ fontSize: 20, fontWeight: 900, color: accent, textTransform: "uppercase" }}>{shopName}</div> : null}
-          </div>
-          <div style={{ lineHeight: 1.7 }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: accent, textTransform: "uppercase", marginBottom: 2 }}>{shopName}</div>
-            {settings.address ? <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.address}</div> : null}
-            {settings.phone ? <div style={{ fontSize: fs - 1, color: "#555" }}>Tel: {settings.phone}{settings.phone2 ? " / " + settings.phone2 : ""}</div> : null}
-            {settings.email ? <div style={{ fontSize: fs - 1, color: "#555" }}>{settings.email}</div> : null}
-            {settings.brn ? <div style={{ fontSize: fs - 1, color: "#555" }}>BRN: {settings.brn}</div> : null}
-          </div>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 18, fontWeight: 800, color: accent, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>
-            Purchase Invoice
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: fs }}>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Invoice No:</span>
-              <span style={{ fontWeight: 700, fontFamily: "monospace", minWidth: 120, textAlign: "right" }}>{pur.invoiceNo || pur.id}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Date:</span>
-              <span style={{ fontWeight: 600, minWidth: 120, textAlign: "right" }}>{fmtDateFull(pur.date)}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Time:</span>
-              <span style={{ fontWeight: 600, minWidth: 120, textAlign: "right" }}>{tStr}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 14 }}>
-              <span style={{ color: "#888" }}>Status:</span>
-              <span style={{ fontWeight: 700, minWidth: 120, textAlign: "right" }}>{pur.status || (balance <= 0 ? "Paid" : "Unpaid")}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div style={{ margin: "0 " + px, borderTop: "2px solid " + accent, marginBottom: 14 }} />
+      <DocPrintHeader
+        settings={settings}
+        title="Purchase Invoice"
+        padPx={pad}
+        showTopbar
+        showLogo={false}
+        contactLabels={{ phone: "Tel:", email: "Email:", brn: "BRN:" }}
+        metaRows={[
+          { label: "Invoice No:", value: pur.invoiceNo || pur.id, mono: true },
+          { label: "Date:", value: fmtDateFull(pur.date) },
+          { label: "Time:", value: tStr },
+          { label: "Status:", value: pur.status || (balance <= 0 ? "Paid" : "Unpaid") },
+        ]}
+      />
 
       <div style={{ padding: "0 " + px, marginBottom: 14 }}>
         <div style={{ fontSize: fs + 1, fontWeight: 800, color: accent, marginBottom: 6 }}>Supplier:</div>

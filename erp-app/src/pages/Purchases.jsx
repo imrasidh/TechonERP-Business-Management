@@ -73,6 +73,48 @@ import {
 import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory, getDefaultProductUnit } from "../utils/categoryGroups.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
+import { PurchaseInvoiceDoc } from "../components/PurchaseInvoiceDoc.jsx";
+import UniversalPrintPreview from "../components/UniversalPrintPreview.jsx";
+
+/* Survives ActivePage remount (purchases → purchase-entry). Do not clear until entry applies it. */
+var _purchasePrefillHandoff = null;
+
+function stashPurchasePrefill(S, payload) {
+  _purchasePrefillHandoff = payload || null;
+  try {
+    if (S && typeof S.set === "function") S.set("tc3_purchase_prefill", payload || null);
+  } catch (_e) { /* ignore */ }
+  try {
+    if (payload) sessionStorage.setItem("tc3_purchase_prefill", JSON.stringify(payload));
+    else sessionStorage.removeItem("tc3_purchase_prefill");
+  } catch (_e2) { /* ignore */ }
+}
+
+function peekPurchasePrefill(S) {
+  if (_purchasePrefillHandoff && _purchasePrefillHandoff.editingPurchaseId) {
+    return _purchasePrefillHandoff;
+  }
+  try {
+    var fromS = S && typeof S.get === "function" ? S.get("tc3_purchase_prefill", null) : null;
+    if (fromS && fromS.editingPurchaseId) return fromS;
+  } catch (_e) { /* ignore */ }
+  try {
+    var raw = sessionStorage.getItem("tc3_purchase_prefill");
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (parsed && parsed.editingPurchaseId) return parsed;
+    }
+  } catch (_e2) { /* ignore */ }
+  return null;
+}
+
+function clearPurchasePrefill(S) {
+  _purchasePrefillHandoff = null;
+  try {
+    if (S && typeof S.set === "function") S.set("tc3_purchase_prefill", null);
+  } catch (_e) { /* ignore */ }
+  try { sessionStorage.removeItem("tc3_purchase_prefill"); } catch (_e2) { /* ignore */ }
+}
 
 var Purchases = React.memo(function (props) {
   var state = props.state;
@@ -128,6 +170,7 @@ var Purchases = React.memo(function (props) {
     : function () { if (typeof setActive === "function") setActive("purchase-entry"); };
   var viewMode = props.viewMode === "entry" ? "entry" : "list";
   var goPurchasesList = function () {
+    clearPurchasePrefill(S);
     if (typeof setActive === "function") setActive("purchases");
   };
   var onUnsavedPurchaseLeave = typeof props.onUnsavedPurchaseLeave === "function"
@@ -146,6 +189,27 @@ var Purchases = React.memo(function (props) {
   });
   var COST_KEY = props.COST_KEY;
   var BLANK = { supplier: "", invoiceNo: genPurNo(), date: today(), payMode: "unpaid", paidAmount: "", cashMethod: "Cash", items: [], chequeList: [], splitRows: [], purchaseTaxAmount: "", note: "", attachments: [], invDiscount: "0.00", invDiscountType: "%" };
+  var purchaseToEntryForm = function (pur) {
+    var paid = Number(pur.paidAmount) || 0;
+    var tot = Number(pur.total) || 0;
+    var payMode = pur.payMode || (tot > 0 && paid >= tot - 0.005 ? "paid" : (paid > 0.005 ? "partial" : "unpaid"));
+    return {
+      supplier: pur.supplier || "",
+      invoiceNo: pur.invoiceNo || "",
+      date: pur.date || today(),
+      payMode: payMode,
+      paidAmount: paid ? String(paid) : "",
+      cashMethod: pur.cashMethod || "Cash",
+      items: (pur.items || []).map(function (it) { return Object.assign({}, it); }),
+      chequeList: [],
+      splitRows: [],
+      purchaseTaxAmount: pur.totalTax != null ? String(pur.totalTax) : "",
+      note: pur.note || "",
+      attachments: (pur.attachments || []).slice(),
+      invDiscount: pur.discountValue != null ? String(pur.discountValue) : (pur.invDiscount != null ? String(pur.invDiscount) : "0.00"),
+      invDiscountType: pur.discountType || pur.invDiscountType || "%",
+    };
+  };
   var PUR_CART_ICON = (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3949AB" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" />
@@ -154,11 +218,27 @@ var Purchases = React.memo(function (props) {
   );
   var [purChqForm, setPurChqForm] = useState({ no: "", bank: "", amount: "", due: today() });
   var [show, setShow] = useState(false);
-  var [f, setF] = useState(BLANK);
+  var [editingPurchaseId, setEditingPurchaseId] = useState(function () {
+    if (viewMode !== "entry") return "";
+    var pf = peekPurchasePrefill(S);
+    return pf && pf.editingPurchaseId ? String(pf.editingPurchaseId) : "";
+  });
+  var [f, setF] = useState(function () {
+    if (viewMode !== "entry") return BLANK;
+    var pf = peekPurchasePrefill(S);
+    if (pf && pf.form) return pf.form;
+    return BLANK;
+  });
   var [editPur, setEditPur] = useState(null);
   var [editLockBusy, setEditLockBusy] = useState(false);
   var [lockTick, setLockTick] = useState(0);
   var [viewPur, setViewPur] = useState(null);
+  var [viewPurFmt, setViewPurFmt] = useState(function () {
+    return (state.settings && state.settings.invoiceDefaultSize) || "a4";
+  });
+  var WABtn = props.WABtn;
+  var PRINT_FONT_LINK = props.PRINT_FONT_LINK || "";
+  var shareViaWhatsApp = props.shareViaWhatsApp;
   var [barcodeItems, setBarcodeItems] = useState(null);
   var [labelQtyModal, setLabelQtyModal] = useState(null);
   var [purSplitModal, setPurSplitModal] = useState(false);
@@ -195,7 +275,11 @@ var Purchases = React.memo(function (props) {
   var [showPurDrop, setShowPurDrop] = useState(false);
   var [purDropIdx, setPurDropIdx] = useState(-1);
   var [purDropPos, setPurDropPos] = useState(null);
-  var [suppSearch, setSuppSearch] = useState("");
+  var [suppSearch, setSuppSearch] = useState(function () {
+    if (viewMode !== "entry") return "";
+    var pf = peekPurchasePrefill(S);
+    return pf && pf.suppSearch ? String(pf.suppSearch) : (pf && pf.form && pf.form.supplier ? String(pf.form.supplier) : "");
+  });
   var [showSuppDrop, setShowSuppDrop] = useState(false);
   var [suppDropIdx, setSuppDropIdx] = useState(-1);
   var [suppDropPos, setSuppDropPos] = useState(null);
@@ -388,9 +472,25 @@ var Purchases = React.memo(function (props) {
 
   useEffect(function () {
     if (viewMode !== "entry") return;
-    resetPurchaseEntryForm();
+    var pf = peekPurchasePrefill(S);
+    if (pf && pf.editingPurchaseId && pf.form) {
+      setEditingPurchaseId(String(pf.editingPurchaseId));
+      setF(pf.form);
+      setSuppSearch(pf.suppSearch || pf.form.supplier || "");
+    } else if (!editingPurchaseId) {
+      resetPurchaseEntryForm();
+    }
     refreshHeldPurchases();
     focusSupplierInput();
+    /* Delay clear so React remount can re-read the same handoff. */
+    var t = setTimeout(function () { clearPurchasePrefill(S); }, 600);
+    return function () { clearTimeout(t); };
+  }, [viewMode]);
+
+  /* Drop any leftover edit handoff when returning to the list. */
+  useEffect(function () {
+    if (viewMode !== "list") return;
+    clearPurchasePrefill(S);
   }, [viewMode]);
 
   /* Keep leave-hold snapshot + dirty flag in sync (same pattern as Sales) */
@@ -747,6 +847,8 @@ var Purchases = React.memo(function (props) {
       showAlert("Cannot print barcodes for a voided purchase invoice.");
       return;
     }
+    /* Close View & Print so the qty/label modals are not hidden under it. */
+    setViewPur(null);
     setLabelQtyModal(buildLabelQtyRowsFromPurchaseItems(pur.items, state.products));
   };
 
@@ -1468,6 +1570,34 @@ var Purchases = React.memo(function (props) {
 
   var doSavePurchase = function (withBarcode, forceSave, skipPackWarn) {
     if (!f.supplier || !f.items.length) return;
+    if (editingPurchaseId) {
+      var origEdit = state.purchases.find(function (p) { return p.id === editingPurchaseId; });
+      if (!origEdit) {
+        showAlert("Original purchase not found. Cannot update.");
+        return;
+      }
+      var builtEdit = Object.assign({}, origEdit, {
+        supplier: f.supplier,
+        invoiceNo: f.invoiceNo,
+        date: f.date,
+        payMode: f.payMode,
+        paidAmount: f.paidAmount,
+        cashMethod: f.cashMethod || "Cash",
+        items: (f.items || []).map(function (it) { return Object.assign({}, it); }),
+        note: f.note || "",
+        attachments: (f.attachments || []).slice(),
+        invDiscount: f.invDiscount,
+        invDiscountType: f.invDiscountType || "%",
+        discountValue: f.invDiscount,
+        discountType: f.invDiscountType || "%",
+        totalTax: f.purchaseTaxAmount,
+        taxMode: (state.settings && state.settings.taxEnabled)
+          ? (origEdit.taxMode || (state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive"))
+          : undefined,
+      });
+      saveEditPur(builtEdit, skipPackWarn);
+      return;
+    }
     var purInvNo = ensureUniqueDocumentNumber(f.invoiceNo, "PUR", state, {
       excludePurchaseId: editPur ? editPur.id : null,
     });
@@ -1640,6 +1770,7 @@ var Purchases = React.memo(function (props) {
   };
 
   var resetPurchaseEntryForm = function () {
+    clearPurchasePrefill(S);
     setF(blankPurchaseForm());
     setSuppSearch("");
     setShowSuppDrop(false);
@@ -1650,6 +1781,7 @@ var Purchases = React.memo(function (props) {
     setPPickedProduct(null);
     setActiveHeldPurId(null);
     setPurSplitModal(false);
+    setEditingPurchaseId("");
     try {
       if (sessionStorage.getItem("tc3_dirty") === "purchase") sessionStorage.removeItem("tc3_dirty");
     } catch (_e) { /* ignore */ }
@@ -1658,6 +1790,10 @@ var Purchases = React.memo(function (props) {
 
   var holdCurrentPurchase = function (opts) {
     var silent = !!(opts && opts.silent);
+    if (editingPurchaseId) {
+      if (!silent) showAlert("Finish or cancel the purchase edit before holding.");
+      return false;
+    }
     if (!(f.items || []).length) {
       if (!silent) showAlert("Add at least one product before holding.");
       return false;
@@ -1745,28 +1881,68 @@ var Purchases = React.memo(function (props) {
 
   var tryOpenPurchaseEdit = function (pur) {
     if (!pur || isVoidedTxn(pur)) return;
-    if (editLockBusy) return;
-    setEditLockBusy(true);
-    acquireInvoiceEditLockSynced(S, pur.id, lockIdentity)
+    var fl = foreignEditLockFor(pur.id);
+    if (fl) {
+      showAlert(formatInvoiceEditLockMessage(fl));
+      return;
+    }
+    var form = purchaseToEntryForm(pur);
+    stashPurchasePrefill(S, {
+      editingPurchaseId: pur.id,
+      form: form,
+      suppSearch: pur.supplier || "",
+    });
+    setViewPur(null);
+    addAudit("Opening purchase entry to edit " + (pur.invoiceNo || pur.id.slice(0, 8)), pur.invoiceNo || "");
+    openNewPurchase();
+  };
+
+  useEffect(function () {
+    if (!editingPurchaseId) return;
+    var purchaseId = editingPurchaseId;
+    var alive = true;
+    var clearEditUi = function () {
+      setEditingPurchaseId("");
+      resetPurchaseEntryForm();
+      goPurchasesList();
+    };
+    acquireInvoiceEditLockSynced(S, purchaseId, lockIdentity)
       .then(function (acquired) {
+        if (!alive) return;
         if (!acquired || !acquired.ok) {
           showAlert((acquired && acquired.message) || formatInvoiceEditLockMessage(acquired && acquired.conflict));
+          clearEditUi();
           return;
         }
-        setEditPur(Object.assign({}, pur, {
-          invDiscount: pur.discountValue != null ? String(pur.discountValue) : (pur.invDiscount != null ? String(pur.invDiscount) : "0.00"),
-          invDiscountType: pur.discountType || pur.invDiscountType || "%",
-          note: pur.note || "",
-          attachments: pur.attachments || [],
-        }));
       })
       .catch(function () {
+        if (!alive) return;
         showAlert("Could not lock this purchase for editing. Check network and try again.");
-      })
-      .finally(function () {
-        setEditLockBusy(false);
+        clearEditUi();
       });
-  };
+    var renew = function () {
+      renewInvoiceEditLockSynced(S, purchaseId, lockIdentity).then(function (r) {
+        if (!alive) return;
+        if (r && r.ok) return;
+        showAlert((r && r.message) || formatInvoiceEditLockMessage(r && r.conflict));
+        clearEditUi();
+      }).catch(function () { /* ignore */ });
+    };
+    var hb = setInterval(renew, INVOICE_EDIT_LOCK_HEARTBEAT_MS);
+    var own = setInterval(function () {
+      checkForeignInvoiceEditLock(S, purchaseId, lockIdentity).then(function (foreign) {
+        if (!alive || !foreign) return;
+        showAlert(formatInvoiceEditLockMessage(foreign));
+        clearEditUi();
+      }).catch(function () { /* ignore */ });
+    }, INVOICE_EDIT_LOCK_OWNERSHIP_MS);
+    return function () {
+      alive = false;
+      clearInterval(hb);
+      clearInterval(own);
+      releaseInvoiceEditLock(S, purchaseId, lockIdentity);
+    };
+  }, [editingPurchaseId, lockIdentity.deviceId]);
 
   useEffect(function () {
     if (!editPur || !editPur.id) return;
@@ -1852,16 +2028,22 @@ var Purchases = React.memo(function (props) {
     setVoidPurTarget(pur);
   };
 
-  var saveEditPur = function (skipPackWarn) {
-    if (!editPur) return;
+  var saveEditPur = function (purSource, skipPackWarn) {
+    /* Modal passes nothing → use editPur; entry edit passes built object as first arg */
+    if (typeof purSource === "boolean") {
+      skipPackWarn = purSource;
+      purSource = null;
+    }
+    var editSrc = purSource || editPur;
+    if (!editSrc) return;
     /* Recalculate totals from current items/payment state before saving */
-    var normalizedEditItems = (editPur.items || []).map(function (it) {
+    var normalizedEditItems = (editSrc.items || []).map(function (it) {
       var pr = state.products.find(function (p) { return p.id === it.id; });
       return pr ? normalizePurchaseLineItem(it, pr, toProductBaseQty) : it;
     });
     var ei, eraw, epr, eiu;
-    for (ei = 0; ei < (editPur.items || []).length; ei++) {
-      eraw = editPur.items[ei];
+    for (ei = 0; ei < (editSrc.items || []).length; ei++) {
+      eraw = editSrc.items[ei];
       epr = state.products.find(function (p) { return p.id === eraw.id; });
       if (!epr) continue;
       eiu = eraw.inputUnit || eraw.unit || epr.unit || "Pcs";
@@ -1875,22 +2057,22 @@ var Purchases = React.memo(function (props) {
         epr = state.products.find(function (p) { return p.id === normalizedEditItems[ei].id; });
         if (!epr) continue;
         if (purchaseLineBaseUnitLooksLikePackTotal(epr, normalizedEditItems[ei], getUnitCostPrice, getUnitSellPrice)) {
-          showConfirm(purchasePackTotalVsCatalogueMessage(), function () { saveEditPur(true); });
+          showConfirm(purchasePackTotalVsCatalogueMessage(), function () { saveEditPur(editSrc, true); });
           return;
         }
       }
     }
     var eLine = sumPurchaseLinesStockTotal(normalizedEditItems);
-    var eDiscRaw = parseFloat(editPur.invDiscount != null ? editPur.invDiscount : editPur.discountValue) || 0;
-    var eDiscType = editPur.invDiscountType || editPur.discountType || "%";
+    var eDiscRaw = parseFloat(editSrc.invDiscount != null ? editSrc.invDiscount : editSrc.discountValue) || 0;
+    var eDiscType = editSrc.invDiscountType || editSrc.discountType || "%";
     var eDiscAmt = eDiscType === "Rs"
       ? Math.min(eLine, Math.round(eDiscRaw * 100) / 100)
       : Math.round(eLine * eDiscRaw / 100 * 100) / 100;
     var eAfterDisc = Math.max(0, Math.round((eLine - eDiscAmt) * 100) / 100);
     var eTaxMode = (state.settings && state.settings.taxEnabled)
-      ? (editPur.taxMode || (state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive"))
+      ? (editSrc.taxMode || (state.settings.taxMode === "inclusive" ? "inclusive" : "exclusive"))
       : undefined;
-    var eTax = state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editPur.totalTax) || 0) * 100) / 100 : 0;
+    var eTax = state.settings && state.settings.taxEnabled ? Math.round((parseFloat(editSrc.totalTax) || 0) * 100) / 100 : 0;
     if (eTaxMode === "inclusive" && eTax <= 0.005 && eAfterDisc > 0) {
       eTax = Math.round((computeSaleTax(state.settings, eAfterDisc).totalTax || 0) * 100) / 100;
     }
@@ -1898,10 +2080,10 @@ var Purchases = React.memo(function (props) {
       ? eAfterDisc
       : (eTax > 0.005 ? Math.round((eAfterDisc + eTax) * 100) / 100 : eAfterDisc);
     var ePurNetFactor = (eTaxMode === "inclusive" && eAfterDisc > 0 && eTax > 0) ? (eAfterDisc - eTax) / eAfterDisc : 1;
-    var ePaid = editPur.payMode === "paid" ? eTot : (editPur.payMode === "partial" ? parseFloat(editPur.paidAmount) || 0 : 0);
+    var ePaid = editSrc.payMode === "paid" ? eTot : (editSrc.payMode === "partial" ? parseFloat(editSrc.paidAmount) || 0 : 0);
     var eBal = eTot - ePaid;
     var eStat = ePaid >= eTot ? "Paid" : ePaid > 0 ? "Partial" : "Unpaid";
-    var purToSave = Object.assign({}, editPur, {
+    var purToSave = Object.assign({}, editSrc, {
       items: normalizedEditItems,
       total: eTot,
       totalTax: eTax,
@@ -1909,7 +2091,7 @@ var Purchases = React.memo(function (props) {
       paidAmount: ePaid,
       balance: eBal,
       status: eStat,
-      note: editPur.note || "",
+      note: editSrc.note || "",
       discount: eDiscAmt,
       discountType: eDiscType,
       discountValue: eDiscRaw,
@@ -2043,7 +2225,7 @@ var Purchases = React.memo(function (props) {
         }
         var corrPh = (orig.paymentHistory || []).concat([{
           id: uid(), date: today(), amount: diff, cashMethod: lastMeth,
-          note: diff > 0 ? "Payment on edit (payMode: " + editPur.payMode + ")" : "Correction — invoice edited (edit)"
+          note: diff > 0 ? "Payment on edit (payMode: " + editSrc.payMode + ")" : "Correction — invoice edited (edit)"
         }]);
         purToSave = Object.assign({}, purToSave, { paymentHistory: corrPh });
       }
@@ -2061,6 +2243,14 @@ var Purchases = React.memo(function (props) {
     addAudit("Edited Purchase Invoice", purToSave.invoiceNo || purToSave.id.slice(0, 8));
     setState(function (st) { return Object.assign({}, st, { purchases: np2 }); });
     setEditPur(null);
+    setEditingPurchaseId("");
+    sessionStorage.removeItem("tc3_dirty");
+    if (viewMode === "entry") {
+      setF(blankPurchaseForm());
+      setSuppSearch("");
+      setPurSplitModal(false);
+      goPurchasesList();
+    }
     }); /* end checkPeriodClose */
   };
 
@@ -2213,6 +2403,19 @@ var Purchases = React.memo(function (props) {
             <div className="erp-pos-left">
               <div className="erp-pos-main-card">
                 <Card pad={4}>
+                  {editingPurchaseId ? (
+                    <div className="erp-pos-edit-banner">
+                      <span>You are editing purchase <b>{f.invoiceNo}</b>. Save to apply changes or cancel.</span>
+                      <button
+                        type="button"
+                        onClick={function () {
+                          clearPurchasePrefill(S);
+                          resetPurchaseEntryForm();
+                        }}
+                        className="erp-pos-seg-btn"
+                      >Cancel Edit</button>
+                    </div>
+                  ) : null}
                   <div className="erp-sale-panel erp-sale-panel-entry" style={{ position: "relative" }}>
                     <div className="erp-sale-box-title erp-sale-entry-title-bar">
                       <button
@@ -2223,9 +2426,10 @@ var Purchases = React.memo(function (props) {
                         ← Back
                       </button>
                       <span className="erp-pos-header-doc erp-pos-header-doc-in-title">
-                        <span className="erp-pos-header-doc-label">New Purchase</span>
+                        <span className="erp-pos-header-doc-label">{editingPurchaseId ? "Edit Purchase" : "New Purchase"}</span>
                         <span className="erp-pos-header-doc-sep" aria-hidden="true">·</span>
                         <span className="erp-pos-header-doc-no">{f.invoiceNo}</span>
+                        {editingPurchaseId ? <span className="erp-pos-edit-badge">EDITING</span> : null}
                         {activeHeldPurId ? <span className="erp-pos-edit-badge">HELD</span> : null}
                         <span className="erp-pos-header-doc-sep" aria-hidden="true">·</span>
                         <span className="erp-pos-header-doc-date-wrap">
@@ -2594,11 +2798,11 @@ var Purchases = React.memo(function (props) {
                     </div>
 
                     <div className="erp-sale-action-stack">
-                      <button type="button" className="erp-sale-action-btn print" disabled={!f.supplier || !f.items.length} onClick={function () { doSavePurchase(true); }} title="Save + Print Barcodes (F8)">
-                        <span>Save + Print Barcodes</span><kbd>F8</kbd>
+                      <button type="button" className="erp-sale-action-btn print" disabled={!f.supplier || !f.items.length} onClick={function () { doSavePurchase(true); }} title={editingPurchaseId ? "Update + Print Barcodes (F8)" : "Save + Print Barcodes (F8)"}>
+                        <span>{editingPurchaseId ? "Update + Print Barcodes" : "Save + Print Barcodes"}</span><kbd>F8</kbd>
                       </button>
-                      <button type="button" className="erp-sale-action-btn save" disabled={!f.supplier || !f.items.length} onClick={function () { doSavePurchase(false); }} title="Save Only (F7)">
-                        <span>Save Only</span><kbd>F7</kbd>
+                      <button type="button" className="erp-sale-action-btn save" disabled={!f.supplier || !f.items.length} onClick={function () { doSavePurchase(false); }} title={editingPurchaseId ? "Update Purchase (F7)" : "Save Only (F7)"}>
+                        <span>{editingPurchaseId ? "Update Purchase" : "Save Only"}</span><kbd>F7</kbd>
                       </button>
                       <button type="button" className="erp-sale-action-btn hold" disabled={!f.items.length} onClick={function () { holdCurrentPurchase(); }} title="Hold Purchase (F9)">
                         <span>Hold</span><kbd>F9</kbd>
@@ -2752,7 +2956,7 @@ var Purchases = React.memo(function (props) {
             <span className="erp-pur-health-pill">{filtered.length.toLocaleString()} in view</span>
             {unpaidInView > 0 ? <span className="erp-pur-health-pill is-warn">{unpaidInView.toLocaleString()} unpaid</span> : null}
           </div>
-          <button type="button" className="erp-pur-btn-primary erp-pur-btn-add" onClick={openNewPurchase} title="New Purchase (F11)">+ New Purchase <kbd>F11</kbd></button>
+          <button type="button" className="erp-pur-btn-primary erp-pur-btn-add" onClick={function () { clearPurchasePrefill(S); openNewPurchase(); }} title="New Purchase (F11)">+ New Purchase <kbd>F11</kbd></button>
         </div>
         <PurKpiStrip items={purchaseListKpis} />
       </div>
@@ -2842,8 +3046,8 @@ var Purchases = React.memo(function (props) {
                                 return (
                                   <ActBtn
                                     tone="blue"
-                                    title={foreignLock ? formatInvoiceEditLockMessage(foreignLock) : (editLockBusy ? "Checking lock…" : "Edit purchase")}
-                                    disabled={!!foreignLock || editLockBusy}
+                                    title={foreignLock ? formatInvoiceEditLockMessage(foreignLock) : "Edit purchase invoice"}
+                                    disabled={!!foreignLock}
                                     onClick={function () { tryOpenPurchaseEdit(p); }}
                                   />
                                 );
@@ -2934,7 +3138,7 @@ var Purchases = React.memo(function (props) {
               <span className="erp-pur-side-title-main">Quick Actions</span>
             </div>
             <div className="erp-pur-quick-list">
-              <button type="button" className="erp-pur-quick erp-pur-quick--primary" onClick={openNewPurchase} title="New Purchase (F11)">
+              <button type="button" className="erp-pur-quick erp-pur-quick--primary" onClick={function () { clearPurchasePrefill(S); openNewPurchase(); }} title="New Purchase (F11)">
                 <span className="erp-pur-quick-ico" aria-hidden="true">＋</span>
                 <span className="erp-pur-quick-label">New Purchase</span>
                 <kbd className="erp-pur-quick-kbd">F11</kbd>
@@ -2973,67 +3177,57 @@ var Purchases = React.memo(function (props) {
 
       {/* New Purchase uses shared full-page route purchase-entry */}
 
+      {/* View & Print — universal invoice preview (same chrome as Sales) */}
       {viewMode === "list" && viewPur && (function () {
         var viewPurRet = purchaseReturnUiStatus(viewPur, state.purchaseReturns);
-        var viewPurStatus = displayStatusForPurchase(viewPur, state.purchaseReturns);
-        return (
-        <Modal title={"Purchase - " + (viewPur.invoiceNo || viewPur.id.slice(0, 8))} onClose={function () { setViewPur(null); }} wide>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
-            <div style={{ background: "#f7f9ff", borderRadius: 10, padding: "12px 16px" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, textTransform: "uppercase", marginBottom: 8 }}>Purchase Details</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 13 }}>
-                <div><strong>Supplier:</strong> {viewPur.supplier}</div>
-                <div><strong>PO No:</strong> <span style={{ fontFamily: "monospace", color: C.accent }}>{viewPur.invoiceNo}</span></div>
-                <div><strong>Date:</strong> {fmtDateFull(viewPur.date)}</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <strong>Status:</strong> <Badge status={viewPurStatus} />
-                  {viewPurRet.hasReturns ? <span title="This invoice has return activity" style={{ fontSize: 10, fontWeight: 800, color: "#c2410c" }}>↩ Returns linked</span> : null}
-                </div>
-              </div>
-            </div>
-            <PaymentBreakdown invoice={Object.assign({}, viewPur, { paid: viewPur.paidAmount || 0 })} cheques={state.cheques || []} isSale={false} />
-          </div>
-          {viewPurRet.hasReturns ? (
-            <ReturnDetailsPanel
-              mode="purchase"
-              rows={viewPurRet.rows}
-              originalId={viewPur.id}
-              C={C}
-              getCurrencySymbol={getCurrencySymbol}
-              fmtNum={fmtNum}
-              fmtDateFull={fmtDateFull}
-            />
-          ) : null}
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead><tr style={{ background: "#f8fafc" }}><TH>Product</TH><TH>Qty</TH><TH>Cost</TH><TH>Sell Price</TH><TH>Total</TH></tr></thead>
-            <tbody>
-              {(viewPur.items || []).map(function (it, i) {
-                var vp = state.products.find(function (p) { return p.id === it.id; });
-                var vu = it.inputUnit || it.unit || (vp && vp.unit) || "Pcs";
-                var showCost = vp ? costPerInputUnitFromBase(Number(it.cost) || 0, vu, vp, toProductBaseQty) : (Number(it.cost) || 0);
-                var lineAmt = purchaseLineStockTotal(it);
-                return (
-                  <TR key={i} i={i}>
-                    <TD bold>{it.name || "Unknown Product"}</TD>
-                    <TD center title="Base storage qty">{fmtNum(it.qty)}{it.inputQty != null ? <span style={{ fontSize: 10, color: C.muted }}><br />({fmtNum(it.inputQty)} {vu})</span> : null}</TD>
-                    <TD>{getCurrencySymbol()} {fmtNum(showCost)} <span style={{ fontSize: 10, color: C.muted }}>/ {vu}</span></TD>
-                    <TD>{it.sellPrice ? getCurrencySymbol() + " " + fmtNum(it.sellPrice) : "-"}</TD>
-                    <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(lineAmt)}</TD>
-                  </TR>
-                );
-              })}
-            </tbody>
-          </table>
-          <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
+        var docNo = viewPur.invoiceNo || viewPur.id.slice(0, 8);
+        var sheetSize = (viewPurFmt === "thermal58" || viewPurFmt === "thermal80") ? "a4" : viewPurFmt;
+        var belowBar = (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", width: "100%" }}>
+            {viewPurRet.hasReturns ? <span>↩ Returns linked to this purchase</span> : null}
+            <span style={{ flex: 1 }} />
+            {!isVoidedTxn(viewPur) ? (
+              <Btn col="blue" onClick={function () { tryOpenPurchaseEdit(viewPur); }}>Edit Purchase</Btn>
+            ) : null}
             {!isVoidedTxn(viewPur) && (viewPur.items || []).length > 0 ? (
               <Btn col="cyan" onClick={function () { openPrintBarcodesFromPurchase(viewPur); }}>Print Barcodes</Btn>
             ) : null}
             {!isVoidedTxn(viewPur) && canDeleteInvoices ? (
               <Btn col="red" onClick={function () { promptVoidPurchase(viewPur); }}>Void Purchase</Btn>
             ) : null}
-            <Btn col="gray" onClick={function () { setViewPur(null); }}>Close</Btn>
           </div>
-        </Modal>
+        );
+        return (
+          <UniversalPrintPreview
+            open
+            badge="PUR"
+            kicker="View & Print"
+            title={"Purchase " + docNo}
+            subtitle={(viewPur.supplier || "Supplier") + (viewPur.date ? (" · " + fmtDateFull(viewPur.date)) : "")}
+            filename={"Purchase-" + docNo}
+            settings={state.settings}
+            WABtn={WABtn}
+            showAlert={showAlert}
+            shareViaWhatsApp={shareViaWhatsApp}
+            PRINT_FONT_LINK={PRINT_FONT_LINK}
+            escapeHtml={escapeHtml}
+            showFormats
+            format={viewPurFmt}
+            onFormatChange={setViewPurFmt}
+            previewElId={"pur-view-preview-" + viewPur.id}
+            belowBar={belowBar}
+            onClose={function () { setViewPur(null); }}
+          >
+            <PurchaseInvoiceDoc
+              pur={viewPur}
+              settings={state.settings}
+              size={sheetSize}
+              fmtDateFull={fmtDateFull}
+              fmtNum={fmtNum}
+              getCurrencySymbol={getCurrencySymbol}
+              fmtStock={fmtStock}
+            />
+          </UniversalPrintPreview>
         );
       })()}
 
@@ -3288,7 +3482,7 @@ var Purchases = React.memo(function (props) {
           <div className="erp-pur-mock-footer">
             <button type="button" className="erp-pur-mock-btn-cancel" onClick={function () { setEditPur(null); }}>Cancel</button>
             <div className="erp-pur-mock-footer-right">
-              <button type="button" className="erp-pur-mock-btn-save" disabled={!editPur.supplier || !(editPur.items || []).length} onClick={saveEditPur}>Update Purchase</button>
+              <button type="button" className="erp-pur-mock-btn-save" disabled={!editPur.supplier || !(editPur.items || []).length} onClick={function () { saveEditPur(); }}>Update Purchase</button>
             </div>
           </div>
         </Modal>
@@ -3320,7 +3514,7 @@ var Purchases = React.memo(function (props) {
         />
       )}
       {labelQtyModal && (
-        <Modal title="Barcode Labels — Set Print Quantity" onClose={function () { setLabelQtyModal(null); }}>
+        <Modal title="Barcode Labels — Set Print Quantity" onClose={function () { setLabelQtyModal(null); }} zIndex={13000}>
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 12 }}>
             Adjust how many labels to print per product. Default = purchase quantity.
           </div>
@@ -3368,7 +3562,7 @@ var Purchases = React.memo(function (props) {
         </Modal>
       )}
       {barcodeItems && (
-        <Modal title={"Print Barcode Labels — " + barcodeItems.length + " labels"} onClose={function () { setBarcodeItems(null); }} wide>
+        <Modal title={"Print Barcode Labels — " + barcodeItems.length + " labels"} onClose={function () { setBarcodeItems(null); }} wide zIndex={13000}>
           <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }} className="no-print">
             <Btn col="cyan" onClick={printBarcodeLabels}>Print Labels</Btn>
             <Btn col="gray" sm onClick={function () { setBarcodeItems(null); }}>Close</Btn>

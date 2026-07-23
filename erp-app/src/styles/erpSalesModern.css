@@ -4461,7 +4461,20 @@
 
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-left {
   gap: 0 !important;
-  padding: 0 !important;
+  padding: 4px !important;
+  min-height: 0 !important;
+  align-self: stretch !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-main-card {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
 }
 
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-main-card > .erp-card > .erp-card-body,
@@ -4604,11 +4617,12 @@
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-right {
   width: 260px !important;
   flex: 0 0 260px !important;
-  padding: 4px 4px 4px 6px !important;
+  padding: 4px !important;
   overflow: hidden !important;
   display: flex !important;
   flex-direction: column !important;
   min-height: 0 !important;
+  align-self: stretch !important;
 }
 
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-checkout-panel {
@@ -4618,6 +4632,7 @@
   flex-direction: column !important;
   overflow: hidden !important;
   gap: 6px !important;
+  height: 100% !important;
 }
 
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-sale-checkout {
@@ -4626,6 +4641,8 @@
   display: flex !important;
   flex-direction: column !important;
   overflow: hidden !important;
+  height: auto !important;
+  align-self: stretch !important;
 }
 
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-sale-hold-trigger,
@@ -4634,14 +4651,6 @@
   flex-shrink: 0 !important;
   min-height: 44px !important;
   margin-top: 0 !important;
-}
-
-.erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-sale-checkout {
-  min-height: 0 !important;
-  flex: 1 1 auto !important;
-  display: flex !important;
-  flex-direction: column !important;
-  overflow: hidden !important;
 }
 
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-sale-checkout-hdr {
@@ -4908,4 +4917,24 @@
 .erp-app-root .erp-page-content.pos-page .erp-pos-modern .erp-sale-hold-trigger-hint,
 .erp-app-root .erp-page-content.pos-page .erp-pur-entry .erp-sale-hold-trigger-hint {
   display: none !important;
+}
+
+/* Cart + checkout: same column height / bottom edge */
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry).erp-pos {
+  align-items: stretch !important;
+  min-height: 0 !important;
+  height: 100% !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-main-card > .erp-card,
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-main-card > div {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.erp-app-root .erp-page-content.pos-page .erp-pos-modern:not(.erp-pur-entry) .erp-pos-checkout-panel > .erp-sale-checkout {
+  flex: 1 1 0 !important;
+  min-height: 0 !important;
 }
