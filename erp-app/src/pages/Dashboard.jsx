@@ -22,7 +22,7 @@ function saleNet(s) {
 function saleCogs(s) {
   return (s.items || []).reduce(function (a, it) {
     var cost = Number(it.cost) || 0;
-    if (it.isGlassLine && it.glassTotalSqFt) return a + cost * (Number(it.glassTotalSqFt) || 0);
+    /* Glass COGS = sheet cost × sheets (qty), matching GL saleLineCOGS — not cost × sqFt. */
     return a + cost * (Number(it.qty) || 0);
   }, 0);
 }

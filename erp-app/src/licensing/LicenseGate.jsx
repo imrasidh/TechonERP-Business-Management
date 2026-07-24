@@ -1403,8 +1403,8 @@ export default function LicenseGate() {
         if (cfg && cfg.wizardComplete) {
           if (cfg.role === 'network_client') {
             const url = String(cfg.apiUrl || '').trim();
-            const key = String(cfg.apiKey || '').trim();
-            if (!url || !key) {
+            const hasKey = !!(cfg.hasApiKey || (cfg.apiKey && String(cfg.apiKey).trim()));
+            if (!url || !hasKey) {
               setNetworkConfig(false);
               return;
             }

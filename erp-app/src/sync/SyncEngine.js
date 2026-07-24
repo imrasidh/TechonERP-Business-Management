@@ -78,6 +78,7 @@ export const NETWORK_KV_KEYS = [
   'tc3_raw_material_counts',
   'tc3_users',
   'tc3_repair3p_product_seq',
+  'tc3_financial_mutation_log',
 ];
 
 const SYNC_KEY_SET = {};
@@ -367,6 +368,26 @@ async function loadQueue() {
   log('info', 'Loaded ' + _queue.length + ' pending items from queue');
 }
 
+/**
+ * Load durable queue into memory BEFORE the first server pull so isSyncKeyPending()
+ * protects local-only rows during merge (avoids lost money writes across restart).
+ */
+export async function preloadSyncQueue() {
+  try {
+    await loadQueue();
+    (_queue || []).forEach(function (e) {
+      if (!e || !e.key || e.value === undefined || e.value === null) return;
+      if (_pending[e.key] === undefined) _pending[e.key] = e.value;
+      if (_keyPendingValues[e.key] === undefined) _keyPendingValues[e.key] = e.value;
+    });
+    TC_SYNC.pendingCount = _queue.length + Object.keys(_pending).length;
+    return _queue.length;
+  } catch (e) {
+    log('error', 'preloadSyncQueue failed: ' + (e && e.message ? e.message : e));
+    return 0;
+  }
+}
+
 async function saveQueue() {
   TC_SYNC.pendingCount = _queue.length;
   await idbSet(QUEUE_IDB_KEY, _queue.length > 0 ? _queue : null);
@@ -446,8 +467,14 @@ function chunkPatches(patches) {
       for (let i = 0; i < patch.value.length; i += CHUNK_SIZE) {
         /* Each chunk gets a unique patch_id derived from the original so server can dedup per chunk */
         const chunkPatchId = patch.patch_id ? patch.patch_id + '_c' + (i / CHUNK_SIZE) : undefined;
-        const entry = { key: patch.key, value: patch.value.slice(i, i + CHUNK_SIZE), _chunk: true };
+        const entry = { key: patch.key, value: patch.value.slice(i, i + CHUNK_SIZE) };
         if (chunkPatchId) entry.patch_id = chunkPatchId;
+        if (i === 0 && patch._forceReplace) {
+          /* First slice hard-replaces MySQL; later slices merge into that base. */
+          entry._forceReplace = true;
+        } else {
+          entry._chunk = true;
+        }
         groups.push([entry]);
       }
       continue;
@@ -495,8 +522,18 @@ async function postSyncPatch(body) {
 
 async function post(endpoint, body) {
   const cfg = getActiveConfig();
-  const apiUrl = cfg && cfg.apiUrl;
+  let apiUrl = cfg && cfg.apiUrl;
   if (!apiUrl) throw new Error('API URL not configured');
+  /* Main PC legacy-key POSTs must use loopback — PHP rejects LAN IP. */
+  if (cfg.role === 'network_server') {
+    try {
+      const u = new URL(apiUrl);
+      if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+        u.hostname = '127.0.0.1';
+        apiUrl = u.toString().replace(/\/?$/, '/');
+      }
+    } catch (_e) { /* keep apiUrl */ }
+  }
 
   const headers = {
     'Content-Type': 'application/json',
@@ -511,7 +548,7 @@ async function post(endpoint, body) {
   };
   try {
     if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
-      fetchOpts.signal = AbortSignal.timeout(30000);
+      fetchOpts.signal = AbortSignal.timeout(/sync_patch\.php/i.test(endpoint) ? 120000 : 30000);
     }
   } catch (_e) { /* ignore */ }
 
@@ -621,7 +658,7 @@ async function flush() {
   const cfg = getActiveConfig();
   if (!cfg || !cfg.apiUrl || Object.keys(_pending).length === 0) return;
 
-  /* Move pending into persistent queue */
+  /* Snapshot pending; only clear keys that enqueue successfully (keep invalid / failed for retry) */
   const toSend = { ..._pending };
   _pending = {};
 
@@ -629,6 +666,8 @@ async function flush() {
     const err = validate(key, value);
     if (err) {
       log('error', 'Validation failed for ' + key + ': ' + err);
+      /* Re-queue so data is not silently dropped; next edit/flush can retry after fix */
+      _pending[key] = value;
       continue;
     }
     enqueue(key, value);
@@ -749,6 +788,72 @@ export async function syncStorageKeyNow(key, optValue) {
   }
 }
 
+/** Push several keys in one HTTP batch (sale + stock + cheques stay together). */
+export async function syncStorageKeysNow(keysAndValues) {
+  var cfg = getActiveConfig();
+  if (!cfg) {
+    cfg = await ensureSyncConfigFromDisk();
+  }
+  if (!cfg || cfg.role === 'standalone' || !cfg.apiUrl) {
+    return { ok: false, message: 'No network config' };
+  }
+  const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
+  const patches = [];
+  const pairs = keysAndValues || [];
+  for (var i = 0; i < pairs.length; i++) {
+    var pair = pairs[i];
+    if (!pair || !pair[0]) continue;
+    var key = pair[0];
+    if (!SYNC_KEY_SET[key]) continue;
+    var value = pair[1] !== undefined ? pair[1] : cache[key];
+    if (value === undefined || value === null) continue;
+    var err = validate(key, value);
+    if (err) {
+      log('error', 'syncStorageKeysNow validate ' + key + ': ' + err);
+      continue;
+    }
+    patches.push({ key: key, value: value });
+    _pending[key] = value;
+    _keyPendingValues[key] = value;
+  }
+  if (!patches.length) return { ok: false, message: 'No patches' };
+
+  setStatus(SYNC_STATUS.SAVING, { pendingCount: patches.length });
+  try {
+    log('info', '[push:syncStorageKeysNow] n=' + patches.length + ' keys=' + patches.map(function (p) { return p.key; }).join(','));
+    const sent = await sendBatch(patches);
+    const okAll = patches.every(function (p) { return sent.indexOf(p.key) >= 0; });
+    sent.forEach(function (k) {
+      if (_pending[k] !== undefined) delete _pending[k];
+      if (_keyPendingValues[k] !== undefined) delete _keyPendingValues[k];
+      try {
+        if (typeof window !== 'undefined') {
+          window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
+          window._tcRecentLocalWrites[k] = Date.now();
+        }
+      } catch (_) {}
+    });
+    patches.forEach(function (p) {
+      if (sent.indexOf(p.key) < 0) {
+        try { enqueue(p.key, p.value); } catch (_e) { /* ignore */ }
+      }
+    });
+    if (okAll && _onFlushSuccess && sent.length > 0) {
+      try { _onFlushSuccess(sent); } catch (_) {}
+    }
+    updateStatusAfterDirectPush();
+    return { ok: okAll, saved: sent };
+  } catch (e) {
+    patches.forEach(function (p) {
+      _pending[p.key] = p.value;
+      _keyPendingValues[p.key] = p.value;
+      try { enqueue(p.key, p.value); } catch (_e) { /* ignore */ }
+    });
+    updateStatusAfterDirectPush();
+    return { ok: false, message: e && e.message ? e.message : String(e) };
+  }
+}
+
 /** Debounced direct push — call from S.set on every business-data write. */
 export function syncStorageKey(key, optValue) {
   if (!SYNC_KEY_SET[key]) return;
@@ -791,10 +896,20 @@ export function syncStorageKey(key, optValue) {
   var captured = value;
   _keyDebounceTimers[key] = setTimeout(function () {
     delete _keyDebounceTimers[key];
-    delete _pending[key];
     var pushVal = _keyPendingValues[key] !== undefined ? _keyPendingValues[key] : captured;
-    delete _keyPendingValues[key];
-    syncStorageKeyNow(key, pushVal).finally(function () {
+    /* Keep in _pending until server ack — do not drop before push */
+    _pending[key] = pushVal;
+    syncStorageKeyNow(key, pushVal).then(function (r) {
+      if (r && r.ok) {
+        if (_pending[key] === pushVal) delete _pending[key];
+        if (_keyPendingValues[key] === pushVal) delete _keyPendingValues[key];
+      } else if (!(r && r.inflight)) {
+        /* Failure: keep in-memory pending AND durable queue so close/restart cannot lose money writes */
+        _pending[key] = pushVal;
+        _keyPendingValues[key] = pushVal;
+        try { enqueue(key, pushVal); } catch (_e) { /* ignore */ }
+      }
+    }).finally(function () {
       updateStatusAfterDirectPush();
     });
   }, delay);
@@ -808,14 +923,22 @@ export async function flushAllPendingKeys() {
     delete _keyDebounceTimers[k];
   });
   const keys = Object.keys(_pending);
-  _pending = {};
   _flushDeferred = false;
   var allOk = true;
   for (var i = 0; i < keys.length; i++) {
     var k = keys[i];
-    var v = _keyPendingValues[k];
+    var v = _keyPendingValues[k] !== undefined ? _keyPendingValues[k] : _pending[k];
     const r = await syncStorageKeyNow(k, v);
-    if (!r.ok) allOk = false;
+    if (r && r.ok) {
+      delete _pending[k];
+      delete _keyPendingValues[k];
+    } else {
+      allOk = false;
+      if (v !== undefined && v !== null) {
+        _pending[k] = v;
+        _keyPendingValues[k] = v;
+      }
+    }
   }
   return allOk;
 }
@@ -896,12 +1019,32 @@ export async function pushKeysToServer(keys, opts = null) {
   if (cfg.role !== 'network_server' && cfg.role !== 'network_client') {
     return { ok: false, message: 'Not network mode' };
   }
+  const forceReplace = !!(opts && opts.forceReplace);
+  if (forceReplace) {
+    const wipe = await wipeShopDataOnServer({ authConfig: cfg });
+    if (wipe && wipe.ok === false) {
+      log('error', 'wipeShopDataOnServer failed: ' + (wipe.message || 'unknown'));
+      return { ok: false, message: wipe.message || 'MySQL wipe failed before upload' };
+    }
+  }
   const cache = (typeof window !== 'undefined' && window._idbCache) ? window._idbCache : {};
   const patches = [];
   (keys || NETWORK_KV_KEYS).forEach(function (k) {
-    if (cache[k] !== undefined && cache[k] !== null) {
-      patches.push({ key: k, value: cache[k] });
+    var v = cache[k];
+    if (v === undefined || v === null) {
+      if (!forceReplace) return;
+      /* Reset/restore must wipe missing keys on MySQL too */
+      if (k === 'tc3_settings') v = {};
+      else if (k === 'tc3_gl_mode') v = 'live';
+      else if (k === 'tc3_journal_hash') v = '';
+      else if (k === 'tc3_openBal') v = null;
+      else if (k === 'tc3_businessType') v = 'tech';
+      else if (k === 'tc3_admin_name') v = '';
+      else v = [];
     }
+    var patch = { key: k, value: v };
+    if (forceReplace) patch._forceReplace = true;
+    patches.push(patch);
   });
   if (!patches.length) return { ok: false, message: 'No shop data found on this PC to upload' };
   const savedConfig = _config;
@@ -911,6 +1054,70 @@ export async function pushKeysToServer(keys, opts = null) {
     return { ok: sent.length > 0, saved: sent, message: sent.length > 0 ? 'Uploaded' : 'Server did not confirm save' };
   } finally {
     _config = savedConfig;
+  }
+}
+
+/**
+ * Hard-delete all tc3_* keys from MySQL kv_store (Reset / Restore on Main PC).
+ * Requires wipe_shop_data.php deployed to XAMPP htdocs/api/.
+ */
+function loopbackApiUrl(apiUrl) {
+  try {
+    const u = new URL(String(apiUrl || ''));
+    if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+      u.hostname = '127.0.0.1';
+    }
+    return u.toString().replace(/\/?$/, '/');
+  } catch (_e) {
+    return String(apiUrl || '');
+  }
+}
+
+export async function wipeShopDataOnServer(opts = null) {
+  const cfg = (opts && opts.authConfig) || getActiveConfig() || {};
+  if (!cfg.apiUrl) return { ok: false, message: 'API URL not configured' };
+  const body = { confirm: 'WIPE_SHOP_DATA' };
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.lanRequest === 'function') {
+      const r = await window.electronAPI.lanRequest({
+        method: 'POST',
+        path: 'wipe_shop_data.php',
+        body: body,
+        clientId: getClientId(),
+        timeoutMs: 60000,
+      });
+      if (r && r.success !== false) {
+        const json = (r && r.data) || r;
+        if (json && json.success) {
+          log('info', 'wipeShopDataOnServer ok deleted=' + ((json.data && json.data.deletedKeys) || '?'));
+          return { ok: true, deletedKeys: json.data && json.data.deletedKeys };
+        }
+        if (json && json.message) {
+          log('warn', 'wipeShopDataOnServer rejected: ' + json.message);
+        }
+      } else {
+        log('warn', 'wipeShopDataOnServer IPC: ' + ((r && r.message) || 'failed'));
+      }
+    }
+  } catch (eIpc) {
+    log('warn', 'wipeShopDataOnServer IPC failed: ' + (eIpc && eIpc.message ? eIpc.message : eIpc));
+  }
+  /* Fallback: direct localhost fetch (Main PC only — avoids LAN IP timeout). */
+  try {
+    const base = (cfg.role === 'network_server') ? loopbackApiUrl(cfg.apiUrl) : String(cfg.apiUrl).replace(/\/?$/, '/');
+    const headers = { 'Content-Type': 'application/json', 'X-TC-Client-ID': getClientId() };
+    if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
+    const res = await fetch(base + 'wipe_shop_data.php', {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(body),
+      signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(60000) : undefined,
+    });
+    const json = await res.json();
+    if (json && json.success) return { ok: true, deletedKeys: json.data && json.data.deletedKeys };
+    return { ok: false, message: (json && json.message) || 'Wipe failed' };
+  } catch (eFetch) {
+    return { ok: false, message: eFetch && eFetch.message ? eFetch.message : String(eFetch) };
   }
 }
 
@@ -989,6 +1196,8 @@ export async function initSyncEngine(config) {
     if (!window.TC_SYNC.queuePatch) window.TC_SYNC.queuePatch = queuePatch;
     if (!window.TC_SYNC.flushNow) window.TC_SYNC.flushNow = flushNow;
     if (!window.TC_SYNC.pushKeysToServer) window.TC_SYNC.pushKeysToServer = pushKeysToServer;
+    window.TC_SYNC.syncStorageKeyNow = syncStorageKeyNow;
+    window.TC_SYNC.syncStorageKeysNow = syncStorageKeysNow;
     window.TC_SYNC.bootstrapServerKv = function () {
       return bootstrapServerKvFromLocal(config.apiUrl, config);
     };
@@ -1028,11 +1237,16 @@ export async function initSyncEngine(config) {
   /* Patch storage before draining so new writes don't race */
   patchStorageSet();
 
-  /* Start periodic background retry timer (every 5 seconds) to drain the queue if it gets stuck */
+  /* Start periodic background retry: durable queue + in-memory pending (direct-push failures) */
   _retryInterval = setInterval(async () => {
-    if (_queue.length > 0 && TC_SYNC.status !== SYNC_STATUS.SAVING && !_syncPaused()) {
+    if (_syncPaused() || TC_SYNC.status === SYNC_STATUS.SAVING) return;
+    if (_queue.length > 0) {
       log('info', 'Periodic retry: draining queue with ' + _queue.length + ' item(s)');
       await drainQueue();
+    }
+    if (Object.keys(_pending).length > 0) {
+      log('info', 'Periodic retry: flushing ' + Object.keys(_pending).length + ' pending key(s)');
+      try { await flushAllPendingKeys(); } catch (_e) { /* ignore */ }
     }
   }, 5000);
 
@@ -1074,6 +1288,36 @@ export function destroySyncEngine() {
 }
 
 /**
+ * Drop in-memory + durable sync queue (reset / restore). Does not push to server.
+ * Call after destroySyncEngine when local wipe makes pending patches obsolete.
+ */
+export function discardPendingSync(reason) {
+  try {
+    clearTimeout(_debounceTimer);
+    _debounceTimer = null;
+    Object.keys(_keyDebounceTimers || {}).forEach(function (k) {
+      clearTimeout(_keyDebounceTimers[k]);
+      delete _keyDebounceTimers[k];
+    });
+    if (_patchRetryTimer) {
+      clearTimeout(_patchRetryTimer);
+      _patchRetryTimer = null;
+    }
+  } catch (_eTimers) { /* ignore */ }
+  _queue = [];
+  _pending = {};
+  _keyPendingValues = {};
+  _inflightKeys = {};
+  _flushDeferred = false;
+  TC_SYNC.pendingCount = 0;
+  setStatus(SYNC_STATUS.IDLE, { failedKeys: [], pendingCount: 0 });
+  try {
+    idbSet(QUEUE_IDB_KEY, null);
+  } catch (_eIdb) { /* ignore */ }
+  log("info", "discardPendingSync: " + (reason || "cleared"));
+}
+
+/**
  * Append (or prepend) one row to a large tc3_* array via App’s S wrapper — avoids UI code holding
  * `[newRow].concat(entireHistory)` for persistence. opts.prepend: true for newest-first (e.g. sales).
  */
@@ -1096,8 +1340,10 @@ export { chunkPatches, validate as validateSyncStorageValue };
 TC_SYNC.queuePatch = queuePatch;
 TC_SYNC.flushNow = flushNow;
 TC_SYNC.pushKeysToServer = pushKeysToServer;
+TC_SYNC.wipeShopDataOnServer = wipeShopDataOnServer;
 TC_SYNC.ensureSyncConfig = ensureSyncConfig;
 TC_SYNC.ensureSyncConfigFromDisk = ensureSyncConfigFromDisk;
 TC_SYNC.syncStorageKey = syncStorageKey;
 TC_SYNC.syncStorageKeyNow = syncStorageKeyNow;
 TC_SYNC.isKeyPending = isSyncKeyPending;
+TC_SYNC.discardPendingSync = discardPendingSync;

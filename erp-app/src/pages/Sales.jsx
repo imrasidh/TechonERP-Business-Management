@@ -46,6 +46,7 @@ import {
 } from "../utils/invoiceEditLocks.js";
 import { stampProductStock, stampUpdatedAt, stampCustomerBalance, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 import { loadFreshProductsForStock, pushKeysNow } from "../utils/concurrencyGuards.js";
+import { normalizeCashMethodForStorage } from "../accounting/generalLedger.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
 var POS = React.memo(function (props) {
@@ -1336,18 +1337,28 @@ var POS = React.memo(function (props) {
         return;
       }
     }
-    /* Block walk-in customers from making unpaid or partial invoices */
+    /* Block walk-in customers from making unpaid or partial invoices.
+       Cheque is not "paid" until cleared — walk-in cheque must cover the full total with real cheque rows. */
     var isWalkIn = custMode === "walkin" || (custMode === "existing" && !custId) || (custMode === "new" && !newCust.name);
+    var walkInChequePayment = posCashMethod === "Cheque" && !(posSplitRows && posSplitRows.length > 0);
     if (isWalkIn) {
-      var splitTotal = (posSplitRows && posSplitRows.length > 0)
-        ? posSplitRows.reduce(function (a, r) { return a + (parseFloat(r.amount) || 0); }, 0)
-        : 0;
-      var isFullyPaid = (posSplitRows && posSplitRows.length > 0)
-        ? splitTotal >= total
-        : payMode === "full";
-      if (!isFullyPaid) {
-        showAlert("Walk-in customers must pay in full.\n\nTo make a partial or unpaid invoice, please select or create a customer first.");
-        return;
+      if (walkInChequePayment) {
+        var walkInChqSum = (posChequeList || []).reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
+        if (!(posChequeList && posChequeList.length > 0) || walkInChqSum + 0.009 < total) {
+          showAlert("Walk-in cheque payment requires cheque(s) totaling the full invoice amount (" + getCurrencySymbol() + " " + fmtNum(total) + ").\n\nAdd cheques first, or pay with Cash/Bank.");
+          return;
+        }
+      } else {
+        var splitTotal = (posSplitRows && posSplitRows.length > 0)
+          ? posSplitRows.reduce(function (a, r) { return a + (parseFloat(r.amount) || 0); }, 0)
+          : 0;
+        var isFullyPaid = (posSplitRows && posSplitRows.length > 0)
+          ? splitTotal >= total
+          : payMode === "full";
+        if (!isFullyPaid) {
+          showAlert("Walk-in customers must pay in full.\n\nTo make a partial or unpaid invoice, please select or create a customer first.");
+          return;
+        }
       }
     }
     var stockErr = null;
@@ -1415,6 +1426,17 @@ var POS = React.memo(function (props) {
         return;
       }
     }
+    if (isChequePayment) {
+      var posChqSum = (posChequeList || []).reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
+      if (!(posChequeList && posChequeList.length > 0)) {
+        showAlert("Add at least one cheque before completing a cheque payment.");
+        return;
+      }
+      if (posChqSum > total + 0.009) {
+        showAlert("Cheque total (" + getCurrencySymbol() + " " + fmtNum(posChqSum) + ") exceeds invoice total (" + getCurrencySymbol() + " " + fmtNum(total) + ").");
+        return;
+      }
+    }
     var saleAmtErr = validateTxnAmounts("Sale invoice", total, effectivePaid, effectiveBalance);
     if (saleAmtErr) { showAlert("" + saleAmtErr); return; }
     var initPh = [];
@@ -1431,7 +1453,7 @@ var POS = React.memo(function (props) {
         }
       });
     } else if (!isChequePayment && paidNum > 0) {
-      initPh = [{ id: uid(), date: today(), amount: paidNum, note: "Initial payment", cashMethod: posCashMethod }];
+      initPh = [{ id: uid(), date: today(), amount: paidNum, note: "Initial payment", cashMethod: normalizeCashMethodForStorage(posCashMethod) }];
     }
     var chronoCart = cartChronological();
     var saleItems = chronoCart.map(mapCartLineToSaleItem).concat(freeCart.map(mapCartLineToSaleItem));
@@ -1456,7 +1478,7 @@ var POS = React.memo(function (props) {
     }
     var saleTs = new Date().toISOString();
     var txnDate = recordDate || today();
-    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: txnDate, isoDateTime: saleTs, customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: posCashMethod, fromRepairId: fromRepairId || undefined, fromRepairDeviceIndexes: (fromRepairDeviceIndexes || []).slice(), fromQuotationId: fromQuotationId || undefined, createdAt: saleTs, updatedAt: saleTs };
+    var saleObj = { id: editingSaleId || uid(), invoiceNo: finalInvNo, date: txnDate, isoDateTime: saleTs, customerId: custId || "", customerName: custName, customerPhone: custPhone, items: saleItems, subTotal: subTotal, discount: discAmt, total: total, paid: effectivePaid, balance: effectiveBalance, payStatus: effectiveStatus, includeWarranty: includeWarranty, paymentHistory: initPh, cashMethod: normalizeCashMethodForStorage(posCashMethod), fromRepairId: fromRepairId || undefined, fromRepairDeviceIndexes: (fromRepairDeviceIndexes || []).slice(), fromQuotationId: fromQuotationId || undefined, createdAt: saleTs, updatedAt: saleTs };
     if (editingSaleId) {
       var _origMeta = state.sales.find(function (s) { return s.id === editingSaleId; });
       if (_origMeta) {
@@ -1514,6 +1536,7 @@ var POS = React.memo(function (props) {
       if (!lines.length) return p;
       if (isServiceProduct(p)) return p;
       var deductQty = lines.reduce(function (acc, ci) {
+        if (ci && ci.isGlassLine) return acc + (Number(ci.qty) || 0);
         return acc + toProductBaseQty(ci.qty || 0, ci.saleUnit || ci.unit || "Pcs", p);
       }, 0);
       var nextStock = (p.stock || 0) - deductQty;
@@ -1613,6 +1636,8 @@ var POS = React.memo(function (props) {
     });
 
     var codRecords = state.codRecords || S.get("tc3_codRecords", []) || [];
+    /* COD track: copy sell/cost/profit into COD Database only.
+       LOCKED SEPARATE — do not journal COD records/withdrawals into main GL/cash/P&L. */
     if (codSalesTrackEnabled && shouldPersistCodRecord(codTrack) && !codRecords.find(function (r) { return r.saleId === saleObj.id; })) {
       if (!tcTrialGuard(codRecords, "codRecords")) return;
     }
@@ -4841,6 +4866,12 @@ var POS = React.memo(function (props) {
                 className="erp-pos-chq-add-btn"
                 onClick={function () {
                   if (!posChqForm.no.trim() || !parseFloat(posChqForm.amount)) { showAlert("Enter cheque number and amount."); return; }
+                  var addAmt = parseFloat(posChqForm.amount) || 0;
+                  var existingSum = (posChequeList || []).reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
+                  if (existingSum + addAmt > total + 0.009) {
+                    showAlert("Cheque total would exceed invoice amount (" + getCurrencySymbol() + " " + fmtNum(total) + ").");
+                    return;
+                  }
                   setPosChequeList(function (l) { return l.concat([Object.assign({}, posChqForm, { id: uid() })]); });
                   setPosChqForm({ no: "", bank: "", amount: "", due: today() });
                 }}

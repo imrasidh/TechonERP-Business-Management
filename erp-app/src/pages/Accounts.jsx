@@ -85,6 +85,11 @@ function buildCashBookEntries(opts) {
   var fmtNum = opts.fmtNum;
   var todayFn = opts.today;
   var entries = [];
+  var cashBookAcct = function (m) {
+    var s = String(m || "Cash");
+    if (s === "Bank" || s === "Card" || s === "Online" || s === "Cheque" || s === "Bank Transfer") return "Bank";
+    return s === "Cash" ? "Cash" : s;
+  };
 
   var obSnap = S.get("tc3_openBal", null);
   if (obSnap && obSnap.completed) {
@@ -110,48 +115,63 @@ function buildCashBookEntries(opts) {
       type: e.type === "invest" ? "Capital Investment" : "Capital Withdrawal",
       typeGroup: "capital",
       description: e.note || e.ref || (e.type === "invest" ? "Capital invested" : "Capital withdrawn"),
-      account: e.cashMethod || "Cash",
+      account: cashBookAcct(e.cashMethod || "Cash"),
       moneyIn: e.type === "invest" ? e.amount : 0,
       moneyOut: e.type === "withdraw" ? e.amount : 0,
     });
   });
 
+  /* Include voided docs: void posts explicit refund PH so cash ties to drawer */
   (state.sales || []).forEach(function (s) {
     (s.paymentHistory || []).forEach(function (ph) {
+      var amt = Number(ph.amount) || 0;
+      var m = ph.cashMethod || "Cash";
+      /* Match GL + getCashBalances: pending Cheque is not cash until cleared to Bank. */
+      if (m === "Cheque" || m === "Adjustment") return;
       entries.push({
         id: "sale_" + ph.id, date: ph.date || s.date, sortKey: (ph.date || s.date) + "_sale_" + ph.id,
-        type: "Sale Payment",
+        type: amt < 0 ? "Sale Refund / Void" : "Sale Payment",
         typeGroup: "sales",
-        description: "Invoice " + (s.invoiceNo || s.id.slice(0, 8)) + " — " + (s.customerName || "Walk-in"),
-        account: ph.cashMethod || "Cash",
-        moneyIn: ph.amount,
-        moneyOut: 0,
+        description: "Invoice " + (s.invoiceNo || s.id.slice(0, 8)) + " — " + (s.customerName || "Walk-in") + (s.status === "Voided" ? " (voided)" : ""),
+        account: cashBookAcct(m),
+        moneyIn: amt > 0 ? amt : 0,
+        moneyOut: amt < 0 ? -amt : 0,
       });
     });
   });
 
   (state.purchases || []).forEach(function (p) {
     (p.paymentHistory || []).forEach(function (ph) {
+      var amt = Number(ph.amount) || 0;
+      var m = ph.cashMethod || "Cash";
+      /* Match GL + getCashBalances: pending Cheque is not cash until cleared to Bank. */
+      if (m === "Cheque" || m === "Adjustment") return;
+      if (amt === 0) return;
+      /* Purchase-return refunds live on purchaseReturns.refundAmount (balances SoT); skip statement-only negatives.
+         Void refunds (type void_refund) must still reverse cash in the book. */
+      if (amt < 0 && ph.type !== "void_refund") return;
       entries.push({
         id: "purch_" + ph.id, date: ph.date || p.date || "", sortKey: (ph.date || p.date || "") + "_purch_" + ph.id,
-        type: "Purchase Payment",
+        type: amt < 0 ? "Purchase Refund / Void" : "Purchase Payment",
         typeGroup: "purchases",
-        description: "PO " + (p.invoiceNo || p.id.slice(0, 8)) + " — " + (p.supplierName || "Supplier"),
-        account: ph.cashMethod || "Cash",
-        moneyIn: 0,
-        moneyOut: ph.amount,
+        description: "PO " + (p.invoiceNo || p.id.slice(0, 8)) + " — " + (p.supplierName || "Supplier") + (p.status === "Voided" ? " (voided)" : ""),
+        account: cashBookAcct(m),
+        moneyIn: amt < 0 ? -amt : 0,
+        moneyOut: amt > 0 ? amt : 0,
       });
     });
   });
 
   (state.expenses || []).forEach(function (e) {
-    var acct = e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" || e.payMode === "Cheque" ? "Bank" : "Cash");
+    if (e.cashMethod === "ChequePending") return;
+    var acct = e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" || e.payMode === "Cheque" || e.payMode === "Card" ? "Bank" : "Cash");
+    var expDate = e.clearedDate || e.date;
     entries.push({
-      id: "exp_" + e.id, date: e.date, sortKey: e.date + "_exp_" + e.id,
+      id: "exp_" + e.id, date: expDate, sortKey: expDate + "_exp_" + e.id,
       type: "Expense",
       typeGroup: "expenses",
       description: (e.category || "Expense") + (e.description ? " — " + e.description : ""),
-      account: acct,
+      account: cashBookAcct(acct),
       moneyIn: 0,
       moneyOut: e.amount,
     });
@@ -164,33 +184,38 @@ function buildCashBookEntries(opts) {
       type: "Asset Purchase",
       typeGroup: "assets",
       description: (a.category || "Asset") + " — " + a.name,
-      account: a.cashMethod || "Cash",
+      account: cashBookAcct(a.cashMethod || "Cash"),
       moneyIn: 0,
       moneyOut: a.amount,
     });
   });
 
   S.get("tc3_manualPayables", []).forEach(function (mp) {
-    if (!mp._isOpening) {
+    /* Inventory-linked / Credit payables are not borrowed cash — only their payments hit the drawer */
+    var skipPrincipalCash = !!(mp.productId) || String(mp.paymentMethod || "") === "Credit";
+    if (!mp._isOpening && !skipPrincipalCash) {
       entries.push({
         id: "mpay_" + mp.id, date: mp.date, sortKey: mp.date + "_mpay_" + mp.id,
         type: mp.type || "Borrowed Money",
         typeGroup: "borrowed",
         description: (mp.source || mp.type || "Borrowed") + (mp.note ? " — " + mp.note : ""),
-        account: mp.paymentMethod || "Cash",
+        account: cashBookAcct(mp.paymentMethod || "Cash"),
         moneyIn: mp.amount,
         moneyOut: 0,
       });
     }
     (mp.paymentHistory || []).forEach(function (ph) {
+      var amt = Number(ph.amount) || 0;
+      var m = ph.cashMethod || "Cash";
+      if (m === "Cheque" || m === "Adjustment" || amt === 0) return;
       entries.push({
         id: "mpay_rep_" + ph.id, date: ph.date || mp.date, sortKey: (ph.date || mp.date) + "_mpayrep_" + ph.id,
-        type: "Payable Repayment",
+        type: amt < 0 ? "Payable Repayment Reversal" : "Payable Repayment",
         typeGroup: "repayment",
         description: "Repayment — " + (mp.source || mp.type || ""),
-        account: ph.cashMethod || "Cash",
-        moneyIn: 0,
-        moneyOut: ph.amount,
+        account: cashBookAcct(m),
+        moneyIn: amt < 0 ? -amt : 0,
+        moneyOut: amt > 0 ? amt : 0,
       });
     });
   });
@@ -202,20 +227,23 @@ function buildCashBookEntries(opts) {
         type: mr.type || "Loan Given",
         typeGroup: "loanout",
         description: (mr.person || mr.type || "Loan given") + (mr.note ? " — " + mr.note : ""),
-        account: mr.paymentMethod || "Cash",
+        account: cashBookAcct(mr.paymentMethod || "Cash"),
         moneyIn: 0,
         moneyOut: mr.amount,
       });
     }
     (mr.paymentHistory || []).forEach(function (ph) {
+      var amt = Number(ph.amount) || 0;
+      var m = ph.cashMethod || "Cash";
+      if (m === "Cheque" || m === "Adjustment" || amt === 0) return;
       entries.push({
         id: "mrec_rep_" + ph.id, date: ph.date || mr.date, sortKey: (ph.date || mr.date) + "_mrecrep_" + ph.id,
-        type: "Receivable Collection",
+        type: amt < 0 ? "Receivable Collection Reversal" : "Receivable Collection",
         typeGroup: "received",
         description: "Collection — " + (mr.person || mr.type || ""),
-        account: ph.cashMethod || "Cash",
-        moneyIn: ph.amount,
-        moneyOut: 0,
+        account: cashBookAcct(m),
+        moneyIn: amt > 0 ? amt : 0,
+        moneyOut: amt < 0 ? -amt : 0,
       });
     });
   });
@@ -226,25 +254,14 @@ function buildCashBookEntries(opts) {
       type: "Profit Distribution",
       typeGroup: "profdist",
       description: "Distributed to " + (pd.partner || pd.name || "Partner"),
-      account: pd.paymentMethod || "Cash",
+      account: cashBookAcct(pd.paymentMethod || "Cash"),
       moneyIn: 0,
       moneyOut: pd.amount,
     });
   });
 
-  (state.salesReturns || []).forEach(function (r) {
-    if (!r.isRefund || !r.refundAmount) return;
-    entries.push({
-      id: "sret_" + r.id, date: r.date, sortKey: r.date + "_sret_" + r.id,
-      type: "Sales Return Refund",
-      typeGroup: "returns",
-      description: "Refund to customer — " + (r.customer || "Walk-in") + " | " + (r.invoiceNo || "") + " | " + (r.productName || "") + (r.reason ? " (" + r.reason + ")" : ""),
-      account: r.refundMethod || "Cash",
-      moneyIn: 0,
-      moneyOut: r.refundAmount,
-    });
-  });
-
+  /* Sales return cash already in parent sale.paymentHistory (negative PH).
+     Purchase return cash-back: parent PH negatives are statement-only — use return log. */
   (state.purchaseReturns || []).forEach(function (r) {
     if (!r.isRefund || !r.refundAmount) return;
     entries.push({
@@ -252,14 +269,89 @@ function buildCashBookEntries(opts) {
       type: "Purchase Return Refund",
       typeGroup: "returns",
       description: "Refund from supplier — " + (r.supplier || "") + " | " + (r.purchaseNo || "") + " | " + (r.productName || "") + (r.reason ? " (" + r.reason + ")" : ""),
-      account: r.refundMethod || "Cash",
+      account: cashBookAcct(r.refundMethod || "Cash"),
       moneyIn: r.refundAmount,
       moneyOut: 0,
     });
   });
 
+  /* Cleared standalone cheques (no invoice/expense link) — match getCashBalances */
+  (state.cheques || []).forEach(function (ch) {
+    if (!ch || String(ch.status || "") !== "Cleared") return;
+    if (ch.saleId || ch.purchaseId || ch.manualPayableId || ch.manualReceivableId || ch.expenseId) return;
+    var amt = Number(ch.amount) || 0;
+    if (amt <= 0) return;
+    var dt = ch.clearedDate || ch.date || "";
+    entries.push({
+      id: "schq_" + ch.id, date: dt, sortKey: dt + "_schq_" + ch.id,
+      type: ch.type === "incoming" ? "Standalone Cheque In" : "Standalone Cheque Out",
+      typeGroup: "cheques",
+      description: "Cheque #" + (ch.chequeNo || ch.id.slice(0, 8)) + (ch.note ? " — " + ch.note : ""),
+      account: "Bank",
+      moneyIn: ch.type === "incoming" ? amt : 0,
+      moneyOut: ch.type === "outgoing" ? amt : 0,
+    });
+  });
+
   entries.sort(function (a, b) { return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0; });
 
+  var running = 0;
+  for (var i = 0; i < entries.length; i++) {
+    running += entries[i].moneyIn - entries[i].moneyOut;
+    entries[i].balance = running;
+  }
+  return entries;
+}
+
+/**
+ * Cash Book from General Ledger CASH/BANK lines (preferred when journal exists).
+ * Falls back caller should use buildCashBookEntries when this returns empty / no journal.
+ */
+function buildCashBookEntriesFromLedger(opts) {
+  var S = opts.S;
+  var lines = S.get("tc3_journal_lines", []) || [];
+  if (!lines.length) return null;
+  var GL_CASH = "1000";
+  var GL_BANK = "1010";
+  var typeGroupFromRef = function (rt) {
+    var s = String(rt || "");
+    if (s.indexOf("sale") === 0) return "sales";
+    if (s.indexOf("purchase") === 0) return "purchases";
+    if (s === "expense") return "expenses";
+    if (s === "asset") return "assets";
+    if (s.indexOf("capital") === 0 || s === "opening_balance") return s === "opening_balance" ? "opening" : "capital";
+    if (s.indexOf("profit") === 0 || s.indexOf("cod_") === 0) return "profdist";
+    if (s.indexOf("cheque") >= 0 || s.indexOf("standalone") >= 0) return "cheques";
+    if (s.indexOf("manual_payable") >= 0) return "repayment";
+    if (s.indexOf("manual_receivable") >= 0) return "received";
+    return "gl";
+  };
+  var entries = [];
+  lines.forEach(function (ln) {
+    if (!ln) return;
+    var acctId = String(ln.accountId || "");
+    if (acctId !== GL_CASH && acctId !== GL_BANK) return;
+    var dr = Number(ln.debit) || 0;
+    var cr = Number(ln.credit) || 0;
+    if (Math.abs(dr) < 0.005 && Math.abs(cr) < 0.005) return;
+    var moneyIn = dr > 0 ? dr : 0;
+    var moneyOut = cr > 0 ? cr : 0;
+    var dt = ln.date || "";
+    var rt = ln.referenceType || "journal";
+    entries.push({
+      id: "gl_" + (ln.id || (String(ln.transactionId || "") + "_" + acctId)),
+      date: dt,
+      sortKey: dt + "_gl_" + (ln.id || ""),
+      type: ln.memo || rt || "GL movement",
+      typeGroup: typeGroupFromRef(rt),
+      description: rt + (ln.referenceId ? " · " + String(ln.referenceId).slice(0, 14) : "") + (ln.memo ? " — " + ln.memo : ""),
+      account: acctId === GL_BANK ? "Bank" : "Cash",
+      moneyIn: moneyIn,
+      moneyOut: moneyOut,
+      _fromLedger: true,
+    });
+  });
+  entries.sort(function (a, b) { return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0; });
   var running = 0;
   for (var i = 0; i < entries.length; i++) {
     running += entries[i].moneyIn - entries[i].moneyOut;
@@ -368,6 +460,8 @@ var Accounts = function (props) {
         availableProfit: 0,
         acStockCostValue: 0,
         acManualStockAdj: 0,
+        profitSource: "ops",
+        positionSource: "ops",
       };
     }
     var liveSalesAc = activeSales(state.sales);
@@ -396,6 +490,33 @@ var Accounts = function (props) {
     var totalCOGS = getNetCOGS(liveSalesAc, state.salesReturns);
     var totalExpenses = (state.expenses || []).reduce(function (a, e) { return a + e.amount; }, 0);
     var totalAssets = (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
+    var positionSource = "ops";
+    var ledgerFixedAssets = null;
+    var ledgerInvStock = null;
+    try {
+      var jlinesPos = S.get("tc3_journal_lines", []) || [];
+      if (jlinesPos.length) {
+        var fixedDr = 0;
+        var fixedCr = 0;
+        var invDr = 0;
+        var invCr = 0;
+        jlinesPos.forEach(function (ln) {
+          if (!ln) return;
+          var aid = String(ln.accountId || "");
+          if (aid === "1500") {
+            fixedDr += Number(ln.debit) || 0;
+            fixedCr += Number(ln.credit) || 0;
+          } else if (aid === "1200") {
+            invDr += Number(ln.debit) || 0;
+            invCr += Number(ln.credit) || 0;
+          }
+        });
+        ledgerFixedAssets = Math.round((fixedDr - fixedCr) * 100) / 100;
+        ledgerInvStock = Math.round((invDr - invCr) * 100) / 100;
+        totalAssets = ledgerFixedAssets;
+        positionSource = "ledger";
+      }
+    } catch (_ePos) { /* keep ops assets */ }
     var netCapital = getCapLedger().reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
     var totalProfitDist = getProfitDist().reduce(function (a, pd) { return a + pd.amount; }, 0);
     var grossProfit = totalRevenue - totalCOGS;
@@ -417,8 +538,32 @@ var Accounts = function (props) {
     }, 0);
     var acTheoreticalStock = acObStockVal + acTotalPurchasesVal - totalCOGS - acTotalPurchaseReturnsVal - acTotalDamageVal;
     var acStockCostValue = (state.products || []).filter(function (p) { return p.status !== "inactive"; }).reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0);
+    if (ledgerInvStock != null) acStockCostValue = ledgerInvStock;
     var acManualStockAdj = acStockCostValue - acTheoreticalStock;
     var netProfit = grossProfit + totalRepairRevenue - totalExpenses + acManualStockAdj;
+    var profitSource = "ops";
+    /* Prefer ledger P&L when journal exists — same net as Accounts → GL / Trial. */
+    try {
+      if (typeof getProfitAndLossFromLedger === "function") {
+        var jlinesOv = S.get("tc3_journal_lines", []);
+        if (jlinesOv && jlinesOv.length) {
+          var plOv = getProfitAndLossFromLedger(null, null);
+          if (plOv && typeof plOv.net === "number") {
+            netProfit = plOv.net;
+            profitSource = "ledger";
+            if (typeof plOv.income === "number") totalRevenue = plOv.income;
+            if (typeof plOv.expenses === "number") {
+              /* Ledger expenses include COGS + opex — avoid double-counting COGS rows. */
+              totalCOGS = 0;
+              totalExpenses = plOv.expenses;
+              totalRepairRevenue = 0;
+              acManualStockAdj = 0;
+              grossProfit = totalRevenue;
+            }
+          }
+        }
+      }
+    } catch (_e) { /* keep ops */ }
     var availableProfit = netProfit - totalProfitDist;
     return {
       totalReceivable: totalReceivable,
@@ -435,6 +580,8 @@ var Accounts = function (props) {
       availableProfit: availableProfit,
       acStockCostValue: acStockCostValue,
       acManualStockAdj: acManualStockAdj,
+      profitSource: profitSource,
+      positionSource: positionSource,
     };
   }, [
     atab,
@@ -537,9 +684,7 @@ var Accounts = function (props) {
       price: form.price,
       extraUnits: form.extraUnits || [],
     });
-    var obQtyToUse = isGlassSheetProductForm(form, shopSettings)
-      ? (parseFloat(obStockQty) || 1)
-      : (parseInt(obStockQty, 10) || 1);
+    var obQtyToUse = parseFloat(obStockQty) || 1;
     var bc = (form.barcode || "").trim() || genBarcode();
     var glassRowFields = glassFieldsFromProductForm(form);
     var row = Object.assign({
@@ -673,9 +818,11 @@ var Accounts = function (props) {
   var [glAuditOpen, setGlAuditOpen] = useState(false);
   var [glDebugGroupLimit, setGlDebugGroupLimit] = useState(50);
 
-  /* Cash Book: build only while the tab is open; paginate so DOM stays light */
+  /* Cash Book: prefer GL cash/bank lines when journal exists; else ops rebuild. */
   var cashBookEntries = useMemo(function () {
     if (atab !== "ledger") return EMPTY_CASH_BOOK;
+    var fromGl = buildCashBookEntriesFromLedger({ S: S });
+    if (fromGl !== null) return fromGl;
     return buildCashBookEntries({
       state: state,
       S: S,
@@ -692,6 +839,7 @@ var Accounts = function (props) {
     state.salesReturns,
     state.purchaseReturns,
     state.settings,
+    state.cheques,
   ]);
 
   var cashBookFiltered = useMemo(function () {
@@ -849,7 +997,9 @@ var Accounts = function (props) {
   ];
 
   var totalLiquid = balances.cash + balances.bank;
-  var totalFixedAssets = (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
+  var totalFixedAssets = ovMetrics.positionSource === "ledger"
+    ? totalAssets
+    : (state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0);
   var obDone = !!(acObSnap && acObSnap.completed);
   /* Trial balance is expensive — only compute on Overview (header) / GL tab does its own */
   var tbOverview = (atab === "overview" && typeof getTrialBalanceSnapshot === "function")
@@ -991,13 +1141,19 @@ var Accounts = function (props) {
           { id: "pay", label: "Payable", tone: "orange", icon: "📤", val: totalPayable, sub: "You owe suppliers & loans" },
           { id: "profit", label: "Available Profit", tone: availableProfit >= 0 ? "green" : "red", icon: availableProfit >= 0 ? "📈" : "📉", val: availableProfit, sub: "After " + getCurrencySymbol() + " " + fmtNum(totalProfitDist) + " distributed" },
         ];
-        var pnlRows = [
-          { label: "Revenue", val: totalRevenue, tone: "blue", bar: totalRevenue },
-          { label: "Cost of Goods Sold", val: totalCOGS, tone: "orange", bar: totalRevenue },
-          { label: "Gross Profit", val: grossProfit, tone: grossProfit >= 0 ? "green" : "red", bar: totalRevenue, pct: marginPct },
-          { label: "Operating Expenses", val: totalExpenses, tone: "red", bar: totalRevenue },
-          { label: "Net Profit", val: netProfit, tone: netProfit >= 0 ? "green" : "red", total: true, bar: totalRevenue },
-        ];
+        var pnlRows = ovMetrics.profitSource === "ledger"
+          ? [
+            { label: "Income (ledger)", val: totalRevenue, tone: "blue", bar: totalRevenue },
+            { label: "Expenses (ledger)", val: totalExpenses, tone: "red", bar: totalRevenue },
+            { label: "Net Profit", val: netProfit, tone: netProfit >= 0 ? "green" : "red", total: true, bar: totalRevenue },
+          ]
+          : [
+            { label: "Revenue", val: totalRevenue, tone: "blue", bar: totalRevenue },
+            { label: "Cost of Goods Sold", val: totalCOGS, tone: "orange", bar: totalRevenue },
+            { label: "Gross Profit", val: grossProfit, tone: grossProfit >= 0 ? "green" : "red", bar: totalRevenue, pct: marginPct },
+            { label: "Operating Expenses", val: totalExpenses, tone: "red", bar: totalRevenue },
+            { label: "Net Profit", val: netProfit, tone: netProfit >= 0 ? "green" : "red", total: true, bar: totalRevenue },
+          ];
         var posRows = [
           { label: "Cash in Hand", val: balances.cash, tone: "green" },
           { label: "Bank Balance", val: balances.bank, tone: "blue" },
@@ -1056,7 +1212,11 @@ var Accounts = function (props) {
                   <span className="erp-acc-ov-panel-icon" aria-hidden="true">📊</span>
                   <div>
                     <div className="erp-acc-ov-panel-title">P&amp;L Summary</div>
-                    <div className="erp-acc-ov-panel-sub">All-time sales, purchases &amp; expenses</div>
+                    <div className="erp-acc-ov-panel-sub">
+                      {ovMetrics.profitSource === "ledger"
+                        ? "From General Ledger (same as GL / Trial)"
+                        : "All-time sales, purchases & expenses"}
+                    </div>
                   </div>
                 </div>
                 <div className="erp-acc-ov-panel-body">
@@ -1092,7 +1252,11 @@ var Accounts = function (props) {
                   <span className="erp-acc-ov-panel-icon" aria-hidden="true">🏦</span>
                   <div>
                     <div className="erp-acc-ov-panel-title">Position</div>
-                    <div className="erp-acc-ov-panel-sub">Cash, assets, capital &amp; balances</div>
+                    <div className="erp-acc-ov-panel-sub">
+                      {ovMetrics.positionSource === "ledger"
+                        ? "Cash / AR / AP / fixed assets from General Ledger"
+                        : "Cash, assets, capital & balances"}
+                    </div>
                   </div>
                 </div>
                 <div className="erp-acc-ov-panel-body">
@@ -1187,7 +1351,7 @@ var Accounts = function (props) {
 
         return (
           <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--ledger erp-acc-ledger-layout">
-            <AccTabHead icon="💵" tone="blue" title="Cash Book" sub="Cash & bank movement ledger — filter, print & share" />
+            <AccTabHead icon="💵" tone="blue" title="Cash Book" sub={(cashBookEntries[0] && cashBookEntries[0]._fromLedger) ? "From General Ledger cash & bank lines — filter, print & share" : "Cash & bank movement ledger — filter, print & share"} />
             <div className="erp-acc-stat-row">
               <StatCard label="Opening Balance" value={openingBal} accent={C.blue} valueColor={C.blue} icon="🏁" sub="Start of period" />
               <StatCard label="Total Money In" value={filteredIn} accent={C.green} valueColor={C.green} icon="📥" />
@@ -1353,6 +1517,7 @@ var Accounts = function (props) {
           invDer: invDerRecon,
           validateJournalBalanced: validateJournalBalanced,
           settings: state.settings || {},
+          state: state,
         });
         var glHealthy = tb.balanced && bsEqBal && reconRep.summaryOk && !glErrText;
         return (
@@ -2224,8 +2389,8 @@ var Accounts = function (props) {
                               <button type="button" className="erp-acc-ob-select" onClick={function () {
                                 var qty = window.prompt("Opening quantity for \"" + p.name + "\":");
                                 if (qty === null) return;
-                                var q = parseInt(qty);
-                                if (!q || q <= 0) { showAlert("Please enter a valid quantity."); return; }
+                                var q = parseFloat(qty);
+                                if (!q || q <= 0 || !isFinite(q)) { showAlert("Please enter a valid quantity."); return; }
                                 var obRow = { name: p.name, barcode: p.barcode, category: p.category, unit: p.unit || "Pcs", bulkUnit: p.bulkUnit || "", bulkConversion: p.bulkConversion || 0, bulkCost: p.bulkCost || 0, bulkPrice: p.bulkPrice || 0, description: p.description || "", cost: p.cost, price: p.price, qty: q, _srcProdId: p.id, _existingProduct: true };
                                 if (Array.isArray(p.units) && p.units.length > 0) obRow.units = p.units;
                                 setD({ stock: (d.stock || []).concat([obRow]) });
@@ -2627,7 +2792,7 @@ var Accounts = function (props) {
                               if (e.key === "Enter" || (e.key === "Tab" && !e.shiftKey)) {
                                 e.preventDefault();
                                 if (!obStockSearch.trim()) return;
-                                var qty = parseInt(obStockQty, 10) || 1;
+                                var qty = parseFloat(obStockQty) || 1;
                                 var cost = parseFloat(obStockCost) || 0;
                                 var sell = parseFloat(obStockSell) || 0;
                                 /* Find existing product */
@@ -2649,7 +2814,7 @@ var Accounts = function (props) {
                             style={{ width: "100%", border: "1.5px solid #93c5fd", borderRadius: 6, padding: "5px 6px", fontSize: 12, textAlign: "right", outline: "none", fontFamily: "inherit", background: "#fff" }} />
                           <button type="button" className="erp-acc-ob-plus" onClick={function () {
                             if (!obStockSearch.trim()) return;
-                            var qty = parseInt(obStockQty, 10) || 1;
+                            var qty = parseFloat(obStockQty) || 1;
                             var cost = parseFloat(obStockCost) || 0;
                             var sell = parseFloat(obStockSell) || 0;
                             var existProd = filtObProds[0] || (state.products || []).find(function (p) {

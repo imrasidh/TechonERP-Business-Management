@@ -29,6 +29,7 @@ var Reports = React.memo(function (props) {
   var getNetCOGS = props.getNetCOGS;
   var getNetCOGSForRange = props.getNetCOGSForRange;
   var getTotalSupplierPayable = props.getTotalSupplierPayable;
+  var getProfitAndLossFromLedger = props.getProfitAndLossFromLedger;
   var getSupplierPayableFromPurchases =
     typeof props.getSupplierPayableFromPurchases === "function"
       ? props.getSupplierPayableFromPurchases
@@ -235,8 +236,27 @@ var Reports = React.memo(function (props) {
     }());
   var glPL = typeof getProfitAndLossFromLedger === "function" ? getProfitAndLossFromLedger(null, null) : null;
   var glBS = typeof getBalanceSheetFromLedger === "function" ? getBalanceSheetFromLedger(null) : null;
-  /* BUG4 FIX: netWorth now uses correct cash, cost-based stock, full receivable, fixed assets and payable */
-  var netWorth = round2(cashInHand + stockValue + totalReceivable + totalAssetsSpent - totalPayable);
+  var jlinesRpt = (typeof S !== "undefined" && S && typeof S.get === "function") ? (S.get("tc3_journal_lines", []) || []) : [];
+  var hasJournalRpt = jlinesRpt.length > 0;
+  var ledgerAcctNetRpt = function (acctId) {
+    var d = 0;
+    var c = 0;
+    jlinesRpt.forEach(function (ln) {
+      if (!ln || String(ln.accountId || "") !== acctId) return;
+      d += Number(ln.debit) || 0;
+      c += Number(ln.credit) || 0;
+    });
+    return round2(d - c);
+  };
+  if (hasJournalRpt) {
+    stockCostValue = ledgerAcctNetRpt("1200");
+    stockValue = stockCostValue;
+    totalAssetsSpent = ledgerAcctNetRpt("1500");
+  }
+  /* BUG4 FIX: netWorth — prefer GL equity when journal exists */
+  var netWorth = hasJournalRpt && glBS && typeof glBS.equityWithCurrentEarnings === "number"
+    ? round2(glBS.equityWithCurrentEarnings)
+    : round2(cashInHand + stockValue + totalReceivable + totalAssetsSpent - totalPayable);
   /* BUG5 FIX (Dashboard): filter out repairs already converted to *active* POS invoices
      to match the same logic used in P&L and Full Report — prevents double-counting */
   var totalRepairRevenue = round2(state.repairs.reduce(function (a, r) {
@@ -776,6 +796,9 @@ var Reports = React.memo(function (props) {
           getTotalReceivableDerived={getTotalReceivableDerived}
           getTotalPayableDerived={getTotalPayableDerived}
           getTotalSupplierPayable={getTotalSupplierPayable}
+          getProfitAndLossFromLedger={getProfitAndLossFromLedger}
+          getBalanceSheetFromLedger={getBalanceSheetFromLedger}
+          S={S}
           liveSalesRpt={liveSalesRpt}
           livePurchasesRpt={livePurchasesRpt}
           hasRepairs={!!getBusinessProfile().modules.repairs}
@@ -1159,13 +1182,32 @@ var Reports = React.memo(function (props) {
         var totalPurchases = round2(livePurchasesRpt.reduce(function (a, p) { return a + (p.total || 0); }, 0));
         var grossP = totalProfit;
         var netP = round2(totalProfit + totalRepairRevenue - totalExpenses);
-        var salesDue = round2(Math.max(0, totalSales - totalSalesIncome));
+        var ovStmtExpenses = totalExpenses;
+        var ovStmtCogs = totalCOGS;
+        var ovLedger = false;
+        /* Prefer ledger P&L when journal exists — same net as Accounts → GL. */
+        if (hasJournalRpt && glPL && typeof glPL.net === "number") {
+          netP = round2(glPL.net);
+          ovLedger = true;
+          if (typeof glPL.income === "number") {
+            totalSales = round2(glPL.income);
+            grossP = round2(glPL.income);
+          }
+          if (typeof glPL.expenses === "number") {
+            ovStmtExpenses = round2(glPL.expenses);
+            ovStmtCogs = 0;
+          }
+        }
+        var salesDue = round2(Math.max(0, liveSalesRpt.reduce(function (a, s) { return a + (s.total || 0); }, 0) - totalSalesIncome));
         var purchDue = round2(Math.max(0, totalPurchases - totalPurchasesPaid));
         var grossMargin = totalSales > 0 ? round2((grossP / totalSales) * 100) : 0;
         var netMargin = totalSales > 0 ? round2((netP / totalSales) * 100) : 0;
-        var collectPct = totalSales > 0 ? round2((totalSalesIncome / totalSales) * 100) : 0;
+        var collectPct = (function () {
+          var invTot = liveSalesRpt.reduce(function (a, s) { return a + (s.total || 0); }, 0);
+          return invTot > 0 ? round2((totalSalesIncome / invTot) * 100) : 0;
+        })();
         var payPct = totalPurchases > 0 ? round2((totalPurchasesPaid / totalPurchases) * 100) : 0;
-        var avgSale = liveSalesRpt.length ? round2(totalSales / liveSalesRpt.length) : 0;
+        var avgSale = liveSalesRpt.length ? round2(liveSalesRpt.reduce(function (a, s) { return a + (s.total || 0); }, 0) / liveSalesRpt.length) : 0;
         var deliveredRepairs = state.repairs.filter(function (r) { return r.status === "Delivered"; }).length;
         var cashHand = round2(cb.cash || 0);
         var cashBank = round2(cb.bank || 0);
@@ -1176,7 +1218,7 @@ var Reports = React.memo(function (props) {
                 <div>
                   <div className="erp-rpt-ov-kicker">Reports · Overview</div>
                   <div className="erp-rpt-ov-title">Business Summary</div>
-                  <div className="erp-rpt-ov-sub">Live snapshot of sales, profit, cash position and collections</div>
+                  <div className="erp-rpt-ov-sub">{ovLedger ? "Live snapshot · P&amp;L and position from General Ledger" : "Live snapshot of sales, profit, cash position and collections"}</div>
                 </div>
                 <div className="erp-rpt-ov-head-actions">
                   <span className={"erp-rpt-ov-pill" + (netP >= 0 ? " is-ok" : " is-bad")}>
@@ -1217,28 +1259,45 @@ var Reports = React.memo(function (props) {
                   <em>{livePurchasesRpt.length} orders · paid {payPct}%</em>
                 </div>
                 <div className="erp-rpt-ov-metric is-red">
-                  <span>Total Expenses</span>
-                  <b>{getCurrencySymbol()} {fmtNum(totalExpenses)}</b>
-                  <em>{state.expenses.length} entries</em>
+                  <span>{ovLedger ? "Expenses (GL)" : "Total Expenses"}</span>
+                  <b>{getCurrencySymbol()} {fmtNum(ovLedger ? ovStmtExpenses : totalExpenses)}</b>
+                  <em>{ovLedger ? "Ledger expense accounts" : state.expenses.length + " entries"}</em>
                 </div>
                 <div className={"erp-rpt-ov-metric" + (grossP >= 0 ? " is-green" : " is-red")}>
-                  <span>Gross Profit</span>
-                  <b>{getCurrencySymbol()} {fmtNum(grossP)}</b>
-                  <em>After COGS · margin {grossMargin}%</em>
+                  <span>{ovLedger ? "Net Profit (GL)" : "Gross Profit"}</span>
+                  <b>{getCurrencySymbol()} {fmtNum(ovLedger ? netP : grossP)}</b>
+                  <em>{ovLedger ? "Matches GL / Trial" : "After COGS · margin " + grossMargin + "%"}</em>
                 </div>
               </div>
 
               <div className="erp-rpt-ov-body">
                 <div className="erp-rpt-ov-main">
-                  <div className="erp-rpt-ov-stmt-head">Performance statement</div>
+                  <div className="erp-rpt-ov-stmt-head">Performance statement{ovLedger ? " (General Ledger)" : ""}</div>
                   <div className="erp-rpt-ov-stmt">
+                    {ovLedger ? (
+                      <>
+                        <div className="erp-rpt-ov-row">
+                          <div className="erp-rpt-ov-lbl">Income<small>From ledger income accounts</small></div>
+                          <div className="erp-rpt-ov-amt is-blue">{getCurrencySymbol()} {fmtNum(totalSales)}</div>
+                        </div>
+                        <div className="erp-rpt-ov-row is-deduct">
+                          <div className="erp-rpt-ov-lbl">Less: Expenses<small>COGS + operating (ledger)</small></div>
+                          <div className="erp-rpt-ov-amt is-red">{getCurrencySymbol()} {fmtNum(ovStmtExpenses)}</div>
+                        </div>
+                        <div className={"erp-rpt-ov-row is-net" + (netP < 0 ? " is-neg" : "")}>
+                          <div className="erp-rpt-ov-lbl">Net Profit{netP < 0 ? " / (Loss)" : ""}<small>Matches Accounts → GL / Trial</small></div>
+                          <div className={"erp-rpt-ov-amt" + (netP >= 0 ? " is-green" : " is-red")}>{getCurrencySymbol()} {fmtNum(netP)}</div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
                     <div className="erp-rpt-ov-row">
                       <div className="erp-rpt-ov-lbl">Total Sales<small>{liveSalesRpt.length} invoices · avg {getCurrencySymbol()} {fmtNum(avgSale)}</small></div>
                       <div className="erp-rpt-ov-amt is-blue">{getCurrencySymbol()} {fmtNum(totalSales)}</div>
                     </div>
                     <div className="erp-rpt-ov-row is-deduct">
                       <div className="erp-rpt-ov-lbl">Less: Cost of Goods Sold<small>Stock cost of items sold</small></div>
-                      <div className="erp-rpt-ov-amt is-red">{getCurrencySymbol()} {fmtNum(totalCOGS)}</div>
+                      <div className="erp-rpt-ov-amt is-red">{getCurrencySymbol()} {fmtNum(ovStmtCogs)}</div>
                     </div>
                     <div className="erp-rpt-ov-row is-gross">
                       <div className="erp-rpt-ov-lbl">Gross Profit<small>Margin {grossMargin}%</small></div>
@@ -1256,18 +1315,20 @@ var Reports = React.memo(function (props) {
                     ) : null}
                     <div className="erp-rpt-ov-row is-deduct">
                       <div className="erp-rpt-ov-lbl">Less: Operating Expenses<small>{state.expenses.length} expenses</small></div>
-                      <div className="erp-rpt-ov-amt is-red">{getCurrencySymbol()} {fmtNum(totalExpenses)}</div>
+                      <div className="erp-rpt-ov-amt is-red">{getCurrencySymbol()} {fmtNum(ovStmtExpenses)}</div>
                     </div>
                     <div className={"erp-rpt-ov-row is-net" + (netP < 0 ? " is-neg" : "")}>
                       <div className="erp-rpt-ov-lbl">Net Profit{netP < 0 ? " / (Loss)" : ""}<small>Margin {netMargin}% of sales</small></div>
                       <div className={"erp-rpt-ov-amt" + (netP >= 0 ? " is-green" : " is-red")}>{getCurrencySymbol()} {fmtNum(netP)}</div>
                     </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
                 <div className="erp-rpt-ov-aside">
                   <div className="erp-rpt-ov-side">
-                    <div className="erp-rpt-ov-side-title">Cash &amp; position</div>
+                    <div className="erp-rpt-ov-side-title">Cash &amp; position{hasJournalRpt ? " (GL)" : ""}</div>
                     <div className="erp-rpt-ov-side-row"><span>Cash in hand</span><b className="is-green">{getCurrencySymbol()} {fmtNum(cashHand)}</b></div>
                     <div className="erp-rpt-ov-side-row"><span>Bank</span><b className="is-blue">{getCurrencySymbol()} {fmtNum(cashBank)}</b></div>
                     <div className="erp-rpt-ov-side-row is-strong"><span>Total cash</span><b className="is-blue">{getCurrencySymbol()} {fmtNum(cb.total)}</b></div>
@@ -1279,7 +1340,7 @@ var Reports = React.memo(function (props) {
                   </div>
 
                   <div className="erp-rpt-ov-side">
-                    <div className="erp-rpt-ov-side-title">Collections</div>
+                    <div className="erp-rpt-ov-side-title">Collections (invoice activity)</div>
                     <div className="erp-rpt-ov-side-row"><span>Sales collected</span><b className="is-green">{getCurrencySymbol()} {fmtNum(totalSalesIncome)}</b></div>
                     <div className="erp-rpt-ov-side-row"><span>Sales outstanding</span><b className="is-red">{getCurrencySymbol()} {fmtNum(salesDue)}</b></div>
                     <div className="erp-rpt-ov-bar-wrap">

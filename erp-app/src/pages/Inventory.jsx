@@ -583,7 +583,7 @@ var Inventory = React.memo(function (props) {
         description: form.description || "",
         cost: parseFloat(form.cost) || 0,
         price: parseFloat(form.price) || 0,
-        stock: normalizeProductType(form.type) === "service" ? 0 : (isGlassNew ? (parseFloat(form.stock) || 0) : (parseInt(form.stock) || 0)),
+        stock: normalizeProductType(form.type) === "service" ? 0 : (parseFloat(form.stock) || 0),
         damaged: 0,
         require_comment: false,
         comment_label: String(form.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL,
@@ -629,7 +629,7 @@ var Inventory = React.memo(function (props) {
     }
     var origProduct = state.products.find(function (p) { return p.id === editP.id; });
     var origStock = origProduct ? (origProduct.stock || 0) : 0;
-    var newStock = parseInt(editP.stock) || 0;
+    var newStock = parseFloat(editP.stock) || 0;
     if (newStock > origStock) {
       showAlert("X Stock cannot be increased from the Inventory tab.\n\nTo add stock, please create a Purchase Order in the Purchases section.\nThis keeps your accounts, costs and audit trail accurate.");
       return;
@@ -699,8 +699,17 @@ var Inventory = React.memo(function (props) {
   var confirmAction = function () {
     if (!actionP || !reason.trim()) return;
     var p = actionP.product;
-    var qty = parseInt(dmgQty) || 1;
+    var qty = parseFloat(dmgQty) || 1;
     if (actionP.mode === "damage") {
+      var onHand = Math.max(0, Number(p.stock) || 0);
+      if (qty > onHand) {
+        showAlert("Cannot write off " + qty + " — only " + onHand + " in stock.");
+        return;
+      }
+      if (qty <= 0) {
+        showAlert("Enter a write-off quantity greater than zero.");
+        return;
+      }
       var np2 = state.products.map(function (x) { return x.id === p.id ? stampProductStock(Object.assign({}, x, { stock: Math.max(0, x.stock - qty), damaged: (x.damaged || 0) + qty }), null, x) : x; });
       var dmgTs = new Date().toISOString();
       var dl = (state.damageLog || []).concat([stampTransactionIsoDateTime({
@@ -748,7 +757,7 @@ var Inventory = React.memo(function (props) {
       setState(function (s) { return Object.assign({}, s, voidStatePatch); });
       addAudit("Voided Product", p.name + (voidDisplayId ? (" (ID " + voidDisplayId + ")") : "") + (voidWriteOffQty > 0 ? (" — " + voidWriteOffQty + " units written off") : ""));
     } else {
-      var removeQty = parseInt(dmgQty) || 1;
+      var removeQty = parseFloat(dmgQty) || 1;
       var np4 = state.products.map(function (x) { return x.id === p.id ? stampProductStock(Object.assign({}, x, { stock: Math.max(0, x.stock - removeQty) }), null, x) : x; });
       var pl2 = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Deleted", productId: p.id, productName: p.name, qty: removeQty, reason: reason }]);
       /* GL + inventory replay: stock removal posts as damage write-off (same as Mark Damaged). */

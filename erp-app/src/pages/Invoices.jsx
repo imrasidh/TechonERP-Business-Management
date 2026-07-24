@@ -861,6 +861,7 @@ var SalesInvoices = React.memo(function (props) {
   var [lockTick, setLockTick] = useState(0);
   var [voidSaleTarget, setVoidSaleTarget] = useState(null);
   var [voidReason, setVoidReason] = useState("");
+  var [voidRefundConfirm, setVoidRefundConfirm] = useState(false);
   var [payModal, setPayModal] = useState(null);
   var [splitPayModal, setSplitPayModal] = useState(null);
   var [payNote, setPayNote] = useState("");
@@ -938,7 +939,7 @@ var SalesInvoices = React.memo(function (props) {
       return;
     }
     var voidState = Object.assign({}, state, { codRecords: S.get("tc3_codRecords", []) });
-    var result = buildVoidSaleUpdates(voidState, saleId, reason);
+    var result = buildVoidSaleUpdates(voidState, saleId, reason, null, { confirmRefund: voidRefundConfirm === true });
     if (!result.ok) {
       showAlert(result.error);
       return;
@@ -963,6 +964,7 @@ var SalesInvoices = React.memo(function (props) {
     releaseInvoiceEditLock(S, saleId, lockIdentity, { force: true });
     setVoidSaleTarget(null);
     setVoidReason("");
+    setVoidRefundConfirm(false);
     if (viewSale && viewSale.id === saleId) setViewSale(null);
     if (fullViewSale && fullViewSale.id === saleId) setFullViewSale(null);
     if (result.refundHint && result.refundHint.message) {
@@ -1161,7 +1163,10 @@ var SalesInvoices = React.memo(function (props) {
           newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
         }
       });
-      var fit = assertPaymentFitsSaleBalance(sale, totalNonCheque);
+      var fit = assertPaymentFitsSaleBalance(sale, totalAdded, {
+        includePendingCheques: true,
+        cheques: state.cheques || [],
+      });
       if (!fit.ok) { showAlert(fit.message); return; }
       var newPaid = (sale.paid || 0) + totalNonCheque;
       var newBal = sale.total - newPaid;
@@ -1725,7 +1730,7 @@ var SalesInvoices = React.memo(function (props) {
       })()}
 
       {voidSaleTarget && (
-        <Modal title={"Void Invoice — " + (voidSaleTarget.invoiceNo || voidSaleTarget.id.slice(0, 8))} onClose={function () { setVoidSaleTarget(null); setVoidReason(""); }}>
+        <Modal title={"Void Invoice — " + (voidSaleTarget.invoiceNo || voidSaleTarget.id.slice(0, 8))} onClose={function () { setVoidSaleTarget(null); setVoidReason(""); setVoidRefundConfirm(false); }}>
           <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "12px 14px", marginBottom: 14, fontSize: 13, color: "#991b1b", lineHeight: 1.5 }}>
             This will reverse stock and customer balance. The invoice stays on record as <strong>Voided</strong>. This cannot be undone.
             {(function () {
@@ -1738,9 +1743,26 @@ var SalesInvoices = React.memo(function (props) {
             <option value="">Select reason…</option>
             {VOID_REASON_OPTIONS.map(function (opt) { return <option key={opt} value={opt}>{opt}</option>; })}
           </Sel>
+          {(function () {
+            var hint = computeVoidSaleRefundHint(voidSaleTarget, state.cheques || []);
+            var paidCash = (voidSaleTarget.paymentHistory || []).reduce(function (a, ph) {
+              var amt = Number(ph.amount) || 0;
+              if (amt <= 0) return a;
+              var m = ph.cashMethod || "Cash";
+              if (m === "Cheque" || m === "Adjustment") return a;
+              return a + amt;
+            }, 0);
+            if (paidCash <= 0.005 && !(hint.cashBankRefund > 0)) return null;
+            return (
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 12, fontSize: 13, color: "#7f1d1d", fontWeight: 600 }}>
+                <input type="checkbox" checked={voidRefundConfirm} onChange={function (e) { setVoidRefundConfirm(e.target.checked); }} style={{ marginTop: 3 }} />
+                <span>I confirm cash/bank received on this invoice will be refunded to the customer (books will post a reversing payment).</span>
+              </label>
+            );
+          })()}
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
             <Btn col="red" disabled={!voidReason} onClick={function () { voidSaleInvoice(voidSaleTarget.id, voidReason); }}>Void Invoice</Btn>
-            <Btn col="gray" onClick={function () { setVoidSaleTarget(null); setVoidReason(""); }}>Cancel</Btn>
+            <Btn col="gray" onClick={function () { setVoidSaleTarget(null); setVoidReason(""); setVoidRefundConfirm(false); }}>Cancel</Btn>
           </div>
         </Modal>
       )}

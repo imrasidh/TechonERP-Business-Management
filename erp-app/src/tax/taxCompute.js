@@ -52,25 +52,35 @@ function computeExclusiveTaxLines(rows, taxableNet, cascade) {
 function computeInclusiveCompoundTaxLines(rows, gross) {
   var G = Math.max(0, gross);
   if (G <= 0 || !rows.length) return { lines: [], totalTax: 0, grandTotal: G };
-  var net = G;
-  var taxParts = [];
+  /* Inclusive cascade: gross embeds all compound taxes. Recover net, then build tax ladder. */
+  var factor = 1;
   rows.forEach(function (t) {
+    var r = Math.max(0, t.rate || 0) / 100;
+    if (r > 0) factor *= (1 + r);
+  });
+  var trueNet = factor > 0 ? roundMoney(G / factor) : G;
+  var running = trueNet;
+  var taxParts = [];
+  rows.forEach(function (t, idx) {
     var r = Math.max(0, t.rate || 0) / 100;
     if (r <= 0) {
       taxParts.push(0);
       return;
     }
-    if (t.appliesOn === "running") {
-      var prevTax = taxParts.reduce(function (a, x) { return a + x; }, 0);
-      var base = net + prevTax;
-      taxParts.push(roundMoney(base - base / (1 + r)));
+    var amt;
+    if (idx === rows.length - 1) {
+      /* Last line absorbs rounding so net + taxes = gross */
+      var soFar = taxParts.reduce(function (a, x) { return a + x; }, 0);
+      amt = roundMoney(G - trueNet - soFar);
     } else {
-      taxParts.push(roundMoney(net - net / (1 + r)));
+      amt = roundMoney(running * r);
+      running = roundMoney(running + amt);
     }
+    taxParts.push(amt);
   });
   var totalTax = roundMoney(taxParts.reduce(function (a, x) { return a + x; }, 0));
   var lines = rows.map(function (t, idx) {
-    return { name: t.name, rate: t.rate, amount: roundMoney(taxParts[idx] || 0), appliesOn: t.appliesOn };
+    return { name: t.name, rate: t.rate, amount: roundMoney(taxParts[idx] || 0), appliesOn: t.appliesOn || "running" };
   });
   return { lines: lines, totalTax: totalTax, grandTotal: G };
 }
@@ -328,6 +338,8 @@ export function computeReturnLineTax(sale, settings, lineAmount, opts) {
 
 /**
  * Input-VAT reversal and AP gross for a purchase return (pro-rata on stock cost returned).
+ * Exclusive: returnStockCost is net inventory cost → AP = cost + prorated input VAT.
+ * Inclusive: returnStockCost is tax-inclusive line cost → AP = that gross; INV credit = net inside gross.
  */
 export function computePurchaseReturnTax(purchase, returnStockCost, settings) {
   var cost = Math.max(0, roundMoney(returnStockCost));
@@ -335,9 +347,18 @@ export function computePurchaseReturnTax(purchase, returnStockCost, settings) {
   var posting = computePurchaseInventoryPosting(purchase, settings || {});
   var taxIn = posting.taxIn;
   if (taxIn <= 0) return { stockCost: cost, taxReversal: 0, apGross: cost };
-  var invBase = posting.inclusive ? posting.invNet : posting.invGross;
+
+  if (posting.inclusive) {
+    var invGross = posting.invGross;
+    if (invGross <= 0.005) return { stockCost: cost, taxReversal: 0, apGross: cost };
+    /* Line costs are gross: reverse VAT inside returned gross; do not add VAT on top. */
+    var taxRevInc = roundMoney(taxIn * (cost / invGross));
+    var stockNetInc = roundMoney(Math.max(0, cost - taxRevInc));
+    return { stockCost: stockNetInc, taxReversal: taxRevInc, apGross: cost };
+  }
+
+  var invBase = posting.invGross;
   if (invBase <= 0) return { stockCost: cost, taxReversal: 0, apGross: cost };
-  var stockNet = posting.inclusive ? cost : cost;
-  var taxRev = roundMoney(taxIn * (stockNet / invBase));
-  return { stockCost: stockNet, taxReversal: taxRev, apGross: roundMoney(stockNet + taxRev) };
+  var taxRev = roundMoney(taxIn * (cost / invBase));
+  return { stockCost: cost, taxReversal: taxRev, apGross: roundMoney(cost + taxRev) };
 }

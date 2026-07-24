@@ -72,6 +72,14 @@ function tcGetRawBody() {
     return $cached;
 }
 
+function tcIsLocalhostRequest() {
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+    return $ip === '127.0.0.1'
+        || $ip === '::1'
+        || $ip === 'localhost'
+        || $ip === '::ffff:127.0.0.1';
+}
+
 /**
  * Legacy API key auth — kept for backward compatibility during device migration.
  */
@@ -79,6 +87,11 @@ function requireLegacyAuth() {
     $storedKey = loadApiKey();
     if ($storedKey === null) {
         if (getenv('TECHON_ERP_OPEN_API') === '1') {
+            if (!tcIsLocalhostRequest()) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'OPEN_API is localhost-only']);
+                exit();
+            }
             return;
         }
         http_response_code(503);

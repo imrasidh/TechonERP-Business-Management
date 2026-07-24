@@ -26,16 +26,60 @@ export var MERGEABLE_RECORD_ARRAY_KEYS = {
   tc3_codPartners: true,
   tc3_codWithdrawals: true,
   tc3_users: true,
+  tc3_others: true,
+  /* Append-only / audit arrays — must union local+remote, never server-snapshot drop */
+  tc3_journal_lines: true,
+  tc3_stock_movements: true,
+  tc3_financial_snapshots: true,
+  tc3_capLedger: true,
+  tc3_capLog: true,
+  tc3_profitDist: true,
+  tc3_assetLog: true,
+  tc3_damageLog: true,
+  tc3_productLog: true,
+  tc3_repairDeleteLog: true,
+  tc3_gl_audit: true,
+  tc3_financial_mutation_log: true,
+};
+
+/** Keys that must always union by id (never server membership delete). */
+export var APPEND_ONLY_RECORD_ARRAY_KEYS = {
+  tc3_journal_lines: true,
+  tc3_stock_movements: true,
+  tc3_financial_snapshots: true,
+  tc3_capLedger: true,
+  tc3_capLog: true,
+  tc3_profitDist: true,
+  tc3_assetLog: true,
+  tc3_damageLog: true,
+  tc3_productLog: true,
+  tc3_repairDeleteLog: true,
+  tc3_gl_audit: true,
+  tc3_financial_mutation_log: true,
+  tc3_raw_material_usage: true,
+  tc3_raw_material_counts: true,
 };
 
 function recordSortTs(row) {
   if (!row || typeof row !== "object") return "";
-  return String(row.updatedAt || row.createdAt || row.billedAt || row.date || "");
+  return clampFutureIso(String(row.updatedAt || row.createdAt || row.billedAt || row.date || ""));
+}
+
+/** Reject / clamp timestamps more than 10 minutes ahead of local clock (anti LWW skew). */
+var MAX_FUTURE_SKEW_MS = 10 * 60 * 1000;
+function clampFutureIso(iso) {
+  var s = String(iso || "");
+  if (!s) return s;
+  var t = Date.parse(s);
+  if (isNaN(t)) return s;
+  var now = Date.now();
+  if (t > now + MAX_FUTURE_SKEW_MS) return new Date(now).toISOString();
+  return s;
 }
 
 function stockSortTs(row) {
   if (!row || typeof row !== "object") return "";
-  return String(row.stockUpdatedAt || row.updatedAt || row.createdAt || "");
+  return clampFutureIso(String(row.stockUpdatedAt || row.updatedAt || row.createdAt || ""));
 }
 
 function paymentEntryKey(ph) {
@@ -101,6 +145,7 @@ export function mergeDocumentWithPaymentHistory(a, b, kind) {
 
   var phSum = Math.round(sumPaymentHistoryAmounts(merged) * 100) / 100;
   var total = parseFloat(out.total) || 0;
+  /* Keep both payments in PH for audit; cap displayed paid at invoice total. */
   var paidCap = Math.min(phSum, total);
   var bal = Math.round((total - paidCap) * 100) / 100;
   if (kind === "sale") {
@@ -108,6 +153,7 @@ export function mergeDocumentWithPaymentHistory(a, b, kind) {
     out.balance = bal;
     out.payStatus = bal <= 0 ? "Paid" : paidCap > 0 ? "Partial" : (out.payStatus || "Unpaid");
     if (phSum > total + 0.009) out.overpaidAmount = Math.round((phSum - total) * 100) / 100;
+    else delete out.overpaidAmount;
   } else if (kind === "purchase") {
     /* Purchases intentionally allow overpayment (supplier credit). */
     out.paidAmount = phSum;
@@ -140,7 +186,15 @@ export function mergeProductRow(a, b) {
     var parentStock = Number(a.stockBefore);
     var dA = Number(a.stock) - Number(a.stockBefore);
     var dB = Number(b.stock) - Number(b.stockBefore);
-    out.stock = parentStock + dA + dB;
+    var rawStock = parentStock + dA + dB;
+    out.stock = rawStock < 0 ? 0 : rawStock;
+    if (rawStock < 0) {
+      out.stockMergeRaw = rawStock;
+      out.stockMergeWarning = "concurrent_oversell";
+    } else {
+      delete out.stockMergeRaw;
+      delete out.stockMergeWarning;
+    }
     if (bTs >= aTs) {
       if (b.cost != null) out.cost = b.cost;
       if (b.stockUpdatedAt) out.stockUpdatedAt = b.stockUpdatedAt;
@@ -187,6 +241,21 @@ export function mergeProductRow(a, b) {
   return out;
 }
 
+function mergeUserRow(a, b) {
+  var preferB = recordSortTs(b) >= recordSortTs(a);
+  var out = Object.assign({}, preferB ? a : b, preferB ? b : a);
+  var ha = a && a.passwordHash ? String(a.passwordHash) : "";
+  var hb = b && b.passwordHash ? String(b.passwordHash) : "";
+  if (!hb && ha) out.passwordHash = ha;
+  else if (!ha && hb) out.passwordHash = hb;
+  else if (preferB && hb) out.passwordHash = hb;
+  else if (ha) out.passwordHash = ha;
+  delete out.password;
+  delete out.pin;
+  delete out.pinHash;
+  return out;
+}
+
 function pickNewerRow(prev, row, storageKey) {
   if (storageKey === "tc3_products") return mergeProductRow(prev, row);
   if (storageKey === "tc3_sales") return mergeDocumentWithPaymentHistory(prev, row, "sale");
@@ -195,7 +264,28 @@ function pickNewerRow(prev, row, storageKey) {
   if (storageKey === "tc3_manualReceivables" || storageKey === "tc3_manualPayables") {
     return mergeManualWithPaymentHistory(prev, row);
   }
+  if (storageKey === "tc3_cheques") return mergeChequeRow(prev, row);
+  if (storageKey === "tc3_users") return mergeUserRow(prev, row);
   return recordSortTs(row) >= recordSortTs(prev) ? row : prev;
+}
+
+function chequeStatusRank(st) {
+  var s = String(st || "");
+  /* Voided must beat Cleared so concurrent void wins over a late clear race. */
+  if (s === "Voided") return 50;
+  if (s === "Cancelled") return 45;
+  if (s === "Cleared") return 40;
+  if (s === "Bounced") return 20;
+  if (s === "Pending") return 10;
+  return 0;
+}
+
+/** Prefer terminal money states (Cleared/Voided) over Pending when timestamps race. */
+export function mergeChequeRow(a, b) {
+  var ra = chequeStatusRank(a && a.status);
+  var rb = chequeStatusRank(b && b.status);
+  if (ra !== rb) return ra > rb ? a : b;
+  return recordSortTs(b) >= recordSortTs(a) ? b : a;
 }
 
 /**
@@ -418,14 +508,8 @@ function mergeRecordArraysLocalMembership(localArr, remoteArr, storageKey) {
 }
 
 function mergeRecordArraysForPull(localArr, remoteArr, storageKey) {
-  /* Ledger / inventory layer rows are append-only with unique ids — never let a partial server
-     snapshot drop local-only lines (causes GL imbalance e.g. missing AR debit on a sale). */
-  if (
-    storageKey === "tc3_journal_lines" ||
-    storageKey === "tc3_inventory_layers" ||
-    storageKey === "tc3_stock_movements" ||
-    storageKey === "tc3_financial_snapshots"
-  ) {
+  /* Append-only / audit rows: always union by id — never let a partial server snapshot drop local lines. */
+  if (APPEND_ONLY_RECORD_ARRAY_KEYS[storageKey] || storageKey === "tc3_inventory_layers") {
     return mergeRecordArraysByNewest(localArr, remoteArr, storageKey);
   }
   if (isRestoreGraceActive()) {
@@ -438,24 +522,9 @@ function mergeRecordArraysForPull(localArr, remoteArr, storageKey) {
   return mergeRecordArraysServerMembership(localArr, remoteArr, storageKey);
 }
 
-/** If local was recently edited, drop server-only ids (prevents deleted rows reappearing on pull). */
+/** If local was recently edited, prefer local for pending keys only — do not strip peer rows. */
 function applyRecentLocalMembership(localArr, mergedArr, storageKey) {
-  var recent = {};
-  try {
-    recent = typeof window !== "undefined" ? (window._tcRecentLocalWrites || {}) : {};
-  } catch (_e) {}
-  var ts = recent[storageKey];
-  if (!ts || Date.now() - ts > RECENT_LOCAL_WRITE_MS) return mergedArr;
-  if (!Array.isArray(localArr) || !Array.isArray(mergedArr)) return mergedArr;
-
-  var localIds = {};
-  localArr.forEach(function (row) {
-    if (row && row.id != null) localIds[String(row.id)] = true;
-  });
-  return mergedArr.filter(function (row) {
-    if (!row || row.id == null) return true;
-    return !!localIds[String(row.id)];
-  });
+  return mergedArr;
 }
 
 export function mergeSettingsFromServer(local, remote) {

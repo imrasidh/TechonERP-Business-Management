@@ -11,6 +11,7 @@ import {
 } from "./generalLedger.js";
 import { reconcileInventoryToLedger, isInventoryReconcileOk } from "./inventoryEngine.js";
 import { evaluateArApPolicy } from "./arApPolicy.js";
+import { compareRoundSumMethods } from "./roundingDrift.js";
 
 function badNumber(x) {
   if (x == null) return true;
@@ -49,6 +50,18 @@ export function validateAccountingCommitInvariants(ctx) {
     });
   }
 
+  var debits = [];
+  var credits = [];
+  for (var ri = 0; ri < lines.length; ri++) {
+    debits.push(lines[ri].debit || 0);
+    credits.push(lines[ri].credit || 0);
+  }
+  var dDrift = compareRoundSumMethods(debits);
+  var cDrift = compareRoundSumMethods(credits);
+  if (Math.abs(dDrift.drift) > 0.02 || Math.abs(cDrift.drift) > 0.02) {
+    errors.push({ code: "rounding_drift", detail: { debitDrift: dDrift.drift, creditDrift: cDrift.drift } });
+  }
+
   var meta = {};
   chart.forEach(function (a) {
     meta[a.id] = a;
@@ -70,7 +83,7 @@ export function validateAccountingCommitInvariants(ctx) {
     }
   }
 
-  var apAr = evaluateArApPolicy({ lines: lines, meta: meta, settings: settings });
+  var apAr = evaluateArApPolicy({ lines: lines, meta: meta, settings: settings, state: ctx.state || null });
   if (!apAr.ar.ok) {
     errors.push({ code: "ar_policy", detail: apAr.ar });
   }

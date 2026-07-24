@@ -41,8 +41,9 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
 
   function rowLockDate(row, key) {
     if (!row) return "";
-    if (key === "tc3_repairs") return row.dateIn || row.date;
-    return row.date;
+    if (key === "tc3_repairs") return row.dateIn || row.date || "";
+    if (key === "tc3_cheques") return row.clearedDate || row.issuedDate || row.dueDate || row.date || "";
+    return row.date || "";
   }
 
   function pushId(row) {

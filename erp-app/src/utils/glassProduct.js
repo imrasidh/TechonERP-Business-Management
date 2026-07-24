@@ -326,6 +326,13 @@ export function glassPurchaseEconomics(qtySheets, costPerSheet, product) {
 
 export function mapGlassLineToSaleItem(it, product) {
   var line = recalcGlassCartLine(it, product);
+  var lineTotal = glassInvoiceLineTotal({
+    isGlassLine: true,
+    glassTotalSqFt: line.glassTotalSqFt,
+    glassRatePerSqFt: line.glassRatePerSqFt,
+    price: line.glassRatePerSqFt,
+    qty: line.qty,
+  });
   return {
     id: line.id,
     name: line.name,
@@ -339,6 +346,7 @@ export function mapGlassLineToSaleItem(it, product) {
     saleUnit: "Sq Ft",
     product_id: line.id,
     isGlassLine: true,
+    lineTotal: lineTotal,
     glassLength: line.glassLength,
     glassWidth: line.glassWidth,
     glassPieces: line.glassPieces,

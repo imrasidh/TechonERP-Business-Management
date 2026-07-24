@@ -11,7 +11,7 @@ function purchaseStatusMeta(status) {
   if (s === "Voided") return { icon: "—", tone: "void", label: "Voided" };
   return { icon: "•", tone: "other", label: s || "—" };
 }
-import { buildVoidPurchaseUpdates, isVoidedTxn, activePurchases, VOID_REASON_OPTIONS, voidPurchaseBlockReason } from "../utils/voidInvoice.js";
+import { buildVoidPurchaseUpdates, isVoidedTxn, activePurchases, VOID_REASON_OPTIONS, voidPurchaseBlockReason, computeVoidPurchaseRefundHint } from "../utils/voidInvoice.js";
 import ReturnDetailsPanel from "../components/ReturnDetailsPanel.jsx";
 import CloseIconButton from "../components/CloseIconButton.jsx";
 import { ensureUniqueDocumentNumber } from "../utils/docNumbers.js";
@@ -268,6 +268,7 @@ var Purchases = React.memo(function (props) {
   var [sidePayStatus, setSidePayStatus] = useState("");
   var [voidPurTarget, setVoidPurTarget] = useState(null);
   var [voidReason, setVoidReason] = useState("");
+  var [voidRefundConfirm, setVoidRefundConfirm] = useState(false);
   var purSearchRef = useRef(null);
   var suppSearchRef = useRef(null);
   var purDateRef = useRef(null);
@@ -1654,6 +1655,10 @@ var Purchases = React.memo(function (props) {
     if (splitRows) {
       var nonChequePaid = splitRows.reduce(function (a, r) { return r.method !== "Cheque" ? a + (parseFloat(r.amount) || 0) : a; }, 0);
       var totalSplit = splitRows.reduce(function (a, r) { return a + (parseFloat(r.amount) || 0); }, 0);
+      if (totalSplit > invoiceTotalSave + 0.009) {
+        showAlert("Payment total exceeds purchase invoice total.");
+        return;
+      }
       effPaid = nonChequePaid;
       effBal = invoiceTotalSave - nonChequePaid;
       effStatus = totalSplit >= invoiceTotalSave ? "Paid" : nonChequePaid > 0 || totalSplit > 0 ? "Partial" : "Unpaid";
@@ -1665,6 +1670,18 @@ var Purchases = React.memo(function (props) {
         }
       });
     } else {
+      if (isCheque) {
+        var purChqList = (f.chequeList || []).filter(function (c) { return c.no && String(c.no).trim() && parseFloat(c.amount) > 0; });
+        var purChqSum = purChqList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
+        if (purChqList.length === 0) {
+          showAlert("Add at least one cheque before saving a cheque payment.");
+          return;
+        }
+        if (purChqSum > invoiceTotalSave + 0.009) {
+          showAlert("Cheque total exceeds purchase invoice total.");
+          return;
+        }
+      }
       effPaid = isCheque ? 0 : formPaid;
       effBal = invoiceTotalSave - effPaid;
       effStatus = effPaid >= invoiceTotalSave ? "Paid" : effPaid > 0 ? "Partial" : "Unpaid";
@@ -1987,7 +2004,7 @@ var Purchases = React.memo(function (props) {
       showPermissionDenied("void purchases");
       return;
     }
-    var result = buildVoidPurchaseUpdates(state, purchaseId, reason);
+    var result = buildVoidPurchaseUpdates(state, purchaseId, reason, null, { confirmRefund: voidRefundConfirm === true });
     if (!result.ok) {
       showAlert(result.error);
       return;
@@ -2006,6 +2023,7 @@ var Purchases = React.memo(function (props) {
     addAudit("Voided Purchase Invoice", (result.voidedPurchase.invoiceNo || purchaseId.slice(0, 8)) + (reason ? " — " + reason : ""));
     setVoidPurTarget(null);
     setVoidReason("");
+    setVoidRefundConfirm(false);
     if (viewPur && viewPur.id === purchaseId) setViewPur(null);
   };
 
@@ -2025,6 +2043,7 @@ var Purchases = React.memo(function (props) {
       return;
     }
     setVoidReason("");
+    setVoidRefundConfirm(false);
     setVoidPurTarget(pur);
   };
 
@@ -3613,17 +3632,39 @@ var Purchases = React.memo(function (props) {
         />
       )}
       {voidPurTarget && (
-        <Modal title={"Void Purchase — " + (voidPurTarget.invoiceNo || voidPurTarget.id.slice(0, 8))} onClose={function () { setVoidPurTarget(null); setVoidReason(""); }}>
+        <Modal title={"Void Purchase — " + (voidPurTarget.invoiceNo || voidPurTarget.id.slice(0, 8))} onClose={function () { setVoidPurTarget(null); setVoidReason(""); setVoidRefundConfirm(false); }}>
           <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "12px 14px", marginBottom: 14, fontSize: 13, color: "#991b1b", lineHeight: 1.5 }}>
             This will remove stock added by this purchase and reverse payments. The record stays as <strong>Voided</strong>. Cannot void if units were already sold.
+            {(function () {
+              var hint = computeVoidPurchaseRefundHint(voidPurTarget, state.cheques || []);
+              if (!hint.message) return null;
+              return <div style={{ marginTop: 8, color: "#7f1d1d" }}>{hint.message}</div>;
+            })()}
           </div>
           <Sel label="Reason" value={voidReason} onChange={function (e) { setVoidReason(e.target.value); }}>
             <option value="">Select reason…</option>
             {VOID_REASON_OPTIONS.map(function (opt) { return <option key={opt} value={opt}>{opt}</option>; })}
           </Sel>
+          {(function () {
+            var hint = computeVoidPurchaseRefundHint(voidPurTarget, state.cheques || []);
+            var paidCash = (voidPurTarget.paymentHistory || []).reduce(function (a, ph) {
+              var amt = Number(ph.amount) || 0;
+              if (amt <= 0) return a;
+              var m = ph.cashMethod || "Cash";
+              if (m === "Cheque" || m === "Adjustment") return a;
+              return a + amt;
+            }, 0);
+            if (paidCash <= 0.005 && !(hint.cashBankRefund > 0)) return null;
+            return (
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 12, fontSize: 13, color: "#7f1d1d", fontWeight: 600 }}>
+                <input type="checkbox" checked={voidRefundConfirm} onChange={function (e) { setVoidRefundConfirm(e.target.checked); }} style={{ marginTop: 3 }} />
+                <span>I confirm cash/bank paid on this purchase will be collected back (books will post a reversing payment).</span>
+              </label>
+            );
+          })()}
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
             <Btn col="red" disabled={!voidReason} onClick={function () { voidPurchaseInvoice(voidPurTarget.id, voidReason); }}>Void Purchase</Btn>
-            <Btn col="gray" onClick={function () { setVoidPurTarget(null); setVoidReason(""); }}>Cancel</Btn>
+            <Btn col="gray" onClick={function () { setVoidPurTarget(null); setVoidReason(""); setVoidRefundConfirm(false); }}>Cancel</Btn>
           </div>
         </Modal>
       )}

@@ -32,11 +32,20 @@ function latestReturnTs(returns, parentField, parentId) {
 
 function restoreActiveSaleFromVoid(sale) {
   if (!sale || !isVoidedTxn(sale)) return sale;
-  var paid = Number(sale.paid) || 0;
+  var ph = (sale.paymentHistory || []).filter(function (p) {
+    return !(p && (p.type === "void_refund" || String(p.note || "").indexOf("Void invoice refund") === 0));
+  });
+  var paid = Math.round(ph.reduce(function (a, p) {
+    var n = Number(p && p.amount) || 0;
+    return a + (n > 0 ? n : 0);
+  }, 0) * 100) / 100;
   var total = Number(sale.total) || 0;
   var bal = Math.round((total - paid) * 100) / 100;
+  if (bal < 0) bal = 0;
   var payStatus = bal <= 0 ? "Paid" : paid > 0 ? "Partial" : "Unpaid";
   var out = Object.assign({}, sale, {
+    paymentHistory: ph,
+    paid: paid,
     balance: bal,
     payStatus: payStatus,
     status: payStatus,
@@ -45,21 +54,36 @@ function restoreActiveSaleFromVoid(sale) {
   delete out.voidReason;
   delete out.voidRefundCashBank;
   delete out.voidRefundNote;
+  delete out.voidRefundConfirmed;
+  delete out.voided;
   return out;
 }
 
 function restoreActivePurchaseFromVoid(purchase) {
   if (!purchase || !isVoidedTxn(purchase)) return purchase;
-  var paid = Number(purchase.paidAmount) || 0;
+  var ph = (purchase.paymentHistory || []).filter(function (p) {
+    return !(p && (p.type === "void_refund" || String(p.note || "").indexOf("Void purchase refund") === 0));
+  });
+  var paid = Math.round(ph.reduce(function (a, p) {
+    var n = Number(p && p.amount) || 0;
+    return a + (n > 0 ? n : 0);
+  }, 0) * 100) / 100;
   var total = Number(purchase.total) || 0;
   var bal = Math.round((total - paid) * 100) / 100;
+  if (bal < 0) bal = 0;
   var status = bal <= 0 ? "Paid" : paid > 0 ? "Partial" : "Unpaid";
   var out = Object.assign({}, purchase, {
+    paymentHistory: ph,
+    paidAmount: paid,
     balance: bal,
     status: status,
   });
   delete out.voidedAt;
   delete out.voidReason;
+  delete out.voidRefundCashBank;
+  delete out.voidRefundNote;
+  delete out.voidRefundConfirmed;
+  delete out.voided;
   return out;
 }
 

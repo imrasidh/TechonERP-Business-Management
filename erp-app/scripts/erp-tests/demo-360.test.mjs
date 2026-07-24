@@ -38,6 +38,7 @@ function backupToState(d) {
     expenses: d.tc3_expenses || [],
     salesReturns: d.tc3_salesReturns || [],
     purchaseReturns: d.tc3_purchaseReturns || [],
+    cheques: d.tc3_cheques || [],
     repairs: d.tc3_repairs || [],
     manualPayables: d.tc3_manualPayables || [],
     damageLog: d.tc3_damageLog || [],
@@ -65,17 +66,17 @@ export function runDemo360Tests(ctx) {
     var d = bk.data;
 
     assert(d.tc3_businessType === "tech", "tech industry set");
-    assert((d.tc3_products || []).length >= 35, "35+ products seeded");
-    assert((d.tc3_customers || []).length >= 40, "40+ customers seeded");
-    assert((d.tc3_suppliers || []).length >= 10, "10+ suppliers seeded");
+    assert((d.tc3_products || []).length >= 200, "200+ products seeded");
+    assert((d.tc3_customers || []).length >= 80, "80+ customers seeded");
+    assert((d.tc3_suppliers || []).length >= 20, "20+ suppliers seeded");
     assert((d.tc3_sales || []).length >= 100, "100+ sales seeded");
-    assert((d.tc3_purchases || []).length >= 35, "35+ purchases seeded");
-    assert((d.tc3_cheques || []).length >= 12, "cheques seeded");
+    assert((d.tc3_purchases || []).length >= 50, "50+ purchases seeded");
+    assert((d.tc3_cheques || []).length >= 20, "20+ cheques seeded");
     assert((d.tc3_manualReceivables || []).length >= 15, "receivables seeded");
     assert((d.tc3_manualPayables || []).length >= 12, "payables seeded");
     assert((d.tc3_salesReturns || []).length >= 20, "sales returns seeded");
     assert((d.tc3_purchaseReturns || []).length >= 12, "purchase returns seeded");
-    assert((d.tc3_quotations || []).length >= 25, "quotations seeded");
+    assert((d.tc3_quotations || []).length >= 30, "quotations seeded");
     assert((d.tc3_expenses || []).length >= 20, "expenses seeded");
     assert((d.tc3_damageLog || []).length >= 5, "damage write-offs seeded");
     assert((d.tc3_assets || []).length >= 4, "fixed assets seeded");
@@ -83,8 +84,10 @@ export function runDemo360Tests(ctx) {
     assert((d.tc3_codWithdrawals || []).length >= 5, "COD withdrawals seeded");
     assert(d.tc3_codProfitSettings && (d.tc3_codProfitSettings.shareholders || []).length >= 2, "COD partners seeded");
     assert(d.tc3_openBal && d.tc3_openBal.completed, "opening balance set");
+    assert(Array.isArray(d.tc3_others) && d.tc3_others.length >= 15, "other contacts seeded");
+    assert(!d.tc3_capLedger || d.tc3_capLedger.length >= 1, "capital ledger seeded when included");
 
-    assert((d.tc3_repairs || []).length >= 25, "25+ repair bills seeded");
+    assert((d.tc3_repairs || []).length >= 30, "30+ repair bills seeded");
     var withDevices = (d.tc3_repairs || []).filter(function (r) { return Array.isArray(r.devices) && r.devices.length > 0; });
     assert(withDevices.length >= 25, "repair bills use per-device model");
     var thirdPartyDevices = 0;
@@ -124,6 +127,8 @@ export function runDemo360Tests(ctx) {
 
     var chPending = (d.tc3_cheques || []).filter(function (c) { return c.status === "Pending"; });
     assert(chPending.length >= 5, "pending cheques");
+    var chBounced = (d.tc3_cheques || []).filter(function (c) { return c.status === "Bounced"; });
+    assert(chBounced.length >= 2, "bounced cheques");
 
     var purPartials = (d.tc3_purchases || []).filter(function (p) { return p.status === "Partial" || p.balance > 0; });
     assert(purPartials.length >= 12, "partial/credit purchases");
@@ -136,6 +141,8 @@ export function runDemo360Tests(ctx) {
 
     var qSent = (d.tc3_quotations || []).filter(function (q) { return q.status === "Sent" || q.status === "Accepted"; });
     assert(qSent.length >= 1, "sent/accepted quotations");
+    assert((d.tc3_quotations || []).some(function (q) { return q.status === "Converted"; })
+      || sales.some(function (s) { return s.fromQuotationId; }), "converted quotation linked to sale");
 
     var codActive = activeCodRecords(d.tc3_codRecords || [], sales);
     assert(codActive.length >= 15, "active COD records linked to sales");

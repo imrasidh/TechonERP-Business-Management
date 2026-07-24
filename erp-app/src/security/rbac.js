@@ -10,7 +10,7 @@ export var ROLE_LABELS = {
 
 /** Shown in Settings → User Management when creating a cashier account. */
 export var CASHIER_ACCESS_SUMMARY =
-  "POS and day-to-day screens; void/edit invoice details and settings are admin-only. Admin password also opens cashier/manager logins.";
+  "POS and day-to-day screens; void/edit invoice details and settings are admin-only. Using the admin password on a cashier login elevates to the admin user (not the cashier).";
 
 var ROLE_PERMISSIONS = {
   admin: {
@@ -60,6 +60,17 @@ export function canAccessPageByRole(user, pageId) {
 /** Live session actor for storage-level permission checks (set on login). */
 export function getSessionActor() {
   try {
+    if (typeof window !== "undefined" && window._tcMainSession && window._tcMainSession.role) {
+      var ms = window._tcMainSession;
+      return {
+        id: ms.userId,
+        username: ms.username,
+        name: ms.name,
+        role: ms.role,
+      };
+    }
+  } catch (_e0) { /* ignore */ }
+  try {
     if (typeof window !== "undefined" && window._tcSessionUser) return window._tcSessionUser;
   } catch (_e) { /* ignore */ }
   try {
@@ -76,6 +87,102 @@ export function setSessionActor(user) {
   try {
     if (typeof window !== "undefined") window._tcSessionUser = user || null;
   } catch (_e) { /* ignore */ }
+}
+
+/** Bind / clear main-process session (Electron). Safe no-op in browser tests.
+ *  Pass opts.password (+ users/apppass) for privileged roles — openSession alone is cashier-only
+ *  unless main seal has passwordLockRequired=false or a one-time elevate token. */
+export function openMainSession(user, opts) {
+  try {
+    if (typeof window === "undefined" || !window.electronAPI) {
+      return Promise.resolve({ ok: true, skipped: true });
+    }
+    var actor = user || {};
+    var o = opts || {};
+    var applySession = function (r) {
+      if (r && r.ok) {
+        window._tcMainSession = {
+          token: r.token,
+          userId: r.userId,
+          username: r.username,
+          name: r.name || actor.name || r.username,
+          role: r.role,
+          expiresAt: r.expiresAt,
+        };
+      }
+      return r;
+    };
+    var sealIfPossible = function (r) {
+      if (r && r.ok && typeof window.electronAPI.sealCredentials === "function" && o.password) {
+        var st = o.settings || {};
+        window.electronAPI.sealCredentials({
+          password: o.password,
+          users: Array.isArray(o.users) ? o.users : [],
+          apppass: o.apppass || "",
+          mainAdminPassHash: o.mainAdminPassHash || "",
+          passwordLockRequired: st.requirePasswordOnLogin !== false,
+        }).catch(function () { /* ignore */ });
+      }
+      return r;
+    };
+    if (o.password && typeof window.electronAPI.loginSession === "function") {
+      return window.electronAPI.loginSession({
+        username: actor.username || actor.name || "",
+        name: actor.name || actor.username || "",
+        userId: actor.id || "",
+        password: o.password,
+        users: Array.isArray(o.users) ? o.users : [],
+        apppass: o.apppass || "",
+        mainAdminPassHash: o.mainAdminPassHash || "",
+      }).then(applySession).then(sealIfPossible);
+    }
+    if (typeof window.electronAPI.openSession !== "function") {
+      return Promise.resolve({ ok: true, skipped: true });
+    }
+    return window.electronAPI.openSession({
+      userId: actor.id || "",
+      username: actor.username || actor.name || "",
+      name: actor.name || actor.username || "",
+    }).then(applySession);
+  } catch (_e) {
+    return Promise.resolve({ ok: false });
+  }
+}
+
+/** Restore main session from existing window session (F5) — do not re-forge role from sessionStorage. */
+export function restoreMainSession() {
+  try {
+    if (typeof window === "undefined" || !window.electronAPI || typeof window.electronAPI.getSession !== "function") {
+      return Promise.resolve({ ok: false });
+    }
+    return window.electronAPI.getSession().then(function (r) {
+      if (r && r.ok && r.session) {
+        window._tcMainSession = {
+          token: r.session.token,
+          userId: r.session.userId,
+          username: r.session.username,
+          name: r.session.name,
+          role: r.session.role,
+          expiresAt: r.session.expiresAt,
+        };
+        return { ok: true, session: r.session };
+      }
+      window._tcMainSession = null;
+      return { ok: false };
+    });
+  } catch (_e) {
+    return Promise.resolve({ ok: false });
+  }
+}
+
+export function closeMainSession() {
+  try {
+    if (typeof window !== "undefined") window._tcMainSession = null;
+    if (typeof window !== "undefined" && window.electronAPI && typeof window.electronAPI.closeSession === "function") {
+      return window.electronAPI.closeSession();
+    }
+  } catch (_e) { /* ignore */ }
+  return Promise.resolve({ ok: true });
 }
 
 function isVoidedRow(row) {
@@ -131,8 +238,19 @@ function isPaymentOnlyDocChange(oldRow, newRow) {
  * @returns {{ ok: boolean, message?: string }}
  */
 export function assertRoleAllowsStorageMutation(user, key, newV, oldV) {
-  /* No session yet (startup seed) — allow. */
-  if (!user) return { ok: true };
+  /* No session: allow bootstrap/system keys only — deny core business ledgers */
+  if (!user) {
+    var bootstrapOk = {
+      tc3_settings: 1, tc3_openBal: 1, tc3_gl_accounts: 1, tc3_journal_lines: 1,
+      tc3_gl_last_error: 1, tc3_gl_prefer_ledger: 1, tc3_gl_mode: 1, tc3_journal_hash: 1,
+      tc3_financial_snapshots: 1, tc3_capLedger: 1, tc3_apppass: 1, tc3_admin_name: 1,
+      tc3_device_id: 1, tc3_net_config: 1, tc3_audit: 1,
+    };
+    if (bootstrapOk[key] || String(key || "").indexOf("tc3_gl_") === 0) {
+      return { ok: true };
+    }
+    return { ok: false, message: "Permission denied: sign in required to change " + key + "." };
+  }
   var role = normalizeRole(user.role);
   if (role === ROLE_ADMIN) return { ok: true };
 

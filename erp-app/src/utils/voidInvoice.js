@@ -317,7 +317,7 @@ export function computeVoidSaleRefundHint(sale, cheques) {
   var pendingChq = 0;
   var clearedChq = 0;
   (cheques || []).forEach(function (ch) {
-    if (!ch || ch.saleId !== sale.id) return;
+    if (!ch || String(ch.saleId) !== String(sale.id)) return;
     var amt = round2(ch.amount || 0);
     if (ch.status === "Pending") pendingChq += amt;
     else if (ch.status === "Cleared") clearedChq += amt;
@@ -331,7 +331,7 @@ export function computeVoidSaleRefundHint(sale, cheques) {
     parts.push("Pending cheques for this invoice are cancelled.");
   }
   if (clearedChq > 0) {
-    parts.push("Cleared cheques (" + clearedChq + ") are marked void — reverse the bank deposit manually if needed.");
+    parts.push("Cleared cheques (" + clearedChq + ") — bank deposit will be reversed automatically on void.");
   }
   return {
     cashBankRefund: cashBankRefund,
@@ -341,7 +341,50 @@ export function computeVoidSaleRefundHint(sale, cheques) {
   };
 }
 
-export function buildVoidSaleUpdates(state, saleId, reason, nowIso) {
+function bankLikeMethod(m) {
+  var s = String(m || "Cash");
+  return s === "Bank" || s === "Card" || s === "Online" || s === "Cheque" || s === "Bank Transfer";
+}
+
+function normalizeVoidCashMethod(m) {
+  return bankLikeMethod(m) ? "Bank" : "Cash";
+}
+
+/** Cash/bank already paid to supplier — collect back when voiding. */
+export function computeVoidPurchaseRefundHint(purchase, cheques) {
+  var paid = round2(purchase && (purchase.paidAmount != null ? purchase.paidAmount : purchase.paid) || 0);
+  if (paid <= 0) {
+    return { cashBankRefund: 0, pendingChequeCancel: 0, clearedChequeNote: 0, message: "" };
+  }
+  var pendingChq = 0;
+  var clearedChq = 0;
+  (cheques || []).forEach(function (ch) {
+    if (!ch || String(ch.purchaseId) !== String(purchase.id)) return;
+    var amt = round2(ch.amount || 0);
+    if (ch.status === "Pending") pendingChq += amt;
+    else if (ch.status === "Cleared") clearedChq += amt;
+  });
+  var cashBankRefund = round2(Math.max(0, paid - pendingChq - clearedChq));
+  var parts = [];
+  if (cashBankRefund > 0) {
+    parts.push("Collect " + cashBankRefund + " cash/bank back from the supplier (or confirm it was never paid out).");
+  }
+  if (pendingChq > 0) {
+    parts.push("Pending cheques for this purchase are cancelled.");
+  }
+  if (clearedChq > 0) {
+    parts.push("Cleared cheques (" + clearedChq + ") — bank payment will be reversed automatically on void.");
+  }
+  return {
+    cashBankRefund: cashBankRefund,
+    pendingChequeCancel: pendingChq,
+    clearedChequeNote: clearedChq,
+    message: parts.join(" "),
+  };
+}
+
+export function buildVoidSaleUpdates(state, saleId, reason, nowIso, opts) {
+  opts = opts || {};
   var sale = (state.sales || []).find(function (s) { return s.id === saleId; });
   var block = voidSaleBlockReason(sale, state);
   if (block) return { ok: false, error: block };
@@ -374,26 +417,81 @@ export function buildVoidSaleUpdates(state, saleId, reason, nowIso) {
   }
 
   var refundHint = computeVoidSaleRefundHint(sale, state.cheques || []);
+  var reverseCashLines = [];
+  var coveredChequeIds = {};
+  (sale.paymentHistory || []).forEach(function (ph) {
+    var a = round2(ph.amount || 0);
+    if (a <= 0.005) return;
+    var m = ph.cashMethod || "Cash";
+    if (m === "Cheque" || m === "Adjustment") return;
+    if (ph.chequeId) coveredChequeIds[String(ph.chequeId)] = true;
+    reverseCashLines.push({ amount: a, cashMethod: normalizeVoidCashMethod(m), note: ph.note || "", chequeId: ph.chequeId || "" });
+  });
+  var reverseTotal = reverseCashLines.reduce(function (a, x) { return a + x.amount; }, 0);
+  if (reverseTotal > 0.005 && opts.confirmRefund !== true) {
+    return {
+      ok: false,
+      error: "This invoice has " + round2(reverseTotal) + " cash/bank received. Confirm that you will refund the customer before voiding.",
+      needsRefundConfirm: true,
+      refundHint: refundHint,
+      reverseTotal: round2(reverseTotal),
+    };
+  }
+  /* Cleared cheques not already in cash/bank PH — reverse Bank automatically (no separate drawer refund). */
+  (state.cheques || []).forEach(function (ch) {
+    if (!ch || String(ch.saleId) !== String(sale.id) || ch.status !== "Cleared") return;
+    var cid = String(ch.id);
+    if (coveredChequeIds[cid]) return;
+    var amt = round2(ch.amount || 0);
+    if (amt <= 0.005) return;
+    coveredChequeIds[cid] = true;
+    reverseCashLines.push({
+      amount: amt,
+      cashMethod: "Bank",
+      note: "Cleared cheque #" + (ch.chequeNo || ""),
+      chequeId: ch.id,
+      type: "void_cleared_cheque_reversal",
+    });
+  });
 
   var cheques = (state.cheques || []).map(function (ch) {
-    if (!ch || ch.saleId !== sale.id) return ch;
+    if (!ch || String(ch.saleId) !== String(sale.id)) return ch;
     if (ch.status === "Voided") return ch;
     return stampUpdatedAt(Object.assign({}, ch, {
       status: "Voided",
       voidedDate: at.slice(0, 10),
       voidReason: ch.status === "Cleared"
-        ? "Sale voided (was Cleared — reverse bank if needed)"
+        ? "Sale voided (cleared — bank reversed via void refund)"
         : "Sale voided",
       priorStatus: ch.status || "",
+      bankReversedOnVoid: ch.status === "Cleared",
     }), at);
+  });
+
+  var ph = (sale.paymentHistory || []).slice();
+  reverseCashLines.forEach(function (line, idx) {
+    ph.push({
+      id: "void_rf_" + String(saleId).slice(0, 8) + "_" + idx + "_" + Date.now(),
+      date: at.slice(0, 10),
+      amount: -line.amount,
+      type: line.type || "void_refund",
+      note: "Void invoice refund" + (line.note ? " · " + line.note : ""),
+      createdAt: at,
+      cashMethod: line.cashMethod,
+      chequeId: line.chequeId || undefined,
+    });
   });
 
   var voidedSale = stampUpdatedAt(Object.assign({}, sale, {
     status: "Voided",
     voidedAt: at,
     voidReason: String(reason || "").trim(),
-    voidRefundCashBank: refundHint.cashBankRefund,
+    voidRefundCashBank: round2(reverseTotal),
+    voidRefundConfirmed: reverseTotal > 0.005,
     voidRefundNote: refundHint.message || undefined,
+    paymentHistory: ph,
+    paid: 0,
+    balance: 0,
   }), at);
 
   var sales = (state.sales || []).map(function (s) {
@@ -419,7 +517,8 @@ export function buildVoidSaleUpdates(state, saleId, reason, nowIso) {
   return out;
 }
 
-export function buildVoidPurchaseUpdates(state, purchaseId, reason, nowIso) {
+export function buildVoidPurchaseUpdates(state, purchaseId, reason, nowIso, opts) {
+  opts = opts || {};
   var purchase = (state.purchases || []).find(function (p) { return p.id === purchaseId; });
   var block = voidPurchaseBlockReason(purchase, state);
   if (block) return { ok: false, error: block };
@@ -431,28 +530,86 @@ export function buildVoidPurchaseUpdates(state, purchaseId, reason, nowIso) {
     products = reversePurchaseLineStock(products, it, at);
   });
 
+  var refundHint = computeVoidPurchaseRefundHint(purchase, state.cheques || []);
+  var reverseCashLines = [];
+  var coveredChequeIdsP = {};
+  (purchase.paymentHistory || []).forEach(function (ph) {
+    var a = round2(ph.amount || 0);
+    if (a <= 0.005) return;
+    var m = ph.cashMethod || "Cash";
+    if (m === "Cheque" || m === "Adjustment") return;
+    if (ph.chequeId) coveredChequeIdsP[String(ph.chequeId)] = true;
+    reverseCashLines.push({ amount: a, cashMethod: normalizeVoidCashMethod(m), note: ph.note || "", chequeId: ph.chequeId || "" });
+  });
+  var reverseTotal = reverseCashLines.reduce(function (a, x) { return a + x.amount; }, 0);
+  if (reverseTotal > 0.005 && opts.confirmRefund !== true) {
+    return {
+      ok: false,
+      error: "This purchase has " + round2(reverseTotal) + " cash/bank paid out. Confirm that you will collect it back (or that it was never paid) before voiding.",
+      needsRefundConfirm: true,
+      refundHint: refundHint,
+      reverseTotal: round2(reverseTotal),
+    };
+  }
+  (state.cheques || []).forEach(function (ch) {
+    if (!ch || String(ch.purchaseId) !== String(purchase.id) || ch.status !== "Cleared") return;
+    var cid = String(ch.id);
+    if (coveredChequeIdsP[cid]) return;
+    var amt = round2(ch.amount || 0);
+    if (amt <= 0.005) return;
+    coveredChequeIdsP[cid] = true;
+    reverseCashLines.push({
+      amount: amt,
+      cashMethod: "Bank",
+      note: "Cleared cheque #" + (ch.chequeNo || ""),
+      chequeId: ch.id,
+      type: "void_cleared_cheque_reversal",
+    });
+  });
+
   var cheques = (state.cheques || []).map(function (ch) {
-    if (!ch || ch.purchaseId !== purchase.id) return ch;
+    if (!ch || String(ch.purchaseId) !== String(purchase.id)) return ch;
     if (ch.status === "Voided") return ch;
     return stampUpdatedAt(Object.assign({}, ch, {
       status: "Voided",
       voidedDate: at.slice(0, 10),
       voidReason: ch.status === "Cleared"
-        ? "Purchase voided (was Cleared — reverse bank if needed)"
+        ? "Purchase voided (cleared — bank reversed via void refund)"
         : "Purchase voided",
       priorStatus: ch.status || "",
+      bankReversedOnVoid: ch.status === "Cleared",
     }), at);
+  });
+
+  var ph = (purchase.paymentHistory || []).slice();
+  reverseCashLines.forEach(function (line, idx) {
+    ph.push({
+      id: "void_rf_" + String(purchaseId).slice(0, 8) + "_" + idx + "_" + Date.now(),
+      date: at.slice(0, 10),
+      amount: -line.amount,
+      type: line.type || "void_refund",
+      note: "Void purchase refund" + (line.note ? " · " + line.note : ""),
+      createdAt: at,
+      cashMethod: line.cashMethod,
+      chequeId: line.chequeId || undefined,
+    });
   });
 
   var voidedPurchase = stampUpdatedAt(Object.assign({}, purchase, {
     status: "Voided",
     voidedAt: at,
     voidReason: String(reason || "").trim(),
+    voidRefundCashBank: round2(reverseTotal),
+    voidRefundConfirmed: reverseTotal > 0.005,
+    voidRefundNote: refundHint.message || undefined,
+    paymentHistory: ph,
+    paidAmount: 0,
+    balance: 0,
   }), at);
 
   var purchases = (state.purchases || []).map(function (p) {
     return p.id === purchaseId ? voidedPurchase : p;
   });
 
-  return { ok: true, products: products, purchases: purchases, cheques: cheques, voidedPurchase: voidedPurchase };
+  return { ok: true, products: products, purchases: purchases, cheques: cheques, voidedPurchase: voidedPurchase, refundHint: refundHint };
 }

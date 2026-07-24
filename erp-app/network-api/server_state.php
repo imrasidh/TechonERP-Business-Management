@@ -8,7 +8,18 @@
  */
 require_once __DIR__ . '/config.php';
 
-requireAuth();
+$auth = requireAuth();
+$authMode = is_array($auth) ? ($auth['mode'] ?? '') : '';
+$isLoopback = function_exists('tcIsLocalhostRequest') ? tcIsLocalhostRequest() : false;
+if ($authMode === 'open' && !$isLoopback) {
+    respond(['success' => false, 'message' => 'OPEN_API reads are localhost-only'], 403);
+}
+if ($authMode === 'legacy' && !$isLoopback && getenv('TECHON_ERP_ALLOW_LEGACY_SYNC') !== '1') {
+    respond([
+        'success' => false,
+        'message' => 'Legacy API key state reads are localhost-only — counters must use device authentication (or set TECHON_ERP_ALLOW_LEGACY_SYNC=1 during migration)',
+    ], 403);
+}
 
 $clientId = $_SERVER['HTTP_X_TC_CLIENT_ID'] ?? '';
 $ip       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
@@ -34,6 +45,9 @@ $ALL_KEYS = [
     'tc3_raw_material_usage',
     'tc3_raw_material_counts',
     'tc3_users',
+    'tc3_others',
+    'tc3_repair3p_product_seq',
+    'tc3_financial_mutation_log',
 ];
 
 $requested = [];
@@ -63,6 +77,26 @@ foreach ($requested as $k) {
 foreach ($rows as $row) {
     $decoded = json_decode($row['value'], true);
     $result[$row['store_key']] = ($decoded !== null) ? $decoded : [];
+}
+
+/* Never ship password hashes / credential material to LAN clients. */
+if (isset($result['tc3_users']) && is_array($result['tc3_users'])) {
+    $result['tc3_users'] = array_map(function ($u) {
+        if (!is_array($u)) return $u;
+        unset($u['passwordHash'], $u['password'], $u['pin'], $u['pinHash']);
+        return $u;
+    }, $result['tc3_users']);
+}
+if (isset($result['tc3_settings']) && is_array($result['tc3_settings'])) {
+    unset(
+        $result['tc3_settings']['mainAdminPassHash'],
+        $result['tc3_settings']['appPassHash'],
+        $result['tc3_settings']['passwordHash'],
+        $result['tc3_settings']['adminPin']
+    );
+}
+if (array_key_exists('tc3_apppass', $result)) {
+    $result['tc3_apppass'] = '';
 }
 
 respond([

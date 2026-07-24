@@ -73,6 +73,9 @@ export function findRowById(rows, id) {
 /**
  * Ensure a payment amount still fits the invoice balance (fresh sale preferred).
  * Returns { ok, sale, message }.
+ * opts.includePendingCheques — also subtract Pending cheque amounts already on this sale
+ *   (use when creating new cheques so clear-time won't leave stuck over-amount cheques).
+ * opts.cheques — cheque register array when includePendingCheques is set.
  */
 export function assertPaymentFitsSaleBalance(sale, amount, opts) {
   opts = opts || {};
@@ -84,12 +87,22 @@ export function assertPaymentFitsSaleBalance(sale, amount, opts) {
   var total = parseFloat(sale.total) || 0;
   var paid = parseFloat(sale.paid) || 0;
   var bal = Math.round((total - paid) * 100) / 100;
+  if (opts.includePendingCheques) {
+    var pending = 0;
+    (opts.cheques || []).forEach(function (ch) {
+      if (!ch || String(ch.saleId) !== String(sale.id)) return;
+      if (String(ch.status || "") !== "Pending") return;
+      pending += parseFloat(ch.amount) || 0;
+    });
+    bal = Math.round((bal - pending) * 100) / 100;
+  }
   if (amt > bal + 0.009) {
     return {
       ok: false,
       sale: sale,
-      message:
-        "Balance changed on another counter (due " + bal + "). Refresh the invoice and try again.",
+      message: opts.includePendingCheques
+        ? "Cheque total exceeds remaining invoice balance (due " + Math.max(0, bal) + "). Reduce cheque amount(s)."
+        : "Balance changed on another counter (due " + bal + "). Refresh the invoice and try again.",
     };
   }
   return { ok: true, sale: sale, balance: bal };
@@ -104,15 +117,65 @@ export function assertPaymentFitsPurchaseBalance(purchase, amount, opts) {
   var total = parseFloat(purchase.total) || 0;
   var paid = parseFloat(purchase.paidAmount) || 0;
   var bal = Math.round((total - paid) * 100) / 100;
+  if (opts.includePendingCheques) {
+    var pending = 0;
+    (opts.cheques || []).forEach(function (ch) {
+      if (!ch || String(ch.purchaseId) !== String(purchase.id)) return;
+      if (String(ch.status || "") !== "Pending") return;
+      pending += parseFloat(ch.amount) || 0;
+    });
+    bal = Math.round((bal - pending) * 100) / 100;
+  }
   if (amt > bal + 0.009) {
     return {
       ok: false,
       purchase: purchase,
-      message:
-        "Balance changed on another counter (due " + bal + "). Refresh and try again.",
+      message: opts.includePendingCheques
+        ? "Cheque total exceeds remaining purchase balance (due " + Math.max(0, bal) + "). Reduce cheque amount(s)."
+        : "Balance changed on another counter (due " + bal + "). Refresh and try again.",
     };
   }
   return { ok: true, purchase: purchase, balance: bal };
+}
+
+/**
+ * Cap payments against a manual receivable/payable outstanding balance.
+ * item: { amount, paid } or raw row with paymentHistory (paid computed if missing).
+ */
+export function assertPaymentFitsManualBalance(item, amount, opts) {
+  opts = opts || {};
+  if (!item) return { ok: false, message: "Record not found. Refresh and try again." };
+  var amt = parseFloat(amount) || 0;
+  if (amt < 0) return { ok: false, message: "Payment amount cannot be negative." };
+  if (opts.allowZero) return { ok: true, balance: 0 };
+  var total = parseFloat(item.amount) || 0;
+  var paid = item.paid != null ? parseFloat(item.paid) || 0 : 0;
+  if (item.paid == null && Array.isArray(item.paymentHistory)) {
+    paid = (item.paymentHistory || []).reduce(function (a, ph) {
+      return a + (parseFloat(ph && ph.amount) || 0);
+    }, 0);
+  }
+  var bal = Math.round((total - paid) * 100) / 100;
+  if (opts.includePendingCheques) {
+    var idField = opts.chequeLinkField || "manualReceivableId";
+    var pending = 0;
+    (opts.cheques || []).forEach(function (ch) {
+      if (!ch || String(ch[idField] || "") !== String(item.id)) return;
+      if (String(ch.status || "") !== "Pending") return;
+      pending += parseFloat(ch.amount) || 0;
+    });
+    bal = Math.round((bal - pending) * 100) / 100;
+  }
+  if (amt > bal + 0.009) {
+    return {
+      ok: false,
+      message: opts.includePendingCheques
+        ? "Amount exceeds remaining balance (due " + Math.max(0, bal) + ") including pending cheques."
+        : "Amount exceeds remaining balance (due " + Math.max(0, bal) + ").",
+      balance: bal,
+    };
+  }
+  return { ok: true, balance: bal };
 }
 
 /**
@@ -133,17 +196,25 @@ export async function loadFreshProductsForStock(S) {
   return products;
 }
 
-/** Fire-and-forget immediate push so peers see money/stock sooner (shrinks TOCTOU). */
+/** Fire-and-forget immediate push — batches keys in ONE request so sale/cheque clears stay atomic. */
 export function pushKeysNow(keysAndValues) {
   try {
-    var syncNow = null;
-    if (typeof window !== "undefined" && window.TC_SYNC && typeof window.TC_SYNC.syncStorageKeyNow === "function") {
-      syncNow = window.TC_SYNC.syncStorageKeyNow.bind(window.TC_SYNC);
+    var syncBatch = null;
+    if (typeof window !== "undefined" && window.TC_SYNC && typeof window.TC_SYNC.syncStorageKeysNow === "function") {
+      syncBatch = window.TC_SYNC.syncStorageKeysNow.bind(window.TC_SYNC);
     }
-    if (!syncNow) return;
-    (keysAndValues || []).forEach(function (pair) {
-      if (!pair || !pair[0]) return;
-      try { syncNow(pair[0], pair[1]); } catch (_e) { /* ignore */ }
-    });
-  } catch (_e2) { /* ignore */ }
+    if (!syncBatch) {
+      var syncNow = null;
+      if (typeof window !== "undefined" && window.TC_SYNC && typeof window.TC_SYNC.syncStorageKeyNow === "function") {
+        syncNow = window.TC_SYNC.syncStorageKeyNow.bind(window.TC_SYNC);
+      }
+      if (!syncNow) return;
+      (keysAndValues || []).forEach(function (pair) {
+        if (!pair || !pair[0]) return;
+        try { syncNow(pair[0], pair[1]); } catch (_e) { /* ignore */ }
+      });
+      return;
+    }
+    try { syncBatch(keysAndValues || []); } catch (_e2) { /* ignore */ }
+  } catch (_e3) { /* ignore */ }
 }

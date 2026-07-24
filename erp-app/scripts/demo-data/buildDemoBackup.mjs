@@ -2,8 +2,11 @@
  * Full demo dataset for Techon Computers (tech retail / repair).
  * Import via Settings → Backup → Restore → demo-data/techon-demo-backup.json
  * Regenerate: npm run seed:demo
+ *
+ * Demo login after restore: username `admin` / password `demo1234`
  */
 
+import crypto from "crypto";
 import {
   rebuildJournalFromState,
   DEFAULT_GL_CHART,
@@ -16,6 +19,16 @@ import {
 } from "../../src/accounting/inventoryEngine.js";
 
 var BASE_DATE = new Date("2026-06-30T12:00:00.000Z");
+/** Documented demo password — used only in seeded backup JSON. */
+var DEMO_ADMIN_PASSWORD = "demo1234";
+var DEMO_ADMIN_NAME = "Demo Admin";
+
+function hashDemoPassword(pw) {
+  var salt = crypto.randomBytes(16);
+  var iters = 100000;
+  var derived = crypto.pbkdf2Sync(String(pw), salt, iters, 32, "sha256");
+  return "pbkdf2:" + iters + ":" + salt.toString("hex") + ":" + derived.toString("hex");
+}
 
 function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
@@ -132,31 +145,33 @@ var REPAIR_PROBLEMS = [
 ];
 
 /** Max allowed inventory vs GL drift (Rs) for bulk WAC demo data — journal must still balance exactly. */
-export var DEMO_INV_GL_TOLERANCE = 8000;
+export var DEMO_INV_GL_TOLERANCE = 25000;
 
-/** Demo dataset scale — computer shop A–Z coverage (fresh medium profile) */
+/** Demo dataset scale — large, varied computer-shop A–Z coverage. */
 var DEMO_SCALE = {
-  stockProducts: 35,
-  customers: 45,
-  suppliers: 15,
-  purchases: 42,
-  sales: 165,
-  salesReturns: 22,
-  purchaseReturns: 14,
-  manualReceivables: 18,
-  manualPayables: 14,
-  quotations: 28,
-  expenses: 22,
-  repairsTotal: 28,
-  extra3pRepairs: 6,
-  codRecords: 18,
-  codWithdrawals: 8,
-  damageEntries: 5,
-  assets: 4,
+  stockProducts: 210,
+  customers: 120,
+  suppliers: 30,
+  others: 24,
+  purchases: 65,
+  sales: 145,
+  salesReturns: 40,
+  purchaseReturns: 30,
+  manualReceivables: 36,
+  manualPayables: 30,
+  quotations: 55,
+  quotationConversions: 15,
+  expenses: 48,
+  repairsTotal: 42,
+  extra3pRepairs: 12,
+  codRecords: 48,
+  codWithdrawals: 18,
+  damageEntries: 14,
+  assets: 10,
 };
 
 export function buildDemoBackup() {
-  var rng = makeRng(20260630);
+  var rng = makeRng(20260724);
   var stockLedger = {};
   var cheques = [];
   var chSeq = 0;
@@ -186,7 +201,7 @@ export function buildDemoBackup() {
     };
   }
 
-  /* ── Products (100 stock + service SKUs) ── */
+  /* ── Products (large stock catalogue + service SKUs) ── */
   var products = [];
   var i;
   var STOCK_N = DEMO_SCALE.stockProducts;
@@ -214,7 +229,8 @@ export function buildDemoBackup() {
     });
   }
   /* Service SKUs for repairs / labour */
-  ["Laptop Repair Labour", "Data Recovery Service", "Virus Removal", "OS Installation", "Network Setup"].forEach(function (name, si) {
+  ["Laptop Repair Labour", "Data Recovery Service", "Virus Removal", "OS Installation", "Network Setup",
+    "Printer Service", "Screen Replacement Labour", "Network Cabling", "Data Migration", "Annual Maintenance"].forEach(function (name, si) {
     products.push({
       id: "demo-svc-" + si,
       productId: String(9000 + si),
@@ -263,17 +279,31 @@ export function buildDemoBackup() {
     });
   }
 
+  /* ── Other contacts (walk-in organizations, couriers, landlords) ── */
+  var others = [];
+  for (i = 0; i < DEMO_SCALE.others; i++) {
+    others.push({
+      id: "demo-o-" + i,
+      name: ["CityLink Couriers", "Unity Plaza Management", "Lakpura Leasing", "Office Mart Lanka",
+        "Metro Property Services", "QuickShip Logistics"][i % 6] + (i >= 6 ? " " + (i + 1) : ""),
+      phone: "011" + String(6100000 + i * 173).slice(0, 7),
+      address: ["Colombo 01", "Colombo 03", "Nugegoda", "Rajagiriya"][i % 4],
+      note: ["Courier contact", "Service provider", "Landlord contact", "Business referral"][i % 4],
+      createdAt: isoAt(dateStr(rint(rng, 20, 90)), 9, rint(rng, 0, 59)),
+    });
+  }
+
   /* ── Purchases — stock in first ── */
   var purchases = [];
   var PUR_COUNT = DEMO_SCALE.purchases;
   for (i = 0; i < PUR_COUNT; i++) {
     var sup = suppliers[i % suppliers.length];
-    var lineCount = i % 4 === 0 ? rint(rng, 2, 3) : 1;
+    var lineCount = i % 3 === 0 ? rint(rng, 3, 5) : (i % 3 === 1 ? 2 : 1);
     var items = [];
     var lineVal = 0;
     var j;
     for (j = 0; j < lineCount; j++) {
-      var pidx = (i + j * 7) % products.length;
+      var pidx = (i * 3 + j * 17) % STOCK_N;
       var prod = products[pidx];
       if (prod.type === "service") continue;
       var qty = purchaseQty(rng, prod);
@@ -302,7 +332,7 @@ export function buildDemoBackup() {
       paymentHistory = [ph("demo-ph-pur-" + i + "-1", dt, lineVal, "Cash", { note: "Cash on delivery" })];
     } else if (payMode === 2 || payMode === 3) {
       paidAmount = round2(lineVal * (payMode === 2 ? 0.35 : 0.45));
-      paymentHistory = [ph("demo-ph-pur-" + i + "-1", dt, paidAmount, "Bank", { note: "Partial advance" })];
+      paymentHistory = [ph("demo-ph-pur-" + i + "-1", dt, paidAmount, payMode === 2 ? "Cash" : "Bank", { note: "Partial advance" })];
     } else if (payMode === 4 || payMode === 5) {
       paidAmount = round2(lineVal * (payMode === 4 ? 0.25 : 0.3));
       chId = "demo-ch-out-" + (++chSeq);
@@ -354,20 +384,20 @@ export function buildDemoBackup() {
     var subTotal = 0;
     var j2;
     for (j2 = 0; j2 < lineCountS; j2++) {
-      var sprod = products[rint(rng, 0, products.length - 6)];
-      if (sprod.type === "service") continue;
-      var maxQty = Math.max(1, Math.min(15, Math.floor(availStock(sprod.id))));
-      if (maxQty < 1) {
-        sprod = products[(i + j2) % 30];
-        maxQty = Math.max(1, Math.min(8, Math.floor(availStock(sprod.id))));
-      }
+      var availableProducts = products.filter(function (p) {
+        return p.type === "stock" && availStock(p.id) >= 1;
+      });
+      if (!availableProducts.length) break;
+      var sprod = pick(rng, availableProducts);
+      var maxQty = Math.min(15, Math.floor(availStock(sprod.id)));
       var sqty = rint(rng, 1, Math.max(1, maxQty));
       trackStock(sprod.id, -sqty);
       saleItems.push(saleLine(sprod, sqty));
       subTotal = round2(subTotal + sprod.price * sqty);
     }
     if (!saleItems.length) {
-      var fb = products[i % 15];
+      var fb = products.find(function (p) { return p.type === "stock" && availStock(p.id) >= 1; });
+      if (!fb) throw new Error("Demo stock exhausted before sale generation");
       var fbq = 1;
       trackStock(fb.id, -fbq);
       saleItems.push(saleLine(fb, fbq));
@@ -478,6 +508,25 @@ export function buildDemoBackup() {
     bouncedDate: dateStr(3), customerId: customers[2].id, customerName: customers[2].name,
     saleId: "", invoiceNo: "", note: "Bounced — customer to reissue",
   });
+  cheques.push({
+    id: "demo-ch-bounced-2", type: "incoming", status: "Bounced",
+    chequeNo: "88143", bankName: "HNB", amount: 41200,
+    dueDate: "2026-06-20", issuedDate: "2026-06-16", createdAt: "2026-06-16",
+    bouncedDate: dateStr(4), customerId: customers[6].id, customerName: customers[6].name,
+    saleId: "", invoiceNo: "", note: "Bounced — insufficient funds",
+  });
+  cheques.push({
+    id: "demo-ch-out-bounced-1", type: "outgoing", status: "Bounced",
+    chequeNo: "45181", bankName: "Commercial", amount: 67500,
+    dueDate: "2026-06-19", issuedDate: "2026-06-15", createdAt: "2026-06-15",
+    bouncedDate: dateStr(5), supplierName: suppliers[3].name, note: "Bounced supplier cheque — reissued by bank transfer",
+  });
+  cheques.push({
+    id: "demo-ch-out-bounced-2", type: "outgoing", status: "Bounced",
+    chequeNo: "45182", bankName: "Sampath", amount: 38800,
+    dueDate: "2026-06-18", issuedDate: "2026-06-14", createdAt: "2026-06-14",
+    bouncedDate: dateStr(6), supplierName: suppliers[7].name, note: "Bounced supplier cheque — account review",
+  });
 
   /* ── Sales returns — mix partial qty returns ── */
   var salesReturns = [];
@@ -514,11 +563,20 @@ export function buildDemoBackup() {
   /* ── Purchase returns ── */
   var purchaseReturns = [];
   for (i = 0; i < DEMO_SCALE.purchaseReturns; i++) {
-    var pur = purchases[rint(rng, 0, purchases.length - 1)];
-    var pitem = pur.items[rint(rng, 0, pur.items.length - 1)];
+    var eligiblePurchases = purchases.filter(function (p) {
+      return p.items.some(function (line) { return availStock(line.id) >= 1; });
+    });
+    var fullReturnPurchases = purchases.filter(function (p) {
+      return p.items.some(function (line) { return availStock(line.id) >= line.qty; });
+    });
+    var pur = i < 3 ? pick(rng, fullReturnPurchases) : pick(rng, eligiblePurchases);
+    var returnLines = pur.items.filter(function (line) {
+      return i < 3 ? availStock(line.id) >= line.qty : availStock(line.id) >= 1;
+    });
+    var pitem = pick(rng, returnLines);
     var prmax = Math.max(1, Math.floor(pitem.qty / 3));
-    var prqty = i % 2 === 0 ? prmax : Math.max(1, rint(rng, 1, prmax));
-    prqty = Math.min(prqty, pitem.qty);
+    var prqty = i < 3 ? pitem.qty : (i % 2 === 0 ? prmax : Math.max(1, rint(rng, 1, prmax)));
+    prqty = Math.min(prqty, pitem.qty, Math.floor(availStock(pitem.id)));
     purchaseReturns.push({
       id: "demo-pr-" + i,
       returnId: "PR-2026" + String(100 + i),
@@ -570,9 +628,9 @@ export function buildDemoBackup() {
       id: "demo-mr-" + i,
       date: dateStr(rint(rng, 15, 70)),
       person: customers[i % customers.length].name,
-      type: pick(rng, ["Loan Given", "Advance", "Other Receivable"]),
+      type: i % 3 === 0 ? "Loan Given" : pick(rng, ["Loan Given", "Advance", "Other Receivable"]),
       amount: mramt,
-      paymentMethod: "Bank",
+      paymentMethod: i % 2 === 0 ? "Cash" : "Bank",
       reference: "MR-2026-" + (i + 1),
       note: "IT equipment advance — demo",
       paymentHistory: mrHist,
@@ -593,9 +651,9 @@ export function buildDemoBackup() {
       id: "demo-mp-" + i,
       date: dateStr(rint(rng, 10, 65)),
       source: suppliers[i % suppliers.length].name,
-      type: pick(rng, ["Borrowed Money", "Credit Purchase", "Other Payable"]),
+      type: i % 3 === 0 ? "Borrowed Money" : pick(rng, ["Borrowed Money", "Credit Purchase", "Other Payable"]),
       amount: mpamt,
-      paymentMethod: "Bank",
+      paymentMethod: i % 2 === 0 ? "Cash" : "Bank",
       reference: "MP-2026-" + (i + 1),
       note: "Supplier credit line — demo",
       paymentHistory: mpHist,
@@ -629,7 +687,7 @@ export function buildDemoBackup() {
       customerPhone: qcust.phone,
       items: qLines,
       notes: i % 3 === 0 ? "Valid 14 days. Prices subject to stock availability." : (i % 4 === 0 ? "Bulk order quote for office setup." : ""),
-      status: pick(rng, ["Draft", "Sent", "Accepted", "Expired"]),
+      status: ["Draft", "Sent", "Accepted", "Expired"][i % 4],
       date: dateStr(rint(rng, 0, 40)),
       createdAt: isoAt(dateStr(rint(rng, 0, 40)), 10, rint(rng, 0, 59)),
       createdBy: "Admin",
@@ -641,6 +699,17 @@ export function buildDemoBackup() {
       taxApplyBase: "after_discount",
       selectedTaxes: [],
     });
+  }
+
+  /* Convert a representative set of quotations into linked POS invoices. */
+  for (i = 0; i < DEMO_SCALE.quotationConversions; i++) {
+    var convertedQuote = quotations[i];
+    var convertedSale = sales[i];
+    convertedQuote.status = "Converted";
+    convertedQuote.convertedAt = convertedSale.date;
+    convertedQuote.saleId = convertedSale.id;
+    convertedSale.fromQuotationId = convertedQuote.id;
+    convertedSale.quotationNo = convertedQuote.quotationNo;
   }
 
   /* ── Repairs (computer shop — multi-device, 3rd party, delivered, returned) ── */
@@ -1130,6 +1199,7 @@ export function buildDemoBackup() {
       category: pick(rng, EXPENSE_CATS),
       description: pick(rng, EXPENSE_CATS) + " — " + pick(rng, ["Showroom", "Workshop", "Delivery", "Admin"]) + " (" + (i + 1) + ")",
       amount: round2(rint(rng, 2000, 45000)),
+      cashMethod: i % 4 === 0 ? "Cash" : "Bank",
       paymentMethod: i % 4 === 0 ? "Cash" : "Bank",
       createdAt: isoAt(dateStr(rint(rng, 0, 60)), 12, 0),
     });
@@ -1210,8 +1280,9 @@ export function buildDemoBackup() {
   /* ── Damage / write-off log ── */
   var damageLog = [];
   for (i = 0; i < DEMO_SCALE.damageEntries; i++) {
-    var dprod = products.filter(function (p) { return p.type !== "service"; })[rint(rng, 0, STOCK_N - 1)];
-    var dqty = rint(rng, 1, 3);
+    var damageCandidates = products.filter(function (p) { return p.type === "stock" && availStock(p.id) >= 1; });
+    var dprod = pick(rng, damageCandidates);
+    var dqty = Math.min(rint(rng, 1, 3), Math.floor(availStock(dprod.id)));
     damageLog.push({
       id: "demo-dmg-" + i,
       date: dateStr(rint(rng, 5, 40)),
@@ -1240,14 +1311,46 @@ export function buildDemoBackup() {
       id: "demo-asset-" + i,
       name: atpl.name + (i >= assetTemplates.length ? " #" + (i + 1) : ""),
       category: atpl.category,
+      date: dateStr(rint(rng, 90, 200)),
       purchaseDate: dateStr(rint(rng, 90, 200)),
+      amount: atpl.cost,
+      value: atpl.cost,
       cost: atpl.cost,
+      cashMethod: i % 2 === 0 ? "Cash" : "Bank",
       depreciationMethod: i % 2 === 0 ? "straight_line" : "none",
       usefulLifeYears: i % 2 === 0 ? 5 : 0,
       note: "Demo fixed asset",
       createdAt: isoAt(dateStr(rint(rng, 90, 200)), 10, 0),
     });
   }
+
+  /* ── Owner capital and distributions ── */
+  var capLedger = [
+    { type: "invest", amount: 2500000, cashMethod: "Bank", note: "Owner working-capital injection", ref: "CAP-001" },
+    { type: "invest", amount: 850000, cashMethod: "Cash", note: "Showroom expansion capital", ref: "CAP-002" },
+    { type: "withdraw", amount: 175000, cashMethod: "Cash", note: "Owner drawings", ref: "CAP-003" },
+    { type: "invest", amount: 1250000, cashMethod: "Bank", note: "Inventory season funding", ref: "CAP-004" },
+    { type: "withdraw", amount: 225000, cashMethod: "Bank", note: "Partner drawings", ref: "CAP-005" },
+    { type: "invest", amount: 600000, cashMethod: "Cash", note: "Workshop tools funding", ref: "CAP-006" },
+  ].map(function (entry, ci) {
+    return Object.assign({
+      id: "demo-cap-" + ci,
+      date: dateStr(75 - ci * 9),
+      createdAt: isoAt(dateStr(75 - ci * 9), 10, 0),
+    }, entry);
+  });
+  var profitDist = [
+    { partner: "Rashid Ahmed", amount: 180000, paymentMethod: "Bank", note: "May profit distribution" },
+    { partner: "Partner Ali", amount: 125000, paymentMethod: "Cash", note: "May profit distribution" },
+    { partner: "Rashid Ahmed", amount: 210000, paymentMethod: "Bank", note: "June profit distribution" },
+    { partner: "Partner Ali", amount: 140000, paymentMethod: "Cash", note: "June profit distribution" },
+  ].map(function (entry, pi) {
+    return Object.assign({
+      id: "demo-pd-" + pi,
+      date: dateStr(35 - pi * 6),
+      createdAt: isoAt(dateStr(35 - pi * 6), 16, 0),
+    }, entry);
+  });
 
   /* Sync product.stock from ledger */
   products.forEach(function (p) {
@@ -1274,7 +1377,7 @@ export function buildDemoBackup() {
     invoiceDefaultSize: "a4",
     invoiceThermalSize: "thermal80",
     defaultInvoiceLang: "en",
-    requirePasswordOnLogin: false,
+    requirePasswordOnLogin: true,
     adminPin: "",
     autoLockEnabled: false,
     autoLockMinutes: 10,
@@ -1284,14 +1387,32 @@ export function buildDemoBackup() {
     glArApNegativeTolerance: 50,
     glArApHardBlockAt: 1000000,
     glInventoryReconcileTolerance: DEMO_INV_GL_TOLERANCE,
+    moduleFlags: { tech: true, repairs: true, quotations: true, cheques: true, cod: true, accounting: true },
+    optionalModules: { repairs: true, quotations: true, cheques: true, cod: true, accounting: true },
+  };
+
+  var adminHash = hashDemoPassword(DEMO_ADMIN_PASSWORD);
+  var demoAdminUser = {
+    id: "demo-admin",
+    username: "admin",
+    name: DEMO_ADMIN_NAME,
+    role: "admin",
+    passwordHash: adminHash,
+    active: true,
+    createdAt: "2026-05-01T08:00:00.000Z",
   };
 
   var data = {
     tc3_businessType: "tech",
+    tc3_apppass: adminHash,
+    tc3_admin_name: DEMO_ADMIN_NAME,
+    tc3_startup_wizard_done: true,
+    tc3_users: [demoAdminUser],
     tc3_settings: settings,
     tc3_products: products,
     tc3_customers: customers,
     tc3_suppliers: suppliers,
+    tc3_others: others,
     tc3_sales: sales,
     tc3_purchases: purchases,
     tc3_salesReturns: salesReturns,
@@ -1303,6 +1424,8 @@ export function buildDemoBackup() {
     tc3_repairs: repairs,
     tc3_expenses: expenses,
     tc3_assets: assets,
+    tc3_capLedger: capLedger,
+    tc3_profitDist: profitDist,
     tc3_damageLog: damageLog,
     tc3_codRecords: codRecords,
     tc3_codPartners: (codProfitSettings.shareholders || []).slice(),
@@ -1341,6 +1464,7 @@ function attachDemoGlSnapshot(data) {
     expenses: data.tc3_expenses || [],
     salesReturns: data.tc3_salesReturns || [],
     purchaseReturns: data.tc3_purchaseReturns || [],
+    cheques: data.tc3_cheques || [],
     repairs: data.tc3_repairs || [],
     manualPayables: data.tc3_manualPayables || [],
     damageLog: data.tc3_damageLog || [],

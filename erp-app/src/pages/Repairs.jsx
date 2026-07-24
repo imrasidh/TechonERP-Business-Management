@@ -7,9 +7,10 @@ import { RepairActionBtn, RepairActionGroup } from "../components/RepairActionBt
 import { RepairStatusSelect, getRepairBulkStatusOptions, styleForAction } from "../components/RepairStatusSelect.jsx";
 import StockProductPicker from "../components/StockProductPicker.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
-import { buildVoidSaleUpdates, isVoidedTxn, VOID_REASON_OPTIONS, voidSaleBlockReason } from "../utils/voidInvoice.js";
+import { buildVoidSaleUpdates, isVoidedTxn, VOID_REASON_OPTIONS, voidSaleBlockReason, computeVoidSaleRefundHint } from "../utils/voidInvoice.js";
 import { rollbackRepairDevicesOnVoidSale } from "../utils/repairVoidRollback.js";
 import { stampProductStock, stampUpdatedAt, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import { normalizeCashMethodForStorage } from "../accounting/generalLedger.js";
 import {
   buildInvoiceEditLockIdentity,
   formatInvoiceEditLockMessage,
@@ -117,6 +118,7 @@ var Repairs = function (props) {
   var [repairLockErr, setRepairLockErr] = useState("");
   var [voidSaleTarget, setVoidSaleTarget] = useState(null);
   var [voidReason, setVoidReason] = useState("");
+  var [voidRefundConfirm, setVoidRefundConfirm] = useState(false);
   var [thirdPartyReceiveModal, setThirdPartyReceiveModal] = useState(null);
   var [thirdPartySendModal, setThirdPartySendModal] = useState(null);
   var [thirdPartyBarcodeItems, setThirdPartyBarcodeItems] = useState(null);
@@ -631,9 +633,9 @@ var Repairs = function (props) {
         note: (thirdPartyReceiveForm.productName || "3rd Party repair cost") + (thirdPartyReceiveForm.note ? " | " + thirdPartyReceiveForm.note : ""),
         paymentHistory: splitRows.length > 0
           ? splitRows.filter(function (r) { return r.method !== "Cheque" && (parseFloat(r.amount) || 0) > 0; }).map(function (r) {
-            return { id: uid(), date: today(), amount: parseFloat(r.amount) || 0, cashMethod: r.method === "Bank" ? "Bank" : "Cash", note: r.note ? ("Repairs 3P: " + r.note) : "Initial payment from Repairs receive flow" };
+            return { id: uid(), date: today(), amount: parseFloat(r.amount) || 0, cashMethod: normalizeCashMethodForStorage(r.method), note: r.note ? ("Repairs 3P: " + r.note) : "Initial payment from Repairs receive flow" };
           })
-          : (paidAmount > 0 ? [{ id: uid(), date: today(), amount: paidAmount, cashMethod: cashMethod === "Bank" ? "Bank" : "Cash", note: "Initial payment from Repairs receive flow" }] : []),
+          : (paidAmount > 0 ? [{ id: uid(), date: today(), amount: paidAmount, cashMethod: normalizeCashMethodForStorage(cashMethod), note: "Initial payment from Repairs receive flow" }] : []),
         createdAt: new Date().toISOString(),
         thirdPartyRepairId: repair.id,
         thirdPartyDeviceIndex: idx,
@@ -750,6 +752,7 @@ var Repairs = function (props) {
     if (block) { showAlert(block); return; }
     setVoidSaleTarget(sale);
     setVoidReason("");
+    setVoidRefundConfirm(false);
   };
   var doVoidSaleFromModal = function () {
     if (!voidSaleTarget) return;
@@ -764,7 +767,7 @@ var Repairs = function (props) {
       return;
     }
     var voidState = Object.assign({}, state, { codRecords: S.get("tc3_codRecords", []) });
-    var res = buildVoidSaleUpdates(voidState, voidSaleTarget.id, voidReason);
+    var res = buildVoidSaleUpdates(voidState, voidSaleTarget.id, voidReason, null, { confirmRefund: voidRefundConfirm === true });
     if (!res.ok) { showAlert(res.error); return; }
     S.set("tc3_products", res.products);
     S.set("tc3_customers", res.customers);
@@ -786,6 +789,7 @@ var Repairs = function (props) {
     releaseInvoiceEditLock(S, voidSaleTarget.id, lockId, { force: true });
     setVoidSaleTarget(null);
     setVoidReason("");
+    setVoidRefundConfirm(false);
     if (res.refundHint && res.refundHint.message) {
       showAlert("Invoice voided.\n\n" + res.refundHint.message);
     }
@@ -1231,6 +1235,54 @@ var Repairs = function (props) {
       showAlert(stockErr);
       return;
     }
+    /* Build invoice lines FIRST — deduct stock only after we know there is something to invoice */
+    var liveRepair = (state.repairs || []).find(function (rep) { return rep && rep.id === r.id; }) || r;
+    allDevices = normalizeRepairDevices(liveRepair);
+    var tpByDevice = {};
+    (convertThirdPartyLines || []).forEach(function (x) {
+      if (x && x.productId != null && x.deviceIndex != null) tpByDevice[x.deviceIndex] = x;
+    });
+    var tpDeviceIdx = {};
+    var thirdPartyItems = [];
+    selectedIndexes.forEach(function (idx) {
+      var d = allDevices[idx] || {};
+      var tp = d.thirdParty || {};
+      var line = tpByDevice[idx];
+      var productId = (line && line.productId) || tp.productId || "";
+      if (!productId) return;
+      var p = (state.products || []).find(function (x) { return x.id === productId; }) || null;
+      tpDeviceIdx[idx] = true;
+      thirdPartyItems.push({
+        id: productId,
+        name: (line && (line.billName || line.productName)) || (p && p.name) || tp.productName || "Repair 3P",
+        qty: 1,
+        price: Number(line && line.sell != null ? line.sell : (tp.sellAmount != null ? tp.sellAmount : (p && p.price) || 0)),
+        cost: Number(line && line.cost != null ? line.cost : (tp.amount != null ? tp.amount : (p && p.cost) || 0)),
+        barcode: (p && p.barcode) || "",
+        fromRepairId: r.id
+      });
+    });
+    var nonTpIndexes = selectedIndexes.filter(function (idx) { return !tpDeviceIdx[idx]; });
+    var invoiceItems = thirdPartyItems.slice();
+    if (nonTpIndexes.length > 0) {
+      var hasPricedService = svcPrice > 0 || svcCost > 0;
+      if (thirdPartyItems.length === 0 || hasPricedService) {
+        var svcDevice = allDevices[nonTpIndexes[0]] || blankDevice();
+        invoiceItems.unshift({
+          id: uid(),
+          name: String(convertInvoiceName || "").trim() || ("Repair Service — " + svcDevice.deviceType + (svcDevice.brand ? " " + svcDevice.brand : "") + (svcDevice.modelNo ? " (" + svcDevice.modelNo + ")" : "") + (svcDevice.problem ? " | " + svcDevice.problem : "")),
+          qty: 1,
+          price: svcPrice,
+          cost: svcCost,
+          barcode: "",
+          fromRepairId: r.id
+        });
+      }
+    }
+    if (!invoiceItems.length) {
+      showAlert("Nothing to invoice. Select a ready device with a 3P product or enter a service sell/cost.");
+      return;
+    }
     if (usedRows.length) {
       var useDay = today();
       var useTs = new Date().toISOString();
@@ -1277,58 +1329,6 @@ var Repairs = function (props) {
       });
       S.set("tc3_repairs", nr);
       setState(function (st) { return Object.assign({}, st, { repairs: nr }); });
-    }
-    /* Build invoice lines from live repair devices:
-       - 3P devices → product line only
-       - In-house devices → repair service line
-       Never add a blank Rs 0 service line next to 3P products. */
-    var liveRepair = (state.repairs || []).find(function (rep) { return rep && rep.id === r.id; }) || r;
-    allDevices = normalizeRepairDevices(liveRepair);
-    var tpByDevice = {};
-    (convertThirdPartyLines || []).forEach(function (x) {
-      if (x && x.productId != null && x.deviceIndex != null) tpByDevice[x.deviceIndex] = x;
-    });
-    var tpDeviceIdx = {};
-    var thirdPartyItems = [];
-    selectedIndexes.forEach(function (idx) {
-      var d = allDevices[idx] || {};
-      var tp = d.thirdParty || {};
-      var line = tpByDevice[idx];
-      var productId = (line && line.productId) || tp.productId || "";
-      if (!productId) return;
-      var p = (state.products || []).find(function (x) { return x.id === productId; }) || null;
-      tpDeviceIdx[idx] = true;
-      thirdPartyItems.push({
-        id: productId,
-        name: (line && (line.billName || line.productName)) || (p && p.name) || tp.productName || "Repair 3P",
-        qty: 1,
-        price: Number(line && line.sell != null ? line.sell : (tp.sellAmount != null ? tp.sellAmount : (p && p.price) || 0)),
-        cost: Number(line && line.cost != null ? line.cost : (tp.amount != null ? tp.amount : (p && p.cost) || 0)),
-        barcode: (p && p.barcode) || "",
-        fromRepairId: r.id
-      });
-    });
-    var nonTpIndexes = selectedIndexes.filter(function (idx) { return !tpDeviceIdx[idx]; });
-    var invoiceItems = thirdPartyItems.slice();
-    if (nonTpIndexes.length > 0) {
-      var hasPricedService = svcPrice > 0 || svcCost > 0;
-      /* Skip empty free service when 3P lines already cover the bill (common when another Ready device was auto-selected). */
-      if (thirdPartyItems.length === 0 || hasPricedService) {
-        var svcDevice = allDevices[nonTpIndexes[0]] || blankDevice();
-        invoiceItems.unshift({
-          id: uid(),
-          name: String(convertInvoiceName || "").trim() || ("Repair Service — " + svcDevice.deviceType + (svcDevice.brand ? " " + svcDevice.brand : "") + (svcDevice.modelNo ? " (" + svcDevice.modelNo + ")" : "") + (svcDevice.problem ? " | " + svcDevice.problem : "")),
-          qty: 1,
-          price: svcPrice,
-          cost: svcCost,
-          barcode: "",
-          fromRepairId: r.id
-        });
-      }
-    }
-    if (!invoiceItems.length) {
-      showAlert("Nothing to invoice. Select a ready device with a 3P product or enter a service sell/cost.");
-      return;
     }
     var prefill = {
       customerName: r.customer,
@@ -2155,17 +2155,39 @@ var Repairs = function (props) {
       </div>
 
       {voidSaleTarget && (
-        <Modal title={"Void Invoice — " + (voidSaleTarget.invoiceNo || voidSaleTarget.id.slice(0, 8))} onClose={function () { setVoidSaleTarget(null); setVoidReason(""); }}>
+        <Modal title={"Void Invoice — " + (voidSaleTarget.invoiceNo || voidSaleTarget.id.slice(0, 8))} onClose={function () { setVoidSaleTarget(null); setVoidReason(""); setVoidRefundConfirm(false); }}>
           <div style={{ background: "#fff5f5", border: "1px solid #fecaca", borderRadius: 10, padding: "12px 16px", marginBottom: 12, fontSize: 13, color: "#b91c1c" }}>
             This will reverse stock, customer balance, and payments. The invoice stays on record as <strong>Voided</strong>. This cannot be undone.
+            {(function () {
+              var hint = computeVoidSaleRefundHint(voidSaleTarget, state.cheques || []);
+              if (!hint.message) return null;
+              return <div style={{ marginTop: 8, color: "#7f1d1d" }}>{hint.message}</div>;
+            })()}
           </div>
           <Sel label="Reason" value={voidReason} onChange={function (e) { setVoidReason(e.target.value); }}>
             <option value="">Select reason…</option>
             {VOID_REASON_OPTIONS.map(function (opt) { return <option key={opt} value={opt}>{opt}</option>; })}
           </Sel>
+          {(function () {
+            var hint = computeVoidSaleRefundHint(voidSaleTarget, state.cheques || []);
+            var paidCash = (voidSaleTarget.paymentHistory || []).reduce(function (a, ph) {
+              var amt = Number(ph.amount) || 0;
+              if (amt <= 0) return a;
+              var m = ph.cashMethod || "Cash";
+              if (m === "Cheque" || m === "Adjustment") return a;
+              return a + amt;
+            }, 0);
+            if (paidCash <= 0.005 && !(hint.cashBankRefund > 0)) return null;
+            return (
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 12, fontSize: 13, color: "#7f1d1d", fontWeight: 600 }}>
+                <input type="checkbox" checked={voidRefundConfirm} onChange={function (e) { setVoidRefundConfirm(e.target.checked); }} style={{ marginTop: 3 }} />
+                <span>I confirm cash/bank received on this invoice will be refunded to the customer (books will post a reversing payment).</span>
+              </label>
+            );
+          })()}
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
             <RepairActionBtn tone="danger" disabled={!voidReason} onClick={doVoidSaleFromModal}>Void Invoice</RepairActionBtn>
-            <RepairActionBtn tone="neutral" onClick={function () { setVoidSaleTarget(null); setVoidReason(""); }}>Cancel</RepairActionBtn>
+            <RepairActionBtn tone="neutral" onClick={function () { setVoidSaleTarget(null); setVoidReason(""); setVoidRefundConfirm(false); }}>Cancel</RepairActionBtn>
           </div>
         </Modal>
       )}

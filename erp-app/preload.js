@@ -140,7 +140,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   /**
-   * LICENSE_SECRET (or file/env) for financial snapshot HMAC v2. Empty string if unset.
+   * Snapshot HMAC v2 — sign/verify in main so LICENSE_SECRET never enters the renderer.
+   * getSnapshotHmacSecret is deprecated (empty when packaged).
    */
   getSnapshotHmacSecret: function() {
     return ipcRenderer.invoke('tc-snapshot-hmac-secret');
@@ -148,6 +149,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   getSnapshotHmacSecretPrevious: function() {
     return ipcRenderer.invoke('tc-snapshot-hmac-secret-previous');
+  },
+
+  signSnapshotHmac: function(canonicalBody) {
+    return ipcRenderer.invoke('tc-snapshot-hmac-sign', canonicalBody || '');
+  },
+
+  verifySnapshotHmac: function(payload) {
+    return ipcRenderer.invoke('tc-snapshot-hmac-verify', payload || {});
+  },
+
+  isSnapshotHmacConfigured: function() {
+    return ipcRenderer.invoke('tc-snapshot-hmac-configured');
+  },
+
+  /** Support unlock PIN — verified in main; salt never exposed to renderer. */
+  verifySupportUnlock: function(payload) {
+    return ipcRenderer.invoke('tc-verify-support-unlock', payload || {});
   },
 
   /** { isPackaged, licenseSecretConfigured, blockWritesOnCritical } */
@@ -208,9 +226,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   /* ── Network Config ─────────────────────────────────────────────── */
 
-  /** Load saved network config from userData/tc_network.json */
+  /** Load saved network config from userData/tc_network.json (apiKey stripped). */
   loadNetworkConfig: function() {
     return ipcRenderer.invoke('tc-network-config-load');
+  },
+
+  /** Admin-only: reveal LAN apiKey for Settings copy UX. */
+  revealNetworkApiKey: function() {
+    return ipcRenderer.invoke('tc-network-api-key-reveal');
   },
 
   /** POS client header: OS hostname + short device id (display only). */
@@ -311,6 +334,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Write a log entry to Documents/TechonERP/logs/ */
   writeLog: function(payload) {
     return ipcRenderer.invoke('tc-write-log', payload || {});
+  },
+
+  /** ERP login session — opaque token held in main (privileged IPC gated by role). */
+  openSession: function(payload) {
+    return ipcRenderer.invoke('tc-session-open', payload || {});
+  },
+  /** Password-verified session — role derived from matched user hash in main. */
+  loginSession: function(payload) {
+    return ipcRenderer.invoke('tc-session-login', payload || {});
+  },
+  /** Seal login credentials into main-owned store (bootstrap / password change). */
+  sealCredentials: function(payload) {
+    return ipcRenderer.invoke('tc-credentials-seal', payload || {});
+  },
+  closeSession: function() {
+    return ipcRenderer.invoke('tc-session-close');
+  },
+  getSession: function() {
+    return ipcRenderer.invoke('tc-session-get');
+  },
+  assertSession: function(payload) {
+    return ipcRenderer.invoke('tc-session-assert', payload || {});
   },
 
   /** Push key-value patches to LAN sync_patch.php (live sync — main + counter). */

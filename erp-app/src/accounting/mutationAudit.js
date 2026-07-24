@@ -52,6 +52,7 @@ export function appendFinancialMutationLog(opts) {
   var sk = opts.storageKey;
   var entity = MUTATION_ENTITY_BY_STORAGE_KEY[sk] || sk.replace(/^tc3_/, "");
   var row = {
+    id: "fml_" + Date.now() + "_" + Math.random().toString(36).slice(2, 9),
     type: "mutation",
     entity: entity,
     storageKey: sk,

@@ -115,6 +115,7 @@ export function deriveInventoryEconomics(state, S, opts) {
   var movements = [];
   var cogsBySaleId = {};
   var cogsBySaleLineKey = {};
+  var invOutByPurchaseReturnId = {};
   var layersByProduct = {};
   var seq = 0;
   var warnings = [];
@@ -546,7 +547,11 @@ export function deriveInventoryEconomics(state, S, opts) {
     if (ev.type === "pur_out") {
       var consPr = consumeFifo(layersByProduct[pid].slice(), ev.qty, pid);
       layersByProduct[pid] = consPr.layers;
-      var prVal = round2(ev.qty * round2(ev.unitCost || 0));
+      /* Prefer consumed layer cost (FIFO/WAC replay); fall back to line unitCost only if layers empty */
+      var prVal = consPr.cost > 0.0001
+        ? round2(consPr.cost)
+        : round2(ev.qty * round2(ev.unitCost || 0));
+      var prUnit = ev.qty > 0 ? round2(prVal / ev.qty) : round2(ev.unitCost || 0);
       if (consPr.cost < 0.0001 && ev.qty > 0) {
         if (method === "fifo") {
           if (allowCostFallback) {
@@ -557,12 +562,17 @@ export function deriveInventoryEconomics(state, S, opts) {
         }
       }
       runningInventoryValue = round2(runningInventoryValue - prVal);
+      if (ev.referenceId) {
+        invOutByPurchaseReturnId[ev.referenceId] = round2(
+          (invOutByPurchaseReturnId[ev.referenceId] || 0) + prVal
+        );
+      }
       movements.push({
         id: stableJournalTransactionId("stk", ev.referenceId, "pr_out"),
         productId: pid,
         qtyIn: 0,
         qtyOut: ev.qty,
-        unitCost: ev.unitCost,
+        unitCost: prUnit,
         totalCost: prVal,
         referenceType: ev.referenceType,
         referenceId: ev.referenceId,
@@ -578,6 +588,7 @@ export function deriveInventoryEconomics(state, S, opts) {
     movements: movements,
     cogsBySaleId: cogsBySaleId,
     cogsBySaleLineKey: cogsBySaleLineKey,
+    invOutByPurchaseReturnId: invOutByPurchaseReturnId,
     layersByProduct: layersByProduct,
     physicalInventoryValue: physicalValue,
     warnings: warnings,

@@ -6,6 +6,16 @@ import { glassInvoiceLineTotal } from "../utils/glassProduct.js";
 import { isVoidedTxn } from "../utils/voidInvoice.js";
 import { stampProductStock, stampUpdatedAt, stampCustomerBalance, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 
+function saleLineReturnKey(it, idx) {
+  if (it && (it.lineId || it.cartLineId)) return String(it.lineId || it.cartLineId);
+  return String((it && it.id) || "line") + "#" + idx;
+}
+
+function purchaseLineReturnKey(it, idx) {
+  if (it && (it.lineId || it.purchaseLineId)) return String(it.lineId || it.purchaseLineId);
+  return String((it && it.id) || "pline") + "#" + idx;
+}
+
 /* ─── RETURNS PAGE ────────────────────────────────────────────────────────── */
 var Returns = function (props) {
   var state = props.state;
@@ -230,16 +240,19 @@ var SalesReturnTab = function (props) {
   };
   var closeModal = function () { setModal(null); setSelInv(null); setReturnQtys({}); setCustSearch(""); setInvSearch(""); setReturnReason(""); setReturnDate(today()); };
 
-  /* already-returned qty per invoice+product */
-  var getReturnedQty = function (invoiceId, productId) {
+  /* already-returned qty per invoice+line (legacy rows fall back to productId) */
+  var getReturnedQty = function (invoiceId, productId, lineKey) {
     return roundQty((state.salesReturns || []).filter(function (r) {
-      return r.invoiceId === invoiceId && r.productId === productId;
+      if (r.invoiceId !== invoiceId) return false;
+      if (r.saleLineKey) return r.saleLineKey === lineKey;
+      /* Legacy rows (no saleLineKey): attribute to product — may under-allow multi-line same SKU. */
+      return r.productId === productId;
     }).reduce(function (a, r) { return a + (r.qty || 0); }, 0));
   };
 
   var selectInvoice = function (inv) {
     var init = {};
-    (inv.items || []).forEach(function (it) { init[it.id] = "0"; });
+    (inv.items || []).forEach(function (it, idx) { init[saleLineReturnKey(it, idx)] = "0"; });
     setSelInv(inv);
     setReturnQtys(init);
     setModal("items");
@@ -256,10 +269,30 @@ var SalesReturnTab = function (props) {
     return round2(q * (Number(it.price) || 0));
   };
 
-  var returnTotal = selInv ? (selInv.items || []).reduce(function (a, it) {
-    var q = parseFloat(returnQtys[it.id]) || 0;
-    return a + returnLineAmount(it, q);
-  }, 0) : 0;
+  /* Allocate invoice discount across return lines so returns cannot reverse more than was billed. */
+  var saleReturnDiscountFactor = function (inv) {
+    if (!inv) return 1;
+    var disc = round2(Number(inv.discount) || 0);
+    if (disc <= 0.005) return 1;
+    var sub = 0;
+    (inv.items || []).forEach(function (it) {
+      if (it && it.isGlassLine) {
+        sub = round2(sub + glassInvoiceLineTotal(it));
+      } else {
+        sub = round2(sub + (Number(it.qty) || 0) * (Number(it.price) || 0));
+      }
+    });
+    if (sub <= 0.005) return 1;
+    return Math.max(0, Math.min(1, (sub - disc) / sub));
+  };
+
+  var returnTotal = selInv ? (function () {
+    var factor = saleReturnDiscountFactor(selInv);
+    return (selInv.items || []).reduce(function (a, it, idx) {
+      var q = parseFloat(returnQtys[saleLineReturnKey(it, idx)]) || 0;
+      return a + round2(returnLineAmount(it, q) * factor);
+    }, 0);
+  })() : 0;
 
   /* Filter invoices: match customer search OR invoice number search */
   var allSales = sortNewestFirst(state.sales || []);
@@ -276,14 +309,17 @@ var SalesReturnTab = function (props) {
   var processReturn = function () {
     if (!selInv) return;
     if (isVoidedTxn(selInv)) { showAlert("Cannot return a voided invoice."); return; }
-    var hasQty = (selInv.items || []).some(function (it) { return (parseFloat(returnQtys[it.id]) || 0) > 0; });
+    var hasQty = (selInv.items || []).some(function (it, idx) {
+      return (parseFloat(returnQtys[saleLineReturnKey(it, idx)]) || 0) > 0;
+    });
     if (!hasQty) { showAlert("Enter at least one return quantity."); return; }
     if (!returnReason.trim()) { showAlert("Please enter a reason for this return."); return; }
     var err = null;
-    (selInv.items || []).forEach(function (it) {
+    (selInv.items || []).forEach(function (it, idx) {
       if (err) return;
-      var q = parseFloat(returnQtys[it.id]) || 0;
-      var maxReturn = (Number(it.qty) || 0) - getReturnedQty(selInv.id, it.id);
+      var lk = saleLineReturnKey(it, idx);
+      var q = parseFloat(returnQtys[lk]) || 0;
+      var maxReturn = (Number(it.qty) || 0) - getReturnedQty(selInv.id, it.id, lk);
       if (q < 0) { err = "Quantity cannot be negative."; return; }
       if (q > maxReturn + 1e-9) { err = "\"" + (it.name || "Item") + "\": max returnable is " + maxReturn + "."; }
     });
@@ -317,21 +353,26 @@ var SalesReturnTab = function (props) {
          Only the FIRST returned item row carries it — the rest get 0.
          getCashBalances sums all rows, so storing it on every row multiplies it by item count. */
       var refundRecorded = false;
+      var discFactor = saleReturnDiscountFactor(selInv);
+      var returnSpendGross = 0;
 
-      (selInv.items || []).forEach(function (it) {
-        var q = parseFloat(returnQtys[it.id]) || 0;
+      (selInv.items || []).forEach(function (it, idx) {
+        var lk = saleLineReturnKey(it, idx);
+        var q = parseFloat(returnQtys[lk]) || 0;
         if (q <= 0) return;
-        var lineGross = returnLineAmount(it, q);
+        var lineGross = round2(returnLineAmount(it, q) * discFactor);
         var isInclusive = selInv.taxMode === "inclusive" || ((state.settings && state.settings.taxMode === "inclusive") && selInv.taxMode !== "exclusive");
         var lineTaxBundle = computeSaleTaxFromSnapshot(selInv, lineGross);
         var lineReturnTax = round2(lineTaxBundle.totalTax || 0);
         var lineNet = isInclusive ? round2(lineGross - lineReturnTax) : lineGross;
         var lineReturnGross = isInclusive ? lineGross : round2(lineGross + lineReturnTax);
+        returnSpendGross = round2(returnSpendGross + lineReturnGross);
         var thisRefund = (needsRefund && !refundRecorded) ? refundAmt : 0;
         if (needsRefund && !refundRecorded) refundRecorded = true;
         newReturns.push(stampTransactionIsoDateTime({
           id: uid(), returnId: genInvNo("SR"), invoiceId: selInv.id, invoiceNo: selInv.invoiceNo,
           productId: it.id, productName: it.name || "Unknown Product",
+          saleLineKey: lk,
           qty: q, amount: lineNet, returnTax: lineReturnTax, returnGross: lineReturnGross, cost: it.cost || 0, /* FIX 1+3: store exact cost at return time — avoids cross-period lookup errors */
           taxMode: selInv.taxMode || (isInclusive ? "inclusive" : "exclusive"),
           selectedTaxes: (selInv.selectedTaxes || []).map(function (t) { return { name: t.name, rate: t.rate, amount: t.amount }; }),
@@ -345,6 +386,7 @@ var SalesReturnTab = function (props) {
         }));
         np = np.map(function (p) {
           if (p.id !== it.id) return p;
+          if (String(p.type || "").toLowerCase() === "service") return p;
           var curS = p.stock || 0;
           var curC = p.cost || 0;
           var retCost = it.cost || 0; /* cost stored at sale time — exact WAC snapshot */
@@ -403,7 +445,7 @@ var SalesReturnTab = function (props) {
         if (!selInv.customerId || c.id !== selInv.customerId) return c;
         return stampCustomerBalance(Object.assign({}, c, {
           credit: Math.max(0, (c.credit || 0) - debtReduced),
-          totalSpent: Math.max(0, (c.totalSpent || 0) - returnTotal)
+          totalSpent: Math.max(0, (c.totalSpent || 0) - returnSpendGross)
         }), null, c);
       });
 
@@ -540,13 +582,14 @@ var SalesReturnTab = function (props) {
             <thead><tr><TH>Product</TH><TH>Sold Qty</TH><TH>Already Returned</TH><TH>Max Returnable</TH><TH>Return Qty</TH><TH>Unit Price</TH><TH>Return Amount</TH></tr></thead>
             <tbody>
               {(selInv.items || []).map(function (it, i) {
-                var alreadyRet = getReturnedQty(selInv.id, it.id);
+                var lk = saleLineReturnKey(it, i);
+                var alreadyRet = getReturnedQty(selInv.id, it.id, lk);
                 var maxRet = it.qty - alreadyRet;
-                var q = parseFloat(returnQtys[it.id]) || 0;
-                var amt = q * (it.price || 0);
+                var q = parseFloat(returnQtys[lk]) || 0;
+                var amt = returnLineAmount(it, q);
                 var overMax = q > maxRet;
                 return (
-                  <TR key={it.id || i} i={i}>
+                  <TR key={lk} i={i}>
                     <td style={{ padding: "10px 14px" }}>
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name || "Unknown Product"}</div>
                       {it.barcode && <div style={{ fontSize: 11, color: C.muted }}>#{it.barcode}</div>}
@@ -558,11 +601,11 @@ var SalesReturnTab = function (props) {
                     </td>
                     <td style={{ padding: "6px 10px" }}>
                       <input
-                        type="number" min="0" max={maxRet} value={returnQtys[it.id] || "0"}
+                        type="number" min="0" max={maxRet} value={returnQtys[lk] || "0"}
                         disabled={maxRet <= 0}
                         onChange={function (e) {
                           var val = e.target.value;
-                          setReturnQtys(function (prev) { var n = Object.assign({}, prev); n[it.id] = val; return n; });
+                          setReturnQtys(function (prev) { var n = Object.assign({}, prev); n[lk] = val; return n; });
                         }}
                         style={{ width: 80, border: "1.5px solid " + (overMax ? C.red : C.border), borderRadius: 8, padding: "8px 12px", fontSize: 14, fontWeight: 700, outline: "none", fontFamily: "inherit", background: maxRet <= 0 ? "#f5f5f5" : "#fff", color: overMax ? C.red : C.text, textAlign: "center" }}
                       />
@@ -683,30 +726,56 @@ var PurchaseReturnTab = function (props) {
   };
   var closeModal = function () { setModal(null); setSelPur(null); setReturnQtys({}); setSuppSearch(""); setPurSearch(""); setPurReturnReason(""); setPurReturnDate(today()); setPurRefundMethod("Cash"); };
 
-  var getPurReturnedQty = function (purchaseId, productId) {
+  var getPurReturnedQty = function (purchaseId, productId, lineKey) {
     return roundQty((state.purchaseReturns || []).filter(function (r) {
-      return r.purchaseId === purchaseId && r.productId === productId;
+      if (r.purchaseId !== purchaseId) return false;
+      if (r.purchaseLineKey) return r.purchaseLineKey === lineKey;
+      return r.productId === productId;
     }).reduce(function (a, r) { return a + (r.qty || 0); }, 0));
   };
 
   var selectPurchase = function (pur) {
     var init = {};
-    (pur.items || []).forEach(function (it) { init[it.id] = "0"; });
+    (pur.items || []).forEach(function (it, idx) { init[purchaseLineReturnKey(it, idx)] = "0"; });
     setSelPur(pur);
     setReturnQtys(init);
     setModal("items");
   };
 
-  var returnTotal = selPur ? (selPur.items || []).reduce(function (a, it) {
-    var q = parseInt(returnQtys[it.id]) || 0;
+  var parsePurReturnQty = function (raw) {
+    var q = parseFloat(raw);
+    if (!isFinite(q) || q <= 0) return 0;
+    return roundQty(q);
+  };
+  var resolvePurReturnUnitCost = function (it) {
+    var unit = Number(it.cost);
+    if (isNaN(unit)) unit = 0;
+    var prMode = state.settings && state.settings.purchaseReturnCostMode === "original_cost";
+    if (prMode) {
+      var costMissing = it.cost == null || (typeof it.cost === "number" && isNaN(it.cost));
+      if (costMissing || !(unit > 0)) {
+        var pRow = (state.products || []).find(function (p) { return p.id === it.id; });
+        unit = pRow ? Number(pRow.cost) || 0 : 0;
+      }
+    } else if (!(unit > 0)) {
+      var pRowWac = (state.products || []).find(function (p) { return p.id === it.id; });
+      unit = pRowWac ? Number(pRowWac.cost) || 0 : 0;
+    }
+    return unit;
+  };
+
+  var returnTotal = selPur ? (selPur.items || []).reduce(function (a, it, idx) {
+    var q = parsePurReturnQty(returnQtys[purchaseLineReturnKey(it, idx)]);
     if (q <= 0) return a;
-    var lineCost = round2(q * (it.cost || 0));
+    var unitForUi = resolvePurReturnUnitCost(it);
+    var lineCost = round2(q * unitForUi);
     var taxOn = state.settings && state.settings.taxEnabled ? computePurchaseReturnTax(selPur, lineCost, state.settings) : { apGross: lineCost };
     return a + round2(taxOn.apGross || lineCost);
   }, 0) : 0;
-  var returnStockCost = selPur ? (selPur.items || []).reduce(function (a, it) {
-    var q = parseInt(returnQtys[it.id]) || 0;
-    return a + round2(q * (it.cost || 0));
+  var returnStockCost = selPur ? (selPur.items || []).reduce(function (a, it, idx) {
+    var q = parsePurReturnQty(returnQtys[purchaseLineReturnKey(it, idx)]);
+    if (q <= 0) return a;
+    return a + round2(q * resolvePurReturnUnitCost(it));
   }, 0) : 0;
 
   var allPurchases = sortNewestFirst(state.purchases || []);
@@ -723,16 +792,25 @@ var PurchaseReturnTab = function (props) {
   var processReturn = function () {
     if (!selPur) return;
     if (isVoidedTxn(selPur)) { showAlert("Cannot return a voided purchase."); return; }
-    var hasQty = (selPur.items || []).some(function (it) { return (parseInt(returnQtys[it.id]) || 0) > 0; });
+    var hasQty = (selPur.items || []).some(function (it, idx) {
+      return parsePurReturnQty(returnQtys[purchaseLineReturnKey(it, idx)]) > 0;
+    });
     if (!hasQty) { showAlert("Enter at least one return quantity."); return; }
     if (!purReturnReason.trim()) { showAlert("Please enter a reason for this purchase return."); return; }
     var err = null;
-    (selPur.items || []).forEach(function (it) {
+    (selPur.items || []).forEach(function (it, idx) {
       if (err) return;
-      var q = parseInt(returnQtys[it.id]) || 0;
-      var maxRet = it.qty - getPurReturnedQty(selPur.id, it.id);
+      var lk = purchaseLineReturnKey(it, idx);
+      var q = parsePurReturnQty(returnQtys[lk]);
+      var maxRet = it.qty - getPurReturnedQty(selPur.id, it.id, lk);
       if (q < 0) { err = "Quantity cannot be negative."; return; }
-      if (q > maxRet) { err = "\"" + (it.name || "Item") + "\": max returnable is " + maxRet + "."; }
+      if (q > maxRet) { err = "\"" + (it.name || "Item") + "\": max returnable is " + maxRet + "."; return; }
+      var onHand = 0;
+      var prodRow = (state.products || []).find(function (p) { return p.id === it.id; });
+      if (prodRow) onHand = Math.max(0, Number(prodRow.stock) || 0);
+      if (q > onHand) {
+        err = "\"" + (it.name || "Item") + "\": only " + onHand + " in stock — cannot return " + q + ".";
+      }
     });
     if (err) { showAlert(err); return; }
 
@@ -760,25 +838,28 @@ var PurchaseReturnTab = function (props) {
          getCashBalances sums all rows, so storing it on every row multiplies it by item count. */
       var purRefundRecorded = false;
 
-      (selPur.items || []).forEach(function (it) {
-        var q = parseInt(returnQtys[it.id]) || 0;
+      (selPur.items || []).forEach(function (it, idx) {
+        var lk = purchaseLineReturnKey(it, idx);
+        var q = parsePurReturnQty(returnQtys[lk]);
         if (q <= 0) return;
-        var unitForGl = Number(it.cost);
-        if (isNaN(unitForGl)) unitForGl = 0;
+        var unitForGl = resolvePurReturnUnitCost(it);
         var costFallbackWac = false;
         if (prModeOriginal) {
           var costMissing = it.cost == null || (typeof it.cost === "number" && isNaN(it.cost));
           if (costMissing) {
-            var pRowFb = (state.products || []).find(function (p) { return p.id === it.id; });
-            unitForGl = pRowFb ? Number(pRowFb.cost) || 0 : 0;
             costFallbackWac = true;
             prPolicyWarnings.push("Original cost: purchase line missing unit cost — fell back to current WAC (" + (it.name || it.id) + ")");
           } else {
-            unitForGl = Number(it.cost) || 0;
             var prodSnap = (state.products || []).find(function (p) { return p.id === it.id; });
             if (prodSnap && Math.abs((Number(prodSnap.cost) || 0) - unitForGl) > 0.02) {
               prPolicyWarnings.push("Original cost policy: GL uses purchase line " + fmtNum(unitForGl) + " for \"" + (it.name || "") + "\" (live product cost differs)");
             }
+          }
+        } else {
+          var costMissingWac = it.cost == null || (typeof it.cost === "number" && isNaN(it.cost)) || !(Number(it.cost) > 0);
+          if (costMissingWac && unitForGl > 0) {
+            costFallbackWac = true;
+            prPolicyWarnings.push("Current WAC: purchase line missing/zero cost — used product cost for \"" + (it.name || it.id) + "\"");
           }
         }
         var amt = round2(q * unitForGl);
@@ -788,6 +869,7 @@ var PurchaseReturnTab = function (props) {
         newReturns.push(stampTransactionIsoDateTime({
           id: uid(), returnId: genInvNo("PR"), purchaseId: selPur.id, purchaseNo: selPur.invoiceNo,
           purchaseLineId: it.id,
+          purchaseLineKey: lk,
           productId: it.id, productName: it.name || "Unknown Product",
           qty: q, amount: amt, returnTax: round2(prTaxBundle.taxReversal || 0), returnGross: round2(prTaxBundle.apGross || amt), date: purReturnDate || today(),
           createdAt: new Date().toISOString(),
@@ -799,6 +881,7 @@ var PurchaseReturnTab = function (props) {
         }));
         np = np.map(function (p) {
           if (p.id !== it.id) return p;
+          if (String(p.type || "").toLowerCase() === "service") return p;
           var curS = p.stock || 0;
           var curC = p.cost || 0;
           var newS = Math.max(0, curS - q);
@@ -969,13 +1052,15 @@ var PurchaseReturnTab = function (props) {
             <thead><tr><TH>Product</TH><TH>Purchased</TH><TH>Already Returned</TH><TH>Max Returnable</TH><TH>Return Qty</TH><TH>Unit Cost</TH><TH>Return Amount</TH></tr></thead>
             <tbody>
               {(selPur.items || []).map(function (it, i) {
-                var alreadyRet = getPurReturnedQty(selPur.id, it.id);
+                var lk = purchaseLineReturnKey(it, i);
+                var alreadyRet = getPurReturnedQty(selPur.id, it.id, lk);
                 var maxRet = it.qty - alreadyRet;
-                var q = parseFloat(returnQtys[it.id]) || 0;
-                var amt = q * (it.cost || 0);
+                var q = parsePurReturnQty(returnQtys[lk]);
+                var unit = resolvePurReturnUnitCost(it);
+                var amt = round2(q * unit);
                 var overMax = q > maxRet;
                 return (
-                  <TR key={it.id || i} i={i}>
+                  <TR key={lk} i={i}>
                     <td style={{ padding: "10px 14px" }}>
                       <div style={{ fontWeight: 700, fontSize: 13 }}>{it.name || "Unknown Product"}</div>
                     </td>
@@ -986,11 +1071,11 @@ var PurchaseReturnTab = function (props) {
                     </td>
                     <td style={{ padding: "6px 10px" }}>
                       <input
-                        type="number" min="0" max={maxRet} value={returnQtys[it.id] || "0"}
+                        type="number" min="0" max={maxRet} value={returnQtys[lk] || "0"}
                         disabled={maxRet <= 0}
                         onChange={function (e) {
                           var val = e.target.value;
-                          setReturnQtys(function (prev) { var n = Object.assign({}, prev); n[it.id] = val; return n; });
+                          setReturnQtys(function (prev) { var n = Object.assign({}, prev); n[lk] = val; return n; });
                         }}
                         style={{ width: 80, border: "1.5px solid " + (overMax ? C.red : C.border), borderRadius: 8, padding: "8px 12px", fontSize: 14, fontWeight: 700, outline: "none", fontFamily: "inherit", background: maxRet <= 0 ? "#f5f5f5" : "#fff", color: overMax ? C.red : C.text, textAlign: "center" }}
                       />

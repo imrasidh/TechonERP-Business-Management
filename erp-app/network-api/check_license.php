@@ -23,8 +23,20 @@
  */
 require_once __DIR__ . '/config.php';
 
-requireAuth();
+$auth = requireAuth();
 const TRIAL_MAX_CLIENTS = 2;
+
+function tcMayAdminLicenseClients($auth) {
+    if (function_exists('tcIsLocalhostRequest') && tcIsLocalhostRequest()) return true;
+    $mode = is_array($auth) ? ($auth['mode'] ?? '') : '';
+    if ($mode === 'device') {
+        $device = $auth['device'] ?? null;
+        $perms = is_array($device) ? ($device['permissions'] ?? null) : null;
+        if (is_string($perms)) $perms = json_decode($perms, true);
+        return is_array($perms) && !empty($perms['admin']);
+    }
+    return false;
+}
 
 $pdo = db();
 try { $pdo->exec("ALTER TABLE shop_license ADD COLUMN max_clients INT NOT NULL DEFAULT 0"); } catch (Exception $e) {}
@@ -115,6 +127,9 @@ function tc_resolve_unique_client_label($pdo, $deviceId, $desiredLabel) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $in = getInput();
     if (($in['action'] ?? '') === 'remove_client') {
+        if (!tcMayAdminLicenseClients($auth)) {
+            respond(['success' => false, 'message' => 'Admin or localhost required to remove clients'], 403);
+        }
         $did = trim((string)($in['deviceId'] ?? ''));
         if ($did === '') respond(['success' => false, 'message' => 'deviceId required'], 400);
         $st = $pdo->prepare("DELETE FROM connected_clients WHERE device_id = ?");
@@ -122,6 +137,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         respond(['success' => true, 'message' => 'Client removed']);
     }
     if (($in['action'] ?? '') === 'set_client_label') {
+        if (!tcMayAdminLicenseClients($auth)) {
+            respond(['success' => false, 'message' => 'Admin or localhost required to label clients'], 403);
+        }
         $did = trim((string)($in['deviceId'] ?? ''));
         $lbl = isset($in['clientLabel']) ? trim((string)$in['clientLabel']) : '';
         if ($did === '') respond(['success' => false, 'message' => 'deviceId required'], 400);

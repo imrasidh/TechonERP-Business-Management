@@ -39,6 +39,15 @@ if (!$syncKey || !$apiKey || !hash_equals($apiKey, $syncKey)) {
     respond(['success' => false, 'message' => 'Unauthorized'], 401);
 }
 
+/* License writes: prefer Main PC loopback. Remote only with explicit migration flag. */
+if (!tcIsLocalhostRequest() && getenv('TECHON_ERP_ALLOW_REMOTE_LICENSE_SAVE') !== '1') {
+    serverLog('warn', '[save_license] Rejected non-localhost write from ' . ($_SERVER['REMOTE_ADDR'] ?? '?'));
+    respond([
+        'success' => false,
+        'message' => 'save_license is localhost-only (set TECHON_ERP_ALLOW_REMOTE_LICENSE_SAVE=1 only if Main PC API URL is not loopback)',
+    ], 403);
+}
+
 /* ── Method check ───────────────────────────────────────────────── */
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     respond(['success' => false, 'message' => 'POST required'], 405);

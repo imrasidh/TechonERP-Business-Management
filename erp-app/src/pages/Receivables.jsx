@@ -14,6 +14,7 @@ import {
 } from "../utils/invoiceEditLocks.js";
 import {
   assertPaymentFitsSaleBalance,
+  assertPaymentFitsManualBalance,
   loadFreshSaleForPayment,
   pushKeysNow,
 } from "../utils/concurrencyGuards.js";
@@ -231,7 +232,10 @@ var EnhancedReceivables = function (props) {
         newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
       }
     });
-    var fit = assertPaymentFitsSaleBalance(sale, totalNonCheque);
+    var fit = assertPaymentFitsSaleBalance(sale, totalAdded, {
+      includePendingCheques: true,
+      cheques: state.cheques || [],
+    });
     if (!fit.ok) { showAlert(fit.message); return; }
     var newPaid = (sale.paid || 0) + totalNonCheque;
     var newBal = sale.total - newPaid;
@@ -377,6 +381,24 @@ var EnhancedReceivables = function (props) {
       if (item._type === "sale" && !assertSaleUnlockedForPayment(item.id)) return;
       var chqTotal = chequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
       if (chqTotal <= 0) { showAlert("Total cheque amount must be greater than zero."); return; }
+      if (item._type === "sale") {
+        var saleForChq = state.sales.find(function (s) { return s.id === item.id; });
+        var fitChq = assertPaymentFitsSaleBalance(saleForChq, chqTotal, {
+          includePendingCheques: true,
+          cheques: state.cheques || [],
+        });
+        if (!fitChq.ok) { showAlert(fitChq.message); return; }
+      } else if (item._type === "manual") {
+        var manBal = Math.max(0, (item.amount || 0) - (item.paid || 0));
+        var manPending = (state.cheques || []).reduce(function (a, ch) {
+          if (ch.manualReceivableId !== item.id || String(ch.status || "") !== "Pending") return a;
+          return a + (parseFloat(ch.amount) || 0);
+        }, 0);
+        if (chqTotal > manBal - manPending + 0.009) {
+          showAlert("Cheque total exceeds remaining receivable balance.");
+          return;
+        }
+      }
       var nch = (state.cheques || []).slice();
       var phEntries = [];
       chequeList.forEach(function (chq) {
@@ -424,10 +446,16 @@ var EnhancedReceivables = function (props) {
     if (item._type === "sale") {
       if (applyErSaleCashPayment(item, amt) === false) return;
     } else {
+      var fitMan = assertPaymentFitsManualBalance(item, amt, {
+        includePendingCheques: true,
+        cheques: state.cheques || [],
+        chequeLinkField: "manualReceivableId",
+      });
+      if (!fitMan.ok) { showAlert(fitMan.message); return; }
       var list = S.get("tc3_manualReceivables", []);
       var updated = list.map(function (mr) {
         if (mr.id !== item.id) return mr;
-        var ph2 = (mr.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: payNote || "Payment received" }]);
+        var ph2 = (mr.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod === "Card" || payMethod === "Online" ? "Bank" : payMethod, note: payNote || "Payment received" }]);
         return stampUpdatedAt(Object.assign({}, mr, { paymentHistory: ph2 }));
       });
       S.set("tc3_manualReceivables", updated);
@@ -1232,6 +1260,12 @@ var EnhancedReceivables = function (props) {
                   newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
                 }
               });
+              var fitSplit = assertPaymentFitsManualBalance(splitPayModal, totalAdded, {
+                includePendingCheques: true,
+                cheques: state.cheques || [],
+                chequeLinkField: "manualReceivableId",
+              });
+              if (!fitSplit.ok) { showAlert(fitSplit.message); return; }
               var updMan = manRecs.map(function (mr) { return mr.id === splitPayModal.id ? stampUpdatedAt(Object.assign({}, mr, { paymentHistory: (mr.paymentHistory || []).concat(newPh) })) : mr; });
               S.set("tc3_manualReceivables", updMan); S.set("tc3_cheques", newCheques);
               setState(function (st) { return Object.assign({}, st, { cheques: newCheques }); });

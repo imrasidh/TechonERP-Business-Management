@@ -39,7 +39,7 @@ import {
 } from "./utils/toolbarConfig.js";
 import { IS_PRODUCTION, COMPUTER_SHOP_EDITION, validateJsonBackupPayload, enforceProductionStrictPeriodLock } from "./productionConfig.js";
 import { defaultStrictPeriodLock } from "./productionDefaults.js";
-import { initSyncEngine, destroySyncEngine, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, pushKeysToServer, NETWORK_KV_KEYS, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId, isSyncHydrating } from "./sync/SyncEngine.js";
+import { initSyncEngine, destroySyncEngine, discardPendingSync, ensureSyncConfig, ensureSyncConfigFromDisk, loadStateFromServer, pushKeysToServer, NETWORK_KV_KEYS, TC_SYNC, SYNC_STATUS, setSyncHydrating, setSyncPullPaused, setSyncFlushCallback, bootstrapServerKvFromLocal, CLIENT_PULL_INTERVAL_MS, getSyncClientId, isSyncHydrating, preloadSyncQueue } from "./sync/SyncEngine.js";
 import { installClientElectronGuards, tcIsDevEnv } from "./utils/clientElectronGuard.js";
 import { isVoidedTxn, activeSales, activePurchases, computeNetCOGS, computeNetCOGSForRange } from "./utils/voidInvoice.js";
 import { LIST_PAGE_SIZE } from "./utils/listPage.js";
@@ -81,6 +81,7 @@ import {
   hashJournalLines,
   validateJournalBalanced,
   GL,
+  isBankLikeCashMethod,
 } from "./accounting/generalLedger.js";
 import { deriveInventoryEconomics, reconcileInventoryToLedger } from "./accounting/inventoryEngine.js";
 import { buildFinancialSnapshot, appendSnapshot, sanitizeFinancialSnapshots, verifyFinancialSnapshotsHmac } from "./accounting/financialSnapshot.js";
@@ -139,6 +140,9 @@ import {
   hasPermission,
   normalizeRole,
   setSessionActor,
+  openMainSession,
+  closeMainSession,
+  restoreMainSession,
 } from "./security/rbac.js";
 import { showPermissionDenied as showPermissionDeniedUi } from "./utils/permissionUi.js";
 import { UI } from "./utils/uiIcons.js";
@@ -238,29 +242,57 @@ var fmtNum = function (n) {
   return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
-/* -- SHA-256 password hashing via native crypto.subtle -- */
+/* -- Password hashing: PBKDF2-SHA256 (new) + legacy SHA-256 / plaintext verify -- */
 var sha256 = function (str) {
   var enc = new TextEncoder();
   return crypto.subtle.digest("SHA-256", enc.encode(str)).then(function (buf) {
     return Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
   });
 };
-/* Synchronous check: if stored value starts with "sha256:" it's a hash, else plaintext (legacy) */
+var _bufToHex = function (buf) {
+  return Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+};
+var _hexToBuf = function (hex) {
+  var clean = String(hex || "");
+  var out = new Uint8Array(Math.floor(clean.length / 2));
+  for (var i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return out;
+};
+var PW_PBKDF2_ITERS = 100000;
+var hashPwPbkdf2 = function (pw, saltBuf, iterations) {
+  var enc = new TextEncoder();
+  var iters = iterations || PW_PBKDF2_ITERS;
+  return crypto.subtle.importKey("raw", enc.encode(String(pw || "")), "PBKDF2", false, ["deriveBits"]).then(function (key) {
+    return crypto.subtle.deriveBits({ name: "PBKDF2", salt: saltBuf, iterations: iters, hash: "SHA-256" }, key, 256);
+  }).then(function (bits) {
+    return "pbkdf2:" + iters + ":" + _bufToHex(saltBuf) + ":" + _bufToHex(bits);
+  });
+};
+/* Synchronous check: if stored value starts with "sha256:" / "pbkdf2:" it's a hash, else plaintext (legacy) */
 var pwMatches = function (input, stored) {
   if (!stored) return false;
-  if (stored.startsWith("sha256:")) {
-    /* async path - caller must use pwMatchesAsync */
+  if (stored.startsWith("sha256:") || stored.startsWith("pbkdf2:")) {
     return false;
   }
-  return input === stored; /* legacy plaintext */
+  return input === stored;
 };
 var pwMatchesAsync = function (input, stored) {
   if (!stored) return Promise.resolve(false);
-  if (!stored.startsWith("sha256:")) return Promise.resolve(input === stored); /* legacy plaintext */
+  if (stored.startsWith("pbkdf2:")) {
+    var parts = stored.split(":");
+    if (parts.length < 4) return Promise.resolve(false);
+    var iters = parseInt(parts[1], 10) || PW_PBKDF2_ITERS;
+    var salt = _hexToBuf(parts[2]);
+    return hashPwPbkdf2(input, salt, iters).then(function (h) { return h === stored; });
+  }
+  if (!stored.startsWith("sha256:")) return Promise.resolve(input === stored);
   return sha256(input).then(function (h) { return "sha256:" + h === stored; });
 };
 var hashPw = function (pw) {
-  return sha256(pw).then(function (h) { return "sha256:" + h; });
+  var salt = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(salt);
+  else for (var i = 0; i < 16; i++) salt[i] = Math.floor(Math.random() * 256);
+  return hashPwPbkdf2(pw, salt, PW_PBKDF2_ITERS);
 };
 var normalizeLoginUsername = function (v) { return String(v || "").trim().toLowerCase(); };
 var isPrimaryAdminUser = function (user) {
@@ -327,28 +359,34 @@ var verifyLoginPassword = function (input, user) {
   var isAdmin = isPrimaryAdminUser(user);
   if (!userHash) {
     if (isAdmin && appHash) {
-      return pwMatchesAsync(input, appHash).then(function (ok) { return { ok: ok, user: user }; });
+      return pwMatchesAsync(input, appHash).then(function (ok) { return { ok: ok, user: user, usedAdminFallback: false }; });
     }
-    /* Cashier/manager with no personal hash yet — admin password still opens their session. */
+    /* Cashier/manager with no personal hash — admin password opens as admin (not under cashier name). */
     if (!isAdmin) {
-      return verifyAdminPassword(input).then(function (ok) { return { ok: !!ok, user: user }; });
+      return verifyAdminPassword(input).then(function (ok) {
+        if (!ok) return { ok: false, user: user, usedAdminFallback: false };
+        var admin = resolvePrimaryAdminUser();
+        return { ok: true, user: admin || user, usedAdminFallback: true };
+      });
     }
-    return Promise.resolve({ ok: false, user: user });
+    return Promise.resolve({ ok: false, user: user, usedAdminFallback: false });
   }
   return pwMatchesAsync(input, userHash).then(function (ok) {
-    if (ok) return { ok: true, user: user };
+    if (ok) return { ok: true, user: user, usedAdminFallback: false };
     if (isAdmin) {
-      if (!appHash || userHash === appHash) return { ok: false, user: user };
+      if (!appHash || userHash === appHash) return { ok: false, user: user, usedAdminFallback: false };
       return pwMatchesAsync(input, appHash).then(function (ok2) {
         if (ok2 && user) {
           setLoginPassword(appHash, { userId: user.id, username: user.username });
         }
-        return { ok: ok2, user: user };
+        return { ok: ok2, user: user, usedAdminFallback: false };
       });
     }
-    /* Cashier / manager: own password failed — accept admin password, stay logged in as this user. */
+    /* Cashier / manager: own password failed — admin password logs in as admin, not this cashier. */
     return verifyAdminPassword(input).then(function (adminOk) {
-      return { ok: !!adminOk, user: user };
+      if (!adminOk) return { ok: false, user: user, usedAdminFallback: false };
+      var admin = resolvePrimaryAdminUser();
+      return { ok: true, user: admin || user, usedAdminFallback: true };
     });
   });
 };
@@ -458,8 +496,7 @@ var tryFinalizeAdminPinEntry = function (entry, stored, onUnlocked, onWrong) {
     else onWrong();
   }
 };
-/* Support challenge-response (no plaintext master PIN in app). Salt must match support desk tooling. */
-var TC_SUPPORT_UNLOCK_SALT = "techon-master-salt-2026";
+/* Support challenge-response: unlock verified in Electron main (salt not in renderer). */
 var generateSupportChallengeCode = function () {
   var chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   var arr = new Uint8Array(6);
@@ -472,10 +509,12 @@ var generateSupportChallengeCode = function () {
   for (var i = 0; i < 6; i++) out += chars[arr[i] % chars.length];
   return out;
 };
-var computeSupportUnlockCode = function (challenge) {
-  return sha256(String(challenge || "") + TC_SUPPORT_UNLOCK_SALT).then(function (hex) {
-    return hex.substring(0, 6).toUpperCase();
-  });
+var verifySupportUnlockViaMain = function (challenge, code) {
+  var api = typeof window !== "undefined" ? window.electronAPI : null;
+  if (api && typeof api.verifySupportUnlock === "function") {
+    return api.verifySupportUnlock({ challenge: challenge, code: code });
+  }
+  return Promise.resolve({ ok: false, message: "Support unlock requires the desktop app." });
 };
 /* Currency helper - reads from global state via getCurrency() set in App root */
 var _currencySymbol = { value: "Rs" };
@@ -1623,6 +1662,7 @@ var GL_TRIGGER_KEYS = {
   tc3_raw_material_usage: 1,
   tc3_raw_material_counts: 1,
   tc3_damageLog: 1,
+  tc3_cheques: 1,
 };
 
 /* Core storage write (no GL side-effects) - used for journal + internal keys */
@@ -1775,6 +1815,16 @@ var wipeAllErpDataForReset = function (opts) {
 
   /* Close SyncEngine connection first — otherwise deleteDatabase hangs forever. */
   try { destroySyncEngine(); } catch (eSync0) { /* ignore */ }
+  try { discardPendingSync("reset_all_data"); } catch (eDiscard) { /* ignore */ }
+  try {
+    if (typeof window !== "undefined") window.__TC_ALLOW_UNLOAD__ = true;
+  } catch (eAllow) { /* ignore */ }
+  /* Keep XAMPP api/ in sync with this app build (forceReplace + wipe_shop_data.php). */
+  try {
+    if (opts.pushServer && window.electronAPI && typeof window.electronAPI.copyApiFiles === "function") {
+      window.electronAPI.copyApiFiles({ xamppPath: (opts.authConfig && opts.authConfig.xamppPath) || undefined });
+    }
+  } catch (eCopyApi) { /* ignore — wipe still attempts */ }
   purgeAllTc3FromMemoryAndLocal();
 
   var finishFreshLocal = function () {
@@ -1800,8 +1850,8 @@ var wipeAllErpDataForReset = function (opts) {
     }
     try { ensureSyncConfig(opts.authConfig); } catch (eCfg) { /* ignore */ }
     return withTimeout(
-      pushKeysToServer(NETWORK_KV_KEYS, { authConfig: opts.authConfig }),
-      12000,
+      pushKeysToServer(NETWORK_KV_KEYS, { authConfig: opts.authConfig, forceReplace: true }),
+      180000,
       "server wipe upload"
     ).then(function (pushRes) {
       if (pushRes && pushRes.timeout) {
@@ -1837,6 +1887,18 @@ var wipeAllErpDataForReset = function (opts) {
     });
 };
 
+/** Auth / bootstrap keys that must round-trip with backups (not only business arrays). */
+var TC_BACKUP_AUTH_KEYS = ["tc3_apppass", "tc3_admin_name", "tc3_startup_wizard_done"];
+
+/** After restore: clear any leftover Electron/session login so Login / first-time setup can run. */
+var prepareLoginAfterRestore = function () {
+  try {
+    sessionStorage.removeItem("tc3_current_user");
+    sessionStorage.setItem("tc3_force_login_once", "1");
+  } catch (eSs) { /* ignore */ }
+  try { closeMainSession(); } catch (eClose) { /* ignore */ }
+};
+
 var buildRestorePayloadFromBackup = function (data) {
   var payload = {};
   TC_FULL_BACKUP_KEYS.forEach(function (k) {
@@ -1846,6 +1908,15 @@ var buildRestorePayloadFromBackup = function (data) {
     else payload[k] = [];
   });
   if (data.tc3_businessType !== undefined) payload.tc3_businessType = data.tc3_businessType;
+  /* Purge clears apppass/admin_name; restore them from backup or leave empty for first-time setup. */
+  payload.tc3_apppass = (data.tc3_apppass !== undefined && data.tc3_apppass !== null) ? data.tc3_apppass : "";
+  payload.tc3_admin_name = (data.tc3_admin_name !== undefined && data.tc3_admin_name !== null) ? data.tc3_admin_name : "";
+  if (data.tc3_startup_wizard_done !== undefined) {
+    payload.tc3_startup_wizard_done = data.tc3_startup_wizard_done;
+  } else {
+    payload.tc3_startup_wizard_done = !!(payload.tc3_apppass && payload.tc3_admin_name);
+  }
+  if (data.tc3_held_invoices !== undefined) payload.tc3_held_invoices = data.tc3_held_invoices;
   payload.tc3_restore_grace_until = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   return payload;
 };
@@ -1856,6 +1927,7 @@ var applyBackupRestoreData = function (data) {
     return Promise.reject(new Error("Invalid backup data"));
   }
   try { destroySyncEngine(); } catch (eSync0) { /* ignore */ }
+  try { discardPendingSync("backup_restore"); } catch (eDiscard) { /* ignore */ }
   try {
     window._tcRestoreInProgress = true;
   } catch (e0) { /* ignore */ }
@@ -1878,6 +1950,8 @@ var applyBackupRestoreData = function (data) {
             window._tcRecentLocalWrites[k] = Date.now();
           });
         } catch (eRw) { /* ignore */ }
+        /* Always force login after restore — never keep a pre-restore Electron session with wiped/new auth. */
+        prepareLoginAfterRestore();
         try { window._tcRestoreInProgress = false; } catch (e1) { /* ignore */ }
       });
     });
@@ -2018,6 +2092,12 @@ var downloadPreRepairJsonBackup = function () {
       var v = _idbCache[k];
       if (v !== undefined) backup.data[k] = v;
     });
+    TC_BACKUP_AUTH_KEYS.forEach(function (k) {
+      var av = _idbCache[k];
+      if (av !== undefined) backup.data[k] = av;
+    });
+    var bt = _idbCache.tc3_businessType;
+    if (bt !== undefined) backup.data.tc3_businessType = bt;
     if (!validateJsonBackupPayload(backup)) return false;
     var blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     var url = URL.createObjectURL(blob);
@@ -2485,8 +2565,14 @@ var getNetCOGSForRange = computeNetCOGSForRange;
 
 var getCashBalances = function (state) {
   try {
+    var glErr = S.get("tc3_gl_last_error", null);
+    var preferLedger = S.get("tc3_gl_prefer_ledger", true) !== false;
+    /* Do not prefer stale GL cash when the last rebuild/commit failed */
+    if (preferLedger && glErr && (glErr.type || glErr.message)) {
+      preferLedger = false;
+    }
     var jlines = S.get("tc3_journal_lines", []);
-    if (jlines && jlines.length && S.get("tc3_gl_prefer_ledger", true) !== false) {
+    if (preferLedger && jlines && jlines.length) {
       var lb = ledgerCashBank(jlines);
       return { cash: lb.cash, bank: lb.bank, total: lb.total, _fromLedger: true };
     }
@@ -2507,34 +2593,51 @@ var getCashBalances = function (state) {
     if (e.cashMethod === "Opening") return;
     var m = e.cashMethod || "Cash";
     var sign = e.type === "invest" ? 1 : -1;
-    if (m === "Bank") bank += sign * e.amount;
+    if (isBankLikeCashMethod(m)) bank += sign * e.amount;
     else cash += sign * e.amount;
   });
 
-  /* Sales received: each payment in paymentHistory (skip voided invoices) */
-  (activeSales(state.sales) || []).forEach(function (s) {
+  /* Sales received: each payment in paymentHistory.
+     Include voided sales so void does not silently erase cash — void must post an explicit refund PH. */
+  (state.sales || []).forEach(function (s) {
     (s.paymentHistory || []).forEach(function (ph) {
       var m = ph.cashMethod || "Cash";
-      if (m === "Bank") bank += ph.amount;
+      if (m === "Cheque" || m === "Adjustment") return;
+      if (isBankLikeCashMethod(m)) bank += ph.amount;
       else cash += ph.amount;
     });
   });
 
-  /* Purchases paid: each payment in paymentHistory (skip voided; skip negative refund rows — cash-back counted via purchaseReturns) */
-  (activePurchases(state.purchases) || []).forEach(function (p) {
+  /* Purchases paid: include voided. Count void_refund negatives so cash returns to drawer;
+     other negatives stay statement-only (purchaseReturns.refundAmount is cash source of truth). */
+  (state.purchases || []).forEach(function (p) {
     (p.paymentHistory || []).forEach(function (ph) {
-      if ((Number(ph.amount) || 0) < 0) return;
+      var amt = Number(ph.amount) || 0;
       var m = ph.cashMethod || "Cash";
-      if (m === "Bank") bank -= ph.amount;
-      else cash -= ph.amount;
+      if (m === "Cheque" || m === "Adjustment") return;
+      if (amt < 0 && ph.type !== "void_refund") return;
+      if (isBankLikeCashMethod(m)) bank -= amt;
+      else cash -= amt;
     });
   });
 
-  /* Expenses */
+  /* Expenses — skip ChequePending until cheque clears */
   (state.expenses || []).forEach(function (e) {
-    var m = e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" || e.payMode === "Cheque" ? "Bank" : "Cash");
-    if (m === "Bank") bank -= e.amount;
+    if (e.cashMethod === "ChequePending") return;
+    var m = e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" || e.payMode === "Cheque" || e.payMode === "Card" ? "Bank" : "Cash");
+    if (m === "Cheque") m = "Bank";
+    if (isBankLikeCashMethod(m)) bank -= e.amount;
     else cash -= e.amount;
+  });
+
+  /* Cleared standalone cheques (no sale/purchase/expense link) affect bank */
+  (state.cheques || []).forEach(function (ch) {
+    if (!ch || String(ch.status || "") !== "Cleared") return;
+    if (ch.saleId || ch.purchaseId || ch.manualPayableId || ch.manualReceivableId || ch.expenseId) return;
+    var amt = Number(ch.amount) || 0;
+    if (amt <= 0) return;
+    if (ch.type === "incoming") bank += amt;
+    else if (ch.type === "outgoing") bank -= amt;
   });
 
   /* Assets */
@@ -2542,7 +2645,7 @@ var getCashBalances = function (state) {
     if (a.cashMethod === "Opening") return; /* opening assets don't deduct cash */
     var m = a.cashMethod || "Cash";
     var amt = a.amount || a.value || 0;
-    if (m === "Bank") bank -= amt;
+    if (isBankLikeCashMethod(m)) bank -= amt;
     else cash -= amt;
   });
 
@@ -2553,24 +2656,28 @@ var getCashBalances = function (state) {
      Repair revenue still appears correctly in P&L reports (those read state.repairs directly). */
 
   /* Manual Payables: Borrowed money = inflow (cash received), payments = outflow
-     Skip opening payables - they are pre-existing liabilities, not new cash */
+     Skip opening payables - they are pre-existing liabilities, not new cash.
+     Skip inventory-linked / Credit payables (3rd-party repair costs) — GL posts INV/AP, not cash. */
   S.get("tc3_manualPayables", []).forEach(function (mp) {
     if (mp._isOpening) {
       /* only count repayments as outflow */
       (mp.paymentHistory || []).forEach(function (ph) {
         var pm = ph.cashMethod || "Cash";
-        if (pm === "Bank") bank -= ph.amount;
+        if (isBankLikeCashMethod(pm)) bank -= ph.amount;
         else cash -= ph.amount;
       });
       return;
     }
-    var m = mp.paymentMethod || "Cash";
-    if (m === "Bank") bank += mp.amount;
-    else cash += mp.amount;
+    var skipPrincipalCash = !!(mp.productId) || String(mp.paymentMethod || "") === "Credit";
+    if (!skipPrincipalCash) {
+      var m = mp.paymentMethod || "Cash";
+      if (isBankLikeCashMethod(m)) bank += mp.amount;
+      else cash += mp.amount;
+    }
     /* subtract any payments made on manual payables */
     (mp.paymentHistory || []).forEach(function (ph) {
       var pm = ph.cashMethod || "Cash";
-      if (pm === "Bank") bank -= ph.amount;
+      if (isBankLikeCashMethod(pm)) bank -= ph.amount;
       else cash -= ph.amount;
     });
   });
@@ -2582,18 +2689,18 @@ var getCashBalances = function (state) {
       /* only count collections as inflow */
       (mr.paymentHistory || []).forEach(function (ph) {
         var pm = ph.cashMethod || "Cash";
-        if (pm === "Bank") bank += ph.amount;
+        if (isBankLikeCashMethod(pm)) bank += ph.amount;
         else cash += ph.amount;
       });
       return;
     }
     var m = mr.paymentMethod || "Cash";
-    if (m === "Bank") bank -= mr.amount;
+    if (isBankLikeCashMethod(m)) bank -= mr.amount;
     else cash -= mr.amount;
     /* add any payments received on manual receivables */
     (mr.paymentHistory || []).forEach(function (ph) {
       var pm = ph.cashMethod || "Cash";
-      if (pm === "Bank") bank += ph.amount;
+      if (isBankLikeCashMethod(pm)) bank += ph.amount;
       else cash += ph.amount;
     });
   });
@@ -2612,15 +2719,14 @@ var getCashBalances = function (state) {
      - Purchases: use return log isRefund (PH negatives are statement-only for older+new consistency) */
   (state.purchaseReturns || S.get("tc3_purchaseReturns", [])).forEach(function (r) {
     if (!r.isRefund || !r.refundMethod || !r.refundAmount) return;
-    var m = r.refundMethod === "Bank" ? "Bank" : "Cash";
-    if (m === "Bank") bank += r.refundAmount;
+    if (isBankLikeCashMethod(r.refundMethod)) bank += r.refundAmount;
     else cash += r.refundAmount;
   });
 
   /* Profit Distributions: outflow */
   S.get("tc3_profitDist", []).forEach(function (pd) {
     var m = pd.paymentMethod || "Cash";
-    if (m === "Bank") bank -= pd.amount;
+    if (isBankLikeCashMethod(m)) bank -= pd.amount;
     else cash -= pd.amount;
   });
 
@@ -2922,10 +3028,20 @@ validateAccountingMutation = function (k, v, oldV) {
     (lockThrough ? "\n\nLocked through: " + lockThrough + " (inclusive)." : "") +
     "\n\nStrict lock is on — Admin override may still be audited.";
   var strictLock = settings.strictPeriodLock === true;
+  var periodLockRowDate = function (row, key) {
+    if (!row) return "";
+    if (key === "tc3_repairs") return row.dateIn || row.date || "";
+    if (key === "tc3_cheques") return row.clearedDate || row.issuedDate || row.dueDate || row.date || "";
+    return row.date || "";
+  };
   if (lock && !window._tcAccountingPeriodAdmin) {
     var newRowViolatesPeriodLock = function (row, key) {
       if (!row) return false;
-      var rowDate = key === "tc3_repairs" ? (row.dateIn || row.date) : row.date;
+      var rowDate = key === "tc3_repairs"
+        ? (row.dateIn || row.date)
+        : key === "tc3_cheques"
+          ? (row.clearedDate || row.issuedDate || row.dueDate || row.date)
+          : row.date;
       if (isLockedThroughDate(rowDate, lock)) return true;
       var ph = row.paymentHistory;
       if (!Array.isArray(ph)) return false;
@@ -2970,8 +3086,18 @@ validateAccountingMutation = function (k, v, oldV) {
       } catch (e) {
         return newRowViolatesPeriodLock(row, key);
       }
-      var dNew = key === "tc3_repairs" ? (row.dateIn || row.date) : row.date;
-      var dOld = key === "tc3_repairs" ? (prevRow.dateIn || prevRow.date) : prevRow.date;
+      var dNew = key === "tc3_repairs"
+        ? (row.dateIn || row.date)
+        : key === "tc3_cheques"
+          ? (row.clearedDate || row.issuedDate || row.dueDate || row.date)
+          : row.date;
+      var dOld = key === "tc3_repairs"
+        ? (prevRow.dateIn || prevRow.date)
+        : key === "tc3_cheques"
+          ? (prevRow.clearedDate || prevRow.issuedDate || prevRow.dueDate || prevRow.date)
+          : prevRow.date;
+      /* Soft lock: any economic edit on a row whose existing date is locked (same as strict). */
+      if (isLockedThroughDate(dOld, lock)) return true;
       if (String(dNew || "") !== String(dOld || "")) {
         if (isLockedThroughDate(dNew, lock)) return true;
       }
@@ -3010,9 +3136,27 @@ validateAccountingMutation = function (k, v, oldV) {
         for (var od = 0; od < oldArr.length; od++) {
           var oDel = oldArr[od];
           if (!oDel || oDel.id == null) continue;
-          var oDelDate = k === "tc3_repairs" ? (oDel.dateIn || oDel.date) : oDel.date;
+          var oDelDate = periodLockRowDate(oDel, k);
           if (!newIds[String(oDel.id)] && isLockedThroughDate(oDelDate, lock)) {
             return { ok: false, message: strictLockMsg };
+          }
+        }
+      } else if (lock) {
+        /* Even without strict mode: never silently delete rows dated on/before the lock. */
+        var newIdsSoft = {};
+        for (var njs = 0; njs < v.length; njs++) {
+          var nvSoft = v[njs];
+          if (nvSoft && nvSoft.id != null) newIdsSoft[String(nvSoft.id)] = true;
+        }
+        for (var ods = 0; ods < oldArr.length; ods++) {
+          var oDelSoft = oldArr[ods];
+          if (!oDelSoft || oDelSoft.id == null) continue;
+          var oDelDateSoft = periodLockRowDate(oDelSoft, k);
+          if (!newIdsSoft[String(oDelSoft.id)] && isLockedThroughDate(oDelDateSoft, lock)) {
+            return {
+              ok: false,
+              message: "Cannot delete records on or before the locked period (" + lock + "). Void or reverse instead.",
+            };
           }
         }
       }
@@ -3025,15 +3169,19 @@ validateAccountingMutation = function (k, v, oldV) {
         } else if (li < oldArr.length && oldArr[li] && !nrow.id && !oldArr[li].id) {
           prevN = oldArr[li];
         }
-        if (strictLock && prevN) {
-          var prevLockDate = k === "tc3_repairs" ? (prevN.dateIn || prevN.date) : prevN.date;
+        if (prevN) {
+          var prevLockDate = k === "tc3_repairs"
+            ? (prevN.dateIn || prevN.date)
+            : k === "tc3_cheques"
+              ? (prevN.clearedDate || prevN.issuedDate || prevN.dueDate || prevN.date)
+              : prevN.date;
           if (isLockedThroughDate(prevLockDate, lock)) {
             try {
               if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
-                return { ok: false, message: strictLockMsg };
+                return { ok: false, message: strictLock ? strictLockMsg : lockMsg };
               }
             } catch (e) {
-              return { ok: false, message: strictLockMsg };
+              return { ok: false, message: strictLock ? strictLockMsg : lockMsg };
             }
             continue;
           }
@@ -3077,13 +3225,13 @@ validateAccountingMutation = function (k, v, oldV) {
     }
     if (k === "tc3_openBal" && v && typeof v === "object") {
       var obOld = oldV && typeof oldV === "object" ? oldV : null;
-      if (strictLock && obOld && obOld.completed && obOld.date && isLockedThroughDate(obOld.date, lock)) {
+      if (obOld && obOld.completed && obOld.date && isLockedThroughDate(obOld.date, lock)) {
         try {
           if (JSON.stringify(obOld) !== JSON.stringify(v)) {
-            return { ok: false, message: strictLockMsg };
+            return { ok: false, message: strictLock ? strictLockMsg : lockMsg };
           }
         } catch (e) {
-          return { ok: false, message: strictLockMsg };
+          return { ok: false, message: strictLock ? strictLockMsg : lockMsg };
         }
       } else if (v.completed && v.date) {
         var obNeedDateCheck = !obOld || !obOld.completed;
@@ -3163,6 +3311,12 @@ var commitGlJournalPersist = function (mergedLines, r, source, invDer) {
     invDer: invDer,
     source: source || "commit",
     settings: Object.assign({}, SEED.settings, S.get("tc3_settings", {})),
+    state: {
+      sales: S.get("tc3_sales", []),
+      purchases: S.get("tc3_purchases", []),
+      manualReceivables: S.get("tc3_manualReceivables", []),
+      manualPayables: S.get("tc3_manualPayables", []),
+    },
   });
   if (!invCheck.ok) {
     appendGlAuditRow("journal_commit_invariant_fail", { source: source, errors: invCheck.errors });
@@ -4084,7 +4238,6 @@ var resolveStatCardIcon = function (icon) {
     "\u2713": "\u2713",
     "\u2714": "\u2714\uFE0F",
     warn: "\u26A0\uFE0F",
-    check: "\u2713",
   };
   if (Object.prototype.hasOwnProperty.call(aliases, s)) return aliases[s];
   return s;
@@ -5876,6 +6029,9 @@ var Statements = function (props) {
     history.forEach(function (ph) {
       var amt = Number(ph && ph.amount) || 0;
       if (Math.abs(amt) <= 0.005) return;
+      /* Match GL: pending Cheque / Adjustment do not settle AR/AP until Bank (or cleared). */
+      var cm = String((ph && ph.cashMethod) || "");
+      if (cm === "Cheque" || cm === "Adjustment") return;
       var method = payMethodLabel(ph);
       var payRef = (ph && (ph.receiptNo || ph.reference || ph.ref)) || ref;
       if (amt > 0) {
@@ -5903,7 +6059,14 @@ var Statements = function (props) {
       }
       histSum += amt;
     });
-    var gap = Math.round((paidTotal - histSum) * 100) / 100;
+    /* Do not invent gap payments for Cheque float still sitting in paidTotal — GL ignores those too. */
+    var chequeFloat = 0;
+    history.forEach(function (ph) {
+      var amt = Number(ph && ph.amount) || 0;
+      var cm = String((ph && ph.cashMethod) || "");
+      if ((cm === "Cheque" || cm === "Adjustment") && Math.abs(amt) > 0.005) chequeFloat += amt;
+    });
+    var gap = Math.round((paidTotal - histSum - chequeFloat) * 100) / 100;
     if (gap > 0.005) {
       rowsOut.push({
         date: fallDate,
@@ -6183,6 +6346,54 @@ var Statements = function (props) {
   var totalDebit = filtered.reduce(function (a, r) { return a + (r.debit || 0); }, 0);
   var totalCredit = filtered.reduce(function (a, r) { return a + (r.credit || 0); }, 0);
   var netBalance = totalDebit - totalCredit;
+
+  /* When journal exists, prefer GL AR/AP for this party's document ids; add recon row so running matches footer. */
+  var glPartyBalance = null;
+  var opsNetBalance = netBalance;
+  try {
+    var jlinesStmt = S.get("tc3_journal_lines", []) || [];
+    if (jlinesStmt.length && selected && (mode === "customer" || mode === "supplier")) {
+      var idSet = {};
+      withBalance.forEach(function (r) {
+        if (r && r.sourceId) idSet[String(r.sourceId)] = true;
+      });
+      var acct = mode === "customer" ? "1100" : "2000";
+      var glNet = 0;
+      jlinesStmt.forEach(function (ln) {
+        if (!ln || String(ln.accountId || "") !== acct) return;
+        var rid = String(ln.referenceId || "");
+        if (!rid) return;
+        var hit = !!idSet[rid];
+        if (!hit) {
+          Object.keys(idSet).forEach(function (sid) {
+            if (rid === sid || rid.indexOf(sid + "-") === 0) hit = true;
+          });
+        }
+        if (!hit) return;
+        glNet += (Number(ln.debit) || 0) - (Number(ln.credit) || 0);
+      });
+      glPartyBalance = Math.round(glNet * 100) / 100;
+      /* Customer AR is debit-normal; supplier AP credit-normal → statement shows amount owed as positive. */
+      if (mode === "supplier") glPartyBalance = -glPartyBalance;
+      if (Math.abs(glPartyBalance - opsNetBalance) > 0.02) {
+        var adjAmt = Math.round((glPartyBalance - opsNetBalance) * 100) / 100;
+        withBalance = withBalance.concat([{
+          date: dateTo || (filtered.length ? filtered[filtered.length - 1].date : "") || "",
+          type: "Adjustment",
+          ref: "GL",
+          detail: "Ledger reconciliation (control account)",
+          debit: adjAmt > 0 ? adjAmt : 0,
+          credit: adjAmt < 0 ? Math.abs(adjAmt) : 0,
+          runningBalance: glPartyBalance,
+          sourceKind: "",
+          sourceId: "",
+        }]);
+        if (adjAmt > 0) totalDebit = Math.round((totalDebit + adjAmt) * 100) / 100;
+        else totalCredit = Math.round((totalCredit + Math.abs(adjAmt)) * 100) / 100;
+        netBalance = glPartyBalance;
+      }
+    }
+  } catch (_eStmt) { /* keep ops netBalance */ }
 
   var closeStmtDoc = function () {
     setDocView(null);
@@ -7613,11 +7824,11 @@ var LoginScreen = function (props) {
     if (!ch) { setErr("Missing challenge. Close and open Forgot password again."); return; }
     setLoginForgotBusy(true);
     setErr("");
-    computeSupportUnlockCode(ch).then(function (expected) {
+    var ent = (loginForgotUnlockRef.current || "").replace(/\s/g, "").toUpperCase();
+    verifySupportUnlockViaMain(ch, ent).then(function (res) {
       setLoginForgotBusy(false);
-      var ent = (loginForgotUnlockRef.current || "").replace(/\s/g, "").toUpperCase();
-      if (ent !== expected) {
-        setErr("Incorrect support unlock code. Check with Techon support and try again.");
+      if (!res || !res.ok) {
+        setErr((res && res.message) || "Incorrect support unlock code. Check with Techon support and try again.");
         return;
       }
       try {
@@ -7626,7 +7837,12 @@ var LoginScreen = function (props) {
         sessionStorage.setItem("tc3_login_need_admin_for_settings", "1");
         sessionStorage.setItem("tc3_forgot_pw_open_settings", "1");
       } catch (e) {}
-      props.onLogin();
+      props.onLogin({
+        id: "legacy-admin",
+        username: "admin",
+        name: S.get("tc3_admin_name", "Admin") || "Admin",
+        role: ROLE_ADMIN,
+      });
     }).catch(function () {
       setLoginForgotBusy(false);
       setErr("Verification failed. Try again.");
@@ -7672,7 +7888,7 @@ var LoginScreen = function (props) {
         username: "admin",
         name: S.get("tc3_admin_name", "Admin"),
         role: ROLE_ADMIN,
-      });
+      }, { password: pw });
     };
     var finishMainAdminLogin = function () {
       finishLogin({
@@ -7699,9 +7915,8 @@ var LoginScreen = function (props) {
       verifyLoginPassword(pw, user).then(function (r) {
         if (r.ok) { finishLogin(r.user || user); return; }
         tryMainServerLogin(pw).then(function (mainOk) {
-          /* Admin password on a cashier/manager username → stay as that user (not elevate to admin). */
-          if (mainOk && !isPrimaryAdminUser(user)) finishLogin(user);
-          else if (mainOk) finishMainAdminLogin();
+          /* Admin / main-server password on a cashier username → elevate to admin actor. */
+          if (mainOk) finishMainAdminLogin();
           else loginFailed();
         });
       }).catch(function () {
@@ -7712,7 +7927,10 @@ var LoginScreen = function (props) {
     }
     pwMatchesAsync(pw, stored).then(function (ok) {
       if (ok && stored) {
-        if (!S.get("tc3_admin_name", "")) { setNeedName(true); setPw(""); return; }
+        if (!S.get("tc3_admin_name", "")) {
+          try { sessionStorage.setItem("tc3_pending_login_pw", pw); } catch (_e) {}
+          setNeedName(true); setPw(""); return;
+        }
         var repaired = setLoginPassword(stored, {
           user: {
             id: "u_" + uid(),
@@ -7753,7 +7971,7 @@ var LoginScreen = function (props) {
         createdAt: new Date().toISOString(),
       };
       setLoginPassword(hashed, { user: firstUser });
-      props.onLogin(firstUser);
+      props.onLogin(firstUser, { password: newPw });
     }).catch(function () {
       setErr("Could not save password. Please restart the app and try again.");
     });
@@ -7763,12 +7981,17 @@ var LoginScreen = function (props) {
     if (!adminName || adminName.trim().length < 2) { setErr("Please enter your name."); return; }
     S.set("tc3_admin_name", adminName.trim());
     markAccountSetupComplete();
+    var pendingPw = "";
+    try {
+      pendingPw = sessionStorage.getItem("tc3_pending_login_pw") || "";
+      sessionStorage.removeItem("tc3_pending_login_pw");
+    } catch (_e2) {}
     props.onLogin({
       id: "legacy-admin",
       username: "admin",
       name: adminName.trim(),
       role: ROLE_ADMIN,
-    });
+    }, pendingPw ? { password: pendingPw } : {});
   };
 
   var handleKeyDown = function (e) {
@@ -8433,14 +8656,39 @@ function App(props) {
   }, []);
   useEffect(function () {
     try {
-      var raw = sessionStorage.getItem("tc3_current_user");
-      if (raw) {
-        var parsed = JSON.parse(raw);
-        if (parsed && parsed.username) {
-          setCurrentUser(parsed);
-          setSessionActor(parsed);
-        }
+      /* After backup restore we must not reuse the pre-restore Electron session. */
+      var forceLogin = false;
+      try { forceLogin = sessionStorage.getItem("tc3_force_login_once") === "1"; } catch (_eForce) { /* ignore */ }
+      if (forceLogin) {
+        forceLoginScreenRef.current = true;
+        try { sessionStorage.removeItem("tc3_current_user"); } catch (_eCu) { /* ignore */ }
+        try { closeMainSession(); } catch (_eClose) { /* ignore */ }
+        return;
       }
+      /* Prefer main-process session (survives F5). Never re-forge admin role from sessionStorage alone. */
+      restoreMainSession().then(function (r) {
+        if (r && r.ok && r.session) {
+          var fromMain = {
+            id: r.session.userId,
+            username: r.session.username,
+            name: r.session.name || r.session.username,
+            role: r.session.role,
+          };
+          setCurrentUser(fromMain);
+          setSessionActor(fromMain);
+          try { sessionStorage.setItem("tc3_current_user", JSON.stringify(fromMain)); } catch (_e) {}
+          return;
+        }
+        var raw = sessionStorage.getItem("tc3_current_user");
+        if (raw) {
+          var parsed = JSON.parse(raw);
+          if (parsed && parsed.username) {
+            /* UI hint only — privileged IPC stays cashier until password login. */
+            setCurrentUser(parsed);
+            setSessionActor(parsed);
+          }
+        }
+      }).catch(function () { /* ignore */ });
     } catch (e) {}
   }, []);
   useEffect(function () {
@@ -8613,12 +8861,12 @@ function App(props) {
     if (!ch) { setPinError("Missing challenge. Go back and open Support again."); return; }
     setSupportUnlockBusy(true);
     setPinError("");
-    computeSupportUnlockCode(ch).then(function (expected) {
+    var ent = (supportUnlockInputRef.current || "").replace(/\s/g, "").toUpperCase();
+    verifySupportUnlockViaMain(ch, ent).then(function (res) {
       if (!appMountedRef.current) return;
       setSupportUnlockBusy(false);
-      var ent = (supportUnlockInputRef.current || "").replace(/\s/g, "").toUpperCase();
-      if (ent !== expected) {
-        setPinError("Incorrect support unlock code. Check with Techon support and try again.");
+      if (!res || !res.ok) {
+        setPinError((res && res.message) || "Incorrect support unlock code. Check with Techon support and try again.");
         return;
       }
       try {
@@ -8799,36 +9047,42 @@ function App(props) {
       }
     }
 
-    /* 1) Load local IDB  2) Pull server state  3) THEN patch S.set for sync */
+    /* 1) Load local IDB  2) Preload durable sync queue  3) Pull server  4) Patch S.set */
     initAndLoadIDB().then(function () {
       if (cancelled) return;
 
       setSyncHydrating(true);
-      var pullPromise;
-      if (isNetworkClient) {
-        pullPromise = loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
-          .then(function (data) {
-            applyFullServerState(data);
-            if (!cancelled) setClientError(null);
-          })
-          .catch(function (err) {
-            if (cancelled) return;
-            if (tcIsDevEnv()) {
-              try { console.error('[TC_NET] Failed to load from server:', err.message); } catch (e2) {}
-            }
-            setClientError('Unable to connect to server at ' + systemConfig.apiUrl + '. Please check the server PC is running.');
-          });
-      } else if (isNetworkServer) {
-        pullPromise = loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
-          .then(function (data) { applyFullServerState(data); })
-          .catch(function (err) {
-            if (!cancelled && tcIsDevEnv()) {
-              try { console.warn('[TC_NET] Server state load failed (using local IDB):', err.message); } catch (e2) {}
-            }
-          });
-      } else {
-        pullPromise = Promise.resolve();
-      }
+      var pullPromise = Promise.resolve()
+        .then(function () {
+          if (isNetworkClient || isNetworkServer) return preloadSyncQueue();
+          return 0;
+        })
+        .then(function () {
+          if (cancelled) return;
+          if (isNetworkClient) {
+            return loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
+              .then(function (data) {
+                applyFullServerState(data);
+                if (!cancelled) setClientError(null);
+              })
+              .catch(function (err) {
+                if (cancelled) return;
+                if (tcIsDevEnv()) {
+                  try { console.error('[TC_NET] Failed to load from server:', err.message); } catch (e2) {}
+                }
+                setClientError('Unable to connect to server at ' + systemConfig.apiUrl + '. Please check the server PC is running.');
+              });
+          } else if (isNetworkServer) {
+            return loadStateFromServer(systemConfig.apiUrl, null, { authConfig: systemConfig })
+              .then(function (data) { applyFullServerState(data); })
+              .catch(function (err) {
+                if (!cancelled && tcIsDevEnv()) {
+                  try { console.warn('[TC_NET] Server state load failed (using local IDB):', err.message); } catch (e2) {}
+                }
+              });
+          }
+          return null;
+        });
 
       return pullPromise.finally(function () {
         if (cancelled) return;
@@ -9006,6 +9260,18 @@ function App(props) {
     if (systemConfig.apiKey) pingHeaders['X-TC-KEY'] = systemConfig.apiKey;
     var cancelled = false;
     var timerId = null;
+    var headersReady = Promise.resolve();
+    try {
+      if (!systemConfig.apiKey && window.electronAPI && window.electronAPI.getDeviceAuthHeaders) {
+        headersReady = window.electronAPI.getDeviceAuthHeaders({
+          method: 'GET',
+          url: systemConfig.apiUrl + 'ping.php',
+          body: '',
+        }).then(function (ah) {
+          if (ah && ah.headers) Object.assign(pingHeaders, ah.headers);
+        }).catch(function () { /* ping may still work unauthenticated */ });
+      }
+    } catch (_e) { /* ignore */ }
 
     function clearRetryTimer() {
       if (timerId !== null) {
@@ -9048,6 +9314,8 @@ function App(props) {
 
     async function pingLoop() {
       if (cancelled) return;
+      await headersReady;
+      if (cancelled) return;
       await ping();
       if (cancelled) return;
       clearRetryTimer();
@@ -9067,7 +9335,14 @@ function App(props) {
     if (!isNetworkMode) return;
 
     var handleBeforeUnload = function (e) {
-      if (window.TC_SYNC && window.TC_SYNC.pendingCount > 0) {
+      try {
+        if (window.__TC_ALLOW_UNLOAD__ || window._tcRestoreInProgress) return;
+      } catch (_eAllow) { /* ignore */ }
+      var pending = 0;
+      try {
+        pending = (window.TC_SYNC && window.TC_SYNC.pendingCount) || 0;
+      } catch (_ePend) { pending = 0; }
+      if (pending > 0) {
         e.preventDefault();
         setShowCloseWarn(true);
         return (e.returnValue = 'Data is still syncing. Please wait.');
@@ -9098,10 +9373,21 @@ function App(props) {
     if (!isNetworkServer || !loggedIn) return;
     var cfg = props.systemConfig;
     if (!cfg || !cfg.apiUrl) return;
-    var headers = { 'X-TC-Client-ID': 'server-self' };
-    if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
-    fetch(cfg.apiUrl + 'health_check.php', { headers, signal: AbortSignal.timeout(10000) })
-      .then(function (r) { return r.json(); })
+    var api = window.electronAPI;
+    var request = (api && typeof api.lanRequest === 'function')
+      ? api.lanRequest({
+          method: 'GET',
+          path: 'health_check.php',
+          clientId: 'server-self',
+        }).then(function (r) {
+          if (r && r.success === false) throw new Error(r.message || 'Health check failed');
+          return (r && r.data) || r;
+        })
+      : fetch(cfg.apiUrl + 'health_check.php', {
+          headers: { 'X-TC-Client-ID': 'server-self' },
+          signal: AbortSignal.timeout(10000),
+        }).then(function (r) { return r.json(); });
+    request
       .then(function (json) {
         if (!json.success) {
           setDbHealthError(json.message || 'Database health check failed');
@@ -9120,7 +9406,7 @@ function App(props) {
       });
   }, [loggedIn, isNetworkServer]);
 
-  var handleLogin = function (user) {
+  var handleLogin = function (user, loginOpts) {
     forceLoginScreenRef.current = false;
     try { sessionStorage.removeItem("tc3_force_login_once"); } catch (e) {}
     settingsPwBypassRef.current = false;
@@ -9138,14 +9424,55 @@ function App(props) {
       name: S.get("tc3_admin_name", "Admin"),
       role: ROLE_ADMIN,
     };
-    setBusinessType(ensureDefaultBusinessType());
-    setCurrentUser(actor);
-    try {
-      setSessionActor(actor);
-      sessionStorage.setItem("tc3_current_user", JSON.stringify(actor));
-    } catch (e) {}
-    addAudit("User Login", actor.username || actor.name || "unknown", { role: actor.role || ROLE_ADMIN });
-    setLoggedIn(true);
+    var opts = loginOpts || {};
+    var st = S.get("tc3_settings", {}) || {};
+    var usersList = S.get("tc3_users", []);
+    if (!Array.isArray(usersList)) usersList = [];
+    var bindMain = function () {
+      return openMainSession(actor, {
+        password: opts.password || "",
+        users: usersList,
+        apppass: S.get("tc3_apppass", "") || "",
+        mainAdminPassHash: st.mainAdminPassHash || "",
+        settings: st,
+      }).then(function (r) {
+        if (r && r.ok && r.role) {
+          actor = Object.assign({}, actor, {
+            role: r.role,
+            username: r.username || actor.username,
+            name: r.name || actor.name,
+            id: r.userId || actor.id,
+          });
+        }
+        setBusinessType(ensureDefaultBusinessType());
+        setCurrentUser(actor);
+        try {
+          setSessionActor(actor);
+          sessionStorage.setItem("tc3_current_user", JSON.stringify(actor));
+        } catch (e) {}
+        addAudit("User Login", actor.username || actor.name || "unknown", { role: actor.role || ROLE_ADMIN });
+        setLoggedIn(true);
+      }).catch(function () {
+        setBusinessType(ensureDefaultBusinessType());
+        setCurrentUser(actor);
+        try {
+          setSessionActor(actor);
+          sessionStorage.setItem("tc3_current_user", JSON.stringify(actor));
+        } catch (e2) {}
+        addAudit("User Login", actor.username || actor.name || "unknown", { role: actor.role || ROLE_ADMIN });
+        setLoggedIn(true);
+      });
+    };
+    try { bindMain(); } catch (_eOpen) {
+      setBusinessType(ensureDefaultBusinessType());
+      setCurrentUser(actor);
+      try {
+        setSessionActor(actor);
+        sessionStorage.setItem("tc3_current_user", JSON.stringify(actor));
+      } catch (e3) {}
+      addAudit("User Login", actor.username || actor.name || "unknown", { role: actor.role || ROLE_ADMIN });
+      setLoggedIn(true);
+    }
   };
   var switchUser = function (reason) {
     var why = reason || "switch_user";
@@ -9169,6 +9496,7 @@ function App(props) {
       sessionStorage.removeItem("tc3_current_user");
       sessionStorage.setItem("tc3_force_login_once", "1");
     } catch (e) {}
+    try { closeMainSession(); } catch (_eClose) { /* ignore */ }
     setPinModal(false);
     setIsAdminMode(false);
     setCurrentUser(null);
@@ -9610,7 +9938,7 @@ function App(props) {
 
   useEffect(function () {
     if (!loggedIn) return;
-    var allKeys = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_others", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals"];
+    var allKeys = TC_FULL_BACKUP_KEYS.concat(TC_BACKUP_AUTH_KEYS).concat(["tc3_businessType"]);
     var buildBackup = function () {
       var st = S.get("tc3_settings", null);
       var sn = st ? (st.shopName || "Techon") : "Techon";
@@ -10116,6 +10444,19 @@ function App(props) {
                 setState(loaded);
                 var bt = data && data.tc3_businessType ? data.tc3_businessType : S.get("tc3_businessType", null);
                 if (bt && BUSINESS_PROFILES[bt]) setBusinessType(bt);
+                /* Drop in-memory login immediately so Settings cannot stay open with wiped auth. */
+                forceLoginScreenRef.current = true;
+                settingsPwBypassRef.current = false;
+                setSettingsPwModal(false);
+                setSettingsPwPending(null);
+                setSettingsPwEntry("");
+                setSettingsPwErr("");
+                setShellElevated(false);
+                setIsAdminMode(false);
+                setCurrentUser(null);
+                try { setSessionActor(null); } catch (_eSa) { /* ignore */ }
+                setLoggedIn(false);
+                prepareLoginAfterRestore();
                 try {
                   window._tcRecentLocalWrites = window._tcRecentLocalWrites || {};
                   NETWORK_KV_KEYS.forEach(function (k) {
@@ -10126,7 +10467,7 @@ function App(props) {
                 if (isNetworkMode && systemConfig && systemConfig.apiUrl) {
                   ensureSyncConfig(systemConfig);
                   var pushKeys = NETWORK_KV_KEYS;
-                  pushPromise = pushKeysToServer(pushKeys, { authConfig: systemConfig }).catch(function (err) {
+                  pushPromise = pushKeysToServer(pushKeys, { authConfig: systemConfig, forceReplace: true }).catch(function (err) {
                     if (tcIsDevEnv()) {
                       try { console.warn("[TC_NET] Restore upload to server failed:", err && err.message ? err.message : err); } catch (ePush) {}
                     }
@@ -10474,7 +10815,7 @@ function App(props) {
           <div style={{ fontSize: 13, color: C.muted, marginBottom: 20, lineHeight: 1.6 }}>
             Some of your data hasn't been saved to the server yet. Please wait a moment.
           </div>
-          <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={function () {
               if (window.TC_SYNC && window.TC_SYNC.flushNow) {
                 window.TC_SYNC.flushNow().then(function (ok) {
@@ -10482,9 +10823,21 @@ function App(props) {
                   else showAlert("Sync still failing. Please check your network connection.");
                 });
               }
-            }} style={{ flex: 1, padding: "11px 0", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Retry Sync
+            }} style={{ flex: 1, minWidth: 110, padding: "11px 0", background: "linear-gradient(135deg,#2979ff,#2255d4)", color: "#fff", border: "none", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Retry Sync
             </button>
-            <button onClick={function () { setShowCloseWarn(false); }} style={{ flex: 1, padding: "11px 0", background: "#f0f4ff", color: C.textMd, border: "1.5px solid " + C.border, borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+            <button onClick={function () {
+              try {
+                if (window.TC_SYNC && typeof window.TC_SYNC.discardPendingSync === "function") {
+                  window.TC_SYNC.discardPendingSync("user_force_unload");
+                }
+              } catch (_eDisc) { /* ignore */ }
+              try { window.__TC_ALLOW_UNLOAD__ = true; } catch (_eAllow) { /* ignore */ }
+              setShowCloseWarn(false);
+              try { window.location.reload(); } catch (_eRel) { /* ignore */ }
+            }} style={{ flex: 1, minWidth: 110, padding: "11px 0", background: "#fff7ed", color: "#9a3412", border: "1.5px solid #fdba74", borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+              Continue anyway
+            </button>
+            <button onClick={function () { setShowCloseWarn(false); }} style={{ flex: 1, minWidth: 110, padding: "11px 0", background: "#f0f4ff", color: C.textMd, border: "1.5px solid " + C.border, borderRadius: 10, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
               Dismiss
             </button>
           </div>

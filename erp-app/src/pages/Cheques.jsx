@@ -60,8 +60,9 @@ var Cheques = React.memo(function (props) {
 
   var [tab, setTab] = useState("all");
   var [search, setSearch] = useState("");
-  var [actionModal, setActionModal] = useState(null); /* { cheque, action: "clear"|"bounce"|"reissue" } */
+  var [actionModal, setActionModal] = useState(null); /* { cheque, action: "clear"|"bounce"|"reissue"|"allocate" } */
   var [reissueForm, setReissueForm] = useState({ chequeNo: "", dueDate: "", bankName: "" });
+  var [allocForm, setAllocForm] = useState({ saleId: "", amount: "", note: "" });
   var [addModal, setAddModal] = useState(null); /* "incoming" | "outgoing" */
   var [addForm, setAddForm] = useState({ chequeNo: "", bankName: "", amount: "", dueDate: today(), partyName: "", note: "", partyType: "customer" });
   var [docView, setDocView] = useState(null); /* sale | purchase */
@@ -207,6 +208,7 @@ var Cheques = React.memo(function (props) {
       currentUser: props.currentUser || null,
       clientMachineLabel: String(props.clientMachineLabel || "").trim(),
     });
+    var runClear = function () {
     var proceedClear = function () {
       showConfirm(
         (ch.type === "outgoing" ? "Mark this cheque as CLEARED?\n\n" + getCurrencySymbol() + " " + fmtNum(ch.amount) + " will be deducted from your bank balance." : "Mark this cheque as CLEARED?\n\n" + getCurrencySymbol() + " " + fmtNum(ch.amount) + " will be added to your bank balance."),
@@ -233,7 +235,7 @@ var Cheques = React.memo(function (props) {
                 var newBal = p.total - newPaid;
                 var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
                 var updPh = (p.paymentHistory || []).map(function (ph) {
-                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, note: ph.note.replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, date: today(), note: (ph.note || "").replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
                 });
                 return stampUpdatedAt(Object.assign({}, p, { paidAmount: newPaid, balance: newBal, status: newStatus, paymentHistory: updPh }));
               });
@@ -248,11 +250,13 @@ var Cheques = React.memo(function (props) {
                   if (!linkedPh) return mp;
                 }
                 var updPh = (mp.paymentHistory || []).map(function (ph) {
-                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", note: ph.note.replace("(Pending", "(Cleared " + today() + "") }) : ph;
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", date: today(), note: (ph.note || "").replace("(Pending", "(Cleared " + today() + "") }) : ph;
                 });
                 return stampUpdatedAt(Object.assign({}, mp, { paymentHistory: updPh }));
               });
               S.set("tc3_manualPayables", updManPays);
+              try { pushKeysNow([["tc3_manualPayables", updManPays]]); } catch (_mp) { /* ignore */ }
+              setState(function (st) { return Object.assign({}, st, { manualPayables: updManPays }); });
             }
             if (ch.type === "incoming" && ch.saleId) {
               var saleRow = ns.find(function (s) { return s.id === ch.saleId; });
@@ -266,7 +270,7 @@ var Cheques = React.memo(function (props) {
                 var newBal = s.total - newPaid;
                 var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
                 var updPh = (s.paymentHistory || []).map(function (ph) {
-                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, note: ph.note.replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, date: today(), note: (ph.note || "").replace("(Pending", "(Cleared " + today() + ""), cashMethod: "Bank" }) : ph;
                 });
                 return stampUpdatedAt(Object.assign({}, s, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: updPh }));
               });
@@ -291,11 +295,26 @@ var Cheques = React.memo(function (props) {
               var updManRecs = manRecs.map(function (mr) {
                 if (mr.id !== ch.manualReceivableId) return mr;
                 var updPh = (mr.paymentHistory || []).map(function (ph) {
-                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", note: ph.note.replace("(Pending", "(Cleared " + today() + "") }) : ph;
+                  return matchesPh(ph) ? Object.assign({}, ph, { amount: ch.amount, chequeId: ch.id, cashMethod: "Bank", date: today(), note: (ph.note || "").replace("(Pending", "(Cleared " + today() + "") }) : ph;
                 });
                 return stampUpdatedAt(Object.assign({}, mr, { paymentHistory: updPh }));
               });
               S.set("tc3_manualReceivables", updManRecs);
+              try { pushKeysNow([["tc3_manualReceivables", updManRecs]]); } catch (_mr) { /* ignore */ }
+              setState(function (st) { return Object.assign({}, st, { manualReceivables: updManRecs }); });
+            }
+            if (ch.expenseId) {
+              var nex = (state.expenses || []).map(function (ex) {
+                if (ex.id !== ch.expenseId) return ex;
+                return stampUpdatedAt(Object.assign({}, ex, {
+                  cashMethod: "Bank",
+                  payMode: "Cheque",
+                  clearedDate: today(),
+                }));
+              });
+              S.set("tc3_expenses", nex);
+              setState(function (st) { return Object.assign({}, st, { expenses: nex }); });
+              try { pushKeysNow([["tc3_expenses", nex]]); } catch (_ee) { /* ignore */ }
             }
             S.set("tc3_cheques", nch);
             if (ch.type === "outgoing" && ch.purchaseId) S.set("tc3_purchases", np);
@@ -351,10 +370,25 @@ var Cheques = React.memo(function (props) {
     } else {
       proceedClear();
     }
+    }; /* end runClear */
+
+    if (typeof checkPeriodClose === "function") {
+      checkPeriodClose(today(), state.settings, runClear);
+    } else {
+      runClear();
+    }
   };
 
   /* ── Mark Bounced ── */
   var markBounced = function (ch) {
+    if (ch.status === "Cleared") {
+      showAlert("Cannot bounce a cleared cheque. Reverse the bank payment / void the clear first.");
+      return;
+    }
+    if (ch.status === "Voided") {
+      showAlert("This cheque is already voided.");
+      return;
+    }
     showConfirm("Mark this cheque as BOUNCED?\n\nThe linked invoice balance will remain unpaid.", function () {
       var nch = (state.cheques || []).map(function (c) {
         return c.id === ch.id ? stampUpdatedAt(Object.assign({}, c, { status: "Bounced", bouncedDate: today() })) : c;
@@ -425,11 +459,147 @@ var Cheques = React.memo(function (props) {
   };
 
   var deleteStandalone = function (id) {
+    var ch = (state.cheques || []).find(function (c) { return c.id === id; });
+    if (ch) {
+      var allocN = (ch.allocations || []).length;
+      if (ch.status === "Cleared" || allocN > 0) {
+        showAlert("Cannot delete a cleared or allocated cheque. Void it instead so GL and invoice payments stay aligned.");
+        return;
+      }
+    }
     showConfirm("Delete this cheque record?", function () {
       var nch = (state.cheques || []).filter(function (c) { return c.id !== id; });
       S.set("tc3_cheques", nch);
       setState(function (st) { return Object.assign({}, st, { cheques: nch }); });
     });
+  };
+
+  var voidStandaloneCleared = function (ch) {
+    if (!ch || (ch.purchaseId || ch.saleId)) {
+      showAlert("Only standalone cheques can be voided here.");
+      return;
+    }
+    if (ch.status !== "Cleared") {
+      showAlert("Only cleared standalone cheques need void (pending can be deleted).");
+      return;
+    }
+    var runVoid = function () {
+      showConfirm(
+        "Void this CLEARED cheque #" + (ch.chequeNo || "") + "?\n\nBank posting will reverse" +
+          ((ch.allocations || []).length ? " and invoice allocations will be unwound." : "."),
+        function () {
+          var at = new Date().toISOString();
+          var allocs = ch.allocations || [];
+          var ns = (state.sales || []).map(function (s) {
+            var related = allocs.filter(function (a) { return a && String(a.saleId) === String(s.id); });
+            if (!related.length) return s;
+            var unwind = related.reduce(function (a, x) { return a + (parseFloat(x.amount) || 0); }, 0);
+            unwind = Math.round(unwind * 100) / 100;
+            if (!(unwind > 0)) return s;
+            var ph = (s.paymentHistory || []).filter(function (p) {
+              return !(p && String(p.chequeId) === String(ch.id) && (p.type === "cheque_allocation" || p.cashMethod === "Adjustment"));
+            });
+            var newPaid = Math.max(0, Math.round(((s.paid || 0) - unwind) * 100) / 100);
+            var newBal = Math.round(((s.total || 0) - newPaid) * 100) / 100;
+            return stampUpdatedAt(Object.assign({}, s, {
+              paid: newPaid,
+              balance: newBal,
+              payStatus: newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid",
+              paymentHistory: ph,
+            }), at);
+          });
+          var nch = (state.cheques || []).map(function (c) {
+            if (c.id !== ch.id) return c;
+            return stampUpdatedAt(Object.assign({}, c, {
+              status: "Voided",
+              priorStatus: "Cleared",
+              voidedDate: today(),
+              allocations: allocs,
+            }), at);
+          });
+          S.set("tc3_cheques", nch);
+          S.set("tc3_sales", ns);
+          try { pushKeysNow([["tc3_cheques", nch], ["tc3_sales", ns]]); } catch (_e) { /* ignore */ }
+          setState(function (st) { return Object.assign({}, st, { cheques: nch, sales: ns }); });
+          addAudit("Cheque Voided (cleared) #" + (ch.chequeNo || ""), getCurrencySymbol() + " " + fmtNum(ch.amount));
+          setActionModal(null);
+        }
+      );
+    };
+    if (typeof checkPeriodClose === "function") {
+      checkPeriodClose(today(), state.settings, runVoid);
+    } else {
+      runVoid();
+    }
+  };
+
+  var openAllocate = function (ch) {
+    var used = (ch.allocations || []).reduce(function (a, x) { return a + (parseFloat(x.amount) || 0); }, 0);
+    var remain = Math.round(((ch.amount || 0) - used) * 100) / 100;
+    setAllocForm({ saleId: "", amount: remain > 0 ? String(remain) : "", note: "" });
+    setActionModal({ cheque: ch, action: "allocate" });
+  };
+
+  var allocateStandaloneCheque = function (ch) {
+    var saleId = String(allocForm.saleId || "").trim();
+    var amt = Math.round((parseFloat(allocForm.amount) || 0) * 100) / 100;
+    if (!saleId) { showAlert("Select an invoice to allocate against."); return; }
+    if (!(amt > 0)) { showAlert("Enter a positive allocation amount."); return; }
+    var used = (ch.allocations || []).reduce(function (a, x) { return a + (parseFloat(x.amount) || 0); }, 0);
+    var remain = Math.round(((ch.amount || 0) - used) * 100) / 100;
+    if (amt > remain + 0.009) { showAlert("Amount exceeds unallocated balance (" + remain + ")."); return; }
+    var sale = (state.sales || []).find(function (s) { return s.id === saleId; });
+    if (!sale || sale.status === "Voided" || sale.status === "Cancelled") {
+      showAlert("Invoice not found or voided.");
+      return;
+    }
+    var fit = assertPaymentFitsSaleBalance(sale, amt);
+    if (!fit.ok) { showAlert(fit.message); return; }
+    var at = new Date().toISOString();
+    var allocRow = {
+      id: uid(),
+      date: today(),
+      saleId: saleId,
+      invoiceNo: sale.invoiceNo || "",
+      customerId: sale.customerId || "",
+      amount: amt,
+      note: String(allocForm.note || "").trim(),
+      createdAt: at,
+    };
+    var nch = (state.cheques || []).map(function (c) {
+      if (c.id !== ch.id) return c;
+      return stampUpdatedAt(Object.assign({}, c, {
+        allocations: (c.allocations || []).concat([allocRow]),
+      }), at);
+    });
+    var ns = (state.sales || []).map(function (s) {
+      if (s.id !== saleId) return s;
+      var ph = (s.paymentHistory || []).slice();
+      ph.push({
+        id: uid(),
+        date: today(),
+        amount: amt,
+        cashMethod: "Adjustment",
+        type: "cheque_allocation",
+        chequeId: ch.id,
+        note: "Allocated from cheque #" + (ch.chequeNo || "") + (allocRow.note ? " · " + allocRow.note : ""),
+        createdAt: at,
+      });
+      var newPaid = Math.min((s.total || 0), Math.round(((s.paid || 0) + amt) * 100) / 100);
+      var newBal = Math.round(((s.total || 0) - newPaid) * 100) / 100;
+      return stampUpdatedAt(Object.assign({}, s, {
+        paid: newPaid,
+        balance: newBal,
+        payStatus: newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : (s.payStatus || "Unpaid"),
+        paymentHistory: ph,
+      }), at);
+    });
+    S.set("tc3_cheques", nch);
+    S.set("tc3_sales", ns);
+    try { pushKeysNow([["tc3_cheques", nch], ["tc3_sales", ns]]); } catch (_e) { /* ignore */ }
+    setState(function (st) { return Object.assign({}, st, { cheques: nch, sales: ns }); });
+    addAudit("Cheque Allocated #" + (ch.chequeNo || ""), getCurrencySymbol() + " " + fmtNum(amt) + " → " + (sale.invoiceNo || saleId));
+    setActionModal(null);
   };
 
   return (
@@ -596,7 +766,13 @@ var Cheques = React.memo(function (props) {
                           {ch.status === "Bounced" && ch.replacedByChequeid ? (
                             <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 700 }}>Re-issued</span>
                           ) : null}
-                          {!ch.purchaseId && !ch.saleId ? (
+                          {!ch.purchaseId && !ch.saleId && ch.status === "Cleared" ? (
+                            <ActBtn tone="red" title="Void cleared cheque" onClick={function () { voidStandaloneCleared(ch); }} />
+                          ) : null}
+                          {!ch.purchaseId && !ch.saleId && ch.status === "Cleared" && ch.type === "incoming" ? (
+                            <ActBtn tone="blue" title="Allocate to invoice" onClick={function () { openAllocate(ch); }} />
+                          ) : null}
+                          {!ch.purchaseId && !ch.saleId && ch.status !== "Cleared" && ch.status !== "Voided" ? (
                             <ActBtn tone="red" title="Delete standalone cheque" onClick={function () { deleteStandalone(ch.id); }} />
                           ) : null}
                         </ActBtnGroup>
@@ -635,6 +811,62 @@ var Cheques = React.memo(function (props) {
             </div>
             <div className="erp-arap-view-actions">
               <Btn col="green" onClick={function () { markCleared(actionModal.cheque); }}>Confirm clear</Btn>
+              <Btn col="gray" onClick={function () { setActionModal(null); }}>Cancel</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {actionModal && actionModal.action === "allocate" && (
+        <Modal
+          className="erp-arap-view-modal is-chq"
+          title={"Allocate · #" + actionModal.cheque.chequeNo}
+          subtitle="Apply unallocated clearing to an open invoice (no second bank debit)"
+          onClose={function () { setActionModal(null); }}
+          compact
+          closeRound
+        >
+          <div className="erp-arap-view">
+            <div className="erp-arap-view-alert is-ok">
+              <div>
+                <strong>Customer credit → invoice</strong>
+                <span>{actionModal.cheque.customerName || "—"}</span>
+              </div>
+              <b>{getCurrencySymbol()} {fmtNum(actionModal.cheque.amount)}</b>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <Sel
+                label="Invoice *"
+                value={allocForm.saleId}
+                onChange={function (e) { setAllocForm(function (x) { return Object.assign({}, x, { saleId: e.target.value }); }); }}
+              >
+                <option value="">Select open invoice…</option>
+                {(state.sales || []).filter(function (s) {
+                  if (!s || s.status === "Voided" || s.status === "Cancelled") return false;
+                  return Math.max(0, (s.total || 0) - (s.paid || 0)) > 0.009;
+                }).slice(0, 80).map(function (s) {
+                  var bal = Math.max(0, (s.total || 0) - (s.paid || 0));
+                  return (
+                    <option key={s.id} value={s.id}>
+                      {(s.invoiceNo || s.id.slice(0, 8)) + " · " + (s.customerName || "") + " · due " + fmtNum(bal)}
+                    </option>
+                  );
+                })}
+              </Sel>
+              <Input
+                label="Amount *"
+                type="number"
+                value={allocForm.amount}
+                onChange={function (e) { setAllocForm(function (x) { return Object.assign({}, x, { amount: e.target.value }); }); }}
+              />
+              <Input
+                label="Note"
+                value={allocForm.note}
+                onChange={function (e) { setAllocForm(function (x) { return Object.assign({}, x, { note: e.target.value }); }); }}
+              />
+            </div>
+            <div className="erp-arap-view-actions">
+              <Btn col="blue" onClick={function () { allocateStandaloneCheque(actionModal.cheque); }}>Allocate</Btn>
               <Btn col="gray" onClick={function () { setActionModal(null); }}>Cancel</Btn>
             </div>
           </div>

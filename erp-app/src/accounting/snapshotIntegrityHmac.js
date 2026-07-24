@@ -1,5 +1,5 @@
 /**
- * Snapshot HMAC: v2 = LICENSE_SECRET (via Electron) when available; v1 = device pepper fallback (dev/non-prod only).
+ * Snapshot HMAC: v2 = LICENSE_SECRET (via Electron main sign/verify); v1 = device pepper (dev only).
  */
 
 import { getOrCreateDeviceId } from "./ids.js";
@@ -32,15 +32,26 @@ async function getHmacKeyBytesDevice() {
   return crypto.subtle.digest("SHA-256", raw);
 }
 
+function hasElectronSign() {
+  return typeof window !== "undefined"
+    && window.electronAPI
+    && typeof window.electronAPI.signSnapshotHmac === "function";
+}
+
 /**
- * LICENSE_SECRET / TC_LIC_SERVER_SECRET from main process (Electron), else null.
+ * True when a LICENSE_SECRET is available (main process or env for node tests).
  */
 export async function resolveSnapshotSecretForRenderer() {
+  if (hasElectronSign() && typeof window.electronAPI.isSnapshotHmacConfigured === "function") {
+    try {
+      if (await window.electronAPI.isSnapshotHmacConfigured()) return "__main_process__";
+    } catch (e) { /* ignore */ }
+  }
   if (typeof window !== "undefined" && window.electronAPI && typeof window.electronAPI.getSnapshotHmacSecret === "function") {
     try {
       var s = await window.electronAPI.getSnapshotHmacSecret();
       if (s && typeof s === "string" && s.length > 0) return s;
-    } catch (e) { /* ignore */ }
+    } catch (e2) { /* ignore */ }
   }
   if (typeof process !== "undefined" && process.env) {
     var e = process.env.LICENSE_SECRET || process.env.TC_LIC_SERVER_SECRET;
@@ -50,17 +61,19 @@ export async function resolveSnapshotSecretForRenderer() {
 }
 
 /**
- * Primary + optional rotation secret (TC_SNAPSHOT_HMAC_SECRET_PREVIOUS) for verify-only.
+ * Primary + optional rotation secret (TC_SNAPSHOT_HMAC_SECRET_PREVIOUS) for verify-only (node/tests).
  */
 export async function resolveSnapshotVerificationSecrets() {
   var list = [];
   var primary = await resolveSnapshotSecretForRenderer();
-  if (primary) list.push(primary);
+  if (primary && primary !== "__main_process__") list.push(primary);
   var prev = "";
   if (typeof process !== "undefined" && process.env && process.env.TC_SNAPSHOT_HMAC_SECRET_PREVIOUS) {
     prev = String(process.env.TC_SNAPSHOT_HMAC_SECRET_PREVIOUS).trim();
   }
-  if (!prev && typeof window !== "undefined" && window.electronAPI && typeof window.electronAPI.getSnapshotHmacSecretPrevious === "function") {
+  if (!prev && typeof window !== "undefined" && window.electronAPI && typeof window.electronAPI.verifySnapshotHmac === "function") {
+    /* Previous secret stays in main — verify IPC already tries TC_SNAPSHOT_HMAC_SECRET_PREVIOUS. */
+  } else if (!prev && typeof window !== "undefined" && window.electronAPI && typeof window.electronAPI.getSnapshotHmacSecretPrevious === "function") {
     try {
       var p = await window.electronAPI.getSnapshotHmacSecretPrevious();
       if (p && typeof p === "string") prev = p.trim();
@@ -74,7 +87,13 @@ export async function resolveSnapshotVerificationSecrets() {
  * HMAC-SHA256(canonicalBody, secret) — v2 strong seal.
  */
 export async function computeSnapshotHmacHexV2(canonicalBody, secret) {
-  if (!secret || typeof crypto === "undefined" || !crypto.subtle) {
+  if (hasElectronSign() && (!secret || secret === "__main_process__")) {
+    try {
+      var r = await window.electronAPI.signSnapshotHmac(canonicalBody || "");
+      if (r && r.ok && r.hex) return r.hex;
+    } catch (e) { /* fall through */ }
+  }
+  if (!secret || secret === "__main_process__" || typeof crypto === "undefined" || !crypto.subtle) {
     return "";
   }
   try {
@@ -88,7 +107,14 @@ export async function computeSnapshotHmacHexV2(canonicalBody, secret) {
 }
 
 export async function verifySnapshotHmacV2(canonicalBody, hexSig, secret) {
-  if (!hexSig || !secret) return false;
+  if (!hexSig) return false;
+  if (hasElectronSign() && typeof window.electronAPI.verifySnapshotHmac === "function" && (!secret || secret === "__main_process__")) {
+    try {
+      var r = await window.electronAPI.verifySnapshotHmac({ canonicalBody: canonicalBody || "", hexSig: hexSig });
+      return !!(r && r.ok);
+    } catch (e) { /* fall through */ }
+  }
+  if (!secret || secret === "__main_process__") return false;
   var next = await computeSnapshotHmacHexV2(canonicalBody, secret);
   return !!next && next === hexSig;
 }
@@ -125,6 +151,21 @@ export async function verifySnapshotHmacFlexible(snapshot, canon) {
   }
   var algo = snapshot.algorithm || "";
   if (algo === "hmac-sha256-v2" || algo === "") {
+    if (hasElectronSign() && typeof window.electronAPI.verifySnapshotHmac === "function") {
+      try {
+        var mainV = await window.electronAPI.verifySnapshotHmac({
+          canonicalBody: canon || "",
+          hexSig: snapshot.integrityHmac,
+        });
+        if (mainV && mainV.ok) {
+          return {
+            ok: true,
+            matched: mainV.matched || "v2_license",
+            reason: "hmac_ok",
+          };
+        }
+      } catch (eM) { /* fall through to secret list */ }
+    }
     var secrets = await resolveSnapshotVerificationSecrets();
     var si;
     for (si = 0; si < secrets.length; si++) {

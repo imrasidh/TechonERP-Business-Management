@@ -143,7 +143,7 @@ export async function validateSnapshotIntegrityFull(snapshot) {
   var flex = await verifySnapshotHmacFlexible(snapshot, canon);
   if (!flex.ok) {
     return Object.assign({}, meta, {
-      ok: true,
+      ok: false,
       tampered: true,
       reason: flex.reason || "hmac_mismatch",
       recomputedContentHashShort: shortenHexForDisplay(recomputedContentHash),
@@ -187,8 +187,8 @@ export function buildFinancialSnapshot(S, lines, chart, invDer, opts) {
       assets: bs.assets,
       liabilities: bs.liabilities,
       equity: bs.equity,
-      balanced: bs.balanced,
-      difference: bs.difference,
+      balanced: bs.balancedWithEarnings != null ? bs.balancedWithEarnings : bs.balanced,
+      difference: bs.differenceWithEarnings != null ? bs.differenceWithEarnings : bs.difference,
       equityBase: bs.equityBase != null ? bs.equityBase : bs.equity,
       currentEarnings: bs.currentEarnings,
       equityWithCurrentEarnings: bs.equityWithCurrentEarnings,
@@ -226,13 +226,27 @@ export async function appendSnapshot(S, snapshot, opts) {
   var canon = stableStringify(raw);
   var licSecret = await resolveSnapshotSecretForRenderer();
   if (licSecret) {
-    raw.integrityHmac = await computeSnapshotHmacHexV2(canon, licSecret);
-    raw.algorithm = "hmac-sha256-v2";
-    raw.integritySealed = true;
+    var hmacV2 = await computeSnapshotHmacHexV2(canon, licSecret);
+    if (hmacV2) {
+      raw.integrityHmac = hmacV2;
+      raw.algorithm = "hmac-sha256-v2";
+      raw.integritySealed = true;
+    } else {
+      raw.integrityHmac = "";
+      raw.algorithm = "hmac-sha256-v2-required";
+      raw.integritySealed = false;
+    }
   } else if (isSnapshotDeviceHmacAllowed()) {
-    raw.integrityHmac = await computeSnapshotHmacHex(canon);
-    raw.algorithm = "hmac-sha256-v1";
-    raw.integritySealed = true;
+    var hmacV1 = await computeSnapshotHmacHex(canon);
+    if (hmacV1) {
+      raw.integrityHmac = hmacV1;
+      raw.algorithm = "hmac-sha256-v1";
+      raw.integritySealed = true;
+    } else {
+      raw.integrityHmac = "";
+      raw.algorithm = "hmac-sha256-v1-required";
+      raw.integritySealed = false;
+    }
   } else {
     raw.integrityHmac = "";
     raw.algorithm = "hmac-sha256-v2-required";

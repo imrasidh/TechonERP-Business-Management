@@ -6,8 +6,9 @@
 
 import { getOrCreateDeviceId, stableJournalTransactionId } from "./ids.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
-import { computeReturnLineTax, computePurchaseReturnTax, computePurchaseInventoryPosting } from "../tax/taxCompute.js";
+import { computeReturnLineTax, computePurchaseReturnTax, computeSaleTaxFromSnapshot, isPurchaseTaxInclusive } from "../tax/taxCompute.js";
 import { isVoidedTxn } from "../utils/voidInvoice.js";
+import { glassInvoiceLineTotal } from "../utils/glassProduct.js";
 
 export var GL = {
   CASH: "1000",
@@ -15,6 +16,10 @@ export var GL = {
   AR: "1100",
   INV: "1200",
   FIXED: "1500",
+  /** Unallocated receipts (standalone incoming cheques / uncleared deposits) */
+  CLEARING: "1195",
+  /** Supplier payments above invoice total (asset until applied) */
+  VENDOR_PREPAY: "1300",
   AP: "2000",
   EQUITY: "3000",
   SALES: "4000",
@@ -40,6 +45,8 @@ export var DEFAULT_GL_CHART = [
   { id: GL.AR, code: "1100", name: "Accounts Receivable", type: "asset", normal: "debit" },
   { id: GL.INV, code: "1200", name: "Inventory", type: "asset", normal: "debit" },
   { id: GL.FIXED, code: "1500", name: "Fixed & Other Assets", type: "asset", normal: "debit" },
+  { id: GL.CLEARING, code: "1195", name: "Unallocated Receipts / Customer Credits", type: "liability", normal: "credit" },
+  { id: GL.VENDOR_PREPAY, code: "1300", name: "Vendor Prepayments", type: "asset", normal: "debit" },
   { id: GL.AP, code: "2000", name: "Accounts Payable", type: "liability", normal: "credit" },
   { id: GL.EQUITY, code: "3000", name: "Owner Equity & Opening Balance", type: "equity", normal: "credit" },
   { id: GL.SALES, code: "4000", name: "Sales Revenue", type: "income", normal: "credit" },
@@ -61,9 +68,20 @@ export function round2(x) {
   return Math.round((Number(x) || 0) * 100) / 100;
 }
 
+/** Card / Online / Cheque clearings settle through bank, not cash drawer. */
+export function isBankLikeCashMethod(m) {
+  var s = String(m || "Cash");
+  return s === "Bank" || s === "Card" || s === "Online" || s === "Cheque" || s === "Bank Transfer";
+}
+
+/** Normalize POS method labels to Cash | Bank for storage / balances. */
+export function normalizeCashMethodForStorage(m) {
+  if (m === "Cheque" || m === "ChequePending" || m === "Adjustment" || m === "Opening") return m;
+  return isBankLikeCashMethod(m) ? "Bank" : "Cash";
+}
+
 function cashBankFromMethod(m) {
-  var cm = (m || "Cash") === "Bank" ? GL.BANK : GL.CASH;
-  return cm;
+  return isBankLikeCashMethod(m) ? GL.BANK : GL.CASH;
 }
 
 /**
@@ -118,6 +136,81 @@ function purchaseInventoryVal(p) {
     /* Align with purchase lines: base qty × per-base cost, or deriveLineStockValue (lineStockValue / legacy) */
     return a + round2(deriveLineStockValue(it));
   }, 0);
+}
+
+function saleLineGross(it) {
+  if (!it) return 0;
+  if (it.isGlassLine) return round2(glassInvoiceLineTotal(it));
+  if (it.lineTotal != null && it.lineTotal !== "" && !isNaN(Number(it.lineTotal))) {
+    return round2(Number(it.lineTotal));
+  }
+  return round2((Number(it.qty) || 0) * (Number(it.price) || 0));
+}
+
+/**
+ * Original sale total/tax from item lines (Returns.jsx does not mutate item qtys).
+ * Prefer this over adding return gross back onto parent.total (which double-counts when
+ * the parent was never mutated, e.g. static accounting tests).
+ */
+export function getOriginalSaleTotalAndTax(s, taxSettings) {
+  taxSettings = taxSettings || {};
+  var items = (s && s.items) || [];
+  if (!items.length) {
+    return { total: round2((s && s.total) || 0), tax: round2((s && s.totalTax) || 0) };
+  }
+  var sub = 0;
+  for (var i = 0; i < items.length; i++) sub = round2(sub + saleLineGross(items[i]));
+  var disc = round2((s && s.discount) || 0);
+  var afterDisc = Math.max(0, round2(sub - disc));
+  var taxMode = s.taxMode === "inclusive" || s.taxMode === "exclusive"
+    ? s.taxMode
+    : (taxSettings.taxMode === "inclusive" ? "inclusive" : "exclusive");
+  var hasSnap = (Number(s.totalTax) > 0) || (s.selectedTaxes && s.selectedTaxes.length > 0);
+  var taxOn = !!(taxSettings.taxEnabled || hasSnap);
+  if (!taxOn) return { total: afterDisc, tax: 0 };
+
+  var snapSale = {
+    totalTax: s.totalTax,
+    taxMode: taxMode,
+    selectedTaxes: (s.selectedTaxes && s.selectedTaxes.length)
+      ? s.selectedTaxes
+      : (taxSettings.selectedTaxes || []),
+    taxCompoundMode: s.taxCompoundMode || taxSettings.taxCompoundMode,
+  };
+  var taxApplyBase = s.taxApplyBase || taxSettings.taxApplyBase || "after_discount";
+  var taxableInput = taxMode === "inclusive"
+    ? afterDisc
+    : (taxApplyBase === "before_discount" ? sub : afterDisc);
+  var tc = computeSaleTaxFromSnapshot(snapSale, taxableInput);
+  var tax = round2(tc.totalTax || 0);
+  if (!tax && Number(s.totalTax) > 0) tax = round2(s.totalTax);
+  if (taxMode === "inclusive") return { total: afterDisc, tax: tax };
+  return { total: round2(afterDisc + tax), tax: tax };
+}
+
+/**
+ * Original purchase AP total / input tax from line stock (items not qty-mutated on returns).
+ */
+export function getOriginalPurchaseTotal(p, taxSettings) {
+  taxSettings = taxSettings || {};
+  var items = (p && p.items) || [];
+  var invVal = purchaseInventoryVal(p);
+  var taxIn = round2((p && p.totalTax) || 0);
+  if (!items.length) {
+    return { total: round2((p && p.total) || 0), tax: taxIn, invNet: invVal };
+  }
+  var inclusive = isPurchaseTaxInclusive(p, taxSettings);
+  if (taxSettings.taxEnabled && taxIn > 0.005) {
+    if (inclusive) {
+      return {
+        total: invVal,
+        tax: taxIn,
+        invNet: round2(Math.max(0, invVal - taxIn)),
+      };
+    }
+    return { total: round2(invVal + taxIn), tax: taxIn, invNet: invVal };
+  }
+  return { total: invVal, tax: 0, invNet: invVal };
 }
 
 /**
@@ -315,16 +408,22 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     var dPay = (ob.payables || []).reduce(function (a, p) { return a + round2(p.amount || 0); }, 0);
     var dStock = (ob.stock || []).reduce(function (a, s) { return a + round2((s.cost || 0) * (s.qty || 0)); }, 0);
     var dAst = (ob.assets || []).reduce(function (a, x) { return a + round2(x.value || 0); }, 0);
-    var totalDr = dCash + dBank + dRecv + dStock + dAst;
-    var totalCr = dPay;
-    var eq = round2(totalDr - totalCr);
     var partsOB = [];
     if (dCash > 0) partsOB.push({ accountId: GL.CASH, debit: dCash, credit: 0, memo: "Opening" });
+    else if (dCash < 0) partsOB.push({ accountId: GL.CASH, debit: 0, credit: -dCash, memo: "Opening overdraft" });
     if (dBank > 0) partsOB.push({ accountId: GL.BANK, debit: dBank, credit: 0, memo: "Opening" });
+    else if (dBank < 0) partsOB.push({ accountId: GL.BANK, debit: 0, credit: -dBank, memo: "Opening overdraft" });
     if (dRecv > 0) partsOB.push({ accountId: GL.AR, debit: dRecv, credit: 0, memo: "Opening receivables" });
+    else if (dRecv < 0) partsOB.push({ accountId: GL.AR, debit: 0, credit: -dRecv, memo: "Opening AR credit" });
     if (dStock > 0) partsOB.push({ accountId: GL.INV, debit: dStock, credit: 0, memo: "Opening stock" });
+    else if (dStock < 0) partsOB.push({ accountId: GL.INV, debit: 0, credit: -dStock, memo: "Opening stock credit" });
     if (dAst > 0) partsOB.push({ accountId: GL.FIXED, debit: dAst, credit: 0, memo: "Opening assets" });
+    else if (dAst < 0) partsOB.push({ accountId: GL.FIXED, debit: 0, credit: -dAst, memo: "Opening asset credit" });
     if (dPay > 0) partsOB.push({ accountId: GL.AP, debit: 0, credit: dPay, memo: "Opening payables" });
+    else if (dPay < 0) partsOB.push({ accountId: GL.AP, debit: -dPay, credit: 0, memo: "Opening AP debit (prepayment)" });
+    var signedDr = (dCash > 0 ? dCash : 0) + (dBank > 0 ? dBank : 0) + (dRecv > 0 ? dRecv : 0) + (dStock > 0 ? dStock : 0) + (dAst > 0 ? dAst : 0) + (dPay < 0 ? -dPay : 0);
+    var signedCr = (dPay > 0 ? dPay : 0) + (dCash < 0 ? -dCash : 0) + (dBank < 0 ? -dBank : 0) + (dRecv < 0 ? -dRecv : 0) + (dStock < 0 ? -dStock : 0) + (dAst < 0 ? -dAst : 0);
+    var eq = round2(signedDr - signedCr);
     if (eq !== 0) partsOB.push({ accountId: GL.EQUITY, debit: eq < 0 ? -eq : 0, credit: eq > 0 ? eq : 0, memo: "Opening equity plug" });
     if (partsOB.length) {
       add(ob.date || (state.settings && state.settings.booksClosedDate) || "", "opening_balance", "ob-1", partsOB, "Opening balance wizard");
@@ -338,30 +437,38 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     if (amt <= 0) return;
     var dt = e.date || "";
     var acc = cashBankFromMethod(e.cashMethod);
+    var capRef = e.id || ("capfb-" + String(dt) + "-" + String(amt) + "-" + idx);
     if (e.type === "invest") {
-      add(dt, "capital", "cap-" + idx, [
+      add(dt, "capital", "cap-" + capRef, [
         { accountId: acc, debit: amt, credit: 0 },
         { accountId: GL.EQUITY, debit: 0, credit: amt },
       ], e.note || "Capital invest");
     } else {
-      add(dt, "capital", "capw-" + idx, [
+      add(dt, "capital", "capw-" + capRef, [
         { accountId: GL.EQUITY, debit: amt, credit: 0 },
         { accountId: acc, debit: 0, credit: amt },
       ], e.note || "Capital withdraw");
     }
   });
 
-  /* ── Sales (revenue + cash/AR + COGS; optional VAT split) ── */
+  /* ── Sales (revenue + cash/AR + COGS; optional VAT split) ──
+     Returns.jsx may reduce parent invoice totals; original totals come from item lines
+     (items are not qty-mutated). Math.max restores mutated-down parents without double-counting
+     when parent.total is already the pre-return amount (static tests). */
   var taxSettings = state.settings || {};
   var glVatPosting = taxSettings.glVatPostingEnabled !== false;
   (state.sales || []).forEach(function (s) {
     if (s.status === "Voided" || s.status === "Cancelled") return;
     var dt = s.date || "";
     var inv = cogsForSale(s);
-    var tot = round2(s.total || 0);
-    var paid = round2(s.paid || 0);
+    var origSale = getOriginalSaleTotalAndTax(s, taxSettings);
+    var tot = (s.items && s.items.length)
+      ? Math.max(round2(s.total || 0), origSale.total)
+      : round2(s.total || 0);
     var parts = [];
-    var taxAmt = round2(s.totalTax || 0);
+    var taxAmt = (s.items && s.items.length)
+      ? Math.max(round2(s.totalTax || 0), origSale.tax)
+      : round2(s.totalTax || 0);
     if (glVatPosting && taxSettings.taxEnabled && taxAmt > 0.005) {
       var netSales = round2(tot - taxAmt);
       if (netSales < 0) netSales = 0;
@@ -378,22 +485,59 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     } else {
       parts.push({ accountId: GL.SALES, debit: 0, credit: tot, memo: "Invoice " + (s.invoiceNo || "") });
     }
-    (s.paymentHistory || []).forEach(function (ph) {
+    /* Full invoice on AR at sale date; cash/bank settle on payment dates (separate journals). */
+    parts.push({ accountId: GL.AR, debit: tot, credit: 0, memo: "Invoice " + (s.invoiceNo || "") });
+    add(dt, "sale", s.id, parts, "Sale", "rev");
+    var cashPhSum = 0;
+    var arRemain = tot;
+    var creditRemain = 0;
+    (s.paymentHistory || []).forEach(function (ph, j) {
       var a = round2(ph.amount || 0);
+      if (Math.abs(a) < 0.005) return;
+      var m = ph.cashMethod || "Cash";
+      if (m === "Cheque" || m === "Adjustment") return;
+      cashPhSum = round2(cashPhSum + a);
+      var payDt = ph.date || dt;
       if (a > 0) {
-        parts.push({ accountId: cashBankFromMethod(ph.cashMethod), debit: a, credit: 0, memo: ph.note || "Payment" });
-      } else if (a < 0) {
-        parts.push({ accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: -a, memo: ph.note || "Payment reversal" });
+        var toAr = round2(Math.min(a, Math.max(0, arRemain)));
+        var excess = round2(a - toAr);
+        arRemain = round2(arRemain - toAr);
+        creditRemain = round2(creditRemain + excess);
+        if (toAr > 0.005) {
+          add(payDt, "sale_payment", s.id + "-pay-" + j, [
+            { accountId: cashBankFromMethod(m), debit: toAr, credit: 0, memo: ph.note || "Payment" },
+            { accountId: GL.AR, debit: 0, credit: toAr },
+          ], "Customer pay");
+        }
+        if (excess > 0.005) {
+          add(payDt, "sale_overpay", s.id + "-over-" + j, [
+            { accountId: cashBankFromMethod(m), debit: excess, credit: 0, memo: "Customer credit / overpayment" },
+            { accountId: GL.CLEARING, debit: 0, credit: excess, memo: "Customer credit" },
+          ], "Customer overpay");
+        }
+      } else {
+        var refund = round2(-a);
+        var fromCredit = round2(Math.min(refund, Math.max(0, creditRemain)));
+        var fromAr = round2(refund - fromCredit);
+        creditRemain = round2(creditRemain - fromCredit);
+        arRemain = round2(arRemain + fromAr);
+        if (fromCredit > 0.005) {
+          add(payDt, "sale_overpay", s.id + "-overrev-" + j, [
+            { accountId: GL.CLEARING, debit: fromCredit, credit: 0, memo: "Customer credit refund" },
+            { accountId: cashBankFromMethod(m), debit: 0, credit: fromCredit },
+          ], "Customer credit refund");
+        }
+        if (fromAr > 0.005) {
+          add(payDt, "sale_payment", s.id + "-pay-" + j, [
+            { accountId: GL.AR, debit: fromAr, credit: 0, memo: ph.note || "Payment reversal" },
+            { accountId: cashBankFromMethod(m), debit: 0, credit: fromAr },
+          ], "Customer payment reversal");
+        }
       }
     });
-    var phSum = (s.paymentHistory || []).reduce(function (a, ph) { return a + round2(ph.amount || 0); }, 0);
-    var arAmt = round2(tot - phSum);
-    if (arAmt > 0.005) {
-      parts.push({ accountId: GL.AR, debit: arAmt, credit: 0, memo: "Outstanding" });
-    } else if (arAmt < -0.005) {
-      warnings.push("Sale " + (s.invoiceNo || s.id) + ": payments exceed total — GL skipped AR line");
+    if (cashPhSum - tot > 0.005) {
+      /* Designed CLEARING home for excess — informational only (must not block journal persist). */
     }
-    add(dt, "sale", s.id, parts, "Sale", "rev");
     if (inv > 0) {
       add(dt, "sale_cogs", s.id, [
         { accountId: GL.COGS, debit: inv, credit: 0 },
@@ -402,15 +546,20 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     }
   });
 
-  /* ── Purchases: inventory + AP (+ input VAT when recorded), then payments ── */
+  /* ── Purchases: inventory + AP (+ input VAT when recorded), then payments.
+     Original AP from purchase lines (Returns.jsx may reduce parent.total). ── */
   (state.purchases || []).forEach(function (p, idx) {
     if (p.status === "Voided" || p.status === "Cancelled") return;
     var dt = p.date || "";
+    var origPur = getOriginalPurchaseTotal(p, taxSettings);
+    var apTot = (p.items && p.items.length)
+      ? Math.max(round2(p.total || 0), origPur.total)
+      : round2(p.total || 0);
+    var taxIn = (p.items && p.items.length)
+      ? Math.max(round2(p.totalTax || 0), origPur.tax)
+      : round2(p.totalTax || 0);
     var invVal = purchaseInventoryVal(p);
-    var apTot = round2(p.total || 0);
-    var posting = computePurchaseInventoryPosting(p, taxSettings);
-    var taxIn = round2(posting.taxIn || 0);
-    var invNet = round2(posting.invNet != null ? posting.invNet : invVal);
+    var invNet = round2(origPur.invNet != null ? origPur.invNet : invVal);
     var pp;
     var diff;
     if (glVatPosting && taxSettings.taxEnabled && taxIn > 0.005) {
@@ -439,32 +588,65 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
       }
     }
     add(dt, "purchase", p.id, pp, "Purchase " + (p.purchaseNo || ""));
+    var apRemain = apTot;
+    var prepayRemain = 0;
     (p.paymentHistory || []).forEach(function (ph, j) {
       var a = round2(ph.amount || 0);
+      if (Math.abs(a) < 0.005) return;
+      var m = ph.cashMethod || "Cash";
+      /* Match sales path + getCashBalances: Cheque pending / Adjustment are not cash until Bank. */
+      if (m === "Cheque" || m === "Adjustment") return;
+      var payDt = ph.date || dt;
       if (a > 0) {
-        add(ph.date || dt, "purchase_payment", p.id + "-pay-" + j, [
-          { accountId: GL.AP, debit: a, credit: 0 },
-          { accountId: cashBankFromMethod(ph.cashMethod), debit: 0, credit: a },
-        ], "Supplier pay");
+        var toAp = round2(Math.min(a, Math.max(0, apRemain)));
+        var excessP = round2(a - toAp);
+        apRemain = round2(apRemain - toAp);
+        prepayRemain = round2(prepayRemain + excessP);
+        if (toAp > 0.005) {
+          add(payDt, "purchase_payment", p.id + "-pay-" + j, [
+            { accountId: GL.AP, debit: toAp, credit: 0 },
+            { accountId: cashBankFromMethod(m), debit: 0, credit: toAp },
+          ], "Supplier pay");
+        }
+        if (excessP > 0.005) {
+          add(payDt, "purchase_prepay", p.id + "-pre-" + j, [
+            { accountId: GL.VENDOR_PREPAY, debit: excessP, credit: 0, memo: "Vendor prepayment" },
+            { accountId: cashBankFromMethod(m), debit: 0, credit: excessP },
+          ], "Vendor prepay");
+        }
       } else if (a < 0) {
-        add(ph.date || dt, "purchase_payment", p.id + "-pay-" + j, [
-          { accountId: cashBankFromMethod(ph.cashMethod), debit: -a, credit: 0 },
-          { accountId: GL.AP, debit: 0, credit: -a },
-        ], "Supplier payment reversal");
+        var refundP = round2(-a);
+        var fromPre = round2(Math.min(refundP, Math.max(0, prepayRemain)));
+        var fromAp = round2(refundP - fromPre);
+        prepayRemain = round2(prepayRemain - fromPre);
+        apRemain = round2(apRemain + fromAp);
+        if (fromPre > 0.005) {
+          add(payDt, "purchase_prepay", p.id + "-prerev-" + j, [
+            { accountId: cashBankFromMethod(m), debit: fromPre, credit: 0 },
+            { accountId: GL.VENDOR_PREPAY, debit: 0, credit: fromPre, memo: "Vendor prepayment refund" },
+          ], "Vendor prepay refund");
+        }
+        if (fromAp > 0.005) {
+          add(payDt, "purchase_payment", p.id + "-pay-" + j, [
+            { accountId: cashBankFromMethod(m), debit: fromAp, credit: 0 },
+            { accountId: GL.AP, debit: 0, credit: fromAp },
+          ], "Supplier payment reversal");
+        }
       }
     });
   });
 
-  /* ── Expenses ── */
+  /* ── Expenses (ChequePending waits until cheque clear posts Bank) ── */
   (state.expenses || []).forEach(function (e) {
-    var dt = e.date || "";
+    if (e.cashMethod === "ChequePending") return;
+    var dt = e.clearedDate || e.date || "";
     var amt = round2(e.amount || 0);
     if (amt <= 0) return;
-    var acc = cashBankFromMethod(e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" ? "Bank" : "Cash"));
+    var acc = cashBankFromMethod(e.cashMethod || (e.payMode === "Bank Transfer" || e.payMode === "Online" || e.payMode === "Cheque" ? "Bank" : "Cash"));
     add(dt, "expense", e.id, [
       { accountId: GL.EXP, debit: amt, credit: 0, memo: e.category || e.type || "" },
       { accountId: acc, debit: 0, credit: amt },
-    ], e.note || "Expense");
+    ], e.note || e.description || "Expense");
   });
 
   /* ── Fixed asset purchases (non-opening) ── */
@@ -571,14 +753,15 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     if (p && p.id != null) purchasesById[p.id] = p;
   });
 
-  /* ── Sales returns (contra revenue + output VAT reversal + AR/cash; COGS reversal) ── */
+  /* ── Sales returns (contra revenue + output VAT reversal + AR; COGS reversal).
+     Cash/bank refunds are posted only via the parent sale paymentHistory (negative PH),
+     never again from return.refundAmount — avoids double cash credit. ── */
   (state.salesReturns || []).forEach(function (r) {
     var parentSale = r.invoiceId != null ? salesById[r.invoiceId] : null;
     if (parentSale && isVoidedTxn(parentSale)) return;
     var dt = r.date || "";
     var rowNet = round2(r.amount || 0);
-    var rf = round2(r.refundAmount || 0);
-    var cost = round2((r.cost || 0) * (r.qty || 0));
+    var cost = round2(round2(r.cost || 0) * (r.qty || 0));
     if (rowNet > 0 || (r.returnGross != null && Number(r.returnGross) > 0)) {
       var sale = r.invoiceId != null ? salesById[r.invoiceId] : null;
       var rt = computeReturnLineTax(sale, taxSettings, rowNet, {
@@ -591,17 +774,19 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
       rowNet = round2(rt.net);
       var taxOnReturn = round2(rt.totalTax);
       var grossReturn = round2(rt.gross);
-      var arCr = round2(grossReturn - rf);
       var parts = [{ accountId: GL.SRET, debit: rowNet, credit: 0, memo: "Return" }];
       if (glVatPosting && taxSettings.taxEnabled && taxOnReturn > 0.005) {
         parts.push({ accountId: GL.VAT_PAY, debit: taxOnReturn, credit: 0, memo: "Output VAT reversal" });
       }
-      if (arCr > 0.005) {
-        parts.push({ accountId: GL.AR, debit: 0, credit: arCr, memo: "Reduce receivable / on account" });
-      }
-      if (rf > 0.005) {
-        var acc = r.refundMethod === "Bank" ? GL.BANK : GL.CASH;
-        parts.push({ accountId: acc, debit: 0, credit: rf, memo: "Refund to customer" });
+      if (grossReturn > 0.005) {
+        /* Orphan return (no parent invoice): CLEARING — avoids AR subledger hard-fail. */
+        var arAcct = (sale || parentSale) ? GL.AR : GL.CLEARING;
+        parts.push({
+          accountId: arAcct,
+          debit: 0,
+          credit: grossReturn,
+          memo: arAcct === GL.AR ? "Reduce receivable / on account" : "Orphan return · customer credit clearing",
+        });
       }
       add(dt, "sales_return", r.id, parts, "Sales return");
     }
@@ -613,51 +798,66 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     }
   });
 
-  /* ── Purchase returns — inventory credit uses (qty × line unit cost) stored on the return row
-     (captured from the purchase line; policy: settings.purchaseReturnCostMode, current_wac = that line / WAC snapshot) ── */
+  /* ── Purchase returns — inventory credit prefers layer/WAC replay from invDer
+     (same idea as sale COGS). Supplier AP still uses commercial return amount;
+     any gap posts to PUR_VAR so INV stays aligned with the inventory engine. ── */
   (state.purchaseReturns || []).forEach(function (r) {
     var parentPurchase = r.purchaseId != null ? purchasesById[r.purchaseId] : null;
     if (parentPurchase && isVoidedTxn(parentPurchase)) return;
     var dt = r.date || "";
-    var cost = round2((r.cost || 0) * (r.qty || 0));
-    if (cost > 0) {
+    var costCommercial = round2(round2(r.cost || 0) * (r.qty || 0));
+    var cost = costCommercial;
+    if (invDer && invDer.invOutByPurchaseReturnId && invDer.invOutByPurchaseReturnId[r.id] != null) {
+      cost = round2(invDer.invOutByPurchaseReturnId[r.id]);
+    }
+    if (costCommercial > 0 || cost > 0) {
       var purchase = r.purchaseId != null ? purchasesById[r.purchaseId] : null;
       var taxRev = 0;
-      var apGross = cost;
-      var invCredit = cost;
+      var apGross = costCommercial > 0 ? costCommercial : cost;
+      var invCredit = cost > 0 ? cost : costCommercial;
       if (glVatPosting && taxSettings.taxEnabled) {
         if (r.returnGross != null && r.returnGross !== "" && !isNaN(Number(r.returnGross))) {
           apGross = round2(Number(r.returnGross));
           taxRev = r.returnTax != null && r.returnTax !== "" && !isNaN(Number(r.returnTax))
             ? round2(Number(r.returnTax))
             : 0;
-          invCredit = round2(apGross - taxRev);
+          /* Prefer engine stock cost when present; else net of tax on commercial gross. */
+          if (!(invDer && invDer.invOutByPurchaseReturnId && invDer.invOutByPurchaseReturnId[r.id] != null)) {
+            invCredit = round2(apGross - taxRev);
+          }
         } else if (r.returnTax != null && r.returnTax !== "" && !isNaN(Number(r.returnTax))) {
           taxRev = round2(Number(r.returnTax));
-          apGross = round2(cost + taxRev);
+          apGross = round2(costCommercial + taxRev);
         } else {
-          var prt = computePurchaseReturnTax(purchase, cost, taxSettings);
+          var prt = computePurchaseReturnTax(purchase, costCommercial > 0 ? costCommercial : cost, taxSettings);
           taxRev = round2(prt.taxReversal);
           apGross = round2(prt.apGross);
-          invCredit = round2(prt.stockCost);
+          if (!(invDer && invDer.invOutByPurchaseReturnId && invDer.invOutByPurchaseReturnId[r.id] != null)) {
+            invCredit = round2(prt.stockCost);
+          }
         }
       }
       var prParts = [
-        { accountId: GL.AP, debit: apGross, credit: 0 },
+        {
+          accountId: (purchase || parentPurchase) ? GL.AP : GL.CLEARING,
+          debit: apGross,
+          credit: 0,
+          memo: (purchase || parentPurchase) ? undefined : "Orphan PR · supplier clearing",
+        },
         { accountId: GL.INV, debit: 0, credit: invCredit },
       ];
       if (taxRev > 0.005) {
         prParts.push({ accountId: GL.VAT_REC, debit: 0, credit: taxRev, memo: "Input VAT reversal" });
       }
+      var prPlug = round2(apGross - invCredit - taxRev);
+      if (Math.abs(prPlug) > 0.005) {
+        if (prPlug > 0) {
+          prParts.push({ accountId: GL.PUR_VAR, debit: 0, credit: prPlug, memo: "PR cost vs layer/WAC" });
+        } else {
+          prParts.push({ accountId: GL.PUR_VAR, debit: -prPlug, credit: 0, memo: "PR cost vs layer/WAC" });
+        }
+      }
       add(dt, "purchase_return", r.id, prParts, "PR");
-    }
-    if (r.isRefund && r.refundAmount > 0) {
-      var rf = round2(r.refundAmount);
-      var acc = r.refundMethod === "Bank" ? GL.BANK : GL.CASH;
-      add(dt, "purchase_return_refund", r.id + "-rf", [
-        { accountId: acc, debit: rf, credit: 0 },
-        { accountId: GL.AP, debit: 0, credit: rf },
-      ], "Supplier refund");
     }
   });
 
@@ -666,10 +866,88 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     var amt = round2(pd.amount || 0);
     if (amt <= 0) return;
     var acc = cashBankFromMethod(pd.paymentMethod);
-    add(pd.date || "", "profit_dist", "pd-" + idx, [
+    var pdRef = pd.id || ("pdfb-" + String(pd.date || "") + "-" + String(amt) + "-" + idx);
+    add(pd.date || "", "profit_dist", "pd-" + pdRef, [
       { accountId: GL.DRAW, debit: amt, credit: 0 },
       { accountId: acc, debit: 0, credit: amt },
     ], pd.note || "Distribution");
+  });
+
+  /* ═══════════════════════════════════════════════════════════════════
+   * COD LOCKED SEPARATE (product request) — DO NOT POST TO GL
+   * tc3_codWithdrawals / partner pools / COD “profit” are a parallel
+   * tracker only. Never Dr/Cr Cash, Bank, Drawings, or P&L for COD
+   * withdrawals or COD fund math. The POS sale still journals as usual;
+   * this COD layer must stay isolated.
+   * ═══════════════════════════════════════════════════════════════════ */
+
+  /* ── Cleared standalone cheques (no invoice link) → bank / clearing ── */
+  (state.cheques || []).forEach(function (ch) {
+    if (!ch) return;
+    var amt = round2(ch.amount || 0);
+    if (amt <= 0) return;
+    var isStandalone = !(ch.saleId || ch.purchaseId || ch.manualPayableId || ch.manualReceivableId || ch.expenseId);
+    if (!isStandalone) return;
+
+    /* Voided after clear: reverse allocations (AR↔CLEARING) then bank ↔ clearing. */
+    if (String(ch.status || "") === "Voided" && String(ch.priorStatus || "") === "Cleared") {
+      var vdt = ch.voidedDate || ch.clearedDate || ch.date || "";
+      if (ch.type === "incoming") {
+        (ch.allocations || []).forEach(function (al, ai) {
+          if (!al || !al.saleId) return;
+          var aa = round2(al.amount || 0);
+          if (aa <= 0.005) return;
+          add(al.date || vdt, "cheque_alloc_void", ch.id + "-av" + ai, [
+            { accountId: GL.AR, debit: aa, credit: 0, memo: "Reverse cheque allocation" },
+            { accountId: GL.CLEARING, debit: 0, credit: aa, memo: "Restore clearing" },
+          ], "Unallocate #" + (ch.chequeNo || ""));
+        });
+        add(vdt, "standalone_cheque_void", ch.id, [
+          { accountId: GL.CLEARING, debit: amt, credit: 0, memo: "Reverse cleared receipt" },
+          { accountId: GL.BANK, debit: 0, credit: amt },
+        ], "Void standalone in #" + (ch.chequeNo || ""));
+      } else if (ch.type === "outgoing") {
+        add(vdt, "standalone_cheque_void", ch.id, [
+          { accountId: GL.BANK, debit: amt, credit: 0 },
+          { accountId: GL.EXP, debit: 0, credit: amt, memo: "Reverse standalone cheque" },
+        ], "Void standalone out #" + (ch.chequeNo || ""));
+      }
+      return;
+    }
+
+    if (String(ch.status || "") !== "Cleared") return;
+    var dt = ch.clearedDate || ch.date || "";
+    if (ch.type === "incoming") {
+      add(dt, "standalone_cheque", ch.id, [
+        { accountId: GL.BANK, debit: amt, credit: 0 },
+        { accountId: GL.CLEARING, debit: 0, credit: amt, memo: "Standalone cheque clear — allocate later" },
+      ], "Standalone in #" + (ch.chequeNo || ""));
+      /* Allocations: Dr CLEARING / Cr AR (invoice) — Bank already posted on clear. */
+      var allocated = 0;
+      (ch.allocations || []).forEach(function (al, ai) {
+        if (!al) return;
+        var aa = round2(al.amount || 0);
+        if (aa <= 0.005) return;
+        allocated = round2(allocated + aa);
+        var adt = al.date || dt;
+        if (al.saleId) {
+          add(adt, "cheque_alloc", ch.id + "-a" + ai, [
+            { accountId: GL.CLEARING, debit: aa, credit: 0, memo: "Allocate to invoice" },
+            { accountId: GL.AR, debit: 0, credit: aa, memo: "Customer receipt allocation" },
+          ], "Allocate #" + (ch.chequeNo || ""));
+        } else {
+          /* Keep as customer credit in CLEARING — no further entry needed. */
+        }
+      });
+      if (allocated - amt > 0.02) {
+        warnings.push("Cheque #" + (ch.chequeNo || ch.id) + ": allocations exceed amount");
+      }
+    } else if (ch.type === "outgoing") {
+      add(dt, "standalone_cheque", ch.id, [
+        { accountId: GL.EXP, debit: amt, credit: 0, memo: "Standalone cheque" },
+        { accountId: GL.BANK, debit: 0, credit: amt },
+      ], "Standalone out #" + (ch.chequeNo || ""));
+    }
   });
 
   /* ── Raw material kitchen usage (inventory replay → GL; idempotent ref raw_usage_YYYY-MM-DD per day) ── */
@@ -792,7 +1070,10 @@ export function balanceSheetFromLedger(lines, chart, asOfDate) {
     var bal = signedBalanceForAccount(a, s.debit, s.credit);
     if (a.type === "asset") assets += bal;
     if (a.type === "liability") liab += bal;
-    if (a.type === "equity") eq += bal;
+    if (a.type === "equity") {
+      /* Debit-normal equity (drawings / distributions) reduces owners' equity. */
+      eq += (a.normal === "debit") ? -bal : bal;
+    }
   });
   var rhs = round2(liab + eq);
   var diff = round2(assets - rhs);

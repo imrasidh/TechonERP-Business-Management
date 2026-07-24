@@ -24,6 +24,9 @@ var ReportsAccountsHub = function (props) {
   var getTotalReceivableDerived = props.getTotalReceivableDerived;
   var getTotalPayableDerived = props.getTotalPayableDerived;
   var getTotalSupplierPayable = props.getTotalSupplierPayable;
+  var getProfitAndLossFromLedger = props.getProfitAndLossFromLedger;
+  var getBalanceSheetFromLedger = props.getBalanceSheetFromLedger;
+  var S = props.S;
   var liveSalesRpt = props.liveSalesRpt || [];
   var livePurchasesRpt = props.livePurchasesRpt || [];
   var hasRepairs = props.hasRepairs === true;
@@ -214,14 +217,56 @@ var ReportsAccountsHub = function (props) {
     var stockRetail = round2(products.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0));
     var assetsTotal = round2((state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0));
 
+    var sourceNote = "ops snapshot";
+    /* Prefer GL inventory / fixed assets / net position when journal exists. */
+    try {
+      var jFull = (S && typeof S.get === "function") ? (S.get("tc3_journal_lines", []) || []) : [];
+      if (jFull.length) {
+        var acctNet = function (id) {
+          var d = 0;
+          var c = 0;
+          jFull.forEach(function (ln) {
+            if (!ln || String(ln.accountId || "") !== id) return;
+            d += Number(ln.debit) || 0;
+            c += Number(ln.credit) || 0;
+          });
+          return round2(d - c);
+        };
+        stockCost = acctNet("1200");
+        assetsTotal = acctNet("1500");
+        if (typeof getBalanceSheetFromLedger === "function") {
+          var bsFull = getBalanceSheetFromLedger(null);
+          if (bsFull && typeof bsFull.assets === "number") {
+            sourceNote = "General Ledger";
+          }
+        } else {
+          sourceNote = "General Ledger";
+        }
+      }
+    } catch (_eFull) { /* keep ops stock/assets */ }
+
     var liquid = cashTotal;
     var currentAssets = round2(cashTotal + receivable + stockCost);
     var totalAssetsPos = round2(currentAssets + assetsTotal);
     var netPosition = round2(totalAssetsPos - payable);
+    try {
+      if (sourceNote === "General Ledger" && typeof getBalanceSheetFromLedger === "function") {
+        var bsPos = getBalanceSheetFromLedger(null);
+        if (bsPos && typeof bsPos.assets === "number") {
+          totalAssetsPos = round2(bsPos.assets);
+          currentAssets = round2(cashTotal + receivable + stockCost);
+          if (typeof bsPos.equityWithCurrentEarnings === "number") {
+            netPosition = round2(bsPos.equityWithCurrentEarnings);
+          } else {
+            netPosition = round2(totalAssetsPos - payable);
+          }
+        }
+      }
+    } catch (_eBs) { /* keep assembled position */ }
 
     var body = "";
     body += "<div class='verdict" + (netPosition < 0 ? " is-neg" : "") + "'>";
-    body += "<div class='vl'>Business position (Assets − Payables)</div>";
+    body += "<div class='vl'>Business position" + (sourceNote === "General Ledger" ? " (GL equity)" : " (Assets − Payables)") + "</div>";
     body += "<div class='vv " + (netPosition >= 0 ? "green" : "red") + "'>" + money(netPosition) + "</div>";
     body += "</div>";
 
@@ -260,7 +305,7 @@ var ReportsAccountsHub = function (props) {
     body += "<tr><td>Payables (you owe suppliers / others)</td><td class='amt red'>" + money(payable) + "</td></tr>";
     body += "<tr class='net-row" + (netPosition < 0 ? " is-neg" : "") + "'><td>Net business position</td><td class='amt " + (netPosition >= 0 ? "green" : "red") + "'>" + money(netPosition) + "</td></tr>";
     body += "</tbody></table>";
-    body += "<p class='note' style='margin-top:8px;'>Snapshot of business condition as of today — cash, stock, assets, money to collect and money to pay.</p>";
+    body += "<p class='note' style='margin-top:8px;'>Snapshot as of today — " + (sourceNote === "General Ledger" ? "stock/assets/position from General Ledger; retail stock is informational only." : "cash, stock, assets, money to collect and money to pay.") + "</p>";
     return wrapA4("Business Full Report", "As of today", body);
   };
 
@@ -308,46 +353,78 @@ var ReportsAccountsHub = function (props) {
     if (id === "summary") {
       var salesDue = round2(Math.max(0, salesTotal - salesPaid));
       var purchDue = round2(Math.max(0, purchTotal - purchPaid));
+      var ledgerNote = "";
+      /* Prefer ledger P&L for the period when journal exists (single source of truth). */
+      try {
+        if (typeof getProfitAndLossFromLedger === "function" && S && typeof S.get === "function") {
+          var jlines = S.get("tc3_journal_lines", []) || [];
+          if (jlines.length) {
+            var plL = getProfitAndLossFromLedger(rf || null, rt || null);
+            if (plL && typeof plL.net === "number") {
+              netP = plL.net;
+              if (typeof plL.income === "number") {
+                salesTotal = plL.income;
+                netRev = plL.income;
+              }
+              if (typeof plL.expenses === "number") {
+                expTotal = plL.expenses;
+                cogs = 0;
+                grossP = round2(netRev - expTotal + netP);
+                grossP = netRev;
+              }
+              ledgerNote = " · figures from General Ledger";
+            }
+          }
+        }
+      } catch (_e) { /* keep ops */ }
       var grossMargin = salesTotal > 0 ? round2((grossP / salesTotal) * 100) : 0;
       var netMargin = salesTotal > 0 ? round2((netP / salesTotal) * 100) : 0;
       var avgSale = salesRows.length ? round2(salesTotal / salesRows.length) : 0;
 
       body += "<div class='off-banner" + (netP < 0 ? " is-neg" : "") + "'>";
       body += "<div><div class='bl'>Net result for period</div>";
-      body += "<div class='bs'>" + escapeHtml(range.label) + " · " + salesRows.length + " sales · " + purchRows.length + " purchases · " + expRows.length + " expenses</div></div>";
+      body += "<div class='bs'>" + escapeHtml(range.label) + " · " + salesRows.length + " sales · " + purchRows.length + " purchases · " + expRows.length + " expenses" + escapeHtml(ledgerNote) + "</div></div>";
       body += "<div class='bv " + (netP >= 0 ? "green" : "red") + "'>" + money(netP) + "</div>";
       body += "</div>";
 
       body += "<div class='off-metrics'>";
-      body += "<div class='m'><div class='ml'>Total Sales</div><div class='mv blue'>" + money(salesTotal) + "</div></div>";
+      body += "<div class='m'><div class='ml'>" + (ledgerNote ? "Income (GL)" : "Total Sales") + "</div><div class='mv blue'>" + money(salesTotal) + "</div></div>";
       body += "<div class='m'><div class='ml'>Total Purchases</div><div class='mv navy'>" + money(purchTotal) + "</div></div>";
-      body += "<div class='m'><div class='ml'>Total Expenses</div><div class='mv red'>" + money(expTotal) + "</div></div>";
-      body += "<div class='m'><div class='ml'>Gross Profit</div><div class='mv " + (grossP >= 0 ? "green" : "red") + "'>" + money(grossP) + "</div></div>";
+      body += "<div class='m'><div class='ml'>" + (ledgerNote ? "Expenses (GL)" : "Total Expenses") + "</div><div class='mv red'>" + money(expTotal) + "</div></div>";
+      body += "<div class='m'><div class='ml'>" + (ledgerNote ? "Net (GL)" : "Gross Profit") + "</div><div class='mv " + (netP >= 0 ? "green" : "red") + "'>" + money(ledgerNote ? netP : grossP) + "</div></div>";
       body += "</div>";
 
-      body += "<div class='off-head'>Performance Statement</div>";
+      body += "<div class='off-head'>Performance Statement" + (ledgerNote ? " (General Ledger)" : "") + "</div>";
       body += "<table class='off-stmt'><tbody>";
-      body += "<tr class='is-line'><td class='lbl'>Total Sales<small>" + salesRows.length + " invoice" + (salesRows.length === 1 ? "" : "s") + (avgSale ? " · avg " + money(avgSale) : "") + "</small></td><td class='amt blue'>" + money(salesTotal) + "</td></tr>";
-      body += "<tr class='is-deduct'><td class='lbl'>Less: Cost of Goods Sold<small>Stock cost of items sold</small></td><td class='amt red'>" + money(cogs) + "</td></tr>";
-      body += "<tr class='is-gross'><td class='lbl'>Gross Profit<small>Margin " + grossMargin + "%</small></td><td class='amt " + (grossP >= 0 ? "green" : "red") + "'>" + money(grossP) + "</td></tr>";
-      body += "<tr class='is-line'><td class='lbl'>Total Purchases<small>" + purchRows.length + " purchase" + (purchRows.length === 1 ? "" : "s") + " (stock bought)</small></td><td class='amt navy'>" + money(purchTotal) + "</td></tr>";
-      body += "<tr class='is-deduct'><td class='lbl'>Less: Operating Expenses<small>" + expRows.length + " expense" + (expRows.length === 1 ? "" : "s") + "</small></td><td class='amt red'>" + money(expTotal) + "</td></tr>";
-      body += "<tr class='is-result" + (netP < 0 ? " is-neg" : "") + "'><td class='lbl'>Net Profit" + (netP < 0 ? " / (Loss)" : "") + "<small>Margin " + netMargin + "% of sales</small></td><td class='amt " + (netP >= 0 ? "green" : "red") + "'>" + money(netP) + "</td></tr>";
+      if (ledgerNote) {
+        body += "<tr class='is-line'><td class='lbl'>Income<small>From ledger income accounts</small></td><td class='amt blue'>" + money(salesTotal) + "</td></tr>";
+        body += "<tr class='is-deduct'><td class='lbl'>Less: Expenses<small>COGS + operating (ledger)</small></td><td class='amt red'>" + money(expTotal) + "</td></tr>";
+        body += "<tr class='is-result" + (netP < 0 ? " is-neg" : "") + "'><td class='lbl'>Net Profit" + (netP < 0 ? " / (Loss)" : "") + "<small>Matches Accounts → GL / Trial</small></td><td class='amt " + (netP >= 0 ? "green" : "red") + "'>" + money(netP) + "</td></tr>";
+      } else {
+        body += "<tr class='is-line'><td class='lbl'>Total Sales<small>" + salesRows.length + " invoice" + (salesRows.length === 1 ? "" : "s") + (avgSale ? " · avg " + money(avgSale) : "") + "</small></td><td class='amt blue'>" + money(salesTotal) + "</td></tr>";
+        body += "<tr class='is-deduct'><td class='lbl'>Less: Cost of Goods Sold<small>Stock cost of items sold</small></td><td class='amt red'>" + money(cogs) + "</td></tr>";
+        body += "<tr class='is-gross'><td class='lbl'>Gross Profit<small>Margin " + grossMargin + "%</small></td><td class='amt " + (grossP >= 0 ? "green" : "red") + "'>" + money(grossP) + "</td></tr>";
+        body += "<tr class='is-line'><td class='lbl'>Total Purchases<small>" + purchRows.length + " purchase" + (purchRows.length === 1 ? "" : "s") + " (stock bought)</small></td><td class='amt navy'>" + money(purchTotal) + "</td></tr>";
+        body += "<tr class='is-deduct'><td class='lbl'>Less: Operating Expenses<small>" + expRows.length + " expense" + (expRows.length === 1 ? "" : "s") + "</small></td><td class='amt red'>" + money(expTotal) + "</td></tr>";
+        body += "<tr class='is-result" + (netP < 0 ? " is-neg" : "") + "'><td class='lbl'>Net Profit" + (netP < 0 ? " / (Loss)" : "") + "<small>Margin " + netMargin + "% of sales</small></td><td class='amt " + (netP >= 0 ? "green" : "red") + "'>" + money(netP) + "</td></tr>";
+      }
       body += "</tbody></table>";
 
       body += "<div class='off-grid'>";
-      body += "<div class='off-card'><div class='ch'>Sales collection</div>";
+      body += "<div class='off-card'><div class='ch'>Sales collection <span class='note'>(invoice activity)</span></div>";
       body += "<div class='cr'><span>Collected</span><span class='green'>" + money(salesPaid) + "</span></div>";
       body += "<div class='cr'><span>Outstanding</span><span class='red'>" + money(salesDue) + "</span></div>";
-      body += "<div class='cr strong'><span>Total sales</span><span class='blue'>" + money(salesTotal) + "</span></div></div>";
+      body += "<div class='cr strong'><span>Total sales (invoices)</span><span class='blue'>" + money(round2(salesRows.reduce(function (a, s) { return a + (s.total || 0); }, 0))) + "</span></div></div>";
 
-      body += "<div class='off-card'><div class='ch'>Purchase payments</div>";
+      body += "<div class='off-card'><div class='ch'>Purchase payments <span class='note'>(invoice activity)</span></div>";
       body += "<div class='cr'><span>Paid to suppliers</span><span class='green'>" + money(purchPaid) + "</span></div>";
       body += "<div class='cr'><span>Still payable</span><span class='red'>" + money(purchDue) + "</span></div>";
       body += "<div class='cr strong'><span>Total purchases</span><span class='navy'>" + money(purchTotal) + "</span></div></div>";
       body += "</div>";
 
-      body += "<p class='off-note'>Gross profit = sales − cost of goods sold. Net profit = gross profit − operating expenses. Purchases are shown for stock buying activity and are separate from COGS.</p>";
+      body += "<p class='off-note'>" + (ledgerNote
+        ? "Net profit is taken from the General Ledger for this period. Invoice collection cards remain operational activity lists."
+        : "Gross profit = sales − cost of goods sold. Net profit = gross profit − operating expenses. Purchases are shown for stock buying activity and are separate from COGS.") + "</p>";
       return wrapA4(title, range.label, body);
     }
 
@@ -443,39 +520,82 @@ var ReportsAccountsHub = function (props) {
     }
 
     if (id === "stock") {
-      var stockProducts = (state.products || []).slice().sort(function (a, b) { return (a.stock || 0) - (b.stock || 0); });
-      var stockVal = round2(stockProducts.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0));
-      body += "<div class='kpi' style='grid-template-columns:1fr 1fr;max-width:420px;'>";
+      var stockProducts = (state.products || []).filter(function (p) { return p && p.status !== "inactive"; })
+        .slice().sort(function (a, b) { return (a.stock || 0) - (b.stock || 0); });
+      var stockCostVal = round2(stockProducts.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0));
+      var stockRetailVal = round2(stockProducts.reduce(function (a, p) { return a + (p.price || 0) * (p.stock || 0); }, 0));
+      body += "<div class='kpi' style='grid-template-columns:1fr 1fr 1fr;max-width:640px;'>";
       body += "<div class='box'><div class='l'>Products</div><div class='v'>" + stockProducts.length + "</div></div>";
-      body += "<div class='box'><div class='l'>Stock Value (retail)</div><div class='v blue'>" + money(stockVal) + "</div></div>";
+      body += "<div class='box'><div class='l'>Stock at cost (GL-aligned)</div><div class='v blue'>" + money(stockCostVal) + "</div></div>";
+      body += "<div class='box'><div class='l'>Stock at retail</div><div class='v'>" + money(stockRetailVal) + "</div></div>";
       body += "</div>";
-      body += "<h3>Stock Detail</h3><table class='data'><thead><tr><th>Code</th><th>Product</th><th>Category</th><th>Stock</th><th>Cost</th><th>Price</th><th>Value</th></tr></thead><tbody>";
-      if (!stockProducts.length) body += "<tr><td colspan='7' class='empty'>No products</td></tr>";
+      body += "<h3>Stock Detail</h3><table class='data'><thead><tr><th>Code</th><th>Product</th><th>Category</th><th>Stock</th><th>Cost</th><th>Price</th><th>Cost value</th><th>Retail value</th></tr></thead><tbody>";
+      if (!stockProducts.length) body += "<tr><td colspan='8' class='empty'>No products</td></tr>";
       stockProducts.forEach(function (p) {
         var st = p.stock || 0;
         var col = st === 0 ? "red" : (st < 5 ? "" : "green");
-        body += "<tr><td>" + escapeHtml(p.productId || "—") + "</td><td>" + escapeHtml(p.name || "") + "</td><td>" + escapeHtml(p.category || "—") + "</td><td class='amt " + col + "'>" + st + "</td><td class='amt'>" + money(p.cost || 0) + "</td><td class='amt'>" + money(p.price || 0) + "</td><td class='amt'>" + money((p.price || 0) * st) + "</td></tr>";
+        body += "<tr><td>" + escapeHtml(p.productId || "—") + "</td><td>" + escapeHtml(p.name || "") + "</td><td>" + escapeHtml(p.category || "—") + "</td><td class='amt " + col + "'>" + st + "</td><td class='amt'>" + money(p.cost || 0) + "</td><td class='amt'>" + money(p.price || 0) + "</td><td class='amt'>" + money((p.cost || 0) * st) + "</td><td class='amt'>" + money((p.price || 0) * st) + "</td></tr>";
       });
       body += "</tbody></table>";
+      body += "<p class='off-note'>Primary valuation is at cost (aligns with GL inventory). Retail is informational only.</p>";
       return wrapA4(title, "As of today", body);
     }
 
     if (id === "customer-balance") {
-      var custs = (state.customers || []).slice().sort(function (a, b) {
-        return (b.balance || 0) - (a.balance || 0);
+      /* Live open AR from invoices + manuals — do not trust denormalized customers[].balance. */
+      var balByKey = {};
+      var nameByKey = {};
+      var phoneByKey = {};
+      (liveSalesRpt || []).forEach(function (s) {
+        if (!s) return;
+        var open = Math.max(0, round2((s.total || 0) - (s.paid || 0)));
+        if (open <= 0.005) return;
+        /* Pending cheque float is still in paid for some flows; keep paid as source of payStatus. */
+        var key = s.customerId ? ("id:" + String(s.customerId)) : ("n:" + String(s.customerName || "Walk-in").toLowerCase());
+        balByKey[key] = round2((balByKey[key] || 0) + open);
+        nameByKey[key] = s.customerName || nameByKey[key] || "Walk-in";
+        if (s.customerPhone) phoneByKey[key] = s.customerPhone;
       });
+      (state.customers || []).forEach(function (c) {
+        if (!c) return;
+        var key = c.id ? ("id:" + String(c.id)) : ("n:" + String(c.name || "").toLowerCase());
+        if (!nameByKey[key]) nameByKey[key] = c.name || "";
+        if (c.phone) phoneByKey[key] = c.phone;
+      });
+      var manuals = (typeof S !== "undefined" && S.get) ? (S.get("tc3_manualReceivables", []) || []) : [];
+      manuals.forEach(function (mr) {
+        if (!mr || mr._isOpening) return;
+        var paidM = (mr.paymentHistory || []).reduce(function (a, p) {
+          var cm = String((p && p.cashMethod) || "");
+          if (cm === "Cheque" || cm === "Adjustment") return a;
+          return a + (Number(p && p.amount) || 0);
+        }, 0);
+        var openM = Math.max(0, round2((mr.amount || 0) - paidM));
+        if (openM <= 0.005) return;
+        var key = mr.customerId ? ("id:" + String(mr.customerId)) : ("n:" + String(mr.person || mr.customer || mr.customerName || "Manual").toLowerCase());
+        balByKey[key] = round2((balByKey[key] || 0) + openM);
+        nameByKey[key] = mr.person || mr.customer || mr.customerName || nameByKey[key] || "Manual";
+      });
+      var custs = Object.keys(balByKey).map(function (key) {
+        return {
+          name: nameByKey[key] || "",
+          phone: phoneByKey[key] || "",
+          balance: balByKey[key] || 0,
+        };
+      }).filter(function (c) { return (c.balance || 0) > 0.005; })
+        .sort(function (a, b) { return (b.balance || 0) - (a.balance || 0); });
       var balTotal = round2(custs.reduce(function (a, c) { return a + Math.max(0, c.balance || 0); }, 0));
       body += "<div class='kpi' style='grid-template-columns:1fr 1fr;max-width:420px;'>";
-      body += "<div class='box'><div class='l'>Customers</div><div class='v'>" + custs.length + "</div></div>";
+      body += "<div class='box'><div class='l'>Customers with balance</div><div class='v'>" + custs.length + "</div></div>";
       body += "<div class='box'><div class='l'>Total Outstanding</div><div class='v red'>" + money(balTotal) + "</div></div>";
       body += "</div>";
       body += "<h3>Customer Balances</h3><table class='data'><thead><tr><th>Customer</th><th>Phone</th><th>Balance</th></tr></thead><tbody>";
-      if (!custs.length) body += "<tr><td colspan='3' class='empty'>No customers</td></tr>";
+      if (!custs.length) body += "<tr><td colspan='3' class='empty'>No outstanding balances</td></tr>";
       custs.forEach(function (c) {
         body += "<tr><td>" + escapeHtml(c.name || "") + "</td><td>" + escapeHtml(c.phone || "—") + "</td><td class='amt " + ((c.balance || 0) > 0 ? "red" : "") + "'>" + money(c.balance || 0) + "</td></tr>";
       });
       body += "</tbody></table>";
-      return wrapA4(title, "As of today", body);
+      return wrapA4(title, "As of today · from open invoices", body);
     }
 
     return wrapA4(title, range.label, "<div class='empty'>Report not available.</div>");

@@ -397,7 +397,21 @@ function handleAuthMessage(ws, msg, expectedKey, authTimer) {
   var clientLastRev = parseInt(msg.last_revision, 10);
   if (isNaN(clientLastRev) || clientLastRev < 0) clientLastRev = 0;
 
+  var allowLegacy = process.env.TECHON_ERP_ALLOW_LEGACY_SYNC === '1';
+
   function finishLegacyAuth() {
+    if (!allowLegacy) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'auth_fail',
+          message: 'Legacy API key WebSocket auth disabled — use device credentials (or set TECHON_ERP_ALLOW_LEGACY_SYNC=1)',
+          msg_id: newMsgId('auth_fail'),
+        }));
+      } catch (_e) {}
+      try { safeCloseSocket(ws, 'auth_fail'); } catch (_e2) {}
+      logFn('warn', '[LanWS] Legacy key auth rejected (migration flag off)');
+      return;
+    }
     var key = String(msg.apiKey || '');
     if (!key || key !== String(expectedKey || '')) {
       try {
@@ -417,7 +431,7 @@ function handleAuthMessage(ws, msg, expectedKey, authTimer) {
       if (result && result.ok) {
         if (authTimer) clearTimeout(authTimer);
         completeWsAuth(ws, msg, result.client_id || clientId);
-      } else if (msg.apiKey) {
+      } else if (msg.apiKey && allowLegacy) {
         logFn('warn', '[LanWS] Device WS auth failed (' + ((result && result.message) || '?') + '), trying legacy key');
         finishLegacyAuth();
       } else {
@@ -433,7 +447,7 @@ function handleAuthMessage(ws, msg, expectedKey, authTimer) {
       }
     }).catch(function (e) {
       logFn('warn', '[LanWS] Device auth error: ' + (e && e.message ? e.message : String(e)));
-      if (msg.apiKey) finishLegacyAuth();
+      if (msg.apiKey && allowLegacy) finishLegacyAuth();
       else try { safeCloseSocket(ws, 'auth_error'); } catch (_e2) {}
     });
     return true;

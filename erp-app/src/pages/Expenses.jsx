@@ -64,11 +64,33 @@ var Expenses = function (props) {
   var saveNew = function () {
     if (!f.description || !f.amount) return;
     var expTs = new Date().toISOString();
-    var e = stampTransactionIsoDateTime({ id: uid(), date: f.date || today(), category: f.category, description: f.description, amount: parseFloat(f.amount) || 0, payee: f.payee || "", payMode: f.payMode || "Cash", reference: f.reference || "", createdAt: expTs, updatedAt: expTs }, expTs);
+    var payMode = f.payMode || "Cash";
+    var amt = parseFloat(f.amount) || 0;
+    var cashMethod = (payMode === "Bank Transfer" || payMode === "Online" || payMode === "Card") ? "Bank"
+      : (payMode === "Cheque" ? "ChequePending" : "Cash");
+    var e = stampTransactionIsoDateTime({
+      id: uid(), date: f.date || today(), category: f.category, description: f.description,
+      amount: amt, payee: f.payee || "", payMode: payMode, cashMethod: cashMethod,
+      reference: f.reference || "", createdAt: expTs, updatedAt: expTs
+    }, expTs);
     if (!tcTrialGuard(state.expenses, 'expenses')) return;
     var ne = state.expenses.concat([e]);
+    var nch = state.cheques || [];
+    if (payMode === "Cheque" && amt > 0) {
+      var chTs = expTs;
+      var newCh = stampTransactionIsoDateTime({
+        id: uid(), type: "outgoing", status: "Pending",
+        chequeNo: (f.reference || "").trim() || ("EXP-" + String(e.id).slice(0, 6)),
+        bankName: "", amount: amt, dueDate: f.date || today(), issuedDate: today(),
+        supplierName: f.payee || f.description || "Expense",
+        expenseId: e.id, note: (f.category || "Expense") + " — " + (f.description || ""),
+        createdAt: chTs, updatedAt: chTs
+      }, chTs);
+      nch = nch.concat([newCh]);
+      S.set("tc3_cheques", nch);
+    }
     S.set("tc3_expenses", ne);
-    setState(function (st) { return Object.assign({}, st, { expenses: ne }); });
+    setState(function (st) { return Object.assign({}, st, { expenses: ne, cheques: nch }); });
     setShow(false); setF(BLANK);
   };
 

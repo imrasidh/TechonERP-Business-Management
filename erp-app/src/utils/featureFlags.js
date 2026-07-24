@@ -41,9 +41,9 @@ export var MODULE_TOGGLE_DEFS = [
   { id: "auditlog", label: "Audit Log", group: "Insight", blurb: "Who changed what and when — security and traceability." },
   { id: "freeItems", label: "Free items (complimentary)", group: "POS", blurb: "Allow complimentary gift lines on the Sales screen.", navId: null },
   { id: "posLineComments", label: "Line comments (serial / note)", group: "POS options", blurb: "Show a comment field on each Sales cart line for serial numbers, IMEI, or notes.", navId: null },
-  { id: "codSalesTrack", label: "COD track (Sales)", group: "POS options", blurb: "Show COD / delivery tracking fields on the Sales screen. Saved sales copy into COD Database when enabled.", navId: null },
-  { id: "coddatabase", label: "COD Tracker", group: "COD", blurb: "COD and delivery order tracking page, status updates, and address labels. Also enables COD fields on Sales.", navId: "coddatabase" },
-  { id: "codCostProfit", label: "Costs & profit", group: "COD", blurb: "Costs & profit tab — order costs, shop & partner balances, withdrawals, and partner settings.", navId: null, parentModule: "coddatabase" },
+  { id: "codSalesTrack", label: "COD track (Sales)", group: "POS options", blurb: "Show COD tracking on Sales. Copies sell/cost/profit into COD Database only — intentional separate tracker; does NOT post to main Accounts/GL/cash. COD Database module should stay enabled with this.", navId: null },
+  { id: "coddatabase", label: "COD Tracker", group: "COD", blurb: "Separate COD/delivery tracker (status, labels). Parallel to main Accounts — not GL/cash/P&L. Also enables COD fields on Sales.", navId: "coddatabase" },
+  { id: "codCostProfit", label: "Costs & profit", group: "COD", blurb: "COD-only costs, partner balances & withdrawals. Locked separate from main Accounts/GL — tracker math only.", navId: null, parentModule: "coddatabase" },
 ];
 
 function defaultForModule(id, businessType, profile) {

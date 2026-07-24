@@ -1,4 +1,25 @@
-/** COD / delivery tracking — optional TechonERP module (separate from tc3_sales schema). */
+/**
+ * COD / delivery tracking — optional TechonERP module.
+ *
+ * ╔══════════════════════════════════════════════════════════════════════╗
+ * ║  LOCKED SEPARATE BY PRODUCT REQUEST — DO NOT LINK TO MAIN ACCOUNTS  ║
+ * ╠══════════════════════════════════════════════════════════════════════╣
+ * ║  COD Database (tc3_codRecords / tc3_codWithdrawals / partners /      ║
+ * ║  profit settings) is an INTENTIONAL parallel tracker only.          ║
+ * ║                                                                      ║
+ * ║  It stores sell price, cost, COD profit splits, and withdrawals for  ║
+ * ║  the operator’s own COD delivery bookkeeping.                        ║
+ * ║                                                                      ║
+ * ║  NEVER post COD withdrawals, partner pools, or COD “profit” into:    ║
+ * ║    • General Ledger / tc3_journal_lines                               ║
+ * ║    • Cash Book / getCashBalances                                      ║
+ * ║    • Main P&L, Trial Balance, or Accounts Overview                    ║
+ * ║                                                                      ║
+ * ║  The underlying POS sale invoice still posts normally (stock/sales). ║
+ * ║  Only this COD layer must stay isolated forever unless product       ║
+ * ║  requirements explicitly change.                                     ║
+ * ╚══════════════════════════════════════════════════════════════════════╝
+ */
 
 export var COD_SALE_TYPES = ["Direct Sale", "Direct Delivery", "COD"];
 
@@ -6,7 +27,7 @@ export var COD_DELIVERY_STATUSES = ["Accepted", "Dispatched", "Delivered", "Retu
 
 export var COD_LOCKED_STATUSES = ["Delivered", "Returned"];
 
-/** Withdrawal pools — recover costs or pay profit share from delivered COD orders. */
+/** COD-only withdrawal pools (tracker math). Never journal these into main GL/cash. */
 export var COD_WITHDRAWAL_FUNDS = [
   { id: "paidItems", label: "Paid items cost", short: "Paid items" },
   { id: "freeItems", label: "Free items cost", short: "Free items" },

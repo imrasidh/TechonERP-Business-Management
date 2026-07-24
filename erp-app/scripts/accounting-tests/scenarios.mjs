@@ -11,6 +11,7 @@ import {
   validateAccountingCommitInvariants,
   profitAndLossFromLedger,
   mergeJournalLinesByTransactionId,
+  mergeRebuildWithImmutableHistory,
   collectStrictPeriodLockOverrideIds,
   evaluateArApPolicy,
   reconcileInventoryToLedger,
@@ -30,6 +31,7 @@ import {
   aggregateKitchenCostByMonthInRange,
   sumRawMaterialKitchenCostInRange,
 } from "../../src/utils/ingredientUsageCost.js";
+import { computePurchaseReturnTax } from "../../src/tax/taxCompute.js";
 
 /**
  * @param {{ fail: (name: string, detail?: unknown) => void, pass: (name: string) => void }} ctx
@@ -187,6 +189,29 @@ export function runScenarioTests(ctx) {
     var r2 = rebuild(st, Smock).r;
     if (JSON.stringify(r1.lines) !== JSON.stringify(r2.lines)) return fail("Rebuild idempotency");
     pass("Journal rebuild idempotency");
+  })();
+
+  /* ── 6b: mergeRebuildWithImmutableHistory — correction tip idempotent ── */
+  (function () {
+    var mk = function () { return "ln_" + Math.random().toString(36).slice(2, 9); };
+    var base = [
+      { id: "a1", transactionId: "T1", entryGroupId: "T1", accountId: GL.CASH, debit: 100, credit: 0, date: "2026-01-01", isPosted: true, memo: "pay" },
+      { id: "a2", transactionId: "T1", entryGroupId: "T1", accountId: GL.SALES, debit: 0, credit: 100, date: "2026-01-01", isPosted: true, memo: "rev" },
+    ];
+    var rebuiltChanged = [
+      { id: "b1", transactionId: "T1", entryGroupId: "T1", accountId: GL.CASH, debit: 120, credit: 0, date: "2026-01-01", memo: "pay" },
+      { id: "b2", transactionId: "T1", entryGroupId: "T1", accountId: GL.SALES, debit: 0, credit: 120, date: "2026-01-01", memo: "rev" },
+    ];
+    var m1 = mergeRebuildWithImmutableHistory(base, rebuiltChanged, mk);
+    if (!validateJournalBalanced(m1).ok) return fail("Merge correction: first merge unbalanced", validateJournalBalanced(m1));
+    var corrCount1 = m1.filter(function (ln) { return ln.correctsTransactionId === "T1"; }).length;
+    if (corrCount1 < 2) return fail("Merge correction: expected correction lines", corrCount1);
+    var m2 = mergeRebuildWithImmutableHistory(m1, rebuiltChanged, mk);
+    var corrCount2 = m2.filter(function (ln) { return ln.correctsTransactionId === "T1"; }).length;
+    if (corrCount2 !== corrCount1) return fail("Merge correction: second merge re-corrected", { corrCount1: corrCount1, corrCount2: corrCount2 });
+    if (m2.length !== m1.length) return fail("Merge correction: second merge changed line count", { a: m1.length, b: m2.length });
+    if (!validateJournalBalanced(m2).ok) return fail("Merge correction: second merge unbalanced");
+    pass("Journal merge correction idempotency");
   })();
 
   /* ── 7: Commit invariant failures block persist (same gates as App commitGlJournalPersist) ── */
@@ -672,8 +697,11 @@ export function runScenarioTests(ctx) {
       id: "pur_tax_pr", date: "2026-02-01", invoiceNo: "P-TAX-1",
       total: 110, totalTax: 10, taxMode: "exclusive",
       items: [{ id: pid, qty: 2, cost: 50, lineStockValue: 100 }],
-      paidAmount: 110,
-      paymentHistory: [{ id: "ph_p1", date: "2026-02-01", amount: 110, cashMethod: "Bank" }],
+      paidAmount: 0,
+      paymentHistory: [
+        { id: "ph_p1", date: "2026-02-01", amount: 110, cashMethod: "Bank" },
+        { id: "ph_p1r", date: "2026-02-08", amount: -110, cashMethod: "Bank", type: "refund", note: "Purchase return refund/adjustment" },
+      ],
     }];
     st.purchaseReturns = [{
       id: "pr_tax_1", purchaseId: "pur_tax_pr", date: "2026-02-08",
@@ -812,6 +840,42 @@ export function runScenarioTests(ctx) {
     if (Math.abs(acctBal(x.r.lines, GL.AP) - 110) > 0.02) return fail("Inclusive purchase: AP", acctBal(x.r.lines, GL.AP));
     if (Math.abs(acctBal(x.r.lines, GL.PUR_VAR)) > 0.02) return fail("Inclusive purchase: PUR_VAR should be 0", acctBal(x.r.lines, GL.PUR_VAR));
     pass("Inclusive purchase — VAT extracted from inventory asset");
+  })();
+
+  /* ── Tax: inclusive purchase return — gross cost must not get VAT added on top ── */
+  (function () {
+    var st = baseState();
+    st.settings = Object.assign({}, st.settings, {
+      taxEnabled: true,
+      taxMode: "inclusive",
+      glVatPostingEnabled: true,
+      selectedTaxes: [{ name: "VAT", rate: 10, enabled: true }],
+    });
+    var pid = "prod_pur_inc_ret";
+    st.products = [{ id: pid, name: "PurIncRet", stock: 10, cost: 10 }];
+    st.purchases = [{
+      id: "pur_inc_ret", date: "2026-04-01", invoiceNo: "P-INC-R",
+      total: 110, totalTax: 10, taxMode: "inclusive",
+      items: [{ id: pid, qty: 10, cost: 11 }],
+      paidAmount: 0,
+      paymentHistory: [],
+    }];
+    /* Full return of 1 unit: gross 11 → net INV 10, VAT_REC reverse 1, AP debit 11 */
+    st.purchaseReturns = [{
+      id: "pr_inc_1", purchaseId: "pur_inc_ret", date: "2026-04-08",
+      qty: 1, cost: 11, amount: 11, returnTax: 1, returnGross: 11,
+    }];
+    var x = rebuild(st, Smock);
+    if (!x.r.validate.ok) return fail("Inclusive purchase return: validate", x.r.validate);
+    if (Math.abs(acctBal(x.r.lines, GL.INV) - 90) > 0.02) return fail("Inclusive purchase return: INV net remaining", acctBal(x.r.lines, GL.INV));
+    if (Math.abs(acctBal(x.r.lines, GL.VAT_REC) - 9) > 0.02) return fail("Inclusive purchase return: VAT_REC remaining", acctBal(x.r.lines, GL.VAT_REC));
+    if (Math.abs(acctBal(x.r.lines, GL.AP) - 99) > 0.02) return fail("Inclusive purchase return: AP remaining", acctBal(x.r.lines, GL.AP));
+    /* Also verify helper does not inflate when called with gross cost */
+    var helper = computePurchaseReturnTax(st.purchases[0], 11, st.settings);
+    if (Math.abs(helper.apGross - 11) > 0.02 || Math.abs(helper.stockCost - 10) > 0.02 || Math.abs(helper.taxReversal - 1) > 0.02) {
+      return fail("Inclusive purchase return: computePurchaseReturnTax", helper);
+    }
+    pass("Inclusive purchase return — gross cost, net INV, no VAT-on-VAT");
   })();
 
   /* ── Tax: orphan sales return uses stored tax snapshot (not current settings rate) ── */

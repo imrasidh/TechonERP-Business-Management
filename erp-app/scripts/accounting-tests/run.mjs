@@ -6,6 +6,7 @@
 import { runScenarioTests } from "./scenarios.mjs";
 import { runGoldenTests } from "./golden.mjs";
 import { runMigrationTests } from "./migration.mjs";
+import { runV3BusinessWorkflowTests } from "./v3-business-workflow.mjs";
 
 function fail(name, detail) {
   console.error("FAIL —", name, detail != null ? detail : "");
@@ -31,6 +32,12 @@ if (process.exitCode) {
 }
 
 runMigrationTests(ctx);
+if (process.exitCode) {
+  console.error("\nSummary: accounting tests failed (exit " + process.exitCode + ").");
+  process.exit(process.exitCode);
+}
+
+runV3BusinessWorkflowTests(ctx);
 if (process.exitCode) {
   console.error("\nSummary: accounting tests failed (exit " + process.exitCode + ").");
   process.exit(process.exitCode);

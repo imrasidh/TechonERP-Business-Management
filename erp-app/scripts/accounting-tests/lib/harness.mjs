@@ -12,8 +12,11 @@ import {
   round2,
   sumAccount,
   signedBalanceForAccount,
+  ledgerCashBank,
+  ledgerARAP,
 } from "../../../src/accounting/generalLedger.js";
 import { mergeJournalLinesByTransactionId } from "../../../src/accounting/journalMerge.js";
+import { mergeRebuildWithImmutableHistory } from "../../../src/accounting/journalMerge.js";
 import { collectStrictPeriodLockOverrideIds } from "../../../src/accounting/periodLockOverride.js";
 import { validateAccountingCommitInvariants } from "../../../src/accounting/commitInvariants.js";
 import { deriveInventoryEconomics, reconcileInventoryToLedger, isInventoryReconcileOk } from "../../../src/accounting/inventoryEngine.js";
@@ -27,6 +30,7 @@ export {
   balanceSheetFromLedger,
   validateJournalBalanced,
   mergeJournalLinesByTransactionId,
+  mergeRebuildWithImmutableHistory,
   collectStrictPeriodLockOverrideIds,
   validateAccountingCommitInvariants,
   deriveInventoryEconomics,
@@ -37,6 +41,8 @@ export {
   round2,
   sumAccount,
   signedBalanceForAccount,
+  ledgerCashBank,
+  ledgerARAP,
 };
 
 export function uid() {

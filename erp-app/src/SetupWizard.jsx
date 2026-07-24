@@ -17,6 +17,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import packageJson from '../package.json';
+import { NETWORK_KV_KEYS } from './sync/SyncEngine.js';
 
 /* ─── Design tokens ─────────────────────────────────────────────── */
 const C = {
@@ -320,7 +321,7 @@ const SERVER_STEPS = [
   { key: 'get_ip',         label: 'Detect network address' },
 ];
 
-function ServerSetup({ onComplete }) {
+function ServerSetup({ onComplete, onCancel, migrateTitle }) {
   const api = window.electronAPI || {};
   const [phase, setPhase]         = useState('intro');
   const [steps, setSteps]         = useState(
@@ -347,28 +348,70 @@ function ServerSetup({ onComplete }) {
   async function handleMigrate() {
     setMigrating(true);
     try {
+      /* Share LAN URL with counters, but Main PC migration must use loopback (legacy key). */
+      var migrateBase = apiUrl;
+      try {
+        var u = new URL(apiUrl);
+        if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+          u.hostname = '127.0.0.1';
+          migrateBase = u.toString().replace(/\/?$/, '/');
+        }
+      } catch (_eUrl) { /* keep apiUrl */ }
+      const authConfig = {
+        role: 'network_server',
+        apiUrl: migrateBase,
+        apiKey: generatedKey,
+      };
+      /* Prefer SyncEngine force-replace (wipes MySQL shop keys first, then uploads full IndexedDB). */
+      if (typeof window !== 'undefined' && window.TC_SYNC && typeof window.TC_SYNC.pushKeysToServer === 'function') {
+        try {
+          if (window.TC_SYNC.ensureSyncConfig) window.TC_SYNC.ensureSyncConfig(authConfig);
+        } catch (_eCfg) { /* ignore */ }
+        const r = await window.TC_SYNC.pushKeysToServer(NETWORK_KV_KEYS, {
+          authConfig: authConfig,
+          forceReplace: true,
+        });
+        if (!r || !r.ok) throw new Error((r && r.message) || 'Migration upload failed');
+        setMigrated(true);
+        setMigrating(false);
+        return;
+      }
+
       const cache = window._idbCache || {};
-      const TC_KEYS = [
-        'tc3_settings','tc3_products','tc3_customers','tc3_suppliers',
-        'tc3_sales','tc3_purchases','tc3_expenses','tc3_repairs',
-        'tc3_assets','tc3_damageLog','tc3_productLog','tc3_repairDeleteLog',
-        'tc3_salesReturns','tc3_purchaseReturns','tc3_quotations','tc3_cheques',
-        'tc3_manualReceivables','tc3_manualPayables','tc3_capLedger','tc3_capLog',
-        'tc3_profitDist','tc3_assetLog','tc3_openBal','tc3_labelDesigns','tc3_businessType',
-      ];
-      const patches = TC_KEYS
-        .filter(k => cache[k] !== undefined && cache[k] !== null)
-        .map(k => ({ key: k, value: cache[k] }));
+      const TC_KEYS = NETWORK_KV_KEYS.slice().concat([
+        'tc3_apppass', 'tc3_admin_name', 'tc3_startup_wizard_done', 'tc3_users',
+      ]);
+      const patches = [];
+      const seen = {};
+      TC_KEYS.forEach(function (k) {
+        if (seen[k]) return;
+        seen[k] = true;
+        if (cache[k] === undefined || cache[k] === null) return;
+        patches.push({ key: k, value: cache[k], _forceReplace: true });
+      });
 
       if (patches.length === 0) { setMigrating(false); setMigrated(true); return; }
+
+      try {
+        await fetch(migrateBase + 'wipe_shop_data.php', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-TC-Client-ID': 'migration',
+            ...(generatedKey ? { 'X-TC-KEY': generatedKey } : {}),
+          },
+          body: JSON.stringify({ confirm: 'WIPE_SHOP_DATA' }),
+          signal: AbortSignal.timeout(30000),
+        });
+      } catch (_eWipe) { /* continue — forceReplace patches still help */ }
 
       const headers = { 'Content-Type': 'application/json', 'X-TC-Client-ID': 'migration' };
       if (generatedKey) headers['X-TC-KEY'] = generatedKey;
 
-      const res  = await fetch(apiUrl + 'sync_patch.php', {
+      const res  = await fetch(migrateBase + 'sync_patch.php', {
         method: 'POST', headers,
         body: JSON.stringify({ patches, client_id: 'migration' }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(120000),
       });
       const json = await res.json();
       if (!json.success) throw new Error(json.message || 'Migration failed');
@@ -514,9 +557,9 @@ function ServerSetup({ onComplete }) {
       <div>
         <div style={{ textAlign: 'center', marginBottom: 12 }}>
           <div style={{ fontSize: 28, marginBottom: 4 }}>🗄️</div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 4 }}>Server Auto Setup</div>
+          <div style={{ fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 4 }}>{migrateTitle || 'Server Auto Setup'}</div>
           <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.45 }}>
-            This will install and configure XAMPP on your computer. It runs once and takes about 3–5 minutes.
+            This will configure XAMPP and import this PC&apos;s shop data into MySQL. It runs once and takes about 3–5 minutes.
           </div>
         </div>
 
@@ -525,14 +568,15 @@ function ServerSetup({ onComplete }) {
           <div style={{ fontSize: 12, color: '#7c4a00', lineHeight: 1.45 }}>
             • XAMPP must be installed at <strong>C:\xampp</strong> (recommended)<br />
             • <strong>Do NOT install inside Program Files</strong><br />
-            • This is required only once. It takes 2–3 minutes.
+            • This is required only once. It takes 2–3 minutes.<br />
+            • Your IndexedDB shop data stays on this PC — MySQL gets a copy for counters.
           </div>
         </div>
 
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600, fontSize: 12, color: C.textMd, marginBottom: 6 }}>Checklist:</div>
           {[
-            { done: true,  text: 'Step 1 — Choose "Network Server" mode (done)' },
+            { done: true,  text: migrateTitle ? 'Step 1 — Keep current shop data on this PC (done)' : 'Step 1 — Choose "Network Server" mode (done)' },
             { done: false, text: 'Step 2 — Install XAMPP (click button below if not installed)' },
             { done: false, text: 'Step 3 — Run automatic setup (everything else is handled)' },
           ].map((item, i) => (
@@ -552,8 +596,17 @@ function ServerSetup({ onComplete }) {
           </PrimaryBtn>
         </div>
         <div style={{ fontSize: 10, color: C.muted, marginTop: 6, textAlign: 'center' }}>
-          Already have XAMPP installed? Just click "Run Automatic Setup".
+          Already have XAMPP installed? Just click &quot;Run Automatic Setup&quot;.
         </div>
+        {typeof onCancel === 'function' ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            style={{ marginTop: 12, width: '100%', background: 'none', border: 'none', color: C.muted, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
+          >
+            Cancel — stay on this PC as standalone
+          </button>
+        ) : null}
       </div>
     );
   }
@@ -661,12 +714,36 @@ function ServerSetup({ onComplete }) {
         </ol>
       </div>
 
-      <PrimaryBtn col="green" onClick={() => onComplete({ role: 'network_server', apiUrl, apiKey: generatedKey })} style={{ width: '100%', justifyContent: 'center' }}>
-        🚀 Start Using Techon ERP
+      <PrimaryBtn
+        col="green"
+        onClick={function () {
+          if (hasExistingData && !migrated && !migrating) {
+            handleMigrate().then(function () {
+              onComplete({ role: 'network_server', apiUrl: apiUrl, apiKey: generatedKey });
+            });
+            return;
+          }
+          onComplete({ role: 'network_server', apiUrl: apiUrl, apiKey: generatedKey });
+        }}
+        loading={migrating}
+        style={{ width: '100%', justifyContent: 'center' }}
+      >
+        {migrating ? 'Importing shop data…' : '🚀 Start Using Techon ERP'}
       </PrimaryBtn>
+      {typeof onCancel === 'function' ? (
+        <button
+          type="button"
+          onClick={onCancel}
+          style={{ marginTop: 10, width: '100%', background: 'none', border: 'none', color: C.muted, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
+        >
+          Cancel
+        </button>
+      ) : null}
     </div>
   );
 }
+
+export { ServerSetup };
 
 /* ─── CLIENT SETUP ───────────────────────────────────────────────── */
 function ClientSetup({ onComplete }) {

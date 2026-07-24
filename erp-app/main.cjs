@@ -29,6 +29,42 @@ const { buildLanAuthHeaders, stripInternalHeaders } = require('./lan-auth.cjs');
 const { createDeviceStore } = require('./device-store.cjs');
 const appUpdater = require('./updater.cjs');
 
+/** Opaque ERP login sessions (per BrowserWindow / webContents). */
+const tcErpSessions = new Map();
+const TC_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+
+function tcSessionKeyFromEvent(event) {
+  try {
+    const wc = event && event.sender;
+    return wc && typeof wc.id === 'number' ? wc.id : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function tcGetSession(event) {
+  const id = tcSessionKeyFromEvent(event);
+  if (id == null) return null;
+  const s = tcErpSessions.get(id);
+  if (!s) return null;
+  if (Date.now() > s.expiresAt) {
+    tcErpSessions.delete(id);
+    return null;
+  }
+  return s;
+}
+
+function tcRequireSessionRole(event, roles) {
+  const s = tcGetSession(event);
+  if (!s) return { ok: false, message: 'Sign in required.' };
+  const need = Array.isArray(roles) ? roles : [roles];
+  const role = String(s.role || '').toLowerCase();
+  if (need.length && need.indexOf(role) < 0 && need.indexOf('*') < 0) {
+    return { ok: false, message: 'Permission denied for role ' + role + '.' };
+  }
+  return { ok: true, session: s };
+}
+
 /* Dev / unpackaged only: erp-app/.env → LICENSE_SECRET / TC_LIC_SERVER_SECRET.
  * Packaged .exe: set OS env LICENSE_SECRET (preferred) or TC_LIC_SERVER_SECRET, or tc_license_secret.txt beside .exe. */
 try {
@@ -808,12 +844,9 @@ function tcRequest(endpoint, payload) {
         }
       };
 
-      /* Match legacy main.cjs: relaxed TLS for license host only (some cPanel chains fail strict verify). */
+      /* Prefer strict TLS; license.techon.lk should present a valid chain. */
       if (url.protocol === 'https:') {
-        const isLicenseServer = url.hostname === 'license.techon.lk';
-        if (isLicenseServer) {
-          options.agent = new https.Agent({ rejectUnauthorized: false });
-        }
+        options.agent = new https.Agent({ rejectUnauthorized: true });
       }
 
       const lib = url.protocol === 'https:' ? https : http;
@@ -1061,8 +1094,14 @@ function applyVerifyPayloadToLicense(lic, resp, nowTs) {
   return lic;
 }
 
-/** POST JSON to a LAN API endpoint with optional extra headers. */
-function lanPost(url, body, extraHeaders, cfgOrKey) {
+/** POST JSON to a LAN API endpoint with optional extra headers.
+ *  optsOrTimeout: number (ms) or { timeoutMs } — wipe/large ops need >10s. */
+function lanPost(url, body, extraHeaders, cfgOrKey, optsOrTimeout) {
+  var timeoutMs = 10000;
+  if (typeof optsOrTimeout === 'number' && optsOrTimeout > 0) timeoutMs = optsOrTimeout;
+  else if (optsOrTimeout && typeof optsOrTimeout.timeoutMs === 'number' && optsOrTimeout.timeoutMs > 0) {
+    timeoutMs = optsOrTimeout.timeoutMs;
+  }
   return new Promise((resolve, reject) => {
     try {
       const parsed  = new URL(url);
@@ -1091,7 +1130,7 @@ function lanPost(url, body, extraHeaders, cfgOrKey) {
         });
       });
       req.on('error', reject);
-      req.setTimeout(10000, () => { req.destroy(); reject(new Error('lanPost timeout')); });
+      req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('lanPost timeout')); });
       req.write(bodyStr);
       req.end();
     } catch (e) { reject(e); }
@@ -1111,8 +1150,9 @@ async function _syncAttempt(payload, cfg, attempt) {
   }
   try {
     const headers = { 'X-TC-License-Sync': cfg.apiKey };
+    const saveUrl = lanMainLoopbackUrl(cfg, 'save_license.php') || (cfg.apiUrl + 'save_license.php');
     const r = await lanPost(
-      cfg.apiUrl + 'save_license.php',
+      saveUrl,
       payload,
       headers,
       cfg
@@ -1192,7 +1232,8 @@ async function syncTrialLicenseToMySQLNow(cfg) {
   }
   const payload = buildMysqlLicensePayload(getTrialLicenseSnapshot());
   try {
-    const r = await lanPost(cfg.apiUrl + 'save_license.php', payload, { 'X-TC-License-Sync': cfg.apiKey }, cfg);
+    const saveUrl = (typeof lanMainLoopbackUrl === 'function' ? lanMainLoopbackUrl(cfg, 'save_license.php') : '') || (cfg.apiUrl + 'save_license.php');
+    const r = await lanPost(saveUrl, payload, { 'X-TC-License-Sync': cfg.apiKey }, cfg);
     if (!r.success) throw new Error(r.message || 'save_license returned success:false');
     writeLogFile('info', '[LicenseSync] Trial synced to MySQL — max_clients=' + TRIAL_MAX_CLIENTS);
     return { ok: true, message: 'Trial license synced to server database.', max_clients: TRIAL_MAX_CLIENTS };
@@ -2056,24 +2097,483 @@ ipcMain.handle('tc-update-install-prompt', async () => {
   return appUpdater.promptAndInstall();
 });
 
-/** Same secret as license API — for snapshot HMAC-SHA256 v2 (renderer never stores it). */
-ipcMain.handle('tc-snapshot-hmac-secret', () => {
+function tcNormalizeSessionRole(role) {
+  const r = String(role || '').trim().toLowerCase();
+  if (r === 'admin' || r === 'manager' || r === 'cashier') return r;
+  return 'cashier';
+}
+
+function tcSafeTimingEqualHex(a, b) {
   try {
-    const s = getLicenseServerSecret();
-    return typeof s === 'string' ? s : '';
+    const ba = Buffer.from(String(a || ''), 'hex');
+    const bb = Buffer.from(String(b || ''), 'hex');
+    if (ba.length === 0 || ba.length !== bb.length) return false;
+    return crypto.timingSafeEqual(ba, bb);
+  } catch (_e) {
+    return false;
+  }
+}
+
+/** Verify login password against stored hash (pbkdf2 / sha256 / legacy plaintext). */
+function tcPasswordMatchesStored(input, stored) {
+  if (!stored) return false;
+  const s = String(stored);
+  const pw = String(input == null ? '' : input);
+  if (s.startsWith('pbkdf2:')) {
+    const parts = s.split(':');
+    if (parts.length < 4) return false;
+    const iters = parseInt(parts[1], 10) || 100000;
+    let salt;
+    try {
+      salt = Buffer.from(parts[2], 'hex');
+    } catch (_e) {
+      return false;
+    }
+    if (!salt.length) return false;
+    const derived = crypto.pbkdf2Sync(pw, salt, iters, 32, 'sha256').toString('hex');
+    return tcSafeTimingEqualHex(derived, parts[3]);
+  }
+  if (s.startsWith('sha256:')) {
+    const hex = crypto.createHash('sha256').update(pw, 'utf8').digest('hex');
+    return ('sha256:' + hex) === s;
+  }
+  return pw === s;
+}
+
+function tcFindLoginUser(users, username) {
+  const list = Array.isArray(users) ? users : [];
+  const uname = String(username || '').trim().toLowerCase();
+  let user = list.find(function (u) {
+    return u && u.active !== false && String(u.username || '').trim().toLowerCase() === uname;
+  });
+  if (!user && (uname === 'admin' || !uname)) {
+    user = list.find(function (u) { return u && String(u.role || '').toLowerCase() === 'admin'; }) || list[0];
+  }
+  return user || null;
+}
+
+function tcPutErpSession(event, sessionFields) {
+  const id = tcSessionKeyFromEvent(event);
+  if (id == null) return { ok: false, message: 'No window' };
+  const username = String(sessionFields.username || '').trim();
+  if (!username) return { ok: false, message: 'username required' };
+  const token = crypto.randomBytes(24).toString('hex');
+  const session = {
+    token: token,
+    userId: String(sessionFields.userId || username),
+    username: username,
+    name: String(sessionFields.name || username),
+    role: tcNormalizeSessionRole(sessionFields.role),
+    expiresAt: Date.now() + TC_SESSION_TTL_MS,
+  };
+  tcErpSessions.set(id, session);
+  return {
+    ok: true,
+    token: token,
+    role: session.role,
+    username: session.username,
+    userId: session.userId,
+    name: session.name,
+    expiresAt: session.expiresAt,
+  };
+}
+
+/** Main-owned credential seal — login verifies against this, not renderer-supplied hashes. */
+const tcElevateTokens = new Map();
+const tcSupportUnlockAttempts = new Map();
+
+function tcCredsSealPath() {
+  return path.join(app.getPath('userData'), 'tc_erp_creds.json');
+}
+
+function tcLoadSealedCreds() {
+  try {
+    const p = tcCredsSealPath();
+    if (!fs.existsSync(p)) return null;
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return j && typeof j === 'object' ? j : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function tcSanitizeUsersForSeal(users) {
+  return (Array.isArray(users) ? users : []).map(function (u) {
+    if (!u) return null;
+    return {
+      id: u.id || '',
+      username: String(u.username || '').trim(),
+      name: String(u.name || u.username || '').trim(),
+      role: tcNormalizeSessionRole(u.role),
+      passwordHash: String(u.passwordHash || ''),
+      active: u.active !== false,
+    };
+  }).filter(function (u) { return u && u.username; });
+}
+
+function tcSaveSealedCreds(creds) {
+  const out = {
+    users: tcSanitizeUsersForSeal(creds.users),
+    apppass: String(creds.apppass || ''),
+    mainAdminPassHash: String(creds.mainAdminPassHash || ''),
+    passwordLockRequired: creds.passwordLockRequired !== false,
+    updatedAt: Date.now(),
+  };
+  fs.writeFileSync(tcCredsSealPath(), JSON.stringify(out), 'utf8');
+  return out;
+}
+
+function tcIssueElevateToken(event, role) {
+  const id = tcSessionKeyFromEvent(event);
+  if (id == null) return false;
+  tcElevateTokens.set(id, {
+    role: tcNormalizeSessionRole(role || 'admin'),
+    expiresAt: Date.now() + 120000,
+  });
+  return true;
+}
+
+function tcConsumeElevateToken(event) {
+  const id = tcSessionKeyFromEvent(event);
+  if (id == null) return null;
+  const elev = tcElevateTokens.get(id);
+  if (!elev) return null;
+  tcElevateTokens.delete(id);
+  if (elev.expiresAt < Date.now()) return null;
+  return elev.role;
+}
+
+/**
+ * Seal / refresh main-owned credentials (post-login, password change).
+ * First seal is created only by tc-session-login after a verified password match —
+ * never from unauthenticated renderer-supplied hashes.
+ */
+ipcMain.handle('tc-credentials-seal', (event, payload) => {
+  try {
+    const existing = tcLoadSealedCreds();
+    if (!existing) {
+      return { ok: false, message: 'Credentials seal bootstrap requires a verified login first' };
+    }
+    const users = tcSanitizeUsersForSeal(payload && payload.users);
+    const apppass = String((payload && payload.apppass) || '');
+    const mainAdmin = String((payload && payload.mainAdminPassHash) || '');
+    const lockReq = payload && payload.passwordLockRequired;
+    const gate = tcRequireSessionRole(event, ['admin']);
+    const pw = String((payload && payload.password) || '');
+    const pwOk = !!pw && (
+      tcPasswordMatchesStored(pw, existing.apppass)
+      || tcPasswordMatchesStored(pw, existing.mainAdminPassHash)
+      || (existing.users || []).some(function (u) {
+        return u && String(u.role || '').toLowerCase() === 'admin'
+          && tcPasswordMatchesStored(pw, u.passwordHash);
+      })
+    );
+    if (!gate.ok && !pwOk) {
+      return { ok: false, message: 'Admin session or current password required to update credentials' };
+    }
+    tcSaveSealedCreds({
+      users: users.length ? users : existing.users,
+      apppass: apppass || existing.apppass,
+      mainAdminPassHash: mainAdmin || existing.mainAdminPassHash,
+      passwordLockRequired: typeof lockReq === 'boolean' ? lockReq : existing.passwordLockRequired,
+    });
+    return { ok: true };
   } catch (e) {
-    return '';
+    return { ok: false, message: 'seal failed' };
   }
 });
 
-/** Optional previous secret during LICENSE_SECRET rotation (verify-only). */
-ipcMain.handle('tc-snapshot-hmac-secret-previous', () => {
+/**
+ * Unauthenticated open — cashier only, unless one-time elevate token or sealed password-lock-off.
+ * Role never comes from a client-asserted forge flag.
+ */
+ipcMain.handle('tc-session-open', (event, payload) => {
   try {
-    const s = process.env.TC_SNAPSHOT_HMAC_SECRET_PREVIOUS;
-    return s && String(s).trim() ? String(s).trim() : '';
+    const username = String((payload && payload.username) || '').trim();
+    const userId = String((payload && payload.userId) || '').trim();
+    const name = String((payload && payload.name) || username || '').trim();
+    if (!username) return { ok: false, message: 'username required' };
+    let role = tcConsumeElevateToken(event) || 'cashier';
+    const sealed = tcLoadSealedCreds();
+    if (role === 'cashier' && sealed && sealed.passwordLockRequired === false) {
+      const u = tcFindLoginUser(sealed.users, username);
+      if (u) role = tcNormalizeSessionRole(u.role);
+    }
+    return tcPutErpSession(event, {
+      userId: userId || (sealed && tcFindLoginUser(sealed.users, username) && tcFindLoginUser(sealed.users, username).id) || username,
+      username: username,
+      name: name,
+      role: role,
+    });
   } catch (e) {
-    return '';
+    return { ok: false, message: 'session open failed' };
   }
+});
+
+/**
+ * Password-verified login against main-owned seal.
+ * One-time migration: if no seal exists, verify password against local hashes in-memory,
+ * then persist seal only after a successful match (prevents unauthenticated hash planting).
+ */
+ipcMain.handle('tc-session-login', (event, payload) => {
+  try {
+    const password = String((payload && payload.password) || '');
+    if (!password) return { ok: false, message: 'password required' };
+    const username = String((payload && payload.username) || '').trim();
+    const bootUsers = tcSanitizeUsersForSeal(payload && payload.users);
+    const bootApp = String((payload && payload.apppass) || '');
+    const bootMain = String((payload && payload.mainAdminPassHash) || '');
+    const bootCandidate = {
+      users: bootUsers,
+      apppass: bootApp,
+      mainAdminPassHash: bootMain,
+      passwordLockRequired: true,
+    };
+    const bootPasswordMatches = function () {
+      if (!bootUsers.length && !bootApp && !bootMain) return false;
+      const matchUser = tcFindLoginUser(bootUsers, username);
+      return !!(
+        (matchUser && matchUser.passwordHash && tcPasswordMatchesStored(password, matchUser.passwordHash))
+        || (bootApp && tcPasswordMatchesStored(password, bootApp))
+        || (bootMain && tcPasswordMatchesStored(password, bootMain))
+        || bootUsers.some(function (u) {
+          return u && String(u.role || '').toLowerCase() === 'admin'
+            && u.passwordHash && tcPasswordMatchesStored(password, u.passwordHash);
+        })
+      );
+    };
+
+    let sealed = tcLoadSealedCreds();
+    let migrating = false;
+    if (!sealed) {
+      if (!bootPasswordMatches()) {
+        return { ok: false, message: 'Incorrect password' };
+      }
+      sealed = bootCandidate;
+      migrating = true;
+    }
+
+    let users = sealed.users || [];
+    let apppass = sealed.apppass || '';
+    let mainAdminPassHash = sealed.mainAdminPassHash || '';
+    let user = tcFindLoginUser(users, username);
+
+    const finish = function (fields) {
+      if (migrating || !tcLoadSealedCreds()) {
+        try {
+          tcSaveSealedCreds({
+            users: users,
+            apppass: apppass,
+            mainAdminPassHash: mainAdminPassHash,
+            passwordLockRequired: true,
+          });
+        } catch (_e) { /* ignore */ }
+      }
+      return tcPutErpSession(event, fields);
+    };
+
+    const adminFromHashes = function () {
+      if (tcPasswordMatchesStored(password, apppass) || tcPasswordMatchesStored(password, mainAdminPassHash)) {
+        const admin = users.find(function (u) {
+          return u && String(u.role || '').toLowerCase() === 'admin';
+        });
+        return finish({
+          userId: (admin && admin.id) || 'main-admin-sync',
+          username: (admin && admin.username) || 'admin',
+          name: (admin && admin.name) || 'Admin',
+          role: 'admin',
+        });
+      }
+      /*
+       * Restore / demo reseed can leave tc_erp_creds.json out of sync with IndexedDB.
+       * If the live shop password matches renderer hashes, refresh the seal and continue.
+       */
+      if (bootPasswordMatches()) {
+        users = bootUsers;
+        apppass = bootApp;
+        mainAdminPassHash = bootMain;
+        migrating = true;
+        user = tcFindLoginUser(users, username);
+        const admin = user && String(user.role || '').toLowerCase() === 'admin'
+          ? user
+          : users.find(function (u) {
+            return u && String(u.role || '').toLowerCase() === 'admin';
+          });
+        return finish({
+          userId: (admin && admin.id) || (user && user.id) || 'main-admin-sync',
+          username: (admin && admin.username) || (user && user.username) || username || 'admin',
+          name: (admin && admin.name) || (user && user.name) || String((payload && payload.name) || 'Admin'),
+          role: 'admin',
+        });
+      }
+      return { ok: false, message: 'Incorrect password' };
+    };
+
+    if (user) {
+      const hash = user.passwordHash || '';
+      const isAdmin = String(user.role || '').toLowerCase() === 'admin'
+        || String(user.username || '').trim().toLowerCase() === 'admin';
+      if (hash && tcPasswordMatchesStored(password, hash)) {
+        return finish({
+          userId: user.id || user.username,
+          username: user.username || username,
+          name: user.name || user.username || username,
+          role: user.role || (isAdmin ? 'admin' : 'cashier'),
+        });
+      }
+      if (isAdmin && apppass && tcPasswordMatchesStored(password, apppass)) {
+        return finish({
+          userId: user.id || user.username,
+          username: user.username || username,
+          name: user.name || user.username || username,
+          role: 'admin',
+        });
+      }
+      return adminFromHashes();
+    }
+
+    if (apppass && tcPasswordMatchesStored(password, apppass)) {
+      return finish({
+        userId: 'legacy-admin',
+        username: username || 'admin',
+        name: String((payload && payload.name) || 'Admin'),
+        role: 'admin',
+      });
+    }
+    return adminFromHashes();
+  } catch (e) {
+    return { ok: false, message: 'session login failed' };
+  }
+});
+
+ipcMain.handle('tc-session-close', (event) => {
+  const id = tcSessionKeyFromEvent(event);
+  if (id != null) {
+    tcErpSessions.delete(id);
+    tcElevateTokens.delete(id);
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('tc-session-get', (event) => {
+  const s = tcGetSession(event);
+  if (!s) return { ok: false, session: null };
+  return {
+    ok: true,
+    session: {
+      token: s.token,
+      userId: s.userId,
+      username: s.username,
+      name: s.name,
+      role: s.role,
+      expiresAt: s.expiresAt,
+    },
+  };
+});
+
+ipcMain.handle('tc-session-assert', (event, payload) => {
+  const roles = (payload && payload.roles) || ['*'];
+  const r = tcRequireSessionRole(event, roles);
+  if (!r.ok) return { ok: false, message: r.message };
+  return { ok: true, role: r.session.role, username: r.session.username };
+});
+
+/** Same secret as license API — for snapshot HMAC-SHA256 v2 (renderer never stores it). */
+ipcMain.handle('tc-snapshot-hmac-secret', () => {
+  return '';
+});
+
+ipcMain.handle('tc-snapshot-hmac-sign', (event, canonicalBody) => {
+  try {
+    const gate = tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+    if (!gate.ok) return { ok: false, hex: '', message: gate.message };
+    const secret = getLicenseServerSecret();
+    if (!secret || typeof secret !== 'string') return { ok: false, hex: '' };
+    const hex = crypto.createHmac('sha256', secret).update(String(canonicalBody || ''), 'utf8').digest('hex');
+    return { ok: true, hex: hex };
+  } catch (e) {
+    return { ok: false, hex: '' };
+  }
+});
+
+ipcMain.handle('tc-snapshot-hmac-verify', (_event, payload) => {
+  try {
+    const body = String((payload && payload.canonicalBody) || '');
+    const hexSig = String((payload && payload.hexSig) || '').toLowerCase();
+    if (!hexSig) return { ok: false };
+    const secrets = [];
+    const primary = getLicenseServerSecret();
+    if (primary) secrets.push(primary);
+    const prev = process.env.TC_SNAPSHOT_HMAC_SECRET_PREVIOUS;
+    if (prev && String(prev).trim()) secrets.push(String(prev).trim());
+    for (let i = 0; i < secrets.length; i++) {
+      const hex = crypto.createHmac('sha256', secrets[i]).update(body, 'utf8').digest('hex');
+      if (hex === hexSig) return { ok: true, matched: i === 0 ? 'v2_license' : 'v2_license_previous' };
+    }
+    return { ok: false };
+  } catch (e) {
+    return { ok: false };
+  }
+});
+
+ipcMain.handle('tc-snapshot-hmac-configured', () => {
+  try {
+    const s = getLicenseServerSecret();
+    return !!(s && String(s).trim());
+  } catch (e) {
+    return false;
+  }
+});
+
+/**
+ * Support unlock — challenge-response verified ONLY in main (salt never shipped to renderer).
+ * Allowed without session (forgot-password) with rate limit; grants one-time elevate token.
+ */
+ipcMain.handle('tc-verify-support-unlock', async (event, payload) => {
+  try {
+    const wid = tcSessionKeyFromEvent(event);
+    const attemptKey = wid != null ? String(wid) : 'unknown';
+    const prev = tcSupportUnlockAttempts.get(attemptKey) || { n: 0, resetAt: Date.now() + 900000 };
+    if (Date.now() > prev.resetAt) {
+      prev.n = 0;
+      prev.resetAt = Date.now() + 900000;
+    }
+    if (prev.n >= 8) {
+      return { ok: false, message: 'Too many unlock attempts. Try again later.' };
+    }
+    prev.n += 1;
+    tcSupportUnlockAttempts.set(attemptKey, prev);
+
+    const challenge = String((payload && payload.challenge) || '').trim().toUpperCase();
+    const code = String((payload && payload.code) || '').replace(/\s/g, '').toUpperCase();
+    if (!challenge || code.length !== 6) {
+      return { ok: false, message: 'Invalid challenge or unlock code.' };
+    }
+    const salt =
+      (process.env.TC_SUPPORT_UNLOCK_SALT && String(process.env.TC_SUPPORT_UNLOCK_SALT).trim()) || "";
+    if (!salt) {
+      return {
+        ok: false,
+        message: "Support unlock is not configured on this installation (set TC_SUPPORT_UNLOCK_SALT).",
+      };
+    }
+    const hex = crypto.createHash('sha256').update(challenge + salt, 'utf8').digest('hex');
+    const expected = hex.substring(0, 6).toUpperCase();
+    if (code !== expected) {
+      return { ok: false, message: 'Incorrect support unlock code.' };
+    }
+    tcIssueElevateToken(event, 'admin');
+    prev.n = 0;
+    tcSupportUnlockAttempts.set(attemptKey, prev);
+    return { ok: true, elevate: true };
+  } catch (e) {
+    return { ok: false, message: 'Verification failed.' };
+  }
+});
+
+/** Previous HMAC secret is verify-only in main — never expose raw secret to renderer. */
+ipcMain.handle('tc-snapshot-hmac-secret-previous', () => {
+  return '';
 });
 
 /** Packaged production runtime guard — LICENSE_SECRET required for accounting HMAC / API. */
@@ -2268,10 +2768,19 @@ ipcMain.handle('tc-share-pdf', async (_event, payload) => {
   }
 });
 
+function tcSafePrintHtmlId(id) {
+  const s = String(id || '');
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(s)) return null;
+  return s;
+}
+
 /* Stream Business Report HTML to a temp file in small IPC chunks (avoids structured-clone limits on huge strings). */
 ipcMain.handle('tc-print-html-disk-chunk', async (_event, { id, seq, part }) => {
-  if (!id || typeof part !== 'string') return { ok: false, message: 'Invalid chunk' };
-  const p = path.join(app.getPath('temp'), 'tc_print_html_' + id + '.html');
+  const safeId = tcSafePrintHtmlId(id);
+  if (!safeId || typeof part !== 'string') return { ok: false, message: 'Invalid chunk' };
+  const dir = app.getPath('temp');
+  const p = path.join(dir, 'tc_print_html_' + safeId + '.html');
+  if (path.dirname(p) !== dir) return { ok: false, message: 'Invalid path' };
   try {
     if (seq === 0) fs.writeFileSync(p, part, 'utf8');
     else fs.appendFileSync(p, part, 'utf8');
@@ -2282,8 +2791,11 @@ ipcMain.handle('tc-print-html-disk-chunk', async (_event, { id, seq, part }) => 
 });
 
 ipcMain.handle('tc-print-html-disk-finish', async (_event, { id }) => {
-  const p = path.join(app.getPath('temp'), 'tc_print_html_' + id + '.html');
-  if (!fs.existsSync(p)) return { ok: false, message: 'Missing temp HTML file' };
+  const safeId = tcSafePrintHtmlId(id);
+  if (!safeId) return { ok: false, message: 'Invalid id' };
+  const dir = app.getPath('temp');
+  const p = path.join(dir, 'tc_print_html_' + safeId + '.html');
+  if (path.dirname(p) !== dir || !fs.existsSync(p)) return { ok: false, message: 'Missing temp HTML file' };
   let html;
   try {
     html = fs.readFileSync(p, 'utf8');
@@ -2908,15 +3420,50 @@ ipcMain.handle('tc-ws-status', () => {
   return lanWsSync.getStatus();
 });
 
+/** Prefer loopback for Main-PC-only admin APIs when role is network_server. */
+function lanMainLoopbackUrl(cfg, relPath) {
+  const base = (cfg && cfg.apiUrl) ? String(cfg.apiUrl) : '';
+  const rel = String(relPath || '').replace(/^\//, '');
+  if (!base) return '';
+  try {
+    if (cfg.role === 'network_server') {
+      const u = new URL(base);
+      if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') {
+        u.hostname = '127.0.0.1';
+        return u.toString().replace(/\/?$/, '/') + rel;
+      }
+    }
+  } catch (_e) { /* fall through */ }
+  return base.replace(/\/?$/, '/') + rel;
+}
+
 /** Signed LAN GET/POST from renderer (device auth or legacy fallback). */
-ipcMain.handle('tc-lan-request', async (_event, payload) => {
+ipcMain.handle('tc-lan-request', async (event, payload) => {
   const cfg = loadNetworkConfig();
   if (!cfg || !cfg.apiUrl || cfg.role === 'standalone') {
     return { success: false, message: 'Not in network mode' };
   }
   const method = (payload && payload.method) ? String(payload.method).toUpperCase() : 'GET';
   const relPath = (payload && payload.path) ? String(payload.path).replace(/^\//, '') : '';
-  const fullUrl = cfg.apiUrl + relPath;
+  if (/save_license\.php/i.test(relPath)) {
+    return { success: false, message: 'save_license is main-process only' };
+  }
+  if (/device_manage\.php/i.test(relPath) || (/check_license\.php/i.test(relPath) && method === 'POST')) {
+    const gate = tcRequireSessionRole(event, ['admin']);
+    if (!gate.ok) {
+      return { success: false, message: gate.message || 'Admin session required.' };
+    }
+  }
+  /* Main-PC shop sync/wipe must hit loopback — LAN IP rejects legacy API-key auth. */
+  const isWipe = /wipe_shop_data\.php/i.test(relPath);
+  const isShopSync = /sync_patch\.php|server_state\.php|health_check\.php/i.test(relPath);
+  const useLoopback = cfg.role === 'network_server' && (isWipe || isShopSync);
+  const fullUrl = useLoopback
+    ? (lanMainLoopbackUrl(cfg, relPath) || (cfg.apiUrl + relPath))
+    : (cfg.apiUrl + relPath);
+  const postTimeoutMs = (payload && payload.timeoutMs > 0)
+    ? payload.timeoutMs
+    : (isWipe || isShopSync ? 120000 : 10000);
   const extra = Object.assign({}, (payload && payload.headers) || {});
   if (payload && payload.clientId) extra['X-TC-Client-ID'] = String(payload.clientId);
   try {
@@ -2925,7 +3472,7 @@ ipcMain.handle('tc-lan-request', async (_event, payload) => {
       return { success: true, data: data };
     }
     const body = (payload && payload.body) || {};
-    const data = await lanPost(fullUrl, body, extra, cfg);
+    const data = await lanPost(fullUrl, body, extra, cfg, postTimeoutMs);
     return { success: true, data: data };
   } catch (e) {
     return { success: false, message: e && e.message ? e.message : String(e) };
@@ -2960,7 +3507,9 @@ ipcMain.handle('tc-device-credentials-load', () => {
   };
 });
 
-ipcMain.handle('tc-device-credentials-save', (_event, payload) => {
+ipcMain.handle('tc-device-credentials-save', (event, payload) => {
+  const gate = tcRequireSessionRole(event, ['admin']);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required' };
   const store = getDeviceStore();
   const existing = store.loadDeviceCredentials(app.getPath('userData')) || {};
   const merged = Object.assign({}, existing, payload || {});
@@ -3004,6 +3553,7 @@ ipcMain.handle('tc-device-register', async (_event, payload) => {
     }, {}, cfg);
     if (r && r.success) {
       creds.status = 'pending';
+      if (r.data && r.data.token_id) creds.token_id = r.data.token_id;
       store.saveDeviceCredentials(app.getPath('userData'), creds);
       return { ok: true, device_id: creds.device_id, status: 'pending', message: r.message };
     }
@@ -3021,7 +3571,8 @@ ipcMain.handle('tc-device-poll-status', async () => {
     return { ok: false, message: 'No device identity' };
   }
   try {
-    const url = cfg.apiUrl + 'device_status.php?device_id=' + encodeURIComponent(creds.device_id);
+    let url = cfg.apiUrl + 'device_status.php?device_id=' + encodeURIComponent(creds.device_id);
+    if (creds.token_id) url += '&token_id=' + encodeURIComponent(creds.token_id);
     const r = await lanGet(url, cfg);
     const d = (r && r.data) || {};
     if (d.status === 'approved' && d.device_secret) {
@@ -3040,7 +3591,11 @@ ipcMain.handle('tc-device-poll-status', async () => {
   }
 });
 
-ipcMain.handle('tc-device-manage', async (_event, payload) => {
+ipcMain.handle('tc-device-manage', async (event, payload) => {
+  const gate = tcRequireSessionRole(event, ['admin']);
+  if (!gate.ok) {
+    return { ok: false, message: gate.message || 'Admin session required for device administration.' };
+  }
   const cfg = loadNetworkConfig();
   if (!cfg || !cfg.apiUrl || cfg.role !== 'network_server') {
     return { ok: false, message: 'Main server only' };
@@ -3060,7 +3615,18 @@ ipcMain.handle('tc-device-manage', async (_event, payload) => {
 });
 
 ipcMain.handle('tc-network-config-load', () => {
-  return loadNetworkConfig();
+  const cfg = loadNetworkConfig() || {};
+  const hasApiKey = !!(cfg.apiKey && String(cfg.apiKey).length);
+  /* Never ship the LAN secret to the renderer by default (XSS / DevTools). */
+  return Object.assign({}, cfg, { apiKey: '', hasApiKey: hasApiKey });
+});
+
+/** Admin-only: reveal apiKey for Settings copy / client paste UX. */
+ipcMain.handle('tc-network-api-key-reveal', (event) => {
+  const gate = tcRequireSessionRole(event, ['admin']);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required', apiKey: '' };
+  const cfg = loadNetworkConfig() || {};
+  return { ok: true, apiKey: String(cfg.apiKey || '') };
 });
 
 /** Sync check for preload client-mode guards (contextBridge API is read-only in renderer). */
@@ -3114,8 +3680,10 @@ function sanitizeNetworkConfig(cfg) {
           } else {
             apiUrl = u.href;
           }
-        } else {
+        } else if (host === 'localhost' || host.endsWith('.local') || host === '::1') {
           apiUrl = u.href;
+        } else {
+          writeLogFile('warn', '[NetConfig] Rejected non-LAN hostname apiUrl: ' + host);
         }
       } catch (e) {
         writeLogFile('warn', '[NetConfig] Invalid apiUrl: ' + (e && e.message));
@@ -3175,11 +3743,30 @@ ipcMain.handle('tc-network-test-connection', async (_event, payload) => {
   }
 });
 
-ipcMain.handle('tc-network-config-save', (_event, cfg) => {
+ipcMain.handle('tc-network-config-save', (event, cfg) => {
   const existing = loadNetworkConfig();
+  /* First-run wizard may save before login; later changes need admin session. */
+  if (existing && existing.wizardComplete) {
+    const gate = tcRequireSessionRole(event, ['admin']);
+    if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required', config: null };
+  }
   var merged = cfg;
-  if (existing && existing.role === 'network_client') {
+  /* Counter PCs may update URL/key but must not silently change role — unless explicit upgrade/downgrade. */
+  if (existing && existing.role === 'network_client' && cfg && cfg.role === 'network_client') {
     merged = Object.assign({}, existing, cfg || {}, { role: 'network_client' });
+  }
+  /* Standalone mode: drop network credentials so sync cannot reopen. */
+  if (merged && merged.role === 'standalone') {
+    merged = Object.assign({}, merged, {
+      role: 'standalone',
+      apiUrl: '',
+      apiKey: '',
+      xamppPath: '',
+      wizardComplete: true,
+    });
+  } else if (merged && !(merged.apiKey && String(merged.apiKey).trim()) && existing && existing.apiKey) {
+    /* Preserve stored apiKey when renderer sends empty (stripped load). */
+    merged = Object.assign({}, merged, { apiKey: existing.apiKey });
   }
   const sanitized = sanitizeNetworkConfig(merged);
   const ok = saveNetworkConfig(sanitized);
@@ -3191,10 +3778,16 @@ ipcMain.handle('tc-network-config-save', (_event, cfg) => {
       syncTrialLicenseToMySQLNow(sanitized).catch(function () {});
     }, 2500);
   }
-  return { ok, config: sanitized };
+  const safe = Object.assign({}, sanitized, {
+    apiKey: '',
+    hasApiKey: !!(sanitized.apiKey && String(sanitized.apiKey).length),
+  });
+  return { ok, config: safe };
 });
 
-ipcMain.handle('tc-network-config-reset', () => {
+ipcMain.handle('tc-network-config-reset', (event) => {
+  const gate = tcRequireSessionRole(event, ['admin']);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required' };
   try {
     if (fs.existsSync(NET_CONFIG_FILE)) fs.unlinkSync(NET_CONFIG_FILE);
     return { ok: true };
@@ -3237,29 +3830,35 @@ ipcMain.handle('tc-connected-clients-list', async () => {
   }
 });
 
-ipcMain.handle('tc-connected-client-remove', async (_event, payload) => {
+ipcMain.handle('tc-connected-client-remove', async (event, payload) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireSessionRole(event, ['admin']);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   try {
     const cfg = loadNetworkConfig();
     if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl) return { ok: false, message: 'Not in network server mode.' };
     const deviceId = payload && payload.deviceId ? String(payload.deviceId) : '';
     if (!deviceId) return { ok: false, message: 'Missing deviceId.' };
-    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'remove_client', deviceId: deviceId }, { 'X-TC-KEY': cfg.apiKey || '' }, cfg);
+    const url = lanMainLoopbackUrl(cfg, 'check_license.php') || (cfg.apiUrl + 'check_license.php');
+    const res = await lanPost(url, { action: 'remove_client', deviceId: deviceId }, { 'X-TC-KEY': cfg.apiKey || '' }, cfg);
     return { ok: !!(res && res.success), message: (res && res.message) ? res.message : (res && res.success ? 'Removed' : 'Remove failed') };
   } catch (e) {
     return { ok: false, message: e && e.message ? e.message : 'Could not remove client.' };
   }
 });
 
-ipcMain.handle('tc-connected-client-set-label', async (_event, payload) => {
+ipcMain.handle('tc-connected-client-set-label', async (event, payload) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireSessionRole(event, ['admin']);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   try {
     const cfg = loadNetworkConfig();
     if (!cfg || cfg.role !== 'network_server' || !cfg.apiUrl) return { ok: false, message: 'Not in network server mode.' };
     const deviceId = payload && payload.deviceId ? String(payload.deviceId) : '';
     const clientLabel = payload && payload.clientLabel != null ? String(payload.clientLabel) : '';
     if (!deviceId) return { ok: false, message: 'Missing deviceId.' };
-    const res = await lanPost(cfg.apiUrl + 'check_license.php', { action: 'set_client_label', deviceId, clientLabel: clientLabel.trim() }, { 'X-TC-KEY': cfg.apiKey || '' }, cfg);
+    const url = lanMainLoopbackUrl(cfg, 'check_license.php') || (cfg.apiUrl + 'check_license.php');
+    const res = await lanPost(url, { action: 'set_client_label', deviceId, clientLabel: clientLabel.trim() }, { 'X-TC-KEY': cfg.apiKey || '' }, cfg);
     return {
       ok: !!(res && res.success),
       message: (res && res.message) ? res.message : (res && res.success ? 'OK' : 'Update failed'),
@@ -3652,15 +4251,21 @@ ipcMain.handle('tc-sync-patch', async (_event, payload) => {
     if (!patches.length) {
       return { success: false, message: 'No patches provided' };
     }
-    const postUrl = cfg.apiUrl + 'sync_patch.php';
+    /* Main PC must POST legacy-key sync via loopback — LAN IP is blocked by PHP. */
+    const postUrl = (cfg.role === 'network_server')
+      ? (lanMainLoopbackUrl(cfg, 'sync_patch.php') || (cfg.apiUrl + 'sync_patch.php'))
+      : (cfg.apiUrl + 'sync_patch.php');
     const extra = {};
     if (clientId) extra['X-TC-Client-ID'] = clientId;
+    const isForce = patches.some(function (p) { return p && p._forceReplace; });
+    const timeoutMs = isForce || patches.length > 8 ? 120000 : 30000;
     writeLogFile('info', '[SyncEngine:HTTP] POST ' + postUrl + ' keys=[' + keys + ']');
     const r = await lanPost(
       postUrl,
       { patches: patches, client_id: clientId },
       extra,
-      cfg
+      cfg,
+      timeoutMs
     );
     writeLogFile(
       r && r.success ? 'info' : 'error',

@@ -28,7 +28,8 @@ import {
 } from "../utils/featureFlags.js";
 import { getToolbarKeys, persistToolbarKeys } from "../utils/toolbarConfig.js";
 import { safeStr } from "../utils/syncDataNormalize.js";
-import { pushKeysToServer, NETWORK_KV_KEYS } from "../sync/SyncEngine.js";
+import { pushKeysToServer, wipeShopDataOnServer, NETWORK_KV_KEYS } from "../sync/SyncEngine.js";
+import { ServerSetup } from "../SetupWizard.jsx";
 import {
   CATEGORY_GROUPS,
   readEnabledCategoryGroups,
@@ -320,6 +321,14 @@ var Settings = function (props) {
   var [cloudLoading, setCloudLoading] = useState(false);
   var [licSyncBusy, setLicSyncBusy] = useState(false);
   var [dataPushBusy, setDataPushBusy] = useState(false);
+  var [enableMultiPcOpen, setEnableMultiPcOpen] = useState(false);
+  var [switchStandaloneBusy, setSwitchStandaloneBusy] = useState(false);
+  var [clearMysqlOnStandalone, setClearMysqlOnStandalone] = useState(false);
+  var [netModePwOpen, setNetModePwOpen] = useState(false);
+  var [netModePw, setNetModePw] = useState("");
+  var [netModePwMsg, setNetModePwMsg] = useState("");
+  var [netModePwBusy, setNetModePwBusy] = useState(false);
+  var netModeAuthResolverRef = useRef(null);
   var [clientSlotsBusy, setClientSlotsBusy] = useState(false);
   var [clientSlots, setClientSlots] = useState({ max_clients: 0, connected: 0, clients: [] });
   var [trustedDevices, setTrustedDevices] = useState([]);
@@ -331,6 +340,8 @@ var Settings = function (props) {
   var [clientLabelAdjustedHintDk, setClientLabelAdjustedHintDk] = useState(null);
   var [clientNetUrl, setClientNetUrl] = useState("");
   var [clientNetKey, setClientNetKey] = useState("");
+  var [revealedServerKey, setRevealedServerKey] = useState("");
+  var [serverKeyBusy, setServerKeyBusy] = useState(false);
   var [clientNetBusy, setClientNetBusy] = useState(false);
   var [clientNetErr, setClientNetErr] = useState(null);
   var [clientNetStep, setClientNetStep] = useState("");
@@ -569,10 +580,12 @@ var Settings = function (props) {
       showAlert("Settings updated successfully!");
     };
     var rawPin = f.adminPin || "";
-    if (rawPin && rawPin.length >= 4 && !rawPin.startsWith("sha256:")) {
+    if (rawPin && (rawPin.startsWith("sha256:") || rawPin.startsWith("pbkdf2:"))) {
+      saveSettingsWithPin(rawPin);
+    } else if (rawPin && rawPin.length >= 4) {
       hashPw(rawPin).then(function (hashedPin) { saveSettingsWithPin(hashedPin); });
     } else {
-      saveSettingsWithPin(rawPin);
+      saveSettingsWithPin(rawPin || (state.settings && state.settings.adminPin) || "");
     }
   };
 
@@ -639,8 +652,32 @@ var Settings = function (props) {
   useEffect(function () {
     if (!isNetworkClient) return;
     setClientNetUrl((systemConfig.apiUrl || "").replace(/\/?$/, ""));
-    setClientNetKey(systemConfig.apiKey || "");
+    /* apiKey is stripped from load — keep typed key or leave blank for re-entry. */
+    setClientNetKey(systemConfig.apiKey || clientNetKey || "");
   }, [isNetworkClient, systemConfig.apiUrl, systemConfig.apiKey]);
+
+  var revealServerSecurityKey = function () {
+    var api = window.electronAPI;
+    if (!api || !api.revealNetworkApiKey) {
+      showAlert("Cannot reveal key in this environment.");
+      return Promise.resolve("");
+    }
+    setServerKeyBusy(true);
+    return api.revealNetworkApiKey().then(function (r) {
+      setServerKeyBusy(false);
+      if (!r || !r.ok) {
+        showAlert((r && r.message) || "Admin session required to reveal the security key.");
+        return "";
+      }
+      var k = String(r.apiKey || "");
+      setRevealedServerKey(k);
+      return k;
+    }).catch(function () {
+      setServerKeyBusy(false);
+      showAlert("Failed to reveal security key.");
+      return "";
+    });
+  };
 
   var refreshConnectedClients = function () {
     var api = window.electronAPI;
@@ -688,7 +725,7 @@ var Settings = function (props) {
     }
   }, [cloudSyncBump]);
 
-  var ALL_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals", "tc3_invoice_edit_locks", "tc3_users", "tc3_businessType"];
+  var ALL_KEYS = ["tc3_settings", "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_others", "tc3_sales", "tc3_purchases", "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog", "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist", "tc3_assetLog", "tc3_openBal", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns", "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage", "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_gl_mode", "tc3_journal_hash", "tc3_inventory_layers", "tc3_financial_snapshots", "tc3_stock_movements", "tc3_inv_reconciliation", "tc3_codRecords", "tc3_codPartners", "tc3_codProfitSettings", "tc3_codWithdrawals", "tc3_invoice_edit_locks", "tc3_users", "tc3_businessType", "tc3_apppass", "tc3_admin_name", "tc3_startup_wizard_done"];
 
   var buildBackupObject = function () {
     var backup = { version: 2, timestamp: new Date().toISOString(), shopName: state.settings.shopName || "Techon", data: {} };
@@ -719,6 +756,177 @@ var Settings = function (props) {
       downloadJson(backup, "techon-safety-before-restore-" + ts + ".json");
       return true;
     } catch (e) { return false; }
+  };
+
+  /* Network role changes need a main-process admin session (UI login can exist without it). */
+  var closeNetModePwModal = function (result) {
+    var resolve = netModeAuthResolverRef.current;
+    netModeAuthResolverRef.current = null;
+    setNetModePwOpen(false);
+    setNetModePw("");
+    setNetModePwMsg("");
+    setNetModePwBusy(false);
+    if (typeof resolve === "function") resolve(result || { ok: false, message: "Cancelled — admin password required." });
+  };
+
+  var submitNetModePw = function () {
+    var api = window.electronAPI;
+    var pw = String(netModePw || "").trim();
+    if (!pw) {
+      setNetModePwMsg("Enter your admin password.");
+      return;
+    }
+    setNetModePwBusy(true);
+    setNetModePwMsg("");
+    if (!api || typeof api.loginSession !== "function") {
+      closeNetModePwModal({ ok: false, message: "Sign in required." });
+      return;
+    }
+    /* Same password check as Settings unlock (IndexedDB), then bind main-process session. */
+    confirmAdminPassword(pw).then(function (okLocal) {
+      if (!okLocal) {
+        setNetModePwBusy(false);
+        setNetModePwMsg("Incorrect password.");
+        return null;
+      }
+      var st = (S && S.get) ? (S.get("tc3_settings", {}) || {}) : {};
+      var usersList = (S && S.get) ? S.get("tc3_users", []) : [];
+      if (!Array.isArray(usersList)) usersList = [];
+      var actor = currentUser || {};
+      return api.loginSession({
+        username: actor.username || "admin",
+        name: actor.name || actor.username || "Admin",
+        userId: actor.id || "",
+        password: pw,
+        users: usersList,
+        apppass: (S && S.get) ? (S.get("tc3_apppass", "") || "") : "",
+        mainAdminPassHash: st.mainAdminPassHash || "",
+      });
+    }).then(function (lr) {
+      if (lr == null) return;
+      if (lr && lr.ok && String(lr.role || "").toLowerCase() === "admin") {
+        closeNetModePwModal({ ok: true });
+        return;
+      }
+      setNetModePwBusy(false);
+      setNetModePwMsg((lr && lr.message) || (lr && lr.ok ? "Admin account required." : "Incorrect login password."));
+    }).catch(function (err) {
+      setNetModePwBusy(false);
+      setNetModePwMsg(err && err.message ? err.message : String(err));
+    });
+  };
+
+  var ensureAdminIpcSession = function () {
+    var api = window.electronAPI;
+    if (!api) return Promise.resolve({ ok: true });
+    var hasAdmin = function (r) {
+      return !!(r && r.ok && r.session && String(r.session.role || "").toLowerCase() === "admin");
+    };
+    if (typeof api.getSession !== "function") return Promise.resolve({ ok: true });
+    return api.getSession().then(function (r) {
+      if (hasAdmin(r)) return { ok: true };
+      return new Promise(function (resolve) {
+        netModeAuthResolverRef.current = resolve;
+        setNetModePw("");
+        setNetModePwMsg("");
+        setNetModePwBusy(false);
+        setNetModePwOpen(true);
+      });
+    });
+  };
+
+  var doSwitchToStandalone = function (opts) {
+    if (switchStandaloneBusy) return;
+    opts = opts || {};
+    var api = window.electronAPI;
+    if (!api || !api.saveNetworkConfig) {
+      showAlert("Network setup is not available in this build.");
+      return;
+    }
+    var runSwitch = function () {
+      setSwitchStandaloneBusy(true);
+      var wipeNote = "";
+      ensureAdminIpcSession().then(function (auth) {
+        if (!auth || !auth.ok) {
+          throw new Error((auth && auth.message) || "Sign in required.");
+        }
+        var chain = Promise.resolve();
+        if (clearMysqlOnStandalone && isNetworkServer && systemConfig.apiUrl) {
+          chain = wipeShopDataOnServer({ authConfig: systemConfig }).then(function (w) {
+            if (w && w.ok === false) {
+              wipeNote = " MySQL clear skipped (" + (w.message || "timed out") + "). Local shop data is still kept.";
+            }
+          }).catch(function (err) {
+            wipeNote = " MySQL clear skipped (" + (err && err.message ? err.message : String(err)) + "). Local shop data is still kept.";
+          });
+        }
+        return chain.then(function () {
+          return api.saveNetworkConfig({
+            role: "standalone",
+            apiUrl: "",
+            apiKey: "",
+            wizardComplete: true,
+          }).then(function (r) {
+            if (r && r.ok === false) throw new Error(r.message || "Could not save standalone mode");
+            try { window.__TC_ALLOW_UNLOAD__ = true; } catch (_eA) { /* ignore */ }
+            showAlert("Switched to Standalone." + wipeNote + " Reloading…", function () {
+              try { window.location.reload(); } catch (_eR) { /* ignore */ }
+            });
+          });
+        });
+      }).catch(function (err) {
+        setSwitchStandaloneBusy(false);
+        showAlert("Switch failed: " + (err && err.message ? err.message : String(err)));
+      });
+    };
+    if (opts.skipConfirm) {
+      runSwitch();
+      return;
+    }
+    var mysqlLine = isNetworkServer
+      ? (clearMysqlOnStandalone ? "• Techon MySQL shop data on this PC will be cleared\n" : "• MySQL shop data is left as-is (optional)\n")
+      : "";
+    showConfirm(
+      "Switch this PC to Standalone?\n\n" +
+      "• All shop data on this PC is kept (IndexedDB)\n" +
+      "• Multi-PC sync stops\n" +
+      "• XAMPP is NOT uninstalled\n" +
+      mysqlLine +
+      "\nContinue?",
+      runSwitch
+    );
+  };
+
+  var doEnableMultiPcComplete = function (cfg) {
+    setEnableMultiPcOpen(false);
+    var api = window.electronAPI;
+    var finish = function () {
+      try { window.__TC_ALLOW_UNLOAD__ = true; } catch (_eA) { /* ignore */ }
+      showAlert("Multi-PC enabled on this Main PC. Reloading…", function () {
+        try { window.location.reload(); } catch (_eR) { /* ignore */ }
+      });
+    };
+    if (api && api.saveNetworkConfig) {
+      ensureAdminIpcSession().then(function (auth) {
+        if (!auth || !auth.ok) {
+          showAlert("Could not enable Multi-PC: " + ((auth && auth.message) || "Sign in required."));
+          return;
+        }
+        return api.saveNetworkConfig({
+          role: "network_server",
+          apiUrl: (cfg && cfg.apiUrl) || "",
+          apiKey: (cfg && cfg.apiKey) || "",
+          wizardComplete: true,
+        }).then(function (r) {
+          if (r && r.ok === false) throw new Error(r.message || "Could not save network mode");
+          finish();
+        });
+      }).catch(function (err) {
+        showAlert("Could not enable Multi-PC: " + (err && err.message ? err.message : String(err)));
+      });
+    } else {
+      finish();
+    }
   };
 
   var doResetData = function () {
@@ -781,6 +989,12 @@ var Settings = function (props) {
     var reloadSoon = function (msg) {
       if (resetFinished) return;
       resetFinished = true;
+      try {
+        if (window.TC_SYNC && typeof window.TC_SYNC.discardPendingSync === "function") {
+          window.TC_SYNC.discardPendingSync("reset_reload");
+        }
+      } catch (eDisc) { /* ignore */ }
+      try { window.__TC_ALLOW_UNLOAD__ = true; } catch (eAllow) { /* ignore */ }
       setResetMsg({ type: "success", text: msg || "✅ System reset complete. Reloading..." });
       setTimeout(function () {
         try { window.location.reload(); } catch (eRel) {
@@ -855,9 +1069,24 @@ var Settings = function (props) {
               return;
             }
             if (isNetworkMode) msg += " — uploaded to MySQL server";
-            msg += ". Reloading in 3 seconds...";
+            msg += ". Opening login in 2 seconds...";
             setBakMsg({ type: "success", text: msg });
-            setTimeout(function () { window.location.reload(); }, 3000);
+            try {
+              sessionStorage.removeItem("tc3_current_user");
+              sessionStorage.setItem("tc3_force_login_once", "1");
+            } catch (eForce) { /* ignore */ }
+            try {
+              if (window.electronAPI && typeof window.electronAPI.closeSession === "function") {
+                window.electronAPI.closeSession();
+              }
+            } catch (eClose) { /* ignore */ }
+            try {
+              if (window.TC_SYNC && typeof window.TC_SYNC.discardPendingSync === "function") {
+                window.TC_SYNC.discardPendingSync("restore_reload");
+              }
+            } catch (eDisc) { /* ignore */ }
+            try { window.__TC_ALLOW_UNLOAD__ = true; } catch (eAllow) { /* ignore */ }
+            setTimeout(function () { window.location.reload(); }, 2000);
           }).catch(function (err) {
             setBakMsg({ type: "error", text: "Restore failed: " + (err && err.message ? err.message : String(err)) });
           });
@@ -1327,8 +1556,8 @@ var Settings = function (props) {
   var TABS = [["profile", "Shop Profile"], ["shop", "Business Settings"], ["features", "Modules"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["users", "Security & Users"]];
   if (isRestaurantBusiness) TABS.splice(2, 0, ["restaurantsetup", "Restaurant Setup"]);
   TABS.push(["activity", "Activity Log"]);
-  /* Always show Network tab on server/client PCs (needed for API URL + security key on main PC). */
-  if (isNetworkServer || isNetworkClient) TABS.push(["network", "Network"]);
+  /* Always show Network tab (standalone can Enable Multi-PC; server/client manage sync). */
+  if (!isNetworkClient) TABS.push(["network", "Network"]);
   TABS.push(["about", "About"]);
   if (isNetworkClient) {
     TABS = [["features", "Modules"], ["network", "Network"], ["about", "About"]];
@@ -3482,6 +3711,74 @@ var Settings = function (props) {
         </Modal>
       )}
 
+      {netModePwOpen && (
+        <Modal title="Confirm admin password" onClose={function () { closeNetModePwModal({ ok: false, message: "Cancelled — admin password required." }); }}>
+          <div style={{ fontSize: 13, color: "#475569", marginBottom: 12, lineHeight: 1.45 }}>
+            Enter the same password you use to log in. This is required to change network mode.
+          </div>
+          <Input
+            label="Admin password"
+            type="password"
+            value={netModePw}
+            onChange={function (e) { setNetModePw(e.target.value); setNetModePwMsg(""); }}
+            placeholder="Login password"
+            onKeyDown={function (e) { if (e.key === "Enter" && netModePw && !netModePwBusy) submitNetModePw(); }}
+          />
+          {netModePwMsg ? (
+            <div style={{ marginTop: 10, background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, color: "#b91c1c", fontWeight: 600 }}>
+              {netModePwMsg}
+            </div>
+          ) : null}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14 }}>
+            <Btn col="gray" onClick={function () { closeNetModePwModal({ ok: false, message: "Cancelled — admin password required." }); }} disabled={netModePwBusy}>Cancel</Btn>
+            <Btn col="blue" onClick={submitNetModePw} disabled={!netModePw || netModePwBusy}>{netModePwBusy ? "Checking…" : "Continue"}</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {stab === "network" && !isNetworkMode && (
+        <div className="erp-net-page">
+          <div className="erp-net-wrap">
+            <Card className="erp-net-card">
+              <div className="erp-net-brand">
+                <div className="erp-net-brand-ico" aria-hidden="true">🖥️</div>
+                <div className="erp-net-brand-text">
+                  <div className="erp-net-title">Standalone</div>
+                  <div className="erp-net-sub">This PC stores shop data locally (IndexedDB only)</div>
+                </div>
+                <span className="erp-net-badge">Standalone</span>
+              </div>
+
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">Enable Multi-PC</div>
+                <div className="erp-net-hint" style={{ marginBottom: 12 }}>
+                  Turn this PC into the <strong>Main PC</strong>. The app installs API files into XAMPP, creates MySQL, and imports your current shop data.
+                  Your local data is kept — MySQL gets a shared copy for counters. No AppData edits needed.
+                </div>
+                <div className="erp-net-actions">
+                  <Btn col="blue" onClick={function () {
+                    showConfirm(
+                      "Enable Multi-PC on this computer?\n\n1) Download a backup first if you have not already.\n2) Install XAMPP to C:\\xampp if needed.\n3) App will configure MySQL and import this PC's data.\n\nContinue?",
+                      function () { setEnableMultiPcOpen(true); }
+                    );
+                  }}>Enable Multi-PC</Btn>
+                  <Btn col="gray" onClick={function () {
+                    try {
+                      var bak = buildBackupObject();
+                      var d = new Date().toISOString().slice(0, 10);
+                      downloadJson(bak, "techon-erp-backup-before-multipc-" + d + ".json");
+                      showAlert("Backup downloaded. You can Enable Multi-PC when ready.");
+                    } catch (e) {
+                      showAlert("Backup failed: " + (e && e.message ? e.message : String(e)));
+                    }
+                  }}>Download Backup First</Btn>
+                </div>
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
       {stab === "network" && isNetworkClient && (
         <div className="erp-net-page">
           <div className="erp-net-wrap">
@@ -3569,6 +3866,22 @@ var Settings = function (props) {
                   }}>Check Approval</Btn>
                 </div>
               </div>
+
+              <div className="erp-net-block">
+                <div className="erp-net-block-label">Switch to Standalone</div>
+                <div className="erp-net-hint" style={{ marginBottom: 12 }}>
+                  Disconnect from the Main PC and use this computer alone. Any data already downloaded stays in IndexedDB.
+                  You can reconnect later with Enable Multi-PC on a Main PC or Connect on a counter.
+                </div>
+                <div className="erp-net-actions">
+                  <Btn col="orange" disabled={!!switchStandaloneBusy} onClick={function () {
+                    showConfirm(
+                      "Switch this Counter to Standalone?\n\nThis disconnects from the Main PC. Locally cached data stays on this PC.\n\nContinue?",
+                      function () { doSwitchToStandalone({ skipConfirm: true }); }
+                    );
+                  }}>{switchStandaloneBusy ? "Switching…" : "Switch to Standalone"}</Btn>
+                </div>
+              </div>
             </Card>
           </div>
         </div>
@@ -3607,17 +3920,28 @@ var Settings = function (props) {
                     <div className="erp-net-cred-hint">Share with client PCs</div>
                   </div>
 
-                  {systemConfig.apiKey ? (
+                  {(systemConfig.hasApiKey || systemConfig.apiKey || revealedServerKey) ? (
                     <div className="erp-net-cred is-key">
                       <div className="erp-net-cred-label">Security Key</div>
                       <div className="erp-net-cred-row">
-                        <code className="erp-net-cred-val">{systemConfig.apiKey}</code>
+                        <code className="erp-net-cred-val">{revealedServerKey || systemConfig.apiKey || "•••••••• (hidden)"}</code>
                         <button
                           type="button"
                           className="erp-net-copy is-amber"
-                          onClick={function () { try { navigator.clipboard.writeText(systemConfig.apiKey); showAlert("Security key copied to clipboard!"); } catch (e) {} }}
+                          disabled={serverKeyBusy}
+                          onClick={function () {
+                            var copyKey = function (k) {
+                              if (!k) return;
+                              try { navigator.clipboard.writeText(k); showAlert("Security key copied to clipboard!"); } catch (e) {}
+                            };
+                            if (revealedServerKey || systemConfig.apiKey) {
+                              copyKey(revealedServerKey || systemConfig.apiKey);
+                              return;
+                            }
+                            revealServerSecurityKey().then(copyKey);
+                          }}
                         >
-                          Copy Key
+                          {revealedServerKey || systemConfig.apiKey ? "Copy Key" : "Reveal & Copy"}
                         </button>
                       </div>
                       <div className="erp-net-cred-hint is-warn">Keep secret — do not share publicly</div>
@@ -3893,6 +4217,27 @@ var Settings = function (props) {
                 </div>
               </div>
 
+              <div className="erp-net-block is-danger">
+                <div className="erp-net-block-label is-danger">Switch to Standalone</div>
+                <div className="erp-net-hint" style={{ marginBottom: 10 }}>
+                  Stops multi-PC sync on this Main PC. Shop data on this PC is kept. XAMPP is not uninstalled.
+                </div>
+                <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, color: "#374151", marginBottom: 12, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={clearMysqlOnStandalone}
+                    onChange={function (e) { setClearMysqlOnStandalone(!!e.target.checked); }}
+                    style={{ marginTop: 2 }}
+                  />
+                  <span>Also clear Techon shop data in MySQL on this PC (optional). Does not uninstall XAMPP.</span>
+                </label>
+                <div className="erp-net-actions">
+                  <Btn col="orange" onClick={doSwitchToStandalone} disabled={switchStandaloneBusy}>
+                    {switchStandaloneBusy ? "Switching…" : "Switch to Standalone"}
+                  </Btn>
+                </div>
+              </div>
+
               {!COMPUTER_SHOP_EDITION ? (
                 <div className="erp-net-block is-danger">
                   <div className="erp-net-block-label is-danger">Reset Setup Wizard</div>
@@ -3917,8 +4262,44 @@ var Settings = function (props) {
         </div>
       )}
 
-      
-{stab === "users" && (
+      {enableMultiPcOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 99990,
+            background: "rgba(15, 23, 42, 0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Enable Multi-PC"
+        >
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              maxHeight: "92vh",
+              overflowY: "auto",
+              background: "#fff",
+              borderRadius: 14,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.28)",
+              padding: "18px 18px 14px",
+            }}
+          >
+            <ServerSetup
+              migrateTitle="Enable Multi-PC"
+              onCancel={function () { setEnableMultiPcOpen(false); }}
+              onComplete={doEnableMultiPcComplete}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {stab === "users" && (
         <div className="erp-usr-page">
           <div className="erp-usr-wrap">
             <div className="erp-usr-brand">

@@ -2,13 +2,55 @@
 /**
  * device_manage.php — Main PC trusted device administration.
  *
- * Auth: legacy X-TC-KEY or approved device with admin permission (future).
- * During migration, legacy key is sufficient for server-side admin UI on Main PC.
+ * Auth:
+ *  - Device HMAC with permissions.admin === true, OR
+ *  - Legacy X-TC-KEY only from localhost (Main PC server UI), OR
+ *    TECHON_ERP_ALLOW_LEGACY_DEVICE_ADMIN=1 for controlled remote admin.
+ *  - Open API mode is never allowed here.
  */
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/device_auth.php';
 
 $auth = requireAuth();
+
+function tcClientIsLocalhost() {
+    return function_exists('tcIsLocalhostRequest') ? tcIsLocalhostRequest() : false;
+}
+
+function tcDeviceHasAdminPermission($device) {
+    if (!$device || !is_array($device)) return false;
+    $perms = $device['permissions'] ?? null;
+    if (is_string($perms)) {
+        $perms = json_decode($perms, true);
+    }
+    return is_array($perms) && !empty($perms['admin']);
+}
+
+function tcRequireDeviceAdminAuth($auth) {
+    $mode = is_array($auth) ? ($auth['mode'] ?? '') : '';
+    if ($mode === 'open') {
+        respond(['success' => false, 'message' => 'Device administration requires authentication'], 403);
+    }
+    if ($mode === 'device') {
+        if (!tcDeviceHasAdminPermission($auth['device'] ?? null)) {
+            respond(['success' => false, 'message' => 'Admin device permission required'], 403);
+        }
+        return;
+    }
+    if ($mode === 'legacy') {
+        $allowRemote = getenv('TECHON_ERP_ALLOW_LEGACY_DEVICE_ADMIN') === '1';
+        if (!$allowRemote && !tcClientIsLocalhost()) {
+            respond([
+                'success' => false,
+                'message' => 'Legacy API key cannot administer devices remotely — use an admin-approved device or localhost Main PC',
+            ], 403);
+        }
+        return;
+    }
+    respond(['success' => false, 'message' => 'Unauthorized'], 401);
+}
+
+tcRequireDeviceAdminAuth($auth);
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $pending = isset($_GET['pending']) && $_GET['pending'] === '1';

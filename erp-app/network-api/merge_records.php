@@ -9,16 +9,29 @@
  * (Mirrors erp-app/src/utils/mergeRecordArrays.js.)
  */
 
+function tcClampFutureIso($ts) {
+    $s = (string)$ts;
+    if ($s === '') return $s;
+    $t = strtotime($s);
+    if ($t === false) return $s;
+    $now = time();
+    /* 10 minutes ahead of server clock — reject LWW skew / malicious future stamps */
+    if ($t > $now + 600) {
+        return gmdate('Y-m-d\TH:i:s\Z', $now);
+    }
+    return $s;
+}
+
 function tcRecordSortTs($row) {
     if (!is_array($row)) return '';
     $ts = $row['updatedAt'] ?? $row['createdAt'] ?? $row['billedAt'] ?? $row['date'] ?? '';
-    return (string)$ts;
+    return tcClampFutureIso((string)$ts);
 }
 
 function tcStockSortTs($row) {
     if (!is_array($row)) return '';
     $ts = $row['stockUpdatedAt'] ?? $row['updatedAt'] ?? $row['createdAt'] ?? '';
-    return (string)$ts;
+    return tcClampFutureIso((string)$ts);
 }
 
 function tcPaymentEntryKey($ph) {
@@ -131,7 +144,14 @@ function tcMergeProductRow($a, $b) {
         $parentStock = (float)$a['stockBefore'];
         $dA = (float)$a['stock'] - (float)$a['stockBefore'];
         $dB = (float)$b['stock'] - (float)$b['stockBefore'];
-        $out['stock'] = $parentStock + $dA + $dB;
+        $rawStock = $parentStock + $dA + $dB;
+        $out['stock'] = $rawStock < 0 ? 0 : $rawStock;
+        if ($rawStock < 0) {
+            $out['stockMergeRaw'] = $rawStock;
+            $out['stockMergeWarning'] = 'concurrent_oversell';
+        } else {
+            unset($out['stockMergeRaw'], $out['stockMergeWarning']);
+        }
         if ($bTs >= $aTs) {
             if (array_key_exists('cost', $b)) $out['cost'] = $b['cost'];
             if (isset($b['stockUpdatedAt'])) $out['stockUpdatedAt'] = $b['stockUpdatedAt'];
@@ -177,6 +197,25 @@ function tcMergeProductRow($a, $b) {
     return $out;
 }
 
+function tcMergeUserRow($a, $b) {
+    $preferB = tcRecordSortTs($b) >= tcRecordSortTs($a);
+    $out = array_merge($preferB ? $a : $b, $preferB ? $b : $a);
+    $ha = isset($a['passwordHash']) ? (string)$a['passwordHash'] : '';
+    $hb = isset($b['passwordHash']) ? (string)$b['passwordHash'] : '';
+    /* Never let a hash-stripped hydrate wipe credentials on push. */
+    if ($hb === '' && $ha !== '') {
+        $out['passwordHash'] = $ha;
+    } elseif ($ha === '' && $hb !== '') {
+        $out['passwordHash'] = $hb;
+    } elseif ($preferB && $hb !== '') {
+        $out['passwordHash'] = $hb;
+    } elseif ($ha !== '') {
+        $out['passwordHash'] = $ha;
+    }
+    unset($out['password'], $out['pin'], $out['pinHash']);
+    return $out;
+}
+
 function tcPickNewerRow($prev, $row, $storageKey = null) {
     if ($storageKey === 'tc3_products') {
         return tcMergeProductRow($prev, $row);
@@ -193,7 +232,31 @@ function tcPickNewerRow($prev, $row, $storageKey = null) {
     if ($storageKey === 'tc3_manualReceivables' || $storageKey === 'tc3_manualPayables') {
         return tcMergeManualWithPaymentHistory($prev, $row);
     }
+    if ($storageKey === 'tc3_cheques') {
+        return tcMergeChequeRow($prev, $row);
+    }
+    if ($storageKey === 'tc3_users') {
+        return tcMergeUserRow($prev, $row);
+    }
     return (tcRecordSortTs($row) >= tcRecordSortTs($prev)) ? $row : $prev;
+}
+
+function tcChequeStatusRank($st) {
+    $s = (string)($st ?? '');
+    /* Voided must beat Cleared so concurrent void wins over a late clear (match JS). */
+    if ($s === 'Voided') return 50;
+    if ($s === 'Cancelled') return 45;
+    if ($s === 'Cleared') return 40;
+    if ($s === 'Bounced') return 20;
+    if ($s === 'Pending') return 10;
+    return 0;
+}
+
+function tcMergeChequeRow($a, $b) {
+    $ra = tcChequeStatusRank($a['status'] ?? '');
+    $rb = tcChequeStatusRank($b['status'] ?? '');
+    if ($ra !== $rb) return $ra > $rb ? $a : $b;
+    return (tcRecordSortTs($b) >= tcRecordSortTs($a)) ? $b : $a;
 }
 
 function tcMergeManualWithPaymentHistory($a, $b) {
@@ -301,8 +364,47 @@ function tcMergeRecordArraysByNewest($localArr, $remoteArr, $storageKey = null) 
  * Full-array snapshot from a terminal: incoming defines which record ids exist.
  * Per-id field conflicts resolve by newest timestamp. Ids only on server but
  * absent from incoming are removed (handles deletes).
+ * Append-only keys always union — never drop server-only audit/ledger rows.
  */
+function tcIsAppendOnlyArrayKey($key) {
+    static $appendOnly = [
+        'tc3_journal_lines' => true,
+        'tc3_stock_movements' => true,
+        'tc3_financial_snapshots' => true,
+        'tc3_capLedger' => true,
+        'tc3_capLog' => true,
+        'tc3_profitDist' => true,
+        'tc3_assetLog' => true,
+        'tc3_damageLog' => true,
+        'tc3_productLog' => true,
+        'tc3_repairDeleteLog' => true,
+        'tc3_gl_audit' => true,
+        'tc3_financial_mutation_log' => true,
+        'tc3_raw_material_usage' => true,
+        'tc3_raw_material_counts' => true,
+        'tc3_auditLog' => true,
+    ];
+    return !empty($appendOnly[$key]);
+}
+
 function tcApplyFullArraySnapshot($existingArr, $incomingArr, $storageKey = null) {
+    if (tcIsAppendOnlyArrayKey($storageKey)) {
+        return tcMergeRecordArraysByNewest($existingArr, $incomingArr, $storageKey);
+    }
+    /* Guard mass wipe: if incoming drops >50% of id'd rows (and server had ≥4), union instead of replace. */
+    if (is_array($existingArr) && is_array($incomingArr)) {
+        $exIds = 0;
+        foreach ($existingArr as $er) {
+            if (is_array($er) && isset($er['id'])) $exIds++;
+        }
+        $inIds = 0;
+        foreach ($incomingArr as $ir) {
+            if (is_array($ir) && isset($ir['id'])) $inIds++;
+        }
+        if ($exIds >= 4 && $inIds < ($exIds * 0.5)) {
+            return tcMergeRecordArraysByNewest($existingArr, $incomingArr, $storageKey);
+        }
+    }
     $existingById = [];
     if (is_array($existingArr)) {
         foreach ($existingArr as $row) {
@@ -451,28 +553,64 @@ function tcLatestReturnTs($returns, $parentField, $parentId) {
 
 function tcRestoreActiveSaleFromVoid($sale) {
     if (!is_array($sale) || !tcIsVoidedDoc($sale)) return $sale;
-    $paid = (float)($sale['paid'] ?? 0);
+    $ph = [];
+    if (!empty($sale['paymentHistory']) && is_array($sale['paymentHistory'])) {
+        foreach ($sale['paymentHistory'] as $p) {
+            if (!is_array($p)) continue;
+            $type = isset($p['type']) ? (string)$p['type'] : '';
+            $note = isset($p['note']) ? (string)$p['note'] : '';
+            if ($type === 'void_refund' || strpos($note, 'Void invoice refund') === 0) continue;
+            $ph[] = $p;
+        }
+    }
+    $paid = 0.0;
+    foreach ($ph as $p) {
+        $n = (float)($p['amount'] ?? 0);
+        if ($n > 0) $paid += $n;
+    }
+    $paid = round($paid, 2);
     $total = (float)($sale['total'] ?? 0);
     $bal = round($total - $paid, 2);
+    if ($bal < 0) $bal = 0;
     $payStatus = $bal <= 0 ? 'Paid' : ($paid > 0 ? 'Partial' : 'Unpaid');
     $out = $sale;
+    $out['paymentHistory'] = $ph;
+    $out['paid'] = $paid;
     $out['balance'] = $bal;
     $out['payStatus'] = $payStatus;
     $out['status'] = $payStatus;
-    unset($out['voidedAt'], $out['voidReason'], $out['voidRefundCashBank'], $out['voidRefundNote']);
+    unset($out['voidedAt'], $out['voidReason'], $out['voidRefundCashBank'], $out['voidRefundNote'], $out['voidRefundConfirmed'], $out['voided']);
     return $out;
 }
 
 function tcRestoreActivePurchaseFromVoid($purchase) {
     if (!is_array($purchase) || !tcIsVoidedDoc($purchase)) return $purchase;
-    $paid = (float)($purchase['paidAmount'] ?? 0);
+    $ph = [];
+    if (!empty($purchase['paymentHistory']) && is_array($purchase['paymentHistory'])) {
+        foreach ($purchase['paymentHistory'] as $p) {
+            if (!is_array($p)) continue;
+            $type = isset($p['type']) ? (string)$p['type'] : '';
+            $note = isset($p['note']) ? (string)$p['note'] : '';
+            if ($type === 'void_refund' || strpos($note, 'Void purchase refund') === 0) continue;
+            $ph[] = $p;
+        }
+    }
+    $paid = 0.0;
+    foreach ($ph as $p) {
+        $n = (float)($p['amount'] ?? 0);
+        if ($n > 0) $paid += $n;
+    }
+    $paid = round($paid, 2);
     $total = (float)($purchase['total'] ?? 0);
     $bal = round($total - $paid, 2);
+    if ($bal < 0) $bal = 0;
     $status = $bal <= 0 ? 'Paid' : ($paid > 0 ? 'Partial' : 'Unpaid');
     $out = $purchase;
+    $out['paymentHistory'] = $ph;
+    $out['paidAmount'] = $paid;
     $out['balance'] = $bal;
     $out['status'] = $status;
-    unset($out['voidedAt'], $out['voidReason']);
+    unset($out['voidedAt'], $out['voidReason'], $out['voidRefundCashBank'], $out['voidRefundNote'], $out['voidRefundConfirmed'], $out['voided']);
     return $out;
 }
 
@@ -684,7 +822,16 @@ function tcReconcileVoidReturnStateOnServer(PDO $pdo) {
         $field = $key === 'tc3_sales' ? 'sales'
             : ($key === 'tc3_purchases' ? 'purchases'
             : ($key === 'tc3_salesReturns' ? 'salesReturns' : 'purchaseReturns'));
-        $json = json_encode($reconciled[$field], JSON_UNESCAPED_UNICODE);
+        $next = $reconciled[$field];
+        /* Do not let post-patch void/return reconcile rewrite locked-period money rows. */
+        if (function_exists('tcPeriodLockBlocksArrayChange')) {
+            $lockErr = tcPeriodLockBlocksArrayChange($pdo, $key, $data[$key], $next);
+            if ($lockErr) {
+                $next = $data[$key];
+                $reconciled[$field] = $next;
+            }
+        }
+        $json = json_encode($next, JSON_UNESCAPED_UNICODE);
         if ($json !== false) $upsert->execute([$key, $json]);
     }
     tcApplyVoidReturnSideEffectsOnServer($pdo, $reconciled);

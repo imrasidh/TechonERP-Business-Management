@@ -7,6 +7,7 @@ import { LIST_PAGE_SIZE } from "../utils/listPage.js";
 import { stampUpdatedAt, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
 import {
   assertPaymentFitsPurchaseBalance,
+  assertPaymentFitsManualBalance,
   loadFreshPurchaseForPayment,
   pushKeysNow,
 } from "../utils/concurrencyGuards.js";
@@ -203,6 +204,24 @@ var EnhancedPayables = function (props) {
       if (item._type === "purchase" && !assertPurchaseUnlockedForPayment(item.id)) return;
       var chqTotal = chequeList.reduce(function (a, c) { return a + (parseFloat(c.amount) || 0); }, 0);
       if (chqTotal <= 0) { showAlert("Total cheque amount must be greater than zero."); return; }
+      if (item._type === "purchase") {
+        var purForChq = state.purchases.find(function (p) { return p.id === item.id; });
+        var fitChq = assertPaymentFitsPurchaseBalance(purForChq, chqTotal, {
+          includePendingCheques: true,
+          cheques: state.cheques || [],
+        });
+        if (!fitChq.ok) { showAlert(fitChq.message); return; }
+      } else if (item._type === "manual") {
+        var manBal = Math.max(0, (item.amount || 0) - (item.paid || 0));
+        var manPending = (state.cheques || []).reduce(function (a, ch) {
+          if (ch.manualPayableId !== item.id || String(ch.status || "") !== "Pending") return a;
+          return a + (parseFloat(ch.amount) || 0);
+        }, 0);
+        if (chqTotal > manBal - manPending + 0.009) {
+          showAlert("Cheque total exceeds remaining payable balance.");
+          return;
+        }
+      }
       var nch = (state.cheques || []).slice();
       var phEntries = [];
       chequeList.forEach(function (chq) {
@@ -292,10 +311,17 @@ var EnhancedPayables = function (props) {
         });
       return;
     } else {
+      var fitManPay = assertPaymentFitsManualBalance(item, amt, {
+        includePendingCheques: true,
+        cheques: state.cheques || [],
+        chequeLinkField: "manualPayableId",
+      });
+      if (!fitManPay.ok) { showAlert(fitManPay.message); return; }
       var list = S.get("tc3_manualPayables", []);
       var updated = list.map(function (mp) {
         if (mp.id !== item.id) return mp;
-        var ph2 = (mp.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: payMethod, note: payNote || "" }]);
+        var cmPay = (payMethod === "Bank" || payMethod === "Online" || payMethod === "Card") ? "Bank" : payMethod;
+        var ph2 = (mp.paymentHistory || []).concat([{ id: uid(), date: today(), amount: amt, cashMethod: cmPay, note: payNote || "" }]);
         return stampUpdatedAt(Object.assign({}, mp, { paymentHistory: ph2 }));
       });
       S.set("tc3_manualPayables", updated);
@@ -313,7 +339,10 @@ var EnhancedPayables = function (props) {
     if (entry._type === "purchase") {
       var applyPurSplit = function (pur, purchasesBase) {
         if (!pur) return;
-        var fit = assertPaymentFitsPurchaseBalance(pur, totalNonCheque);
+        var fit = assertPaymentFitsPurchaseBalance(pur, totalAdded, {
+          includePendingCheques: true,
+          cheques: state.cheques || [],
+        });
         if (!fit.ok) { showAlert(fit.message); return; }
         var newPh = (pur.paymentHistory || []).slice();
         splits.forEach(function (row) {
@@ -367,6 +396,12 @@ var EnhancedPayables = function (props) {
           newPh2.push({ id: uid(), date: today(), amount: amt, cashMethod: cm2, note: (row.method || "Cash") + (row.note ? ": " + row.note : "") });
         }
       });
+      var fitManSplit = assertPaymentFitsManualBalance(entry, totalAdded, {
+        includePendingCheques: true,
+        cheques: state.cheques || [],
+        chequeLinkField: "manualPayableId",
+      });
+      if (!fitManSplit.ok) { showAlert(fitManSplit.message); return; }
       var updMan = manPays.map(function (mp) { return mp.id === entry.id ? stampUpdatedAt(Object.assign({}, mp, { paymentHistory: (mp.paymentHistory || []).concat(newPh2) })) : mp; });
       S.set("tc3_manualPayables", updMan); S.set("tc3_cheques", newCheques);
       setState(function (st) { return Object.assign({}, st, { cheques: newCheques }); });

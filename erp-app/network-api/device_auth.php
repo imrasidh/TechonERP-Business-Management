@@ -33,8 +33,17 @@ function tcDeviceMasterKey() {
         $key = hash('sha256', 'tc-device-master-v1:' . $apiKey, true);
         return $key;
     }
-    $key = hash('sha256', 'tc-device-master-dev', true);
-    return $key;
+    /* Fail closed: do not use a public deterministic key in production. */
+    if (getenv('TECHON_ERP_OPEN_API') === '1' || getenv('TECHON_ERP_DEV_DEVICE_MASTER') === '1') {
+        $key = hash('sha256', 'tc-device-master-dev', true);
+        return $key;
+    }
+    http_response_code(503);
+    echo json_encode([
+        'success' => false,
+        'message' => 'Device master key not configured — create network-api/tc_device_master.php or set TECHON_ERP_DEV_DEVICE_MASTER=1 for local dev only.',
+    ]);
+    exit();
 }
 
 function tcEncryptSecret($plainSecret) {
@@ -191,10 +200,20 @@ function tcNonceSeen($deviceId, $nonce) {
     $pdo = db();
     $stmt = $pdo->prepare('SELECT 1 FROM device_nonces WHERE nonce = ? LIMIT 1');
     $stmt->execute([(string) $nonce]);
-    if ($stmt->fetch()) return true;
-    $ins = $pdo->prepare('INSERT INTO device_nonces (nonce, device_id) VALUES (?, ?)');
-    $ins->execute([(string) $nonce, (string) $deviceId]);
-    return false;
+    return (bool) $stmt->fetch();
+}
+
+/** Persist nonce after successful signature verification (prevents unauthenticated nonce flooding). */
+function tcRememberNonce($deviceId, $nonce) {
+    tcEnsureDeviceTables();
+    try {
+        $ins = db()->prepare('INSERT INTO device_nonces (nonce, device_id) VALUES (?, ?)');
+        $ins->execute([(string) $nonce, (string) $deviceId]);
+        return true;
+    } catch (Exception $e) {
+        /* Duplicate — treat as replay */
+        return false;
+    }
 }
 
 function tcGetTrustedDevice($deviceId) {
@@ -315,6 +334,12 @@ function tcValidateDeviceAuth($method = null, $path = null, $rawBody = null) {
         return null;
     }
 
+    if (!tcRememberNonce($deviceId, $nonce)) {
+        $TC_DEVICE_AUTH_ERROR = 'duplicate_nonce';
+        tcDeviceAudit('replay_attempt', $deviceId, 'duplicate_nonce_insert', $ip);
+        return null;
+    }
+
     tcTouchDeviceSeen($deviceId, $ip);
     tcDeviceAudit('auth_success', $deviceId, $reqMethod . ' ' . $reqPath, $ip);
     $TC_DEVICE_AUTH_ERROR = null;
@@ -382,6 +407,11 @@ function tcRequireAuthDual() {
     $storedKey = loadApiKey();
     if ($storedKey === null) {
         if (getenv('TECHON_ERP_OPEN_API') === '1') {
+            if (!tcIsLocalhostRequest()) {
+                http_response_code(403);
+                echo json_encode(['success' => false, 'message' => 'OPEN_API is localhost-only']);
+                exit();
+            }
             return ['mode' => 'open', 'device' => null];
         }
         http_response_code(503);
@@ -471,7 +501,8 @@ function tcApproveDevice($deviceId, $permissions = null) {
     $secret = tcGenerateDeviceSecret();
     $enc = tcEncryptSecret($secret);
     if (!$enc) return ['ok' => false, 'message' => 'Failed to secure device secret'];
-    $tokenId = tcGenerateTokenId();
+    /* Keep registration token_id as the one-time claim proof for secret delivery. */
+    $tokenId = !empty($device['token_id']) ? $device['token_id'] : tcGenerateTokenId();
     $perms = $permissions !== null ? json_encode($permissions, JSON_UNESCAPED_UNICODE) : $device['permissions'];
     $pdo = db();
     $stmt = $pdo->prepare(
@@ -569,8 +600,15 @@ function tcDeliverDeviceSecret($deviceId) {
         return ['ok' => false, 'message' => 'Secret unavailable'];
     }
     $pdo = db();
-    $stmt = $pdo->prepare('UPDATE trusted_devices SET secret_delivered = 1 WHERE device_id = ?');
-    $stmt->execute([(string) $deviceId]);
+    /* Atomic one-time claim — only the winning UPDATE returns the secret. */
+    $stmt = $pdo->prepare(
+        'UPDATE trusted_devices SET secret_delivered = 1
+         WHERE device_id = ? AND status = ? AND (secret_delivered IS NULL OR secret_delivered = 0)'
+    );
+    $stmt->execute([(string) $deviceId, 'approved']);
+    if ($stmt->rowCount() !== 1) {
+        return ['ok' => true, 'status' => 'approved', 'device_id' => $deviceId, 'secret_ready' => false];
+    }
     return [
         'ok' => true,
         'status' => 'approved',

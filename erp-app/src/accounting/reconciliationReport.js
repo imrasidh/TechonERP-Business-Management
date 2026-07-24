@@ -59,7 +59,7 @@ export function buildReconciliationReport(o) {
     rows.push({ id: "inv_vs_gl", label: "Inventory vs GL", ok: null, detail: "— (no inventory derive)", amounts: null });
   }
 
-  var apAr = evaluateArApPolicy({ lines: lines, meta: meta, settings: settings });
+  var apAr = evaluateArApPolicy({ lines: lines, meta: meta, settings: settings, state: o.state || null });
   rows.push({
     id: "ar_sanity",
     label: "AR (GL) — policy (tolerance + references)",
@@ -74,6 +74,24 @@ export function buildReconciliationReport(o) {
     detail: apAr.ap.ok ? "OK" : "❌ " + (apAr.ap.detail || ""),
     amounts: { balance: apAr.ap.balance, accountId: "2000", policy: apAr.ap.detail },
   });
+  if (apAr.arSubledger) {
+    rows.push({
+      id: "ar_subledger",
+      label: "AR GL vs open invoice balances",
+      ok: !!apAr.arSubledger.ok,
+      detail: apAr.arSubledger.ok ? "OK" : "❌ " + (apAr.arSubledger.detail || ""),
+      amounts: apAr.arSubledger,
+    });
+  }
+  if (apAr.apSubledger) {
+    rows.push({
+      id: "ap_subledger",
+      label: "AP GL vs open purchase balances",
+      ok: !!apAr.apSubledger.ok,
+      detail: apAr.apSubledger.ok ? "OK" : "❌ " + (apAr.apSubledger.detail || ""),
+      amounts: apAr.apSubledger,
+    });
+  }
 
   var lock = settings.lockedUntilDate;
   var strict = settings.strictPeriodLock === true;

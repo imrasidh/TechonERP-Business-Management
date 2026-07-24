@@ -31,6 +31,16 @@ import CloseIconButton from "../components/CloseIconButton.jsx";
 import { modalShellStyle, modalBodyStyle } from "../components/modalChrome.js";
 import { stampUpdatedAt } from "../utils/stampUpdatedAt.js";
 
+/**
+ * COD Database UI.
+ *
+ * LOCKED SEPARATE BY PRODUCT REQUEST — do not wire COD withdrawals / partner
+ * profit / fund pools into main Accounts, Cash Book, or General Ledger.
+ * This screen is an intentional parallel tracker (sold / cost / profit /
+ * withdrawn for COD ops only). The linked POS sale still updates main ERP;
+ * COD math itself must never affect main profit or cash.
+ */
+
 var STATUS_COLORS = { Accepted: "#2979ff", Dispatched: "#f59e0b", Delivered: "#16a34a", Returned: "#dc2626", All: "#64748b" };
 
 var CodDatabase = function (props) {
@@ -246,6 +256,7 @@ var CodDatabase = function (props) {
     setState(function (st) { return Object.assign({}, st, { codRecords: next }); });
   };
 
+  /* Persist COD withdrawals to tc3_codWithdrawals only — never post to GL/cash. */
   var persistWithdrawals = function (next) {
     var cur = state.codWithdrawals || S.get("tc3_codWithdrawals", []) || [];
     if (next.length > cur.length && typeof tcTrialGuard === "function" && !tcTrialGuard(cur, "codWithdrawals")) return;
@@ -849,7 +860,7 @@ var CodDatabase = function (props) {
             <div className="erp-arap-brand-ico" aria-hidden="true">CD</div>
             <div>
               <h1 className="erp-arap-header-title">COD Database</h1>
-              <p className="erp-arap-header-sub">Delivery tracker · costs &amp; profit</p>
+              <p className="erp-arap-header-sub">Separate COD tracker only · not linked to main Accounts / GL</p>
             </div>
           </div>
           <div className="erp-arap-kpi-row" aria-label="COD status overview">
@@ -1361,7 +1372,7 @@ var CodDatabase = function (props) {
               <CloseIconButton onClick={function () { setWdModal(null); }} size={32} bg="rgba(255,255,255,0.12)" color="#fff" borderRadius={8} />
             </div>
             <div className="erp-modal-body" style={modalBodyStyle({ padding: "12px 14px 14px" })}>
-            <div className="erp-cod-wd-note">COD-only payout — does not affect main ERP Accounts or cash.</div>
+            <div className="erp-cod-wd-note">COD-only payout — intentional separate tracker; does not affect main Accounts, Cash Book, or GL.</div>
             {["paidItems", "freeItems", "courier"].indexOf(wdForm.withdrawFrom) >= 0 ? (
               <div className="erp-cod-wd-field">
                 <label>Cost type</label>

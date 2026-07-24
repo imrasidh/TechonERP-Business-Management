@@ -3,18 +3,13 @@
  * device_validate.php — Internal WebSocket auth validation (localhost only).
  *
  * POST: WS auth message { type, device_id, timestamp, nonce, signature, client_id, last_revision }
- * No HTTP auth required — restricted to 127.0.0.1 / ::1 for main-process WS server.
+ * No HTTP auth required — restricted to Main PC loopback for main-process WS server.
  */
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/device_auth.php';
 
-$ip = $_SERVER['REMOTE_ADDR'] ?? '';
-$lanOnly = (bool) preg_match(
-    '#^(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|::1)#',
-    $ip
-);
-if (!$lanOnly) {
-    respond(['success' => false, 'message' => 'Forbidden'], 403);
+if (!tcIsLocalhostRequest()) {
+    respond(['success' => false, 'message' => 'Forbidden — device_validate is localhost-only'], 403);
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
