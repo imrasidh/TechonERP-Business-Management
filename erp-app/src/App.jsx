@@ -7780,6 +7780,8 @@ var LoginScreen = function (props) {
   var [loginForgotUnlock, setLoginForgotUnlock] = useState("");
   var [loginForgotBusy, setLoginForgotBusy] = useState(false);
   var [loginForgotCopyHint, setLoginForgotCopyHint] = useState(false);
+  var [loginForgotResetOpen, setLoginForgotResetOpen] = useState(false);
+  var [loginForgotResetBusy, setLoginForgotResetBusy] = useState(false);
   var [loginUserOpen, setLoginUserOpen] = useState(false);
   var loginForgotUnlockRef = useRef("");
   var loginUserWrapRef = useRef(null);
@@ -7816,6 +7818,7 @@ var LoginScreen = function (props) {
     setLoginForgotUnlock("");
     setErr("");
     setLoginForgotCopyHint(false);
+    setLoginForgotResetOpen(false);
     setLoginForgotOpen(true);
   };
   var verifyLoginForgotUnlock = function () {
@@ -7831,21 +7834,59 @@ var LoginScreen = function (props) {
         setErr((res && res.message) || "Incorrect support unlock code. Check with Techon support and try again.");
         return;
       }
-      try {
-        sessionStorage.setItem("tc3_open_app_password_reset", "1");
-        sessionStorage.setItem("tc3_allow_login_pw_reset_without_old", "1");
-        sessionStorage.setItem("tc3_login_need_admin_for_settings", "1");
-        sessionStorage.setItem("tc3_forgot_pw_open_settings", "1");
-      } catch (e) {}
-      props.onLogin({
-        id: "legacy-admin",
-        username: "admin",
-        name: S.get("tc3_admin_name", "Admin") || "Admin",
-        role: ROLE_ADMIN,
+      /* Unlock verified — require a new password before entering ERP. */
+      setLoginForgotOpen(false);
+      setLoginForgotUnlock("");
+      setNewPw("");
+      setNewPw2("");
+      setAdminName(function (prev) {
+        if (prev && String(prev).trim()) return prev;
+        return S.get("tc3_admin_name", "") || "";
       });
+      setErr("");
+      setLoginForgotResetOpen(true);
     }).catch(function () {
       setLoginForgotBusy(false);
       setErr("Verification failed. Try again.");
+    });
+  };
+
+  var handleForgotResetPassword = function () {
+    if (loginForgotResetBusy) return;
+    if (!newPw || newPw.length < 4) { setErr("New password must be at least 4 characters."); return; }
+    if (newPw !== newPw2) { setErr("Passwords do not match."); return; }
+    setLoginForgotResetBusy(true);
+    setErr("");
+    hashPw(newPw).then(function (hashed) {
+      var name = String(adminName || S.get("tc3_admin_name", "") || "Admin").trim() || "Admin";
+      if (name.length >= 2) S.set("tc3_admin_name", name);
+      var updated = setLoginPassword(hashed, { username: "admin" });
+      var actor = updated || resolvePrimaryAdminUser() || {
+        id: "legacy-admin",
+        username: "admin",
+        name: name,
+        role: ROLE_ADMIN,
+      };
+      actor = Object.assign({}, actor, {
+        name: actor.name || name,
+        username: actor.username || "admin",
+        role: ROLE_ADMIN,
+        passwordHash: hashed,
+      });
+      try {
+        sessionStorage.removeItem("tc3_open_app_password_reset");
+        sessionStorage.removeItem("tc3_allow_login_pw_reset_without_old");
+        sessionStorage.removeItem("tc3_login_need_admin_for_settings");
+        sessionStorage.removeItem("tc3_forgot_pw_open_settings");
+      } catch (_eClear) { /* ignore */ }
+      setLoginForgotResetOpen(false);
+      setLoginForgotResetBusy(false);
+      setNewPw("");
+      setNewPw2("");
+      props.onLogin(actor, { password: newPw });
+    }).catch(function () {
+      setLoginForgotResetBusy(false);
+      setErr("Could not save password. Please try again.");
     });
   };
 
@@ -7996,17 +8037,20 @@ var LoginScreen = function (props) {
 
   var handleKeyDown = function (e) {
     if (e.key === "Enter") {
-      if (isFirst) handleCreate();
+      if (loginForgotResetOpen) handleForgotResetPassword();
+      else if (isFirst) handleCreate();
       else if (needName) handleSaveName();
       else handleLogin();
     }
   };
 
-  var loginSubtitle = isFirst
-    ? "Enter your name and password to get started"
-    : needName
-      ? "Almost there — one more step"
-      : "Sign in to continue";
+  var loginSubtitle = loginForgotResetOpen
+    ? "Support unlock verified — set a new password to continue"
+    : isFirst
+      ? "Enter your name and password to get started"
+      : needName
+        ? "Almost there — one more step"
+        : "Sign in to continue";
 
   return (
     <React.Fragment>
@@ -8175,6 +8219,42 @@ var LoginScreen = function (props) {
                 </div>
                 <Input label="Your Name" value={adminName} onChange={function (e) { setAdminName(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="e.g. Rashid" />
                 <Btn col="cyan" full onClick={handleSaveName} disabled={!adminName}>Save & Continue</Btn>
+              </div>
+            ) : loginForgotResetOpen ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div style={{ fontSize: 17, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em" }}>Set a new login password</div>
+                <div style={{ background: "#ecfdf5", border: "1px solid #86efac", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#166534", lineHeight: 1.45 }}>
+                  Support unlock succeeded. Choose a new password before entering TechonERP. You will use this password for login and Settings.
+                </div>
+                <Input
+                  label="Administrator name"
+                  value={adminName}
+                  onChange={function (e) { setAdminName(e.target.value); setErr(""); }}
+                  onKeyDown={handleKeyDown}
+                  placeholder="e.g. Demo Admin"
+                />
+                <div className="tc-login-fields-row">
+                  <Input label="New password (min 4 chars)" type="password" value={newPw} onChange={function (e) { setNewPw(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="New password" />
+                  <Input label="Confirm password" type="password" value={newPw2} onChange={function (e) { setNewPw2(e.target.value); setErr(""); }} onKeyDown={handleKeyDown} placeholder="Repeat password" />
+                </div>
+                <Btn col="cyan" full onClick={handleForgotResetPassword} disabled={loginForgotResetBusy || !newPw || !newPw2}>
+                  {loginForgotResetBusy ? "Saving…" : "Save password & enter ERP"}
+                </Btn>
+                <div style={{ textAlign: "center" }}>
+                  <button
+                    type="button"
+                    onClick={function () {
+                      if (loginForgotResetBusy) return;
+                      setLoginForgotResetOpen(false);
+                      setNewPw("");
+                      setNewPw2("");
+                      setErr("");
+                    }}
+                    style={{ background: "none", border: "none", color: "#64748b", fontSize: 12, fontWeight: 600, cursor: "pointer", textDecoration: "underline", fontFamily: "inherit" }}
+                  >
+                    Cancel — back to login
+                  </button>
+                </div>
               </div>
             ) : loginForgotOpen ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -9504,28 +9584,7 @@ function App(props) {
     setLoggedIn(false);
   };
 
-  /* After login-screen support unlock: grant Admin Mode so Settings opens, then go to Settings + prompt for new password */
-  useEffect(function () {
-    if (!loggedIn) return;
-    if (isNetworkClient) return;
-    try {
-      if (sessionStorage.getItem("tc3_login_need_admin_for_settings") !== "1") return;
-      sessionStorage.removeItem("tc3_login_need_admin_for_settings");
-      setIsAdminMode(true);
-    } catch (e) { /* ignore */ }
-  }, [loggedIn, isNetworkClient]);
-
-  useEffect(function () {
-    if (!loggedIn || !uiAdminMode) return;
-    try {
-      if (sessionStorage.getItem("tc3_forgot_pw_open_settings") !== "1") return;
-      sessionStorage.removeItem("tc3_forgot_pw_open_settings");
-      safeSetActive("settings");
-      setTimeout(function () {
-        showAlert("Unlocked. Set a new login password under Security ? Change Login Password (leave Current Password empty for this one-time reset), then tap Update Settings.");
-      }, 150);
-    } catch (e) { /* ignore */ }
-  }, [loggedIn, uiAdminMode]);
+  /* After support unlock, password is set on the login screen before ERP entry. */
 
   var normalizedCurrentUser = currentUser || {
     id: "legacy-admin",

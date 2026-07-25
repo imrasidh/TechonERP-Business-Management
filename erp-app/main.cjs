@@ -2526,6 +2526,40 @@ ipcMain.handle('tc-snapshot-hmac-configured', () => {
 });
 
 /**
+ * Support unlock salt must match license.techon.lk admin Support Desk
+ * (SHA-256(challenge + salt) → first 6 hex chars).
+ */
+function getSupportUnlockSalt() {
+  const env = process.env.TC_SUPPORT_UNLOCK_SALT && String(process.env.TC_SUPPORT_UNLOCK_SALT).trim();
+  if (env) return env;
+  try {
+    const candidates = [];
+    if (app.isPackaged) {
+      candidates.push(path.join(path.dirname(process.execPath), 'tc_support_unlock_salt.txt'));
+      try {
+        candidates.push(path.join(app.getPath('userData'), 'tc_support_unlock_salt.txt'));
+      } catch (_eUd) { /* ignore */ }
+    } else {
+      candidates.push(path.join(__dirname, 'tc_support_unlock_salt.txt'));
+      candidates.push(path.join(process.cwd(), 'tc_support_unlock_salt.txt'));
+    }
+    for (var i = 0; i < candidates.length; i++) {
+      if (fs.existsSync(candidates[i])) {
+        const raw = fs.readFileSync(candidates[i], 'utf8');
+        const line = String(raw || '')
+          .replace(/^\uFEFF/, '')
+          .split(/\r?\n/)
+          .map(function (l) { return l.trim(); })
+          .find(function (l) { return l && l.charAt(0) !== '#'; });
+        if (line) return line;
+      }
+    }
+  } catch (_eFile) { /* ignore */ }
+  /* Same default as public_html/license.techon.lk/admin Support Desk — required for verify. */
+  return 'techon-master-salt-2026';
+}
+
+/**
  * Support unlock — challenge-response verified ONLY in main (salt never shipped to renderer).
  * Allowed without session (forgot-password) with rate limit; grants one-time elevate token.
  */
@@ -2549,8 +2583,7 @@ ipcMain.handle('tc-verify-support-unlock', async (event, payload) => {
     if (!challenge || code.length !== 6) {
       return { ok: false, message: 'Invalid challenge or unlock code.' };
     }
-    const salt =
-      (process.env.TC_SUPPORT_UNLOCK_SALT && String(process.env.TC_SUPPORT_UNLOCK_SALT).trim()) || "";
+    const salt = getSupportUnlockSalt();
     if (!salt) {
       return {
         ok: false,
