@@ -1,7 +1,7 @@
 {
-  "version": "2.0.3",
-  "url": "https://github.com/imrasidh/TechonERP-releases/releases/download/v2.0.3/TechonERP-2.0.3.zip",
-  "download": "https://github.com/imrasidh/TechonERP-releases/releases/download/v2.0.3/TechonERP-2.0.3.zip",
-  "notes": "In-app auto-update and GitHub releases",
-  "publishedAt": "2026-07-15T08:56:56.247Z"
+  "version": "3.0.0",
+  "url": "https://github.com/imrasidh/TechonERP-releases/releases/download/v3.0.0/TechonERP-3.0.0.zip",
+  "download": "https://github.com/imrasidh/TechonERP-releases/releases/download/v3.0.0/TechonERP-3.0.0.zip",
+  "notes": "TechonERP 3.0.0 — Enable Multi-PC / Switch to Standalone, safer MySQL force-replace migration, forgot-password set-new-password before ERP entry, support unlock salt fix, and related sync/auth hardening.",
+  "publishedAt": "2026-07-25T06:08:19.497Z"
 }
