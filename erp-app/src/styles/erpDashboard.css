@@ -36,7 +36,7 @@
   flex: 1 1 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1.12fr) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) minmax(210px, 0.92fr);
   gap: 5px;
   overflow: hidden;
 }
@@ -1097,13 +1097,37 @@
 /* Dashboard recent tables — ERP1 invoice page style */
 .erp-dash-inv-table-wrap {
   overflow: hidden;
-  flex: 1 1 0;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 198px;
   border: 1px solid #eef2fb;
   border-radius: 8px;
   background: #fff;
   display: flex;
   flex-direction: column;
+}
+
+.erp-md-tables .erp-dash-panel > div {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.erp-md-tables .erp-dash-inv-table-wrap {
+  flex: 1 1 0;
+  min-height: 198px;
+}
+
+.erp-md-tables .erp-dash-inv-table-wrap.is-filled {
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.erp-md-tables .erp-dash-inv-table-wrap.is-filled .erp-dash-inv-table tbody tr {
+  min-height: 28px;
+}
+
+.erp-md-tables .erp-dash-inv-table-wrap.is-filled .erp-dash-inv-table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .erp-dash-inv-table {
@@ -1115,8 +1139,61 @@
 
 .erp-md-dash .erp-dash-inv-table th,
 .erp-md-dash .erp-dash-inv-table td {
-  padding: 4px 8px !important;
+  padding: 6px 8px !important;
   font-size: 11px !important;
+  line-height: 1.35;
+  vertical-align: middle;
+}
+
+.erp-md-dash .erp-dash-inv-table thead tr {
+  height: 28px;
+}
+
+.erp-md-dash .erp-dash-inv-table tbody tr {
+  height: auto;
+  min-height: 34px;
+}
+
+.erp-md-dash .erp-dash-inv-table td.erp-dash-cell-ref {
+  max-width: none !important;
+  overflow: visible !important;
+  white-space: normal !important;
+}
+
+.erp-md-dash .erp-dash-inv-table .erp-dash-ref-text,
+.erp-md-dash button.erp-dash-ref-btn {
+  appearance: none;
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  text-align: left;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9px !important;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #1d4ed8;
+  cursor: pointer;
+  white-space: normal;
+  word-break: break-all;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(29, 78, 216, 0.35);
+}
+
+.erp-md-dash .erp-dash-inv-table .erp-dash-ref-text {
+  color: #1e3a5f;
+  text-decoration: none;
+  cursor: default;
+}
+
+.erp-md-dash button.erp-dash-ref-btn:hover {
+  color: #1e3a8a !important;
+  text-decoration-color: rgba(30, 58, 138, 0.7);
 }
 
 .erp-md-dash .erp-dash-inv-table tbody tr td span {
@@ -1140,8 +1217,9 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 5px;
-  min-height: 0;
+  min-height: 210px;
   overflow: hidden;
+  align-items: stretch;
 }
 
 .erp-md-tables.erp-md-tables-solo {
@@ -1575,6 +1653,15 @@
   padding: 0 !important;
   font-size: 12px !important;
   font-weight: 700 !important;
+  box-shadow: none !important;
+}
+
+.erp-app-root .erp-page-content .erp-md-dash button.erp-dash-ref-btn,
+.erp-app-root .erp-md-dash button.erp-dash-ref-btn {
+  border: none !important;
+  background: transparent !important;
+  min-height: 0 !important;
+  padding: 0 !important;
   box-shadow: none !important;
 }
 

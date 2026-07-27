@@ -3,6 +3,7 @@
  */
 
 import { isInventoryReconcileOk } from "../accounting/inventoryEngine.js";
+import { diagnoseGlStorage } from "./glStorageHealth.js";
 
 function countAuditActions(audit, actions) {
   var map = {};
@@ -45,9 +46,22 @@ export function buildOperationalHealthSnapshot(S, syncMeta) {
   var syncFail = (counts["journal_sync_merge_imbalance"] || 0) + (counts["journal_sync_merge_commit_failed"] || 0);
   var commitFail = (counts["journal_commit_storage_failed"] || 0) + (counts["journal_commit_invariant_fail"] || 0);
 
+  var glStorage = diagnoseGlStorage(S);
+  var lastAuto = S.get("tc3_last_auto_backup", null) || S.get("tc3_last_manual_backup", null);
+  var backupAgeHours = null;
+  if (lastAuto) {
+    backupAgeHours = Math.max(0, (Date.now() - new Date(lastAuto).getTime()) / 3600000);
+  }
+
   return {
-    ok: failSum === 0 && !(syncMeta && syncMeta.lastError),
+    ok: failSum === 0 && !(syncMeta && syncMeta.lastError) && glStorage.ok && (backupAgeHours == null || backupAgeHours <= 72),
     generatedAt: new Date().toISOString(),
+    glStorage: glStorage,
+    backup: {
+      lastAt: lastAuto || null,
+      ageHours: backupAgeHours != null ? Math.round(backupAgeHours * 10) / 10 : null,
+      stale: backupAgeHours != null && backupAgeHours > 48,
+    },
     sync: syncMeta
       ? {
           lastError: syncMeta.lastError || null,

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from "react";
 
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
+import { auditEntryNav } from "../utils/sourceDocumentNav.js";
 
 var AUDIT_PAGE_SIZE = LIST_PAGE_SIZE;
 var AuditLog = function (props) {
@@ -16,6 +18,8 @@ var AuditLog = function (props) {
   var TR = props.TR;
   var TD = props.TD;
   var Modal = props.Modal;
+  var state = props.state || {};
+  var openSourceDocument = props.openSourceDocument;
   var [search, setSearch] = useState("");
   var [filterType, setFilterType] = useState("All");
   var [auditPage, setAuditPage] = useState(0);
@@ -187,7 +191,14 @@ var AuditLog = function (props) {
                           {e.action}
                         </span>
                       </td>
-                      <td><span className="erp-arap-ref-pill">{e.reference || "—"}</span></td>
+                      <td onClick={function (ev) { ev.stopPropagation(); }}>
+                        <SourceDocLink
+                          nav={auditEntryNav(e, state, S)}
+                          label={e.reference || "—"}
+                          openSourceDocument={openSourceDocument}
+                          className="erp-stmt-ref-btn erp-arap-ref-pill"
+                        />
+                      </td>
                       <td style={{ color: "#64748b" }}>{e.user || "Admin"}</td>
                       <td style={{ color: "var(--arap-accent)", fontWeight: 700, fontSize: 11 }}>View →</td>
                     </tr>

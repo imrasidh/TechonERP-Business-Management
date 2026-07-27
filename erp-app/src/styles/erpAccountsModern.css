@@ -574,10 +574,20 @@
 }
 
 .erp-acc-modern .erp-acc-ledger-layout {
-  display: grid;
-  grid-template-rows: auto auto 1fr;
-  gap: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   min-height: 0;
+  overflow: hidden;
+}
+
+.erp-acc-modern .erp-acc-ledger-layout > .erp-acc-table-fill {
+  flex: 1 1 0;
+  min-height: 120px;
+}
+
+.erp-acc-modern .erp-acc-ledger-layout > *:not(.erp-acc-table-fill) {
+  flex: 0 0 auto;
 }
 
 .erp-acc-modern .erp-acc-split-layout {
@@ -1317,6 +1327,11 @@
   align-items: flex-end;
 }
 
+.erp-acc-modern .erp-acc-toolbar-field {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
 .erp-acc-modern .erp-acc-toolbar-field label {
   display: block;
   font-size: 9px;
@@ -1329,13 +1344,55 @@
 
 .erp-acc-modern .erp-acc-toolbar-field input,
 .erp-acc-modern .erp-acc-toolbar-field select {
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 12px;
-  color: #0f172a;
-  background: #fff;
-  outline: none;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 6px !important;
+  padding: 6px 10px !important;
+  font-size: 12px !important;
+  color: #0f172a !important;
+  background: #fff !important;
+  outline: none !important;
+  box-sizing: border-box !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  max-height: 34px !important;
+  line-height: 1.2 !important;
+}
+
+/* Date inputs must not collapse to a hairline in the flex toolbar */
+.erp-acc-modern .erp-acc-toolbar-field input[type="date"] {
+  min-width: 154px !important;
+  width: 154px !important;
+  max-width: 100% !important;
+  flex-shrink: 0 !important;
+  -webkit-appearance: auto !important;
+  appearance: auto !important;
+}
+
+.erp-acc-modern .erp-acc-toolbar-field input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: 1 !important;
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+.erp-acc-modern .erp-acc-toolbar-field select {
+  min-width: 148px !important;
+  height: 34px !important;
+}
+
+.erp-acc-modern .erp-acc-toolbar-card {
+  overflow: visible !important;
+  flex-shrink: 0 !important;
+}
+
+.erp-acc-modern .erp-acc-type-pill {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  box-sizing: border-box;
 }
 
 .erp-acc-modern .erp-acc-pill-group {
@@ -1646,7 +1703,6 @@
 
 .erp-acc-modern .erp-acc-form-card,
 .erp-acc-modern .erp-acc-data-card,
-.erp-acc-modern .erp-acc-toolbar-card,
 .erp-acc-modern .erp-acc-gl-main-card,
 .erp-acc-modern .erp-acc-fold-card,
 .erp-acc-modern .erp-acc-partner-card {
@@ -1654,6 +1710,14 @@
   border: 1px solid #e2e8f0 !important;
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06) !important;
   overflow: hidden;
+}
+
+.erp-acc-modern .erp-acc-toolbar-card {
+  border-radius: 12px !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06) !important;
+  overflow: visible !important;
+  flex-shrink: 0 !important;
 }
 
 .erp-acc-modern .erp-acc-form-card {

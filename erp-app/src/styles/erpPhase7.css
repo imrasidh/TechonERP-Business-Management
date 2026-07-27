@@ -2602,6 +2602,9 @@ button.erp-dialog-btn.cancel:hover:not(:disabled) {
   line-height: 26px !important;
   box-sizing: border-box !important;
 }
+.erp-app-root .erp-page-content .erp-pur-modern .erp-pur-search-wrap-pro input.erp-pur-field-ctrl {
+  padding-left: 28px !important;
+}
 .erp-app-root .erp-page-content .erp-pur-modern input.erp-pur-field-ctrl:focus,
 .erp-app-root .erp-page-content .erp-pur-modern select.erp-pur-field-ctrl:focus {
   border-color: #3b82f6 !important;

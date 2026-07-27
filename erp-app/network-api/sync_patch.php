@@ -19,18 +19,18 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/merge_records.php';
 
 $auth = requireAuth();
-
-/* Sync writes: device HMAC preferred. Legacy/open only from localhost (Main PC) unless explicitly allowed. */
-$authMode = is_array($auth) ? ($auth['mode'] ?? '') : '';
+tcEnforceRemoteAuthPolicy($auth);
+$authMode = is_array($auth) ? (string)($auth['mode'] ?? '') : '';
 $isLoopback = function_exists('tcIsLocalhostRequest') ? tcIsLocalhostRequest() : false;
-if ($authMode === 'open' && !$isLoopback) {
-    respond(['success' => false, 'message' => 'OPEN_API sync is localhost-only'], 403);
+$mainActionToken = null;
+if (file_exists(__DIR__ . '/tc_main_action.php')) {
+    require_once __DIR__ . '/tc_main_action.php';
+    if (defined('TC_MAIN_ACTION_TOKEN')) $mainActionToken = (string)TC_MAIN_ACTION_TOKEN;
 }
-if ($authMode === 'legacy' && !$isLoopback && getenv('TECHON_ERP_ALLOW_LEGACY_SYNC') !== '1') {
-    respond([
-        'success' => false,
-        'message' => 'Legacy API key sync is localhost-only — counters must use device authentication (or set TECHON_ERP_ALLOW_LEGACY_SYNC=1 during migration)',
-    ], 403);
+
+$ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+if (!tcRateLimitAllow('sync_patch_' . $ip, 120)) {
+    respond(['success' => false, 'message' => 'Too many sync requests. Please retry shortly.'], 429);
 }
 
 /**
@@ -177,80 +177,9 @@ function tcPeriodLockBlocksArrayChange($pdo, $key, $existing, $incoming) {
 
 /**
  * Map device permissions → which storage keys this counter may write.
- * Deny by default when the matching permission bit is false.
+ * Implementation lives in config.php (shared with server_state read ACL).
  */
-function tcDeviceMayWriteKey($auth, $key) {
-    if (!is_array($auth) || ($auth['mode'] ?? '') !== 'device') return true;
-    $device = $auth['device'] ?? null;
-    if (!$device) return false;
-    $perms = $device['permissions'] ?? null;
-    if (is_string($perms)) $perms = json_decode($perms, true);
-    if (!is_array($perms)) $perms = [];
-    if (!empty($perms['admin']) || !empty($perms['manager'])) return true;
-
-    $accountsKeys = [
-        'tc3_users' => true,
-        'tc3_settings' => true,
-        'tc3_journal_lines' => true,
-        'tc3_gl_accounts' => true,
-        'tc3_gl_mode' => true,
-        'tc3_gl_audit' => true,
-        'tc3_journal_hash' => true,
-        'tc3_financial_snapshots' => true,
-        'tc3_openBal' => true,
-        'tc3_capLedger' => true,
-        'tc3_capLog' => true,
-        'tc3_profitDist' => true,
-        'tc3_admin_name' => true,
-        'tc3_financial_mutation_log' => true,
-        'tc3_apppass' => true,
-    ];
-    $salesKeys = [
-        'tc3_sales' => true,
-        'tc3_salesReturns' => true,
-        'tc3_quotations' => true,
-        'tc3_held_invoices' => true,
-        'tc3_customers' => true,
-        'tc3_manualReceivables' => true,
-        'tc3_cheques' => true,
-        'tc3_codRecords' => true,
-        'tc3_codPartners' => true,
-        'tc3_codWithdrawals' => true,
-        'tc3_codProfitSettings' => true,
-        'tc3_invoice_edit_locks' => true,
-        'tc3_repairs' => true,
-        'tc3_repairDeleteLog' => true,
-        'tc3_others' => true,
-    ];
-    $inventoryKeys = [
-        'tc3_products' => true,
-        'tc3_purchases' => true,
-        'tc3_purchaseReturns' => true,
-        'tc3_suppliers' => true,
-        'tc3_manualPayables' => true,
-        'tc3_damageLog' => true,
-        'tc3_productLog' => true,
-        'tc3_stock_movements' => true,
-        'tc3_inv_reconciliation' => true,
-        'tc3_inventory_layers' => true,
-        'tc3_raw_material_usage' => true,
-        'tc3_raw_material_counts' => true,
-        'tc3_assets' => true,
-        'tc3_assetLog' => true,
-        'tc3_expenses' => true,
-    ];
-    if (isset($accountsKeys[$key])) {
-        return !empty($perms['accounts']);
-    }
-    if (isset($salesKeys[$key])) {
-        return !empty($perms['sales']);
-    }
-    if (isset($inventoryKeys[$key])) {
-        return !empty($perms['inventory']);
-    }
-    /* Remaining keys (labels, audit, business type, …) need reports or sales. */
-    return !empty($perms['reports']) || !empty($perms['sales']) || !empty($perms['inventory']);
-}
+/* tcDeviceMayWriteKey() — see config.php */
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     respond(['success' => false, 'message' => 'POST required'], 405);
@@ -270,9 +199,9 @@ if (count($patches) > 200) {
 $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 if ($clientId) touchSession($clientId, $ip);
 
-// ── Purge processed_patches older than 7 days (lightweight GC) ──────
+// ── Purge processed_patches older than 30 days (offline queues can exceed 7d) ──
 try {
-    db()->exec("DELETE FROM processed_patches WHERE processed_at < NOW() - INTERVAL 7 DAY");
+    db()->exec("DELETE FROM processed_patches WHERE processed_at < NOW() - INTERVAL 30 DAY");
 } catch (Exception $ignored) {}
 
 // ── Allowed keys + expected types ───────────────────────────────────
@@ -422,8 +351,10 @@ $dedupInsert = $pdo->prepare(
     'INSERT IGNORE INTO processed_patches (patch_id, store_key) VALUES (?, ?)'
 );
 
-/* Multi-key batches (sale+stock+cheque) commit atomically so peers never see half a sale */
-$batchTxn = is_array($patches) && count($patches) > 1;
+/* Multi-key batches commit atomically so peers never see half a sale.
+   Single-key patches with patch_id also use a transaction so a failed
+   write cannot leave a processed_patches row that blocks legitimate retries. */
+$batchTxn = is_array($patches) && count($patches) >= 1;
 if ($batchTxn) {
     try { $pdo->beginTransaction(); } catch (Exception $e) { $batchTxn = false; }
 }
@@ -478,10 +409,17 @@ foreach ($patches as $patch) {
     /* Admin restore/reset: hard-replace MySQL value (skip merge / append-only / mass-wipe guards). */
     $forceReplace = !empty($patch['_forceReplace']);
     if ($forceReplace) {
-        /* Counters must not wipe the shop — Main PC / localhost / API-key only. */
-        if ($authMode === 'device' && !$isLoopback) {
-            $failed[] = ['key' => $key, 'reason' => 'forceReplace not allowed from counter device'];
-            serverLog('warn', 'forceReplace denied for device on ' . $key);
+        /* Only the Main PC may hard-replace the shop. The app routes restore/reset
+           through loopback, so a LAN request carrying _forceReplace is never legitimate —
+           this also closes the hole left open by TECHON_ERP_ALLOW_LEGACY_SYNC=1. */
+        if (!$isLoopback) {
+            $failed[] = ['key' => $key, 'reason' => 'forceReplace is Main PC (localhost) only'];
+            serverLog('warn', 'forceReplace denied off-loopback (auth=' . $authMode . ') on ' . $key);
+            continue;
+        }
+        if (!$mainActionToken || !hash_equals($mainActionToken, (string)($_SERVER['HTTP_X_TC_MAIN_ACTION'] ?? ''))) {
+            $failed[] = ['key' => $key, 'reason' => 'Main action token required'];
+            serverLog('warn', 'forceReplace denied missing main action token on ' . $key);
             continue;
         }
         serverLog('info', 'forceReplace applied for ' . $key);
@@ -502,8 +440,34 @@ foreach ($patches as $patch) {
                 $value = tcMergeRecordArraysByNewest($existing, $value, $key);
             } else if ($isChunk) {
                 $value = tcMergeRecordArraysByNewest($existing, $value, $key);
+                /* Main PC only: after the final chunk, prune ids not in the full membership list
+                   so large-array hard deletes propagate without reopening LAN mass-wipe. */
+                if ($isLoopback && !empty($patch['_chunkFinal']) && isset($patch['_keepIds']) && is_array($patch['_keepIds'])) {
+                    $keep = [];
+                    foreach ($patch['_keepIds'] as $kid) {
+                        $keep[(string)$kid] = true;
+                    }
+                    $pruned = [];
+                    foreach ($value as $row) {
+                        if (!is_array($row)) continue;
+                        if (!isset($row['id'])) {
+                            $pruned[] = $row;
+                            continue;
+                        }
+                        if (!empty($keep[(string)$row['id']])) $pruned[] = $row;
+                    }
+                    $value = $pruned;
+                }
             } else {
                 $value = tcApplyFullArraySnapshot($existing, $value, $key);
+            }
+            if ($key === 'tc3_gl_accounts') {
+                $incomingEmpty = !is_array($value) || count($value) === 0;
+                $existingOk = is_array($existing) && count($existing) > 0;
+                if ($incomingEmpty && $existingOk) {
+                    $value = $existing;
+                    serverLog('info', 'tc3_gl_accounts: rejected empty patch — kept existing chart');
+                }
             }
             $lockErr = tcPeriodLockBlocksArrayChange($pdo, $key, $existing, $value);
             if ($lockErr) {
@@ -523,10 +487,13 @@ foreach ($patches as $patch) {
             }
         } catch (Exception $e) {
             serverLog('warn', 'Array merge failed for ' . $key . ': ' . $e->getMessage());
+            $failed[] = ['key' => $key, 'reason' => 'Array merge failed'];
+            continue;
         }
     }
 
-    /* Settings: shallow merge so counter POS toggles do not wipe main shop config */
+    /* Settings: shallow merge so counter POS toggles do not wipe main shop config.
+       Protected policy fields never change from off-loopback (LAN) writers — even with accounts. */
     if (!$forceReplace && $key === 'tc3_settings' && is_array($value)) {
         try {
             $verifyStmt->execute([$key]);
@@ -540,6 +507,24 @@ foreach ($patches as $patch) {
                 $value['moduleToggles'] = array_merge($existing['moduleToggles'], $value['moduleToggles']);
             }
             $value = array_merge($existing, $value);
+            if (!$isLoopback) {
+                $protectedSettings = [
+                    'lockedUntilDate',
+                    'strictPeriodLock',
+                    'mainAdminPassHash',
+                    'apppass',
+                    'passwordLockRequired',
+                    'adminPin',
+                    'requirePasswordOnLogin',
+                ];
+                foreach ($protectedSettings as $pf) {
+                    if (array_key_exists($pf, $existing)) {
+                        $value[$pf] = $existing[$pf];
+                    } else {
+                        unset($value[$pf]);
+                    }
+                }
+            }
             $json = json_encode($value, JSON_UNESCAPED_UNICODE);
             if ($json === false) {
                 $failed[] = ['key' => $key, 'reason' => 'JSON encoding failed after settings merge'];
@@ -547,6 +532,43 @@ foreach ($patches as $patch) {
             }
         } catch (Exception $e) {
             serverLog('warn', 'Settings merge failed: ' . $e->getMessage());
+        }
+    }
+
+    /* Scalar GL metadata: never let empty / wrong-type patches wipe good server state. */
+    if (!$forceReplace && ($key === 'tc3_gl_mode' || $key === 'tc3_journal_hash' || $key === 'tc3_inventory_layers')) {
+        try {
+            $verifyStmt->execute([$key]);
+            $existingRaw = $verifyStmt->fetchColumn();
+            $existingScalar = ($existingRaw !== false && $existingRaw !== null)
+                ? json_decode((string)$existingRaw, true)
+                : null;
+            if ($key === 'tc3_gl_mode') {
+                $incomingBad = $value === null || $value === '' || is_array($value);
+                $existingOk = is_string($existingScalar) && $existingScalar !== '';
+                if ($incomingBad && $existingOk) {
+                    $value = $existingScalar;
+                } else if ($incomingBad) {
+                    $value = 'live';
+                }
+            } else if ($key === 'tc3_journal_hash') {
+                if (is_array($value)) {
+                    $value = (is_string($existingScalar) && !is_array($existingScalar)) ? $existingScalar : '';
+                }
+            } else if ($key === 'tc3_inventory_layers') {
+                if (is_array($value) && array_keys($value) === range(0, count($value) - 1)) {
+                    $existingOkObj = is_array($existingScalar) && !empty($existingScalar)
+                        && array_keys($existingScalar) !== range(0, count($existingScalar) - 1);
+                    $value = $existingOkObj ? $existingScalar : new stdClass();
+                }
+            }
+            $json = json_encode($value, JSON_UNESCAPED_UNICODE);
+            if ($json === false) {
+                $failed[] = ['key' => $key, 'reason' => 'JSON encoding failed after GL scalar guard'];
+                continue;
+            }
+        } catch (Exception $e) {
+            serverLog('warn', 'GL scalar guard failed for ' . $key . ': ' . $e->getMessage());
         }
     }
 

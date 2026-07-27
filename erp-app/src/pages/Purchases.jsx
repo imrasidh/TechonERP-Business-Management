@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { purchaseReturnUiStatus, displayStatusForPurchase } from "../utils/returnDisplay.js";
+import { getJsBarcodeInlineScriptTag } from "../utils/jsBarcodeLib.js";
 
 function purchaseStatusMeta(status) {
   var s = String(status || "");
@@ -74,6 +75,7 @@ import { getUnitsForSubCategory, hydrateShopSettings, getDefaultProductCategory,
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
 import { PurchaseInvoiceDoc } from "../components/PurchaseInvoiceDoc.jsx";
+import { resolveDefaultPrintFormat } from "../utils/printFormat.js";
 import UniversalPrintPreview from "../components/UniversalPrintPreview.jsx";
 
 /* Survives ActivePage remount (purchases → purchase-entry). Do not clear until entry applies it. */
@@ -147,6 +149,7 @@ var Purchases = React.memo(function (props) {
   var usePager = props.usePager;
   var fmtDate = props.fmtDate;
   var fmtDateFull = props.fmtDateFull;
+  var openSourceDocument = props.openSourceDocument;
   var getBusinessProfile = props.getBusinessProfile;
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
@@ -234,8 +237,16 @@ var Purchases = React.memo(function (props) {
   var [lockTick, setLockTick] = useState(0);
   var [viewPur, setViewPur] = useState(null);
   var [viewPurFmt, setViewPurFmt] = useState(function () {
-    return (state.settings && state.settings.invoiceDefaultSize) || "a4";
+    return resolveDefaultPrintFormat(state.settings || {});
   });
+  var openPurchaseDoc = function (p) {
+    if (!p) return;
+    if (typeof openSourceDocument === "function") {
+      openSourceDocument({ sourceKind: "purchase", sourceId: p.id });
+      return;
+    }
+    setViewPur(p);
+  };
   var WABtn = props.WABtn;
   var PRINT_FONT_LINK = props.PRINT_FONT_LINK || "";
   var shareViaWhatsApp = props.shareViaWhatsApp;
@@ -354,13 +365,17 @@ var Purchases = React.memo(function (props) {
     };
   }, [showSuppDrop, suppSearch, updateSuppDropPos]);
 
+  var resolvedPurPick = pPickedProduct || (ps.trim() ? findActiveProductByExactSearch(state.products, ps) : null);
+  var resolvedPurPickKey = resolvedPurPick
+    ? String(resolvedPurPick.id || "") + ":" + String(resolvedPurPick.unit || "Pcs")
+    : "";
+
   useEffect(function () {
-    var pick = pPickedProduct || (ps.trim() ? findActiveProductByExactSearch(state.products, ps) : null);
-    if (!pick) return;
-    var bu = pick.unit || "Pcs";
+    if (!resolvedPurPick) return;
+    var bu = resolvedPurPick.unit || "Pcs";
     setPBaseUnit(bu);
-    setPUnit(function (prev) { return resolvePurchaseInputUnit(pick, prev); });
-  }, [ps, pPickedProduct, state.products]);
+    setPUnit(function (prev) { return resolvePurchaseInputUnit(resolvedPurPick, prev); });
+  }, [resolvedPurPickKey]);
 
   var purSearchId = function (mode) { return mode === "edit" ? "pur-edit-search" : "pur-search-input"; };
   var purAddFieldId = function (mode, field) { return (mode === "edit" ? "pur-edit-" : "pur-new-") + field; };
@@ -869,8 +884,13 @@ var Purchases = React.memo(function (props) {
         { id: "productid", type: "productid", x: 2, y: 37, w: 56, h: 4,  fontSize: 7,  fontWeight: "normal", color: "#555555", align: "center", visible: true }
       ]
     };
-    var labelWmm = d.labelW || 60;
-    var labelHmm = d.labelH || 40;
+    var safeCssMm = function (n, fallback) {
+      var x = parseFloat(n);
+      if (!isFinite(x) || x < 10 || x > 300) return fallback || 60;
+      return Math.round(x * 100) / 100;
+    };
+    var labelWmm = safeCssMm(d.labelW, 60);
+    var labelHmm = safeCssMm(d.labelH, 40);
     var w = window.open("", "_blank", "width=900,height=700");
     var css = [
       "*{box-sizing:border-box;margin:0;padding:0;}",
@@ -884,7 +904,12 @@ var Purchases = React.memo(function (props) {
     items.forEach(function (it, idx) {
       var costEncoded = encodeCost(it.cost, state.settings.costCodeWord);
       var shop = state.settings.shopName || "";
-      html += "<div class=\"lbl\" style=\"background:" + (d.bgColor || "#fff") + ";border:" + (d.borderStyle === "none" ? "none" : "1px solid #ccc") + ";\">";
+      html += "<div class=\"lbl\" style=\"background:" + (function () {
+        var s = String(d.bgColor == null ? "" : d.bgColor).trim();
+        if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s)) return s;
+        if (/^[a-zA-Z]{1,20}$/.test(s)) return s.toLowerCase();
+        return "#ffffff";
+      })() + ";border:" + (d.borderStyle === "none" ? "none" : "1px solid #ccc") + ";\">";
       (d.elements || []).forEach(function (el) {
         if (!el.visible) return;
         var val = "";
@@ -904,11 +929,19 @@ var Purchases = React.memo(function (props) {
           return;
         }
         var pct = function (v, total) { return (v / total * 100).toFixed(2) + "%"; };
-        html += "<div style=\"position:absolute;left:" + pct(el.x, labelWmm) + ";top:" + pct(el.y, labelHmm) + ";width:" + pct(el.w, labelWmm) + ";height:" + pct(el.h, labelHmm) + ";font-size:" + el.fontSize + "px;font-weight:" + el.fontWeight + ";color:" + el.color + ";overflow:hidden;display:flex;align-items:center;justify-content:" + (el.align === "center" ? "center" : el.align === "right" ? "flex-end" : "flex-start") + ";\"><span style=\"width:100%;text-align:" + el.align + "\">" + escapeHtml(val) + "</span></div>";
+        var _c = String(el.color == null ? "" : el.color).trim();
+        var safeColor = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(_c) || /^[a-zA-Z]{1,20}$/.test(_c) ? _c : "#000000";
+        var _fs = parseFloat(el.fontSize); if (!isFinite(_fs) || _fs < 4 || _fs > 72) _fs = 8;
+        var _fw = String(el.fontWeight == null ? "400" : el.fontWeight).trim().toLowerCase();
+        if (!/^(normal|bold|bolder|lighter|[1-9]00)$/.test(_fw)) _fw = "400";
+        var _al = String(el.align || "left").toLowerCase();
+        if (_al !== "center" && _al !== "right" && _al !== "left") _al = "left";
+        var justify = _al === "center" ? "center" : _al === "right" ? "flex-end" : "flex-start";
+        html += "<div style=\"position:absolute;left:" + pct(el.x, labelWmm) + ";top:" + pct(el.y, labelHmm) + ";width:" + pct(el.w, labelWmm) + ";height:" + pct(el.h, labelHmm) + ";font-size:" + _fs + "px;font-weight:" + _fw + ";color:" + safeColor + ";overflow:hidden;display:flex;align-items:center;justify-content:" + justify + ";\"><span style=\"width:100%;text-align:" + _al + "\">" + escapeHtml(val) + "</span></div>";
       });
       html += "</div>";
     });
-    html += "<script src=\"https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js\"><\/script>";
+    html += getJsBarcodeInlineScriptTag();
     html += "<script>window.onload=function(){setTimeout(function(){document.querySelectorAll('svg[data-val]').forEach(function(s){try{JsBarcode(s,s.getAttribute('data-val'),{format:'CODE128',width:1.2,height:parseInt(s.getAttribute('data-h')||20),displayValue:false,margin:0});}catch(e){}});setTimeout(function(){window.print();},400);},600);};<\/script>";
     html += "</body></html>";
     w.document.write(html);
@@ -1728,9 +1761,6 @@ var Purchases = React.memo(function (props) {
        so no need to update s.payable here — prevents drift between static and dynamic values. */
     if (!tcTrialGuard(state.purchases, 'purchases')) return;
     var np2 = state.purchases.concat([purObj]);
-    S.set("tc3_products", np); S.set("tc3_purchases", np2);
-    addAudit("Created Purchase Invoice", purObj.invoiceNo || purObj.id.slice(0, 8));
-    /* Create cheque records from splitRows or legacy chequeList */
     var purStateUpdate = { products: np, purchases: np2 };
     var chequeRowsToCreate = [];
     if (splitRows) {
@@ -1752,9 +1782,21 @@ var Purchases = React.memo(function (props) {
       var updPurObj = Object.assign({}, purObj, { paymentHistory: initPurPh.concat(chqPurPh) });
       var np2WithCheque = np2.map(function (p) { return p.id === purObj.id ? updPurObj : p; });
       var nchPur = (state.cheques || []).concat(newPurCheques);
-      S.set("tc3_cheques", nchPur); S.set("tc3_purchases", np2WithCheque);
+      if (S.setMany) {
+        S.setMany([["tc3_products", np], ["tc3_purchases", np2WithCheque], ["tc3_cheques", nchPur]]);
+      } else {
+        S.set("tc3_products", np); S.set("tc3_purchases", np2WithCheque); S.set("tc3_cheques", nchPur);
+      }
       purStateUpdate = { products: np, purchases: np2WithCheque, cheques: nchPur };
+      addAudit("Created Purchase Invoice", purObj.invoiceNo || purObj.id.slice(0, 8));
       addAudit(newPurCheques.length + " Cheque(s) Issued " + getCurrencySymbol() + " " + fmtNum(newPurCheques.reduce(function (a, c) { return a + c.amount; }, 0)), purObj.invoiceNo || "");
+    } else {
+      if (S.setMany) {
+        S.setMany([["tc3_products", np], ["tc3_purchases", np2]]);
+      } else {
+        S.set("tc3_products", np); S.set("tc3_purchases", np2);
+      }
+      addAudit("Created Purchase Invoice", purObj.invoiceNo || purObj.id.slice(0, 8));
     }
     try {
       var pushPairs = [["tc3_products", purStateUpdate.products], ["tc3_purchases", purStateUpdate.purchases]];
@@ -1898,6 +1940,11 @@ var Purchases = React.memo(function (props) {
 
   var tryOpenPurchaseEdit = function (pur) {
     if (!pur || isVoidedTxn(pur)) return;
+    var retMeta = purchaseReturnUiStatus(pur, state.purchaseReturns);
+    if (retMeta && retMeta.hasReturns) {
+      showAlert("This purchase has return records. Use Purchase Return instead of editing the original invoice.");
+      return;
+    }
     var fl = foreignEditLockFor(pur.id);
     if (fl) {
       showAlert(formatInvoiceEditLockMessage(fl));
@@ -2009,9 +2056,17 @@ var Purchases = React.memo(function (props) {
       showAlert(result.error);
       return;
     }
-    S.set("tc3_products", result.products);
-    S.set("tc3_purchases", result.purchases);
-    S.set("tc3_cheques", result.cheques);
+    if (S.setMany) {
+      S.setMany([
+        ["tc3_products", result.products],
+        ["tc3_purchases", result.purchases],
+        ["tc3_cheques", result.cheques],
+      ]);
+    } else {
+      S.set("tc3_products", result.products);
+      S.set("tc3_purchases", result.purchases);
+      S.set("tc3_cheques", result.cheques);
+    }
     releaseInvoiceEditLock(S, purchaseId, lockIdentity, { force: true });
     setState(function (st) {
       return Object.assign({}, st, {
@@ -2120,6 +2175,7 @@ var Purchases = React.memo(function (props) {
     if (editPurAmtErr) { showAlert("X " + editPurAmtErr); return; }
     var orig = state.purchases.find(function (p) { return p.id === purToSave.id; });
     checkPeriodClose(orig ? orig.date : null, state.settings, function () {
+    var editProductsNp = null;
 
     /* Validate and apply stock rollback when purchase items are edited */
     if (orig && orig.items && purToSave.items) {
@@ -2223,8 +2279,8 @@ var Purchases = React.memo(function (props) {
           }), null, p);
         });
       });
-      S.set("tc3_products", np);
-      setState(function (st) { return Object.assign({}, st, { products: np }); });
+      /* Defer persist until purchase row is ready — atomic with tc3_purchases below. */
+      editProductsNp = np;
     }
 
     /* FIX: Reconcile paymentHistory with final paidAmount.
@@ -2252,15 +2308,25 @@ var Purchases = React.memo(function (props) {
     /* FIX 3: Removed stale supplier payable mutation — payable is calculated dynamically
        via getTotalSupplierPayable(). Mutating s.payable here would store stale values in DB. */
     var np2 = state.purchases.map(function (p) { return p.id === purToSave.id ? purToSave : p; });
-    S.set("tc3_purchases", np2);
+    if (editProductsNp && S.setMany) {
+      S.setMany([["tc3_products", editProductsNp], ["tc3_purchases", np2]]);
+    } else if (editProductsNp) {
+      S.set("tc3_products", editProductsNp);
+      S.set("tc3_purchases", np2);
+    } else {
+      S.set("tc3_purchases", np2);
+    }
     try {
       var editPush = [["tc3_purchases", np2]];
-      var productsNow = S.get("tc3_products", state.products);
-      if (productsNow) editPush.push(["tc3_products", productsNow]);
+      if (editProductsNp) editPush.push(["tc3_products", editProductsNp]);
       pushKeysNow(editPush);
     } catch (_e) { /* ignore */ }
     addAudit("Edited Purchase Invoice", purToSave.invoiceNo || purToSave.id.slice(0, 8));
-    setState(function (st) { return Object.assign({}, st, { purchases: np2 }); });
+    setState(function (st) {
+      var next = Object.assign({}, st, { purchases: np2 });
+      if (editProductsNp) next.products = editProductsNp;
+      return next;
+    });
     setEditPur(null);
     setEditingPurchaseId("");
     sessionStorage.removeItem("tc3_dirty");
@@ -3044,7 +3110,7 @@ var Purchases = React.memo(function (props) {
                         <td>{fmtDate(p.date)}</td>
                         <td className="erp-pur-supplier">{p.supplier}</td>
                         <td>
-                          <button type="button" className="erp-pur-inv erp-pur-inv-link" title={p.invoiceNo || p.id.slice(0, 8)} onClick={function () { setViewPur(p); }}>
+                          <button type="button" className="erp-pur-inv erp-pur-inv-link" title={p.invoiceNo || p.id.slice(0, 8)} onClick={function () { openPurchaseDoc(p); }}>
                             {p.invoiceNo || p.id.slice(0, 8)}
                           </button>
                         </td>
@@ -3058,7 +3124,7 @@ var Purchases = React.memo(function (props) {
                         <td className="num">
                           <div className="erp-pur-actions">
                             <ActBtnGroup gap={4}>
-                              <ActBtn tone="cyan" title="View purchase" onClick={function () { setViewPur(p); }} />
+                              <ActBtn tone="cyan" title="View purchase" onClick={function () { openPurchaseDoc(p); }} />
                               {!isVoidedTxn(p) ? (function () {
                                 var foreignLock = foreignEditLockFor(p.id);
                                 void lockTick;

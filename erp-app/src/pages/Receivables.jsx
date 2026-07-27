@@ -19,9 +19,13 @@ import {
   pushKeysNow,
 } from "../utils/concurrencyGuards.js";
 import { MoneyInOutModal } from "../components/MoneyInOutModal.jsx";
+import { PartyPaymentModal } from "../components/PartyPaymentModal.jsx";
 import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
-import { resolveThermalFormat } from "../utils/printFormat.js";
+import { buildPrintFmtOptions, resolveDefaultPrintFormat } from "../utils/printFormat.js";
+import { saveDocPdf, shareDocWhatsApp } from "../utils/docPrintActions.js";
 import { MoneyReceiptDoc } from "../components/MoneyReceiptDoc.jsx";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
+import { receivableEntryNav } from "../utils/sourceDocumentNav.js";
 
 /* ═══════════════════════════════════════════════════════════
    ENHANCED RECEIVABLES — Sales invoices + Manual (Loan Given, Other)
@@ -49,6 +53,7 @@ var EnhancedReceivables = function (props) {
   var TR = props.TR;
   var TD = props.TD;
   var fmtDateFull = props.fmtDateFull;
+  var openSourceDocument = props.openSourceDocument;
   var SplitPaymentModal = props.SplitPaymentModal;
   var usePager = props.usePager;
   var Pager = props.Pager;
@@ -61,6 +66,7 @@ var EnhancedReceivables = function (props) {
   var [rtab, setRtab] = useState("all");
   var [search, setSearch] = useState("");
   var [addModal, setAddModal] = useState(false);
+  var [partyPayOpen, setPartyPayOpen] = useState(false);
   var [payModal, setPayModal] = useState(null);
   var [splitPayModal, setSplitPayModal] = useState(null);
   var [payAmt, setPayAmt] = useState("");
@@ -73,7 +79,7 @@ var EnhancedReceivables = function (props) {
   var [docView, setDocView] = useState(null); /* sale object for View & Print */
   var [receiptView, setReceiptView] = useState(null); /* manual money-out receipt */
   var [editReceipt, setEditReceipt] = useState(null);
-  var [docFmt, setDocFmt] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
+  var [docFmt, setDocFmt] = useState(function () { return resolveDefaultPrintFormat(state.settings || {}); });
   var [docWarranty, setDocWarranty] = useState(false);
   var [printFmtOpen, setPrintFmtOpen] = useState(false);
   var [pendingPrintFmt, setPendingPrintFmt] = useState(null);
@@ -90,12 +96,7 @@ var EnhancedReceivables = function (props) {
   var escapeHtml = props.escapeHtml || function (s) { return String(s == null ? "" : s); };
   var shareViaWhatsApp = props.shareViaWhatsApp;
 
-  var invThermalFmt = resolveThermalFormat(state.settings || {});
-  var invPrintFmtOptions = [
-    ["a4", "A4"],
-    ["a5", "A5"],
-    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
-  ];
+  var invPrintFmtOptions = buildPrintFmtOptions(state.settings || {});
 
   var printInvoiceDoc = function (sale, fmt) {
     var el = document.getElementById("arap-inv-preview-" + sale.id);
@@ -131,17 +132,37 @@ var EnhancedReceivables = function (props) {
   };
 
   var whatsappReceiptDoc = function (rcp, fmt) {
-    var el = document.getElementById("arap-rcp-preview-" + rcp.id);
-    if (!el) { showAlert("Receipt preview not ready. Please try again."); return; }
-    if (typeof shareViaWhatsApp !== "function") { showAlert("WhatsApp share is not available."); return; }
-    var isA5 = fmt === "a5";
-    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
-    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
-    var margin = isThermal ? "3mm" : "8mm";
-    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + (isThermal ? "" : " portrait") + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
-    var pageFormat = isThermal ? (fmt === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
-    var filename = "Receipt-" + (rcp.receiptNo || rcp.id.slice(0, 8));
-    shareViaWhatsApp(el.innerHTML, filename, "", { headStyles: css, pageFormat: pageFormat });
+    shareDocWhatsApp({
+      elId: "arap-rcp-preview-" + rcp.id,
+      fmt: fmt,
+      filename: "Receipt-" + (rcp.receiptNo || rcp.id.slice(0, 8)),
+      shareViaWhatsApp: shareViaWhatsApp,
+      showAlert: showAlert,
+      extra: { voucherSlip: true },
+    });
+  };
+
+  var saveInvoicePdf = function (sale, fmt) {
+    saveDocPdf({
+      elId: "arap-inv-preview-" + sale.id,
+      title: "Invoice " + (sale.invoiceNo || ""),
+      fmt: fmt,
+      printFontLink: PRINT_FONT_LINK,
+      escapeHtml: escapeHtml,
+      showAlert: showAlert,
+    });
+  };
+
+  var saveReceiptPdf = function (rcp, fmt) {
+    saveDocPdf({
+      elId: "arap-rcp-preview-" + rcp.id,
+      title: "Receipt " + (rcp.receiptNo || ""),
+      fmt: fmt,
+      printFontLink: PRINT_FONT_LINK,
+      escapeHtml: escapeHtml,
+      showAlert: showAlert,
+      extra: { voucherSlip: true },
+    });
   };
 
   var printReceiptDoc = function (rcp, fmt) {
@@ -149,9 +170,9 @@ var EnhancedReceivables = function (props) {
     if (!el) return;
     var isA5 = fmt === "a5";
     var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
-    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
-    var margin = isThermal ? "3mm" : "8mm";
-    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + " portrait;margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5 landscape" : "A4";
+    var margin = isThermal ? "3mm" : "6mm";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
     var w = window.open("", "_blank", "width=900,height=760");
     if (!w) return;
     w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>Receipt " + escapeHtml(rcp.receiptNo || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
@@ -255,7 +276,11 @@ var EnhancedReceivables = function (props) {
     maybeShowPaymentMatchToasts(sale, res);
     var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - totalNonCheque) }), null, c) : c; });
     var ns = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale : s; });
-    S.set("tc3_sales", ns); S.set("tc3_customers", nc); S.set("tc3_cheques", newCheques);
+    if (S.setMany) {
+      S.setMany([["tc3_sales", ns], ["tc3_customers", nc], ["tc3_cheques", newCheques]]);
+    } else {
+      S.set("tc3_sales", ns); S.set("tc3_customers", nc); S.set("tc3_cheques", newCheques);
+    }
     try { pushKeysNow([["tc3_sales", ns], ["tc3_customers", nc], ["tc3_cheques", newCheques]]); } catch (_e) { /* ignore */ }
     setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc, cheques: newCheques }); });
     setSplitPayModal(null);
@@ -332,7 +357,8 @@ var EnhancedReceivables = function (props) {
       maybeShowPaymentMatchToasts(sale, res);
       var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - amt) }), null, c) : c; });
       var ns = (salesBase || state.sales).map(function (s) { return s.id === item.id ? updSale : s; });
-      S.set("tc3_sales", ns); S.set("tc3_customers", nc);
+      if (S.setMany) { S.setMany([["tc3_sales", ns], ["tc3_customers", nc]]); }
+      else { S.set("tc3_sales", ns); S.set("tc3_customers", nc); }
       try { pushKeysNow([["tc3_sales", ns], ["tc3_customers", nc]]); } catch (_e) { /* ignore */ }
       addAudit("Receivable Payment: Rs " + amt, item.reference || (sale.invoiceNo || sale.id.slice(0, 8)));
       setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc }); });
@@ -426,7 +452,8 @@ var EnhancedReceivables = function (props) {
         if (sale) {
           var updSale = stampUpdatedAt(Object.assign({}, sale, { paymentHistory: (sale.paymentHistory || []).concat(phEntries) }));
           var ns = state.sales.map(function (s) { return s.id === item.id ? updSale : s; });
-          S.set("tc3_sales", ns); S.set("tc3_cheques", nch);
+          if (S.setMany) { S.setMany([["tc3_sales", ns], ["tc3_cheques", nch]]); }
+          else { S.set("tc3_sales", ns); S.set("tc3_cheques", nch); }
           addAudit(chequeList.length + " Cheque(s) Received " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.reference || "");
           setState(function (st) { return Object.assign({}, st, { sales: ns, cheques: nch }); });
         }
@@ -435,7 +462,8 @@ var EnhancedReceivables = function (props) {
         var upd0 = list0.map(function (mr) {
           return mr.id !== item.id ? mr : stampUpdatedAt(Object.assign({}, mr, { paymentHistory: (mr.paymentHistory || []).concat(phEntries) }));
         });
-        S.set("tc3_manualReceivables", upd0); S.set("tc3_cheques", nch);
+        if (S.setMany) { S.setMany([["tc3_manualReceivables", upd0], ["tc3_cheques", nch]]); }
+        else { S.set("tc3_manualReceivables", upd0); S.set("tc3_cheques", nch); }
         addAudit(chequeList.length + " Cheque(s) Received " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.source || "");
         setState(function (st) { return Object.assign({}, st, { cheques: nch, _recTs: Date.now() }); });
       }
@@ -465,6 +493,122 @@ var EnhancedReceivables = function (props) {
     setPayModal(null); setPayAmt(""); setPayMethod("Cash"); setPayNote("");
   };
 
+  var savePartyPaymentReceive = function (payload, done) {
+    var lines = payload.lines || [];
+    var payment = payload.payment || {};
+    var party = payload.party;
+    var method = payment.method || "Cash";
+    var note = payment.note || "";
+    var chequeNo = String(payment.chequeNo || "").trim();
+    var chequeBank = String(payment.chequeBankName || "").trim();
+    var chequeDue = payment.chequeDueDate || today();
+    var forcedCustId = party && party.kind === "customer" ? party.id : null;
+
+    var sales = (state.sales || []).slice();
+    var customers = (state.customers || []).slice();
+    var manualRecs = S.get("tc3_manualReceivables", []).slice();
+    var cheques = (state.cheques || []).slice();
+    var creditDelta = {};
+    var totalRecorded = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var entry = line.entry;
+      var amt = parseFloat(line.amount) || 0;
+      if (amt <= 0) continue;
+
+      if (entry._type === "sale") {
+        var saleIdx = sales.findIndex(function (s) { return s.id === entry.id; });
+        if (saleIdx < 0) { showAlert("Invoice not found. Refresh and try again."); done(); return; }
+        var sale = sales[saleIdx];
+        if (isVoidedTxn(sale)) { showAlert("Cannot record payment on a voided invoice."); done(); return; }
+        var fitSale = assertPaymentFitsSaleBalance(sale, amt, {
+          includePendingCheques: true,
+          cheques: cheques,
+        });
+        if (!fitSale.ok) { showAlert(fitSale.message); done(); return; }
+        var newPh = (sale.paymentHistory || []).slice();
+        var nonCheque = 0;
+        if (method === "Cheque") {
+          var chTs = new Date().toISOString();
+          var newChq = stampTransactionIsoDateTime({
+            id: uid(), type: "incoming", status: "Pending", chequeNo: chequeNo, bankName: chequeBank,
+            amount: amt, dueDate: chequeDue, issuedDate: today(),
+            customerId: sale.customerId || (forcedCustId || ""), customerName: sale.customerName || (party && party.name) || "",
+            saleId: sale.id, invoiceNo: sale.invoiceNo || "", note: note, createdAt: chTs, updatedAt: chTs,
+          }, chTs);
+          cheques.push(newChq);
+          newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + chequeNo + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + chequeDue + ")" + (note ? " | " + note : ""), chequeId: newChq.id });
+        } else {
+          var cm = (method === "Bank" || method === "Online" || method === "Card") ? "Bank" : "Cash";
+          nonCheque = amt;
+          newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: method + (note ? ": " + note : "") });
+        }
+        var newPaid = (sale.paid || 0) + nonCheque;
+        var newBal = sale.total - newPaid;
+        var newStatus = newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid";
+        sales[saleIdx] = stampUpdatedAt(Object.assign({}, sale, { paid: newPaid, balance: newBal, payStatus: newStatus, paymentHistory: newPh }));
+        var res = resolvePaymentCreditTargetIds(customers, sale, { forcedCustomerId: forcedCustId, legacyApplyAllNameMatches: true });
+        res.ids.forEach(function (cid) { creditDelta[cid] = (creditDelta[cid] || 0) + nonCheque; });
+        totalRecorded += amt;
+      } else if (entry._type === "manual") {
+        var manIdx = manualRecs.findIndex(function (m) { return m.id === entry.id; });
+        if (manIdx < 0) { showAlert("Receivable record not found."); done(); return; }
+        var mr = manualRecs[manIdx];
+        var fitMan = assertPaymentFitsManualBalance(entry, amt, {
+          includePendingCheques: true,
+          cheques: cheques,
+          chequeLinkField: "manualReceivableId",
+        });
+        if (!fitMan.ok) { showAlert(fitMan.message); done(); return; }
+        var newPhMan = (mr.paymentHistory || []).slice();
+        if (method === "Cheque") {
+          var chTs2 = new Date().toISOString();
+          var newChq2 = stampTransactionIsoDateTime({
+            id: uid(), type: "incoming", status: "Pending", chequeNo: chequeNo, bankName: chequeBank,
+            amount: amt, dueDate: chequeDue, issuedDate: today(),
+            customerName: mr.person || (party && party.name) || "", manualReceivableId: mr.id,
+            note: note, createdAt: chTs2, updatedAt: chTs2,
+          }, chTs2);
+          cheques.push(newChq2);
+          newPhMan.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + chequeNo + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + chequeDue + ")" + (note ? " | " + note : ""), chequeId: newChq2.id });
+        } else {
+          var cm2 = (method === "Bank" || method === "Online" || method === "Card") ? "Bank" : method;
+          newPhMan.push({ id: uid(), date: today(), amount: amt, cashMethod: cm2, note: note || "Payment received" });
+        }
+        manualRecs[manIdx] = stampUpdatedAt(Object.assign({}, mr, { paymentHistory: newPhMan }));
+        totalRecorded += amt;
+      }
+    }
+
+    if (totalRecorded <= 0) { showAlert("No payment amounts to save."); done(); return; }
+
+    customers = customers.map(function (c) {
+      var d = creditDelta[c.id] || 0;
+      return d > 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - d) }), null, c) : c;
+    });
+
+    if (S.setMany) {
+      S.setMany([["tc3_sales", sales], ["tc3_customers", customers], ["tc3_manualReceivables", manualRecs], ["tc3_cheques", cheques]]);
+    } else {
+      S.set("tc3_sales", sales);
+      S.set("tc3_customers", customers);
+      S.set("tc3_manualReceivables", manualRecs);
+      S.set("tc3_cheques", cheques);
+    }
+    try { pushKeysNow([["tc3_sales", sales], ["tc3_customers", customers], ["tc3_manualReceivables", manualRecs], ["tc3_cheques", cheques]]); } catch (_e) { /* ignore */ }
+    setState(function (st) { return Object.assign({}, st, { sales: sales, customers: customers, cheques: cheques, _recTs: Date.now() }); });
+    addAudit("Party collection " + getCurrencySymbol() + " " + fmtNum(totalRecorded), (party && party.name) || "Party");
+    if (party && party.kind === "customer") {
+      toastAfterCustomerPaymentApplied(state.customers, { ids: [party.id], needPicker: false });
+    }
+    setPartyPayOpen(false);
+    if (method === "Cheque") {
+      showAlert("✅ Payment recorded. " + lines.length + " cheque(s) pending — clear them in Cheque Register when received.");
+    }
+    done();
+  };
+
   var deleteManual = function (id) {
     var entry = S.get("tc3_manualReceivables", []).find(function (e) { return e.id === id; });
     /* FIX: Block deletion if payments have been recorded — would silently erase cash history */
@@ -481,7 +625,8 @@ var EnhancedReceivables = function (props) {
         }
         return ch;
       });
-      S.set("tc3_manualReceivables", list); S.set("tc3_cheques", nch);
+      if (S.setMany) { S.setMany([["tc3_manualReceivables", list], ["tc3_cheques", nch]]); }
+      else { S.set("tc3_manualReceivables", list); S.set("tc3_cheques", nch); }
       setState(function (st) { return Object.assign({}, st, { cheques: nch, _recTs: Date.now() }); });
       if (viewItem && viewItem.id === id) setViewItem(null);
     });
@@ -537,10 +682,16 @@ var EnhancedReceivables = function (props) {
               <span className="erp-arap-kpi-sub">{getCurrencySymbol()} {fmtNum(totalCollected)}</span>
             </div>
           </div>
-          <button type="button" className="erp-arap-add is-out" onClick={function () { setAddModal(true); }}>
-            <span className="erp-arap-add-ico" aria-hidden="true">↓</span>
-            <span>Money Out</span>
-          </button>
+          <div className="erp-arap-topbar-actions">
+            <button type="button" className="erp-arap-add is-collect" onClick={function () { setPartyPayOpen(true); }}>
+              <span className="erp-arap-add-ico" aria-hidden="true">{getCurrencySymbol()}</span>
+              <span>Collect</span>
+            </button>
+            <button type="button" className="erp-arap-add is-out" onClick={function () { setAddModal(true); }}>
+              <span className="erp-arap-add-ico" aria-hidden="true">↓</span>
+              <span>Money Out</span>
+            </button>
+          </div>
         </div>
         <div className="erp-arap-tabs" role="tablist" aria-label="Receivable filters">
           {RTABS.map(function (t) {
@@ -624,7 +775,14 @@ var EnhancedReceivables = function (props) {
                           ? <span className="erp-arap-bal is-out">{getCurrencySymbol()} {fmtNum(e.balance)}</span>
                           : <span className="erp-arap-bal is-ok">Cleared</span>}
                       </td>
-                      <td className="erp-arap-ref" title={e.reference || ""}>{e.reference || "—"}</td>
+                      <td className="erp-arap-ref" title={e.reference || ""}>
+                        <SourceDocLink
+                          nav={receivableEntryNav(e)}
+                          label={e.reference || "—"}
+                          openSourceDocument={openSourceDocument}
+                          fallbackClassName=""
+                        />
+                      </td>
                       <td style={actBtnCellStyle}>
                         <ActBtnGroup>
                           <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
@@ -874,19 +1032,13 @@ var EnhancedReceivables = function (props) {
                 <div className="erp-arap-view-doclink">
                   <div>
                     <div className="erp-arap-view-card-title">Sales invoice</div>
-                    <button
-                      type="button"
+                    <SourceDocLink
+                      nav={sale ? { sourceKind: "sale", sourceId: sale.id, label: invNo } : null}
+                      label={invNo}
+                      openSourceDocument={openSourceDocument}
                       className="erp-arap-inv-link"
-                      onClick={function () {
-                        if (!sale) { showAlert("Invoice record not found."); return; }
-                        setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                        setDocWarranty(false);
-                        setDocView(sale);
-                      }}
                       title="Open actual invoice"
-                    >
-                      {invNo}
-                    </button>
+                    />
                     <div className="erp-arap-view-muted">Click invoice number to open the actual invoice</div>
                   </div>
                   <button
@@ -894,9 +1046,7 @@ var EnhancedReceivables = function (props) {
                     className="erp-arap-doc-btn"
                     onClick={function () {
                       if (!sale) { showAlert("Invoice record not found."); return; }
-                      setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                      setDocWarranty(false);
-                      setDocView(sale);
+                      if (typeof openSourceDocument === "function") openSourceDocument({ sourceKind: "sale", sourceId: sale.id });
                     }}
                   >
                     Open invoice
@@ -910,17 +1060,13 @@ var EnhancedReceivables = function (props) {
                     <div>
                       <div className="erp-arap-view-card-title">Money Out receipt</div>
                       {hasRcp ? (
-                        <button
-                          type="button"
+                        <SourceDocLink
+                          nav={{ sourceKind: "manual-ar", sourceId: (viewItem._manualObj || viewItem).id, label: rcpNo || "Receipt" }}
+                          label={rcpNo || "Receipt"}
+                          openSourceDocument={openSourceDocument}
                           className="erp-arap-inv-link"
-                          onClick={function () {
-                            setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                            setReceiptView(viewItem._manualObj || viewItem);
-                          }}
                           title="Open receipt"
-                        >
-                          {rcpNo || "Receipt"}
-                        </button>
+                        />
                       ) : (
                         <b style={{ fontSize: 14 }}>{viewItem.reference || "—"}</b>
                       )}
@@ -928,8 +1074,9 @@ var EnhancedReceivables = function (props) {
                     </div>
                     {hasRcp ? (
                       <button type="button" className="erp-arap-doc-btn" onClick={function () {
-                        setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                        setReceiptView(viewItem._manualObj || viewItem);
+                        if (typeof openSourceDocument === "function") {
+                          openSourceDocument({ sourceKind: "manual-ar", sourceId: (viewItem._manualObj || viewItem).id });
+                        }
                       }}>
                         Open receipt
                       </button>
@@ -1026,7 +1173,7 @@ var EnhancedReceivables = function (props) {
               <div className="erp-arap-view-actions">
                 {isSale && sale ? (
                   <button type="button" className="erp-arap-doc-btn is-ghost" onClick={function () {
-                    setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+                    setDocFmt(resolveDefaultPrintFormat(state.settings || {}));
                     setDocWarranty(false);
                     setDocView(sale);
                   }}>
@@ -1083,8 +1230,13 @@ var EnhancedReceivables = function (props) {
                   );
                 })}
               </div>
-              <label className="erp-si-fv-warranty">
-                <input type="checkbox" checked={docWarranty} onChange={function (e) { setDocWarranty(e.target.checked); }} />
+              <label className={"erp-si-fv-warranty" + (docWarranty ? " is-on" : "") + ((state.settings && state.settings.warrantyEnabled === false) ? " is-disabled" : "")} title={(state.settings && state.settings.warrantyEnabled === false) ? "Enable warranty text in Settings → Invoice Design" : "Include warranty policy on this print"}>
+                <input
+                  type="checkbox"
+                  checked={docWarranty}
+                  disabled={state.settings && state.settings.warrantyEnabled === false}
+                  onChange={function (e) { setDocWarranty(e.target.checked); }}
+                />
                 <span>Warranty</span>
               </label>
             </div>
@@ -1095,6 +1247,11 @@ var EnhancedReceivables = function (props) {
                 className="erp-si-fv-btn is-print"
                 onClick={function () { setPrintTarget("sale"); setPrintFmtOpen(true); }}
               >Print</button>
+              <button
+                type="button"
+                className="erp-si-fv-btn is-convert"
+                onClick={function () { saveInvoicePdf(Object.assign({}, docView, { includeWarranty: docWarranty }), docFmt); }}
+              >Save PDF</button>
               {WABtn ? (
                 <WABtn
                   title="Share as PDF via WhatsApp"
@@ -1145,9 +1302,8 @@ var EnhancedReceivables = function (props) {
       <PrintFormatChooser
         open={printFmtOpen}
         settings={state.settings}
-        thermalId={invThermalFmt}
         title={printTarget === "receipt" ? "Print receipt" : "Print invoice"}
-        hint="Choose A4, A5, or Thermal for your printer."
+        hint="Choose an enabled paper size for your printer."
         onClose={function () { setPrintFmtOpen(false); setPrintTarget(null); }}
         onSelect={function (fmt) {
           setPrintFmtOpen(false);
@@ -1203,6 +1359,11 @@ var EnhancedReceivables = function (props) {
                   className="erp-si-fv-btn is-print"
                   onClick={function () { setPrintTarget("receipt"); setPrintFmtOpen(true); }}
                 >Print</button>
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () { saveReceiptPdf(rcp, docFmt); }}
+                >Save PDF</button>
                 {WABtn ? (
                   <WABtn
                     title="Share as PDF via WhatsApp"
@@ -1215,7 +1376,7 @@ var EnhancedReceivables = function (props) {
             <div className="erp-si-fv-stage">
               <div
                 id={"arap-rcp-preview-" + rcp.id}
-                className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}
+                className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper") + " is-voucher-slip"}
               >
                 <MoneyReceiptDoc
                   receipt={rcp}
@@ -1231,6 +1392,32 @@ var EnhancedReceivables = function (props) {
           </div>
         );
       })()}
+
+      {partyPayOpen ? (
+        <PartyPaymentModal
+          mode="receive"
+          entries={allEntries}
+          cheques={state.cheques || []}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+          onSave={savePartyPaymentReceive}
+          onClose={function () { setPartyPayOpen(false); }}
+          openSourceDocument={openSourceDocument}
+          showAlert={showAlert}
+          Modal={Modal}
+          Btn={Btn}
+          Input={Input}
+          today={today}
+          fmtNum={fmtNum}
+          fmtDate={fmtDate}
+          getCurrencySymbol={getCurrencySymbol}
+          S={S}
+          setState={setState}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+        />
+      ) : null}
 
       {splitPayModal && (
         <SplitPaymentModal
@@ -1267,7 +1454,8 @@ var EnhancedReceivables = function (props) {
               });
               if (!fitSplit.ok) { showAlert(fitSplit.message); return; }
               var updMan = manRecs.map(function (mr) { return mr.id === splitPayModal.id ? stampUpdatedAt(Object.assign({}, mr, { paymentHistory: (mr.paymentHistory || []).concat(newPh) })) : mr; });
-              S.set("tc3_manualReceivables", updMan); S.set("tc3_cheques", newCheques);
+              if (S.setMany) { S.setMany([["tc3_manualReceivables", updMan], ["tc3_cheques", newCheques]]); }
+              else { S.set("tc3_manualReceivables", updMan); S.set("tc3_cheques", newCheques); }
               setState(function (st) { return Object.assign({}, st, { cheques: newCheques }); });
               setSplitPayModal(null);
             }

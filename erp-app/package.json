@@ -19,15 +19,23 @@
     "test:accounting": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/accounting-tests/run.mjs",
     "test:erp": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/erp-tests/run.mjs",
     "seed:demo": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/seed-demo-data.mjs",
+    "seed:certification": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/certification/seed-certification-data.mjs",
+    "test:certification": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/certification/run-certification.mjs",
+    "test:smoke": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/erp-tests/standalone-smoke.test.mjs",
+    "test:performance": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/erp-tests/performance-scale.test.mjs",
+    "test:electron-smoke": "node scripts/electron-smoke.mjs",
+    "readiness:standalone": "node scripts/standalone-readiness.mjs",
+    "readiness:multi-pc": "node scripts/multi-pc-readiness.mjs",
     "audit:health": "node scripts/audit-health.mjs",
     "ci:scan-secrets": "node scripts/ci-scan-secrets.mjs",
     "release:check": "npm run ci",
     "release:gate": "npm run ci && node scripts/release-gate.mjs",
-    "ci": "npm run typecheck && npm run audit:high && npm run ci:scan-secrets && npm run test:accounting && npm run test:erp && npm run build"
+    "ci": "npm run typecheck && npm run audit:high && npm run ci:scan-secrets && npm run test:accounting && npm run test:erp && npm run test:certification && npm run test:electron-smoke && npm run test:performance && npm run build"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
     "electron-updater": "^6.8.9",
+    "jsbarcode": "^3.11.5",
     "node-fetch": "^3.3.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
@@ -65,6 +73,8 @@
       "main.cjs",
       "updater.cjs",
       "preload.js",
+      "crypto-key-store.cjs",
+      "backup-sanitize.cjs",
       "lan-ws-sync.cjs",
       "lan-auth.cjs",
       "device-crypto.cjs",
@@ -75,10 +85,6 @@
       "tc_license_secret.txt.example"
     ],
     "extraResources": [
-      {
-        "from": "tc_license_secret.txt",
-        "to": "tc_license_secret.txt"
-      },
       {
         "from": "tc_license_secret.txt.example",
         "to": "tc_license_secret.txt.example"

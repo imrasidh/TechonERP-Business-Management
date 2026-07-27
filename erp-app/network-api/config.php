@@ -22,12 +22,28 @@ if ($dbName === '' || $dbName === false) {
     $dbName = 'techon_erp_network';
 }
 $dbUser = techon_env('DB_USER', '');
-if ($dbUser === '' || $dbUser === false) {
-    $dbUser = 'root';
-}
 $dbPass = techon_env('DB_PASS', null);
+$allowDevDbDefaults = getenv('TECHON_ERP_ALLOW_DEV_DB_DEFAULTS') === '1';
+/* Fallback root/empty password is for local XAMPP only — require env or localhost host. */
+if ($dbUser === '' || $dbUser === false) {
+    if ($allowDevDbDefaults || $dbHost === 'localhost' || $dbHost === '127.0.0.1') {
+        $dbUser = 'root';
+    } else {
+        http_response_code(503);
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'message' => 'DB_USER is not configured']);
+        exit();
+    }
+}
 if ($dbPass === null || $dbPass === false) {
-    $dbPass = ''; /* empty password valid for local XAMPP */
+    if ($allowDevDbDefaults || $dbHost === 'localhost' || $dbHost === '127.0.0.1') {
+        $dbPass = ''; /* empty password valid for local XAMPP */
+    } else {
+        http_response_code(503);
+        header('Content-Type: application/json');
+        echo json_encode(['success' => false, 'message' => 'DB_PASS is not configured']);
+        exit();
+    }
 }
 
 define('DB_HOST', $dbHost);
@@ -121,6 +137,179 @@ function requireLegacyAuth() {
 function requireAuth() {
     require_once __DIR__ . '/device_auth.php';
     return tcRequireAuthDual();
+}
+
+/**
+ * After requireAuth(): block OPEN and remote legacy unless allowed.
+ * $opts['allowRemoteLegacy'] — enrollment endpoints (device_register/status) may use
+ * legacy key from LAN so counters can enroll before device HMAC exists; still rate-limit those.
+ */
+function tcEnforceRemoteAuthPolicy($auth, $opts = []) {
+    $authMode = is_array($auth) ? (string)($auth['mode'] ?? '') : '';
+    $isLoopback = tcIsLocalhostRequest();
+    $allowRemoteLegacy = !empty($opts['allowRemoteLegacy']);
+    if ($authMode === 'open' && !$isLoopback) {
+        respond(['success' => false, 'message' => 'OPEN_API is localhost-only'], 403);
+    }
+    if ($authMode === 'legacy' && !$isLoopback) {
+        if ($allowRemoteLegacy || getenv('TECHON_ERP_ALLOW_LEGACY_SYNC') === '1') {
+            return;
+        }
+        respond([
+            'success' => false,
+            'message' => 'Legacy API key is localhost-only — counters must use device authentication (or set TECHON_ERP_ALLOW_LEGACY_SYNC=1 during migration)',
+        ], 403);
+    }
+}
+
+/**
+ * Lightweight file-based rate limit (per IP / device key). Returns false when blocked.
+ */
+function tcRateLimitAllow($bucketKey, $maxPerMinute = 30) {
+    try {
+        $rlKey = preg_replace('/[^A-Za-z0-9_.-]/', '_', (string)$bucketKey);
+        if ($rlKey === '') $rlKey = 'unknown';
+        $rlDir = __DIR__ . '/logs/ratelimit';
+        if (!is_dir($rlDir)) @mkdir($rlDir, 0755, true);
+        $rlFile = $rlDir . '/rl_' . $rlKey . '.json';
+        $nowMin = date('Y-m-d H:i');
+        $bucket = ['minute' => $nowMin, 'count' => 0];
+        if (file_exists($rlFile)) {
+            $raw = @file_get_contents($rlFile);
+            $dec = json_decode((string)$raw, true);
+            if (is_array($dec) && !empty($dec['minute'])) $bucket = $dec;
+        }
+        if (($bucket['minute'] ?? '') !== $nowMin) $bucket = ['minute' => $nowMin, 'count' => 0];
+        $bucket['count'] = (int)($bucket['count'] ?? 0) + 1;
+        @file_put_contents($rlFile, json_encode($bucket), LOCK_EX);
+        return ((int)$bucket['count']) <= (int)$maxPerMinute;
+    } catch (Exception $e) {
+        /* Fail open: broken rate-limit store must not block legitimate shop traffic. */
+        error_log('[TechonERP] rate limit store error: ' . $e->getMessage());
+        return true;
+    }
+}
+
+/**
+ * Device permission → which storage keys this counter may write.
+ */
+function tcDeviceMayWriteKey($auth, $key) {
+    if (!is_array($auth) || ($auth['mode'] ?? '') !== 'device') return true;
+    $device = $auth['device'] ?? null;
+    if (!$device) return false;
+    $perms = $device['permissions'] ?? null;
+    if (is_string($perms)) $perms = json_decode($perms, true);
+    if (!is_array($perms)) $perms = [];
+    if (!empty($perms['admin']) || !empty($perms['manager'])) return true;
+
+    $accountsKeys = [
+        'tc3_users' => true,
+        'tc3_settings' => true,
+        'tc3_journal_lines' => true,
+        'tc3_gl_accounts' => true,
+        'tc3_gl_mode' => true,
+        'tc3_gl_audit' => true,
+        'tc3_journal_hash' => true,
+        'tc3_gl_last_error' => true,
+        'tc3_financial_snapshots' => true,
+        'tc3_openBal' => true,
+        'tc3_capLedger' => true,
+        'tc3_capLog' => true,
+        'tc3_profitDist' => true,
+        'tc3_admin_name' => true,
+        'tc3_financial_mutation_log' => true,
+        'tc3_apppass' => true,
+        'tc3_auditLog' => true,
+    ];
+    $salesKeys = [
+        'tc3_sales' => true,
+        'tc3_salesReturns' => true,
+        'tc3_quotations' => true,
+        'tc3_held_invoices' => true,
+        'tc3_customers' => true,
+        'tc3_manualReceivables' => true,
+        'tc3_cheques' => true,
+        'tc3_codRecords' => true,
+        'tc3_codPartners' => true,
+        'tc3_codWithdrawals' => true,
+        'tc3_codProfitSettings' => true,
+        'tc3_invoice_edit_locks' => true,
+        'tc3_repairs' => true,
+        'tc3_repairDeleteLog' => true,
+        'tc3_others' => true,
+    ];
+    $inventoryKeys = [
+        'tc3_products' => true,
+        'tc3_purchases' => true,
+        'tc3_purchaseReturns' => true,
+        'tc3_suppliers' => true,
+        'tc3_manualPayables' => true,
+        'tc3_damageLog' => true,
+        'tc3_productLog' => true,
+        'tc3_stock_movements' => true,
+        'tc3_inv_reconciliation' => true,
+        'tc3_inventory_layers' => true,
+        'tc3_raw_material_usage' => true,
+        'tc3_raw_material_counts' => true,
+        'tc3_assets' => true,
+        'tc3_assetLog' => true,
+        'tc3_expenses' => true,
+        'tc3_labelDesigns' => true,
+        'tc3_businessType' => true,
+        'tc3_repair3p_product_seq' => true,
+    ];
+    if (isset($accountsKeys[$key])) {
+        return !empty($perms['accounts']);
+    }
+    if (isset($salesKeys[$key])) {
+        return !empty($perms['sales']);
+    }
+    if (isset($inventoryKeys[$key])) {
+        return !empty($perms['inventory']);
+    }
+    /* Deny unknown keys by default (no catch-all privilege broaden). */
+    return false;
+}
+
+/**
+ * Read ACL for server_state hydrate. Financial ledger keys require accounts;
+ * shop settings readable with any operational permission (hashes already stripped).
+ */
+function tcDeviceMayReadKey($auth, $key) {
+    if (!is_array($auth) || ($auth['mode'] ?? '') !== 'device') return true;
+    $device = $auth['device'] ?? null;
+    if (!$device) return false;
+    $perms = $device['permissions'] ?? null;
+    if (is_string($perms)) $perms = json_decode($perms, true);
+    if (!is_array($perms)) $perms = [];
+    if (!empty($perms['admin']) || !empty($perms['manager'])) return true;
+
+    $accountsOnly = [
+        'tc3_users' => true,
+        'tc3_journal_lines' => true,
+        'tc3_gl_accounts' => true,
+        'tc3_gl_mode' => true,
+        'tc3_gl_audit' => true,
+        'tc3_journal_hash' => true,
+        'tc3_gl_last_error' => true,
+        'tc3_financial_snapshots' => true,
+        'tc3_openBal' => true,
+        'tc3_capLedger' => true,
+        'tc3_capLog' => true,
+        'tc3_profitDist' => true,
+        'tc3_admin_name' => true,
+        'tc3_financial_mutation_log' => true,
+        'tc3_apppass' => true,
+        'tc3_auditLog' => true,
+    ];
+    if (isset($accountsOnly[$key])) {
+        return !empty($perms['accounts']);
+    }
+    /* Settings / shop identity needed for POS — allow any operational bit (hashes stripped). */
+    if ($key === 'tc3_settings' || $key === 'tc3_businessType' || $key === 'tc3_labelDesigns') {
+        return !empty($perms['sales']) || !empty($perms['inventory']) || !empty($perms['reports']) || !empty($perms['accounts']);
+    }
+    return tcDeviceMayWriteKey($auth, $key);
 }
 
 // ── DB connection ────────────────────────────────────────────────────

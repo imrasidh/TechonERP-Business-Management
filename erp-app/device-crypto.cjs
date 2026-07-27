@@ -118,7 +118,6 @@ function signWsAuth(opts) {
     signature: signature,
     client_id: clientId,
     last_revision: isNaN(lastRevision) || lastRevision < 0 ? 0 : lastRevision,
-    apiKey: opts.apiKey || '',
   };
 }
 

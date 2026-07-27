@@ -10,16 +10,7 @@ require_once __DIR__ . '/config.php';
 
 $auth = requireAuth();
 $authMode = is_array($auth) ? ($auth['mode'] ?? '') : '';
-$isLoopback = function_exists('tcIsLocalhostRequest') ? tcIsLocalhostRequest() : false;
-if ($authMode === 'open' && !$isLoopback) {
-    respond(['success' => false, 'message' => 'OPEN_API reads are localhost-only'], 403);
-}
-if ($authMode === 'legacy' && !$isLoopback && getenv('TECHON_ERP_ALLOW_LEGACY_SYNC') !== '1') {
-    respond([
-        'success' => false,
-        'message' => 'Legacy API key state reads are localhost-only — counters must use device authentication (or set TECHON_ERP_ALLOW_LEGACY_SYNC=1 during migration)',
-    ], 403);
-}
+tcEnforceRemoteAuthPolicy($auth);
 
 $clientId = $_SERVER['HTTP_X_TC_CLIENT_ID'] ?? '';
 $ip       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
@@ -60,8 +51,15 @@ if (!empty($_GET['keys'])) {
     $requested = $ALL_KEYS;
 }
 
+/* Read ACL: sales-only devices must not hydrate journal/GL/accounts keys. */
+if ($authMode === 'device') {
+    $requested = array_values(array_filter($requested, function ($k) use ($auth) {
+        return tcDeviceMayReadKey($auth, $k);
+    }));
+}
+
 if (empty($requested)) {
-    respond(['success' => false, 'message' => 'No valid keys requested'], 400);
+    respond(['success' => false, 'message' => 'No permitted keys for this device'], 403);
 }
 
 $placeholders = implode(',', array_fill(0, count($requested), '?'));
@@ -71,12 +69,13 @@ $stmt->execute($requested);
 $rows = $stmt->fetchAll();
 
 $result = [];
-foreach ($requested as $k) {
-    $result[$k] = (strpos($k, 'tc3_settings') !== false) ? (object)[] : [];
-}
+/* Only return keys that exist in kv_store — missing keys must not arrive as []
+   and wipe a good local chart of accounts / scalar GL fields on pull. */
 foreach ($rows as $row) {
     $decoded = json_decode($row['value'], true);
-    $result[$row['store_key']] = ($decoded !== null) ? $decoded : [];
+    if ($decoded !== null) {
+        $result[$row['store_key']] = $decoded;
+    }
 }
 
 /* Never ship password hashes / credential material to LAN clients. */

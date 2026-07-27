@@ -32,6 +32,8 @@ import {
   sumRawMaterialKitchenCostInRange,
 } from "../../src/utils/ingredientUsageCost.js";
 import { computePurchaseReturnTax } from "../../src/tax/taxCompute.js";
+import { diagnoseGlStorage, healGlStorageMetadata, hasGlOperationalSalesMismatch } from "../../src/ops/glStorageHealth.js";
+import { trialBalance } from "../../src/accounting/generalLedger.js";
 
 /**
  * @param {{ fail: (name: string, detail?: unknown) => void, pass: (name: string) => void }} ctx
@@ -878,7 +880,7 @@ export function runScenarioTests(ctx) {
     pass("Inclusive purchase return — gross cost, net INV, no VAT-on-VAT");
   })();
 
-  /* ── Tax: orphan sales return uses stored tax snapshot (not current settings rate) ── */
+  /* ── Tax: orphan sales returns are quarantined (no parent ⇒ no GL/inventory) ── */
   (function () {
     var st = baseState();
     st.settings = Object.assign({}, st.settings, {
@@ -903,9 +905,12 @@ export function runScenarioTests(ctx) {
     }];
     var x = rebuild(st, Smock);
     if (!x.r.validate.ok) return fail("Orphan sales return: validate", x.r.validate);
-    if (Math.abs(acctBal(x.r.lines, GL.SRET) - 100) > 0.02) return fail("Orphan sales return: SRET net", acctBal(x.r.lines, GL.SRET));
-    if (Math.abs(acctBal(x.r.lines, GL.VAT_PAY) + 10) > 0.02) return fail("Orphan sales return: VAT_PAY reversal", acctBal(x.r.lines, GL.VAT_PAY));
-    pass("Orphan sales return — historical tax snapshot preserved");
+    if (Math.abs(acctBal(x.r.lines, GL.SRET)) > 0.02) return fail("Orphan sales return: SRET must stay 0 (quarantined)", acctBal(x.r.lines, GL.SRET));
+    var orphanLines = (x.r.lines || []).filter(function (l) {
+      return l.referenceType === "sales_return" || l.referenceType === "sales_return_cogs";
+    });
+    if (orphanLines.length !== 0) return fail("Orphan sales return: expected no GL lines", orphanLines.length);
+    pass("Orphan sales return — quarantined without active parent");
   })();
 
   /* ── Inventory: same-day events sort by isoDateTime (not array/_seq order) ── */
@@ -937,5 +942,50 @@ export function runScenarioTests(ctx) {
       return fail("Same-day isoDateTime sort: WAC COGS", cogs);
     }
     pass("Same-day inventory events — chronological isoDateTime sort");
+  })();
+
+  /* ── GL storage health: empty COA heal + Reports mismatch guard ── */
+  (function () {
+    var store = {
+      data: {
+        tc3_journal_lines: [{ id: "l1", accountId: "4000", debit: 0, credit: 100, date: "2026-01-01" }],
+        tc3_gl_accounts: [],
+        tc3_gl_mode: [],
+        tc3_journal_hash: [],
+        tc3_inventory_layers: [],
+      },
+      get: function (k, def) {
+        return this.data[k] !== undefined ? this.data[k] : def;
+      },
+      set: function (k, v) { this.data[k] = v; },
+    };
+    var healed = healGlStorageMetadata(store);
+    if (!healed.healed.length || healed.healed.indexOf("coa_empty") < 0) {
+      return fail("GL storage heal: empty COA", healed);
+    }
+    if (!Array.isArray(store.data.tc3_gl_accounts) || !store.data.tc3_gl_accounts.length) {
+      return fail("GL storage heal: COA still empty");
+    }
+    var tb = trialBalance(store.data.tc3_journal_lines, store.data.tc3_gl_accounts);
+    if (!tb.rows.length) return fail("GL storage heal: trial balance still empty", tb);
+    var diag = diagnoseGlStorage(store);
+    if (!diag.ok) return fail("GL storage heal: unexpected critical issues after heal", diag);
+    pass("GL storage health — heal empty COA restores trial balance");
+  })();
+
+  (function () {
+    var store2 = {
+      data: {
+        tc3_journal_lines: [{ id: "l1", accountId: "1000", debit: 50, credit: 0, date: "2026-01-01" }],
+        tc3_gl_accounts: DEFAULT_GL_CHART.slice(),
+      },
+      get: function (k, def) {
+        return this.data[k] !== undefined ? this.data[k] : def;
+      },
+    };
+    if (!hasGlOperationalSalesMismatch(store2, 500)) {
+      return fail("GL mismatch guard: expected mismatch when GL income 0 and ops sales > 0");
+    }
+    pass("GL storage health — detect ops/GL sales mismatch");
   })();
 }

@@ -18,7 +18,8 @@ import { PurchaseInvoiceDoc } from "../components/PurchaseInvoiceDoc.jsx";
 import { MoneyReceiptDoc } from "../components/MoneyReceiptDoc.jsx";
 import { MoneyInOutModal } from "../components/MoneyInOutModal.jsx";
 import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
-import { resolveThermalFormat } from "../utils/printFormat.js";
+import { buildPrintFmtOptions, resolveDefaultPrintFormat } from "../utils/printFormat.js";
+import { saveDocPdf, shareDocWhatsApp } from "../utils/docPrintActions.js";
 
 /* ─── CHEQUE REGISTER PAGE ────────────────────────────────────────────────── */
 var Cheques = React.memo(function (props) {
@@ -33,6 +34,7 @@ var Cheques = React.memo(function (props) {
   var showAlert = props.showAlert;
   var showConfirm = props.showConfirm;
   var addAudit = props.addAudit;
+  var openSourceDocument = props.openSourceDocument;
   var getCurrencySymbol = props.getCurrencySymbol;
   var fmtNum = props.fmtNum;
   var StatCard = props.StatCard;
@@ -70,18 +72,13 @@ var Cheques = React.memo(function (props) {
   var [receiptView, setReceiptView] = useState(null);
   var [receiptMode, setReceiptMode] = useState("in"); /* in = money in (payable), out = money out (receivable) */
   var [editReceipt, setEditReceipt] = useState(null);
-  var [docFmt, setDocFmt] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
+  var [docFmt, setDocFmt] = useState(function () { return resolveDefaultPrintFormat(state.settings || {}); });
   var [printFmtOpen, setPrintFmtOpen] = useState(false);
   var [printTarget, setPrintTarget] = useState(null); /* sale | purchase | receipt */
 
   var cheques = sortNewestFirst(state.cheques || []);
   var todayStr = today();
-  var invThermalFmt = resolveThermalFormat(state.settings || {});
-  var invPrintFmtOptions = [
-    ["a4", "A4"],
-    ["a5", "A5"],
-    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
-  ];
+  var invPrintFmtOptions = buildPrintFmtOptions(state.settings || {});
 
   var resolveLinkedDoc = function (ch) {
     if (!ch) return null;
@@ -123,7 +120,15 @@ var Cheques = React.memo(function (props) {
       showAlert("No linked invoice or receipt found for this cheque.");
       return;
     }
-    setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+    if (typeof openSourceDocument === "function") {
+      var kindMap = { sale: "sale", purchase: "purchase", "receipt-out": "manual-ar", "receipt-in": "manual-ap" };
+      var sk = kindMap[linked.kind];
+      if (sk && linked.doc && linked.doc.id) {
+        openSourceDocument({ sourceKind: sk, sourceId: linked.doc.id });
+        return;
+      }
+    }
+    setDocFmt(resolveDefaultPrintFormat(state.settings || {}));
     if (linked.kind === "sale") {
       setReceiptView(null);
       setDocKind("sale");
@@ -142,21 +147,46 @@ var Cheques = React.memo(function (props) {
     setReceiptView(linked.doc);
   };
 
-  var printDocById = function (elId, title, fmt) {
+  var printDocById = function (elId, title, fmt, opts) {
     var el = document.getElementById(elId);
     if (!el) return;
     var isA5 = fmt === "a5";
     var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
+    var isVoucher = opts && opts.voucherSlip;
     var thermalBodyW = fmt === "thermal58" ? "218px" : "302px";
-    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
-    var margin = isThermal ? "3mm" : "8mm";
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : (isVoucher && isA5) ? "A5 landscape" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : (isVoucher ? "6mm" : "8mm");
     var bodyW = isThermal ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}" : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
-    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pageSize + " portrait;margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pageSize + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
     var w = window.open("", "_blank", "width=900,height=760");
     if (!w) return;
     w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>" + escapeHtml(title || "") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
     w.document.close();
     setTimeout(function () { w.focus(); w.print(); }, 500);
+  };
+
+  var saveDocPdfById = function (elId, title, fmt, extra) {
+    saveDocPdf({
+      elId: elId,
+      title: title,
+      fmt: fmt,
+      printFontLink: PRINT_FONT_LINK,
+      escapeHtml: escapeHtml,
+      showAlert: showAlert,
+      extra: extra || {},
+    });
+  };
+
+  var whatsappDocById = function (elId, filename, phone, fmt, extra) {
+    shareDocWhatsApp({
+      elId: elId,
+      fmt: fmt,
+      filename: filename,
+      phone: phone || "",
+      shareViaWhatsApp: shareViaWhatsApp,
+      showAlert: showAlert,
+      extra: extra || {},
+    });
   };
 
   /* Status badge */
@@ -202,8 +232,38 @@ var Cheques = React.memo(function (props) {
   var chqPager = usePager(filtered, LIST_PAGE_SIZE);
 
   /* ── Mark Cleared ── */
+  /* A cleared cheque posts bank + AR/AP against its parent document. If that parent was
+     deleted, clearing would move money with nothing to settle it against, so it is blocked. */
+  var findMissingChequeParents = function (ch) {
+    var existsIn = function (lists, id) {
+      for (var i = 0; i < lists.length; i++) {
+        var arr = lists[i] || [];
+        for (var j = 0; j < arr.length; j++) {
+          if (arr[j] && arr[j].id === id) return true;
+        }
+      }
+      return false;
+    };
+    var missing = [];
+    if (ch.saleId && !existsIn([state.sales, S.get("tc3_sales", [])], ch.saleId)) missing.push("sales invoice");
+    if (ch.purchaseId && !existsIn([state.purchases, S.get("tc3_purchases", [])], ch.purchaseId)) missing.push("purchase bill");
+    if (ch.expenseId && !existsIn([state.expenses, S.get("tc3_expenses", [])], ch.expenseId)) missing.push("expense");
+    if (ch.manualPayableId && !existsIn([S.get("tc3_manualPayables", [])], ch.manualPayableId)) missing.push("payable");
+    if (ch.manualReceivableId && !existsIn([S.get("tc3_manualReceivables", [])], ch.manualReceivableId)) missing.push("receivable");
+    return missing;
+  };
+
   var markCleared = function (ch) {
     if (ch.status === "Voided") { showAlert("This cheque has been voided and cannot be cleared."); return; }
+    var missingParents = findMissingChequeParents(ch);
+    if (missingParents.length) {
+      showAlert(
+        "This cheque is linked to a " + missingParents.join(" and ") + " that no longer exists.\n\n" +
+        "Clearing it would post a bank movement with nothing to settle against. Restore the original document, " +
+        "or void this cheque and record the money as a direct receipt/payment."
+      );
+      return;
+    }
     var lockId = buildInvoiceEditLockIdentity({
       currentUser: props.currentUser || null,
       clientMachineLabel: String(props.clientMachineLabel || "").trim(),
@@ -254,9 +314,8 @@ var Cheques = React.memo(function (props) {
                 });
                 return stampUpdatedAt(Object.assign({}, mp, { paymentHistory: updPh }));
               });
-              S.set("tc3_manualPayables", updManPays);
-              try { pushKeysNow([["tc3_manualPayables", updManPays]]); } catch (_mp) { /* ignore */ }
-              setState(function (st) { return Object.assign({}, st, { manualPayables: updManPays }); });
+              /* Deferred — committed with setMany below so balance-fit failures cannot leave a half write. */
+              applyClear._updManPays = updManPays;
             }
             if (ch.type === "incoming" && ch.saleId) {
               var saleRow = ns.find(function (s) { return s.id === ch.saleId; });
@@ -299,9 +358,7 @@ var Cheques = React.memo(function (props) {
                 });
                 return stampUpdatedAt(Object.assign({}, mr, { paymentHistory: updPh }));
               });
-              S.set("tc3_manualReceivables", updManRecs);
-              try { pushKeysNow([["tc3_manualReceivables", updManRecs]]); } catch (_mr) { /* ignore */ }
-              setState(function (st) { return Object.assign({}, st, { manualReceivables: updManRecs }); });
+              applyClear._updManRecs = updManRecs;
             }
             if (ch.expenseId) {
               var nex = (state.expenses || []).map(function (ex) {
@@ -312,29 +369,33 @@ var Cheques = React.memo(function (props) {
                   clearedDate: today(),
                 }));
               });
-              S.set("tc3_expenses", nex);
-              setState(function (st) { return Object.assign({}, st, { expenses: nex }); });
-              try { pushKeysNow([["tc3_expenses", nex]]); } catch (_ee) { /* ignore */ }
+              applyClear._nex = nex;
             }
-            S.set("tc3_cheques", nch);
-            if (ch.type === "outgoing" && ch.purchaseId) S.set("tc3_purchases", np);
+            var commitPairs = [["tc3_cheques", nch]];
+            if (ch.type === "outgoing" && ch.purchaseId) commitPairs.push(["tc3_purchases", np]);
             if (ch.type === "incoming" && ch.saleId) {
-              S.set("tc3_sales", ns);
-              S.set("tc3_customers", nc);
+              commitPairs.push(["tc3_sales", ns]);
+              commitPairs.push(["tc3_customers", nc]);
             }
-            var pushPairs = [["tc3_cheques", nch]];
-            if (ch.type === "outgoing" && ch.purchaseId) pushPairs.push(["tc3_purchases", np]);
-            if (ch.type === "incoming" && ch.saleId) {
-              pushPairs.push(["tc3_sales", ns]);
-              pushPairs.push(["tc3_customers", nc]);
+            if (applyClear._updManPays) commitPairs.push(["tc3_manualPayables", applyClear._updManPays]);
+            if (applyClear._updManRecs) commitPairs.push(["tc3_manualReceivables", applyClear._updManRecs]);
+            if (applyClear._nex) commitPairs.push(["tc3_expenses", applyClear._nex]);
+            if (typeof S.setMany === "function") {
+              var batch = S.setMany(commitPairs);
+              if (batch && batch.ok === false) return;
+            } else {
+              commitPairs.forEach(function (pair) { S.set(pair[0], pair[1]); });
+              try { pushKeysNow(commitPairs); } catch (_e) { /* ignore */ }
             }
-            try { pushKeysNow(pushPairs); } catch (_e) { /* ignore */ }
             setState(function (st) {
               return Object.assign({}, st, {
                 cheques: nch,
                 purchases: (ch.type === "outgoing" && ch.purchaseId) ? np : st.purchases,
                 sales: (ch.type === "incoming" && ch.saleId) ? ns : st.sales,
                 customers: (ch.type === "incoming" && ch.saleId) ? nc : st.customers,
+                manualPayables: applyClear._updManPays || st.manualPayables,
+                manualReceivables: applyClear._updManRecs || st.manualReceivables,
+                expenses: applyClear._nex || st.expenses,
               });
             });
             addAudit("Cheque Cleared", "#" + (ch.chequeNo || "") + " " + getCurrencySymbol() + " " + fmtNum(ch.amount));
@@ -517,8 +578,8 @@ var Cheques = React.memo(function (props) {
               allocations: allocs,
             }), at);
           });
-          S.set("tc3_cheques", nch);
-          S.set("tc3_sales", ns);
+          if (S.setMany) { S.setMany([["tc3_cheques", nch], ["tc3_sales", ns]]); }
+          else { S.set("tc3_cheques", nch); S.set("tc3_sales", ns); }
           try { pushKeysNow([["tc3_cheques", nch], ["tc3_sales", ns]]); } catch (_e) { /* ignore */ }
           setState(function (st) { return Object.assign({}, st, { cheques: nch, sales: ns }); });
           addAudit("Cheque Voided (cleared) #" + (ch.chequeNo || ""), getCurrencySymbol() + " " + fmtNum(ch.amount));
@@ -594,8 +655,12 @@ var Cheques = React.memo(function (props) {
         paymentHistory: ph,
       }), at);
     });
-    S.set("tc3_cheques", nch);
-    S.set("tc3_sales", ns);
+    if (typeof S.setMany === "function") {
+      S.setMany([["tc3_cheques", nch], ["tc3_sales", ns]]);
+    } else {
+      S.set("tc3_cheques", nch);
+      S.set("tc3_sales", ns);
+    }
     try { pushKeysNow([["tc3_cheques", nch], ["tc3_sales", ns]]); } catch (_e) { /* ignore */ }
     setState(function (st) { return Object.assign({}, st, { cheques: nch, sales: ns }); });
     addAudit("Cheque Allocated #" + (ch.chequeNo || ""), getCurrencySymbol() + " " + fmtNum(amt) + " → " + (sale.invoiceNo || saleId));
@@ -931,6 +996,26 @@ var Cheques = React.memo(function (props) {
             </div>
             <div className="erp-si-fv-actions">
               <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("sale"); setPrintFmtOpen(true); }}>Print</button>
+              <button
+                type="button"
+                className="erp-si-fv-btn is-convert"
+                onClick={function () {
+                  saveDocPdfById("chq-inv-preview-" + docView.id, "Invoice " + (docView.invoiceNo || ""), docFmt);
+                }}
+              >Save PDF</button>
+              {WABtn ? (
+                <WABtn
+                  title="Share as PDF via WhatsApp"
+                  onClick={function () {
+                    whatsappDocById(
+                      "chq-inv-preview-" + docView.id,
+                      "Invoice-" + (docView.invoiceNo || docView.id.slice(0, 8)),
+                      docView.customerPhone || "",
+                      docFmt
+                    );
+                  }}
+                />
+              ) : null}
               <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setDocView(null); setDocKind(""); }} aria-label="Close">✕</button>
             </div>
           </div>
@@ -971,6 +1056,26 @@ var Cheques = React.memo(function (props) {
             </div>
             <div className="erp-si-fv-actions">
               <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("purchase"); setPrintFmtOpen(true); }}>Print</button>
+              <button
+                type="button"
+                className="erp-si-fv-btn is-convert"
+                onClick={function () {
+                  saveDocPdfById("chq-pur-preview-" + docView.id, "Purchase " + (docView.invoiceNo || ""), docFmt);
+                }}
+              >Save PDF</button>
+              {WABtn ? (
+                <WABtn
+                  title="Share as PDF via WhatsApp"
+                  onClick={function () {
+                    whatsappDocById(
+                      "chq-pur-preview-" + docView.id,
+                      "Purchase-" + (docView.invoiceNo || docView.id.slice(0, 8)),
+                      "",
+                      docFmt
+                    );
+                  }}
+                />
+              ) : null}
               <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setDocView(null); setDocKind(""); }} aria-label="Close">✕</button>
             </div>
           </div>
@@ -1038,11 +1143,37 @@ var Cheques = React.memo(function (props) {
                   }}
                 >Edit</button>
                 <button type="button" className="erp-si-fv-btn is-print" onClick={function () { setPrintTarget("receipt"); setPrintFmtOpen(true); }}>Print</button>
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () {
+                    saveDocPdfById(
+                      "chq-rcp-preview-" + rcp.id,
+                      "Receipt " + rcpNo,
+                      docFmt,
+                      { voucherSlip: true }
+                    );
+                  }}
+                >Save PDF</button>
+                {WABtn ? (
+                  <WABtn
+                    title="Share as PDF via WhatsApp"
+                    onClick={function () {
+                      whatsappDocById(
+                        "chq-rcp-preview-" + rcp.id,
+                        "Receipt-" + rcpNo,
+                        "",
+                        docFmt,
+                        { voucherSlip: true }
+                      );
+                    }}
+                  />
+                ) : null}
                 <button type="button" className="erp-si-fv-btn is-close" onClick={function () { setReceiptView(null); }} aria-label="Close">✕</button>
               </div>
             </div>
             <div className="erp-si-fv-stage">
-              <div id={"chq-rcp-preview-" + rcp.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+              <div id={"chq-rcp-preview-" + rcp.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper") + " is-voucher-slip"}>
                 <MoneyReceiptDoc
                   receipt={rcp}
                   mode={isOut ? "out" : "in"}
@@ -1086,9 +1217,8 @@ var Cheques = React.memo(function (props) {
       <PrintFormatChooser
         open={printFmtOpen}
         settings={state.settings}
-        thermalId={invThermalFmt}
         title={printTarget === "receipt" ? "Print receipt" : (printTarget === "purchase" ? "Print purchase" : "Print invoice")}
-        hint="Choose A4, A5, or Thermal for your printer."
+        hint="Choose an enabled paper size for your printer."
         onClose={function () { setPrintFmtOpen(false); setPrintTarget(null); }}
         onSelect={function (fmt) {
           setPrintFmtOpen(false);
@@ -1096,7 +1226,7 @@ var Cheques = React.memo(function (props) {
           setPrintTarget(null);
           if (target === "sale" && docView) printDocById("chq-inv-preview-" + docView.id, "Invoice " + (docView.invoiceNo || ""), fmt);
           else if (target === "purchase" && docView) printDocById("chq-pur-preview-" + docView.id, "Purchase " + (docView.invoiceNo || ""), fmt);
-          else if (target === "receipt" && receiptView) printDocById("chq-rcp-preview-" + receiptView.id, "Receipt " + (receiptView.receiptNo || ""), fmt);
+          else if (target === "receipt" && receiptView) printDocById("chq-rcp-preview-" + receiptView.id, "Receipt " + (receiptView.receiptNo || ""), fmt, { voucherSlip: true });
         }}
       />
     </div>

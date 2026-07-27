@@ -1127,6 +1127,13 @@ body {
   color: #9a3412;
 }
 
+.erp-banner-critical {
+  background: #ffebee;
+  border-bottom: 1px solid #ef9a9a;
+  color: #b71c1c;
+  font-weight: 600;
+}
+
 .erp-module-bar-host:empty {
   display: none;
 }

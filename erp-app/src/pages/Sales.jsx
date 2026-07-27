@@ -19,7 +19,7 @@ import {
   quotationToPrintInv,
 } from "../utils/quotationDocument.js";
 import { GlassRateInput, glassCartFieldStyle, GlassCutFields, GlassLineExtras, GLASS_CART_FIELD_H } from "../components/GlassCartLine.jsx";
-import { resolveThermalFormat } from "../utils/printFormat.js";
+import { buildPrintFmtOptions, resolveDefaultPrintFormat, resolveThermalFormat } from "../utils/printFormat.js";
 import UniversalPrintPreview from "../components/UniversalPrintPreview.jsx";
 import {
   isGlassProduct,
@@ -45,7 +45,7 @@ import {
   tryAcquireInvoiceEditLock,
 } from "../utils/invoiceEditLocks.js";
 import { stampProductStock, stampUpdatedAt, stampCustomerBalance, stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
-import { loadFreshProductsForStock, pushKeysNow } from "../utils/concurrencyGuards.js";
+import { loadFreshProductsForStock, pushKeysNow, assertCartStockAvailable } from "../utils/concurrencyGuards.js";
 import { normalizeCashMethodForStorage } from "../accounting/generalLedger.js";
 
 /* ??? POS / SALES ??????????????????????????????????? */
@@ -235,6 +235,12 @@ var POS = React.memo(function (props) {
     if (pf && Array.isArray(pf.items)) {
       return pf.items.slice().reverse().map(function (it) { return mapPrefillItemToCartLine(it, uid); }).filter(Boolean);
     }
+    var draft = S.get("tc3_pos_cart_draft", null);
+    if (draft && Array.isArray(draft.cart) && draft.cart.length) {
+      return draft.cart.map(function (it) {
+        return Object.assign({}, it, { cartLineId: it.cartLineId || uid() });
+      });
+    }
     return [];
   });
   var [freeCart, setFreeCart] = useState(function () {
@@ -243,6 +249,12 @@ var POS = React.memo(function (props) {
       return pf.freeItems.map(function (it) {
         return Object.assign(mapPrefillItemToCartLine(it, uid) || {}, { isFree: true, price: 0 });
       }).filter(function (it) { return it && it.id; });
+    }
+    var draft = S.get("tc3_pos_cart_draft", null);
+    if (draft && Array.isArray(draft.freeCart) && draft.freeCart.length) {
+      return draft.freeCart.map(function (it) {
+        return Object.assign({}, it, { cartLineId: it.cartLineId || uid(), isFree: true, price: 0 });
+      });
     }
     return [];
   });
@@ -260,6 +272,20 @@ var POS = React.memo(function (props) {
   var cartHasNonGlassLine = cart.some(function (x) { return x && !x.isGlassLine; });
   var cartMixedGlassLayout = cartHasGlassLine && cartHasNonGlassLine;
   var glassCartLayout = cartHasGlassLine;
+  useEffect(function () {
+    if (!cart.length && !freeCart.length) {
+      S.set("tc3_pos_cart_draft", null);
+      return;
+    }
+    var tmr = setTimeout(function () {
+      S.set("tc3_pos_cart_draft", {
+        cart: cart,
+        freeCart: freeCart,
+        updatedAt: new Date().toISOString(),
+      });
+    }, 400);
+    return function () { clearTimeout(tmr); };
+  }, [cart, freeCart]);
   var [custMode, setCustMode] = useState(function () {
     var pf = S.get("tc3_repair_prefill", null);
     if (pf && pf.customerId) return "existing";
@@ -1270,38 +1296,54 @@ var POS = React.memo(function (props) {
   var setIsCheckingOut = isCheckingOutSt[1];
   var posSetupBlocked = posSetupBlocksCriticalActions();
 
-  /* Single burst of S.set so sync/network cannot interleave sale vs inventory vs ledger.
-     New sales: prepend one row via S.appendRecord to avoid building a full sales array for persistence. */
+  /* Single atomic burst so sync/network cannot interleave sale vs inventory vs ledger.
+     New sales: prefer setMany with the full sales array; fall back to appendRecord when setMany is unavailable. */
   var flushPosCheckoutToStorage = function (nextState, heldIdToRemove, editingId, primarySaleId) {
-    S.set("tc3_products", nextState.products);
-    S.set("tc3_customers", nextState.customers);
-    if (editingId) {
-      S.set("tc3_sales", nextState.sales);
-    } else if (S.appendRecord && primarySaleId) {
-      var saleRow = (nextState.sales || []).find(function (s) { return s.id === primarySaleId; });
-      if (saleRow) S.appendRecord("tc3_sales", saleRow, { prepend: true });
-      else S.set("tc3_sales", nextState.sales);
-    } else {
-      S.set("tc3_sales", nextState.sales);
+    var pairs = [
+      ["tc3_products", nextState.products],
+      ["tc3_customers", nextState.customers],
+      ["tc3_repairs", nextState.repairs],
+      ["tc3_quotations", nextState.quotations || []],
+      ["tc3_cheques", nextState.cheques || []],
+    ];
+    if (nextState.codRecords) {
+      pairs.push(["tc3_codRecords", nextState.codRecords]);
     }
-    S.set("tc3_repairs", nextState.repairs);
-    S.set("tc3_quotations", nextState.quotations || []);
-    S.set("tc3_cheques", nextState.cheques || []);
+    var salesArr = nextState.sales;
+    if (!editingId && S.appendRecord && primarySaleId && !S.setMany) {
+      var saleRow = (nextState.sales || []).find(function (s) { return s.id === primarySaleId; });
+      if (saleRow) {
+        S.appendRecord("tc3_sales", saleRow, { prepend: true });
+        salesArr = null;
+      }
+    }
+    if (salesArr) pairs.unshift(["tc3_sales", salesArr]);
     if (heldIdToRemove) {
       var cleanHeld = (S.get("tc3_held_invoices", []) || []).filter(function (x) { return x.id !== heldIdToRemove; });
-      S.set("tc3_held_invoices", cleanHeld);
+      pairs.push(["tc3_held_invoices", cleanHeld]);
     }
-    /* Push stock + sale (+ customers/cheques) immediately on LAN. */
+    if (S.setMany) {
+      var smRes = S.setMany(pairs);
+      if (smRes && smRes.ok === false) {
+        try { showAlert(smRes.message || "Could not save sale — please try again."); } catch (_eSm) {}
+        return false;
+      }
+    } else {
+      pairs.forEach(function (p) { S.set(p[0], p[1]); });
+    }
     try {
-      pushKeysNow([
+      var pushPairs = [
         ["tc3_products", nextState.products],
         ["tc3_sales", nextState.sales],
         ["tc3_customers", nextState.customers],
         ["tc3_cheques", nextState.cheques || []],
         ["tc3_quotations", nextState.quotations || []],
         ["tc3_repairs", nextState.repairs],
-      ]);
+      ];
+      if (nextState.codRecords) pushPairs.push(["tc3_codRecords", nextState.codRecords]);
+      pushKeysNow(pushPairs);
     } catch (_pushNow) { /* ignore */ }
+    return true;
   };
 
   var saveAndFinishRef = useRef(function () {});
@@ -1362,21 +1404,32 @@ var POS = React.memo(function (props) {
       }
     }
     var stockErr = null;
+    var mergeWarn = null;
     var seenStockPid = {};
     cart.concat(freeCart).forEach(function (item) {
-      if (stockErr) return;
+      if (stockErr || mergeWarn) return;
       if (seenStockPid[item.id]) return;
       seenStockPid[item.id] = 1;
       var prod = productsSnap.find(function (p) { return p.id === item.id; });
       if (!prod) return;
+      if (prod.stockMergeWarning === "concurrent_oversell") {
+        mergeWarn = "\"" + item.name + "\" was oversold on another terminal — stock was clamped. Verify quantity before checkout.";
+        return;
+      }
       if (isServiceProduct(prod)) return;
-      var totalReq = getReservedBaseQtyForProduct(prod);
-      if (totalReq > (prod.stock || 0)) {
-        var availMsg = getBulkDisplayParts(prod) ? fmtStockDual(prod) : fmtStock(prod.stock || 0, prod.unit || "Pcs");
-        stockErr = "Not enough stock for \"" + item.name + "\". Available: " + availMsg + ", requested (all lines): " + fmtStock(totalReq, prod.unit || "Pcs") + ".";
+      if (!isNetworkClientPos) {
+        var totalReq = getReservedBaseQtyForProduct(prod);
+        if (totalReq > (prod.stock || 0)) {
+          var availMsg = getBulkDisplayParts(prod) ? fmtStockDual(prod) : fmtStock(prod.stock || 0, prod.unit || "Pcs");
+          stockErr = "Not enough stock for \"" + item.name + "\". Available: " + availMsg + ", requested (all lines): " + fmtStock(totalReq, prod.unit || "Pcs") + ".";
+        }
       }
     });
-    if (stockErr) { showAlert(stockErr); return; }
+    if (mergeWarn) { showAlert(mergeWarn); return; }
+    if (isNetworkClientPos) {
+      var stockAssert = assertCartStockAvailable(cart.concat(freeCart), productsSnap, getReservedBaseQtyForProduct, isServiceProduct);
+      if (!stockAssert.ok) { showAlert(stockAssert.message); return; }
+    } else if (stockErr) { showAlert(stockErr); return; }
     var missingServicePrice = cart.find(function (item) {
       var pr = productsSnap.find(function (p) { return p.id === item.id; });
       return isServiceProduct(pr) && !(Number(item.price) > 0);
@@ -1658,12 +1711,10 @@ var POS = React.memo(function (props) {
         var cix = nextCod.findIndex(function (r) { return r.saleId === saleObj.id; });
         if (cix >= 0) nextCod[cix] = codRec;
         else nextCod.unshift(codRec);
-        S.set("tc3_codRecords", nextCod);
         codRecords = nextCod;
       } else if (editingSaleId) {
         var filteredCod = codRecords.filter(function (r) { return r.saleId !== saleObj.id; });
         if (filteredCod.length !== codRecords.length) {
-          S.set("tc3_codRecords", filteredCod);
           codRecords = filteredCod;
         }
       }
@@ -1699,7 +1750,11 @@ var POS = React.memo(function (props) {
       setPosChequeList([]); setPosChqForm({ no: "", bank: "", amount: "", due: today() });
     }
 
-    flushPosCheckoutToStorage(newState, activeHeldId, editingSaleId, saleObj.id);
+    if (flushPosCheckoutToStorage(newState, activeHeldId, editingSaleId, saleObj.id) === false) {
+      posIsSavingRef.current = false;
+      setIsCheckingOut(false);
+      return;
+    }
     if (!editingSaleId) {
       newState = Object.assign({}, newState, { sales: S.get("tc3_sales", []) });
     }
@@ -1755,6 +1810,7 @@ var POS = React.memo(function (props) {
     if (editingSaleId) setEditingSaleId("");
     try {
       sessionStorage.removeItem("tc3_dirty"); sessionStorage.removeItem("tc3_held_pos"); sessionStorage.removeItem("tc3_invoice_held"); window._techon_pos_snapshot = null;
+      S.set("tc3_pos_cart_draft", null);
     } catch (e) { }
 
     var finalSaleForPrint = (newState.sales || []).find(function (s) { return s.id === saleObj.id; }) || saleObj;
@@ -2104,7 +2160,7 @@ var POS = React.memo(function (props) {
         setPendingPrint({
           kind: "quotation",
           sale: quotationToPrintInv(newQ),
-          mode: printMode || (state.settings.invoiceDefaultSize || "a4"),
+          mode: printMode || resolveDefaultPrintFormat(state.settings || {}),
           settings: Object.assign({}, state.settings),
           invoiceLang: "en",
         });
@@ -4954,6 +5010,15 @@ var POS = React.memo(function (props) {
                 return Object.assign({}, prev, { mode: fmt });
               });
             }}
+            showWarranty={!isQuot}
+            warranty={!!pendingPrint.warranty}
+            warrantyDisabled={(pendingPrint.settings || state.settings || {}).warrantyEnabled === false}
+            onWarrantyChange={function (on) {
+              setPendingPrint(function (prev) {
+                if (!prev) return prev;
+                return Object.assign({}, prev, { warranty: on });
+              });
+            }}
             previewElId="pos-print-preview"
             onClose={function () { setPendingPrint(null); }}
           >
@@ -4978,44 +5043,30 @@ var POS = React.memo(function (props) {
       {waSharePicker && (
         <Modal title={waSharePickerKind === "quotation" ? "Share Quotation via WhatsApp" : "Share Invoice via WhatsApp"} onClose={function () { setWaSharePicker(false); }} compact>
           {(function () {
-            var thermalSize = resolveThermalFormat(state.settings);
+            var opts = buildPrintFmtOptions(state.settings);
             var docWord = waSharePickerKind === "quotation" ? "quotation" : "invoice";
             return (
               <div className="erp-sale-picker">
                 <div className="erp-sale-picker-hint">Choose which {docWord} format to share on WhatsApp.</div>
-                <button
-                  type="button"
-                  className="erp-sale-picker-btn primary"
-                  onClick={function () {
-                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode("a4");
-                    else saveAndWhatsAppWithMode("a4");
-                  }}
-                >
-                  <span className="erp-sale-picker-label">A4 PDF</span>
-                  <span className="erp-sale-picker-key">1</span>
-                </button>
-                <button
-                  type="button"
-                  className="erp-sale-picker-btn secondary"
-                  onClick={function () {
-                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode("a5");
-                    else saveAndWhatsAppWithMode("a5");
-                  }}
-                >
-                  <span className="erp-sale-picker-label">A5 PDF</span>
-                  <span className="erp-sale-picker-key">2</span>
-                </button>
-                <button
-                  type="button"
-                  className="erp-sale-picker-btn secondary"
-                  onClick={function () {
-                    if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(thermalSize);
-                    else saveAndWhatsAppWithMode(thermalSize);
-                  }}
-                >
-                  <span className="erp-sale-picker-label">{thermalSize === "thermal58" ? "Thermal 58mm PDF" : "Thermal 80mm PDF"}</span>
-                  <span className="erp-sale-picker-key">3</span>
-                </button>
+                {opts.map(function (item, idx) {
+                  var id = item[0];
+                  var lbl = item[1];
+                  var isPrimary = idx === 0;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={"erp-sale-picker-btn" + (isPrimary ? " primary" : " secondary")}
+                      onClick={function () {
+                        if (waSharePickerKind === "quotation") saveQuotationWhatsAppWithMode(id);
+                        else saveAndWhatsAppWithMode(id);
+                      }}
+                    >
+                      <span className="erp-sale-picker-label">{lbl} PDF</span>
+                      <span className="erp-sale-picker-key">{idx + 1}</span>
+                    </button>
+                  );
+                })}
                 <button type="button" className="erp-sale-picker-btn cancel" onClick={function () { setWaSharePicker(false); }}>
                   <span className="erp-sale-picker-label">Cancel</span>
                   <span className="erp-sale-picker-key">Esc</span>
@@ -5035,7 +5086,7 @@ var POS = React.memo(function (props) {
           compact
         >
           {(function () {
-            var thermalSize = resolveThermalFormat(state.settings);
+            var opts = buildPrintFmtOptions(state.settings);
             var isPreview = posPrintPickerIntent === "preview";
             var docWord = posPrintPickerKind === "quotation" ? "quotation" : "invoice";
             return (
@@ -5045,18 +5096,22 @@ var POS = React.memo(function (props) {
                     ? "Choose format to preview. Nothing will be saved."
                     : "Choose printer paper size for this " + docWord + "."}
                 </div>
-                <button type="button" className="erp-sale-picker-btn primary" onClick={function () { saveAndPrintWithMode("a4"); }}>
-                  <span className="erp-sale-picker-label">{isPreview ? "A4 Preview" : "A4 Print"}</span>
-                  <span className="erp-sale-picker-key">1</span>
-                </button>
-                <button type="button" className="erp-sale-picker-btn secondary" onClick={function () { saveAndPrintWithMode("a5"); }}>
-                  <span className="erp-sale-picker-label">{isPreview ? "A5 Preview" : "A5 Print"}</span>
-                  <span className="erp-sale-picker-key">2</span>
-                </button>
-                <button type="button" className="erp-sale-picker-btn secondary" onClick={function () { saveAndPrintWithMode(thermalSize); }}>
-                  <span className="erp-sale-picker-label">{thermalSize === "thermal58" ? (isPreview ? "Thermal 58mm Preview" : "Thermal 58mm Print") : (isPreview ? "Thermal 80mm Preview" : "Thermal 80mm Print")}</span>
-                  <span className="erp-sale-picker-key">3</span>
-                </button>
+                {opts.map(function (item, idx) {
+                  var id = item[0];
+                  var lbl = item[1];
+                  var isPrimary = idx === 0;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={"erp-sale-picker-btn" + (isPrimary ? " primary" : " secondary")}
+                      onClick={function () { saveAndPrintWithMode(id); }}
+                    >
+                      <span className="erp-sale-picker-label">{isPreview ? (lbl + " Preview") : (lbl + " Print")}</span>
+                      <span className="erp-sale-picker-key">{idx + 1}</span>
+                    </button>
+                  );
+                })}
                 <button type="button" className="erp-sale-picker-btn cancel" onClick={function () { setPosPrintPicker(false); }}>
                   <span className="erp-sale-picker-label">Cancel</span>
                   <span className="erp-sale-picker-key">Esc</span>

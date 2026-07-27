@@ -24,6 +24,7 @@
 require_once __DIR__ . '/config.php';
 
 $auth = requireAuth();
+tcEnforceRemoteAuthPolicy($auth);
 const TRIAL_MAX_CLIENTS = 2;
 
 function tcMayAdminLicenseClients($auth) {
@@ -261,7 +262,19 @@ try {
             'data' => ['read_only_reason' => 'blocked']
         ], 200);
     }
-} catch (Exception $e) {}
+} catch (Exception $e) {
+    /* Fail closed: broken rate-limit store must not disable throttling. */
+    try {
+        logLicenseEvent($pdo, 'device_blocked_ratelimit', $deviceId, 'Rate-limit store error');
+    } catch (Exception $e2) { /* ignore */ }
+    respond([
+        'success' => false,
+        'valid' => false,
+        'status' => 'blocked',
+        'message' => 'Too many requests. Please retry shortly.',
+        'data' => ['read_only_reason' => 'blocked']
+    ], 200);
+}
 
 /* max_clients policy:
    0 or less => no client PCs allowed (standalone only) */

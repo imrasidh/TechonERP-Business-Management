@@ -26,7 +26,8 @@ import {
   pushKeysNow,
 } from "../utils/concurrencyGuards.js";
 import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
-import { resolveThermalFormat } from "../utils/printFormat.js";
+import { buildPrintFmtOptions, resolveDefaultPrintFormat } from "../utils/printFormat.js";
+import { saveDocPdf, shareDocWhatsApp } from "../utils/docPrintActions.js";
 
 /** Map stored sale/quotation lines into POS cart shape (prefer input qty/unit/price). */
 var mapDocItemToPosCartLine = function (it) {
@@ -343,15 +344,10 @@ var Quotations = function (props) {
   var [show, setShow] = useState(false);
   var [f, setF] = useState(BLANK_Q);
   var [fullViewQ, setFullViewQ] = useState(null);
-  var [fqFormat, setFqFormat] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
+  var [fqFormat, setFqFormat] = useState(function () { return resolveDefaultPrintFormat(state.settings || {}); });
   var [qPrintFmtOpen, setQPrintFmtOpen] = useState(false);
   var [qPendingPrintFmt, setQPendingPrintFmt] = useState(null);
-  var thermalFmt = resolveThermalFormat(state.settings || {});
-  var printFmtOptions = [
-    ["a4", "A4"],
-    ["a5", "A5"],
-    [thermalFmt, thermalFmt === "thermal58" ? "58mm" : "80mm"],
-  ];
+  var printFmtOptions = buildPrintFmtOptions(state.settings || {});
 
   useEffect(function () {
     if (!qPendingPrintFmt || !fullViewQ) return undefined;
@@ -368,7 +364,7 @@ var Quotations = function (props) {
   var quotWaPendingRef = useRef(false);
 
   var openFullViewQ = function (q) {
-    setFqFormat((state.settings && state.settings.invoiceDefaultSize) || "a4");
+    setFqFormat(resolveDefaultPrintFormat(state.settings || {}));
     setFullViewQ(q);
   };
 
@@ -506,17 +502,25 @@ var Quotations = function (props) {
   };
 
   var whatsappFullQuotation = function (q, fmt) {
-    var el = document.getElementById("si-quot-preview-" + q.id);
-    if (!el) { showAlert("Quotation preview not ready. Please try again."); return; }
-    var isA5 = fmt === "a5";
-    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
-    var thermalBodyW = fmt === "thermal58" ? "218px" : "302px";
-    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
-    var margin = isThermal ? "3mm" : "8mm";
-    var bodyW = isThermal ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}" : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
-    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pageSize + (isThermal ? "" : " portrait") + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
-    var pageFormat = isThermal ? (fmt === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
-    shareViaWhatsApp(el.innerHTML, "Quotation-" + (q.quotationNo || q.id.slice(0, 8)), q.customerPhone || "", { headStyles: css, pageFormat: pageFormat });
+    shareDocWhatsApp({
+      elId: "si-quot-preview-" + q.id,
+      fmt: fmt,
+      filename: "Quotation-" + (q.quotationNo || q.id.slice(0, 8)),
+      phone: q.customerPhone || "",
+      shareViaWhatsApp: shareViaWhatsApp,
+      showAlert: showAlert,
+    });
+  };
+
+  var saveQuotationPdf = function (q, fmt) {
+    saveDocPdf({
+      elId: "si-quot-preview-" + q.id,
+      title: "Quotation " + (q.quotationNo || ""),
+      fmt: fmt,
+      printFontLink: PRINT_FONT_LINK,
+      escapeHtml: escapeHtml,
+      showAlert: showAlert,
+    });
   };
 
   var printQuotation = function (q, lang, waShare) {
@@ -524,7 +528,7 @@ var Quotations = function (props) {
     setPendingQuotPrint({
       inv: quotationToPrintInv(q),
       lang: "en",
-      mode: (state.settings && state.settings.invoiceDefaultSize) || "a4",
+      mode: resolveDefaultPrintFormat(state.settings || {}),
       settings: state.settings || {},
       phone: q.customerPhone || "",
       docNo: q.quotationNo || q.id,
@@ -729,6 +733,11 @@ var Quotations = function (props) {
                 className="erp-si-fv-btn is-print"
                 onClick={function () { setQPrintFmtOpen(true); }}
               >Print</button>
+              <button
+                type="button"
+                className="erp-si-fv-btn is-convert"
+                onClick={function () { saveQuotationPdf(fullViewQ, fqFormat); }}
+              >Save PDF</button>
               <WABtn title="Share Quotation via WhatsApp" onClick={function () { whatsappFullQuotation(fullViewQ, fqFormat); }} />
               <button
                 type="button"
@@ -768,9 +777,8 @@ var Quotations = function (props) {
       <PrintFormatChooser
         open={qPrintFmtOpen}
         settings={state.settings}
-        thermalId={thermalFmt}
         title="Print quotation"
-        hint="Choose A4, A5, or Thermal for your printer."
+        hint="Choose an enabled paper size for your printer."
         onClose={function () { setQPrintFmtOpen(false); }}
         onSelect={function (fmt) {
           setQPrintFmtOpen(false);
@@ -806,6 +814,7 @@ var SalesInvoices = React.memo(function (props) {
   var fmtNum = props.fmtNum;
   var fmtDate = props.fmtDate;
   var fmtDateFull = props.fmtDateFull;
+  var openSourceDocument = props.openSourceDocument;
   var fmtStock = props.fmtStock;
   var StatCard = props.StatCard;
   var Card = props.Card;
@@ -866,19 +875,25 @@ var SalesInvoices = React.memo(function (props) {
   var [splitPayModal, setSplitPayModal] = useState(null);
   var [payNote, setPayNote] = useState("");
   var [payMode, setPayMode] = useState("Cash");
-  var [siFormat, setSiFormat] = useState(function () { return state.settings.invoiceDefaultSize || "a4"; });
+  var [siFormat, setSiFormat] = useState(function () { return resolveDefaultPrintFormat(state.settings || {}); });
   var [siWarranty, setSiWarranty] = useState(false);
   var [fullViewSale, setFullViewSale] = useState(null);
-  var [fvFormat, setFvFormat] = useState(function () { return state.settings.invoiceDefaultSize || "a4"; });
+  var [fvFormat, setFvFormat] = useState(function () { return resolveDefaultPrintFormat(state.settings || {}); });
   var [fvWarranty, setFvWarranty] = useState(false);
   var [printFmtOpen, setPrintFmtOpen] = useState(false);
   var [pendingPrintFmt, setPendingPrintFmt] = useState(null);
-  var invThermalFmt = resolveThermalFormat(state.settings || {});
-  var invPrintFmtOptions = [
-    ["a4", "A4"],
-    ["a5", "A5"],
-    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
-  ];
+  var invPrintFmtOptions = buildPrintFmtOptions(state.settings || {});
+
+  var openSaleDoc = function (s) {
+    if (!s) return;
+    if (typeof openSourceDocument === "function") {
+      openSourceDocument({ sourceKind: "sale", sourceId: s.id });
+      return;
+    }
+    setFullViewSale(s);
+    setFvFormat(resolveDefaultPrintFormat(state.settings || {}));
+    setFvWarranty(s.includeWarranty || false);
+  };
 
   useEffect(function () {
     if (!pendingPrintFmt || !fullViewSale) return undefined;
@@ -944,13 +959,20 @@ var SalesInvoices = React.memo(function (props) {
       showAlert(result.error);
       return;
     }
-    S.set("tc3_products", result.products);
-    S.set("tc3_customers", result.customers);
-    S.set("tc3_sales", result.sales);
-    S.set("tc3_cheques", result.cheques);
-    if (result.codRecords) S.set("tc3_codRecords", result.codRecords);
+    var voidPairs = [
+      ["tc3_products", result.products],
+      ["tc3_customers", result.customers],
+      ["tc3_sales", result.sales],
+      ["tc3_cheques", result.cheques],
+    ];
+    if (result.codRecords) voidPairs.push(["tc3_codRecords", result.codRecords]);
     var repairs = rollbackRepairDevicesOnVoidSale(state.repairs || [], result.voidedSale, today());
-    if (repairs !== (state.repairs || [])) S.set("tc3_repairs", repairs);
+    if (repairs !== (state.repairs || [])) voidPairs.push(["tc3_repairs", repairs]);
+    if (S.setMany) {
+      S.setMany(voidPairs);
+    } else {
+      voidPairs.forEach(function (p) { S.set(p[0], p[1]); });
+    }
     setState(function (st) {
       return Object.assign({}, st, {
         products: result.products,
@@ -1002,6 +1024,8 @@ var SalesInvoices = React.memo(function (props) {
 
   var saleInvoiceEditAllowed = function (s) {
     if (!s || isVoidedTxn(s)) return false;
+    var retMeta = saleReturnUiStatus(s, state.salesReturns);
+    if (retMeta && retMeta.hasReturns) return false;
     return true;
   };
 
@@ -1013,7 +1037,12 @@ var SalesInvoices = React.memo(function (props) {
   };
 
   var tryOpenInvoiceEdit = function (sale) {
-    if (!saleInvoiceEditAllowed(sale)) return;
+    if (!saleInvoiceEditAllowed(sale)) {
+      if (sale && !isVoidedTxn(sale) && saleReturnUiStatus(sale, state.salesReturns).hasReturns) {
+        showAlert("This invoice has return records. Use Sales Return instead of editing the original invoice.");
+      }
+      return;
+    }
     if (!canEditInvoices) { showPermissionDenied("edit invoices"); return; }
     var fl = foreignEditLockFor(sale.id);
     if (fl) {
@@ -1083,7 +1112,11 @@ var SalesInvoices = React.memo(function (props) {
         var ph = (sale.paymentHistory || []).concat([{ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + chequeNo + " (Pending — due " + chequeDueDate + ")" + (note ? " | " + note : ""), chequeId: newCheque.id }]);
         var updSale = stampUpdatedAt(Object.assign({}, sale, { paymentHistory: ph }));
         var ns = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale : s; });
-      S.set("tc3_sales", ns); S.set("tc3_cheques", nch);
+      if (typeof S.setMany === "function") {
+        S.setMany([["tc3_sales", ns], ["tc3_cheques", nch]]);
+      } else {
+        S.set("tc3_sales", ns); S.set("tc3_cheques", nch);
+      }
       try { pushKeysNow([["tc3_sales", ns], ["tc3_cheques", nch]]); } catch (_e) { /* ignore */ }
       addAudit("Cheque Received " + getCurrencySymbol() + " " + fmtNum(amount) + " #" + chequeNo, sale.invoiceNo || saleId.slice(0, 8));
         setState(function (st) { return Object.assign({}, st, { sales: ns, cheques: nch }); });
@@ -1113,7 +1146,11 @@ var SalesInvoices = React.memo(function (props) {
       maybeShowPaymentMatchToasts(sale, res);
       var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - amount) }), null, c) : c; });
       var ns2 = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale2 : s; });
-      S.set("tc3_sales", ns2); S.set("tc3_customers", nc);
+      if (typeof S.setMany === "function") {
+        S.setMany([["tc3_sales", ns2], ["tc3_customers", nc]]);
+      } else {
+        S.set("tc3_sales", ns2); S.set("tc3_customers", nc);
+      }
       try { pushKeysNow([["tc3_sales", ns2], ["tc3_customers", nc]]); } catch (_e) { /* ignore */ }
       setState(function (st) { return Object.assign({}, st, { sales: ns2, customers: nc }); });
       if (viewSale && viewSale.id === saleId) setViewSale(updSale2);
@@ -1186,7 +1223,11 @@ var SalesInvoices = React.memo(function (props) {
       maybeShowPaymentMatchToasts(sale, res);
       var nc = state.customers.map(function (c) { return res.ids.indexOf(c.id) >= 0 ? stampCustomerBalance(Object.assign({}, c, { credit: Math.max(0, (c.credit || 0) - totalNonCheque) }), null, c) : c; });
       var ns = (salesBase || state.sales).map(function (s) { return s.id === saleId ? updSale : s; });
-      S.set("tc3_sales", ns); S.set("tc3_customers", nc); S.set("tc3_cheques", newCheques);
+      if (S.setMany) {
+        S.setMany([["tc3_sales", ns], ["tc3_customers", nc], ["tc3_cheques", newCheques]]);
+      } else {
+        S.set("tc3_sales", ns); S.set("tc3_customers", nc); S.set("tc3_cheques", newCheques);
+      }
       try { pushKeysNow([["tc3_sales", ns], ["tc3_customers", nc], ["tc3_cheques", newCheques]]); } catch (_e) { /* ignore */ }
       setState(function (st) { return Object.assign({}, st, { sales: ns, customers: nc, cheques: newCheques }); });
       if (viewSale && viewSale.id === saleId) setViewSale(updSale);
@@ -1231,19 +1272,25 @@ var SalesInvoices = React.memo(function (props) {
   };
 
   var whatsappInvoice = function (sale, fmt) {
-    var el = document.getElementById("si-inv-preview-" + sale.id);
-    if (!el) { showAlert("Invoice preview not ready. Please try again."); return; }
-    var isA5 = fmt === "a5";
-    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
-    var thermalBodyW = fmt === "thermal58" ? "218px" : "302px";
-    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
-    var margin = isThermal ? "3mm" : "8mm";
-    var bodyW = isThermal ? "body{background:#fff;font-family:'Courier New',monospace;width:" + thermalBodyW + ";}" : "body{background:#fff;font-family:'Plus Jakarta Sans',Arial,sans-serif;}";
-    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}" + bodyW + "@page{size:" + pageSize + (isThermal ? "" : " portrait") + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
-    var pageFormat = isThermal ? (fmt === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
-    var filename = "Invoice-" + (sale.invoiceNo || sale.id.slice(0, 8));
-    var phone = sale.customerPhone || "";
-    shareViaWhatsApp(el.innerHTML, filename, phone, { headStyles: css, pageFormat: pageFormat });
+    shareDocWhatsApp({
+      elId: "si-inv-preview-" + sale.id,
+      fmt: fmt,
+      filename: "Invoice-" + (sale.invoiceNo || sale.id.slice(0, 8)),
+      phone: sale.customerPhone || "",
+      shareViaWhatsApp: shareViaWhatsApp,
+      showAlert: showAlert,
+    });
+  };
+
+  var saveInvoicePdf = function (sale, fmt) {
+    saveDocPdf({
+      elId: "si-inv-preview-" + sale.id,
+      title: "Invoice " + (sale.invoiceNo || ""),
+      fmt: fmt,
+      printFontLink: PRINT_FONT_LINK,
+      escapeHtml: escapeHtml,
+      showAlert: showAlert,
+    });
   };
 
   return (
@@ -1379,13 +1426,11 @@ var SalesInvoices = React.memo(function (props) {
                         role="button"
                         tabIndex={0}
                         className="erp-si-inv-link"
-                        onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }}
+                        onClick={function () { openSaleDoc(s); }}
                         onKeyDown={function (e) {
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
-                            setFullViewSale(s);
-                            setFvFormat(state.settings.invoiceDefaultSize || "a4");
-                            setFvWarranty(s.includeWarranty || false);
+                            openSaleDoc(s);
                           }
                         }}
                         title={invNo + " — View & print"}
@@ -1427,7 +1472,7 @@ var SalesInvoices = React.memo(function (props) {
                     </td>
                     <td style={actBtnCellStyle}>
                       <ActBtnGroup>
-                        <ActBtn tone="cyan" title="View & print" onClick={function () { setFullViewSale(s); setFvFormat(state.settings.invoiceDefaultSize || "a4"); setFvWarranty(s.includeWarranty || false); }} />
+                        <ActBtn tone="cyan" title="View & print" onClick={function () { openSaleDoc(s); }} />
                         {bal > 0 ? <ActBtn tone="green" icon="pay" title={foreignLock ? formatInvoiceEditLockMessage(foreignLock) : "Record payment"} wide disabled={!!foreignLock} onClick={function () {
                           if (!assertInvoiceUnlockedForMoney(s.id, "record payment")) return;
                           setSplitPayModal(s);
@@ -1495,8 +1540,13 @@ var SalesInvoices = React.memo(function (props) {
                   );
                 })}
               </div>
-              <label className="erp-si-fv-warranty">
-                <input type="checkbox" checked={fvWarranty} onChange={function (e) { setFvWarranty(e.target.checked); }} />
+              <label className={"erp-si-fv-warranty" + (fvWarranty ? " is-on" : "") + ((state.settings && state.settings.warrantyEnabled === false) ? " is-disabled" : "")} title={(state.settings && state.settings.warrantyEnabled === false) ? "Enable warranty text in Settings → Invoice Design" : "Include warranty policy on this print"}>
+                <input
+                  type="checkbox"
+                  checked={fvWarranty}
+                  disabled={state.settings && state.settings.warrantyEnabled === false}
+                  onChange={function (e) { setFvWarranty(e.target.checked); }}
+                />
                 <span>Warranty</span>
               </label>
             </div>
@@ -1507,6 +1557,11 @@ var SalesInvoices = React.memo(function (props) {
                 className="erp-si-fv-btn is-print"
                 onClick={function () { setPrintFmtOpen(true); }}
               >Print</button>
+              <button
+                type="button"
+                className="erp-si-fv-btn is-convert"
+                onClick={function () { saveInvoicePdf(Object.assign({}, fullViewSale, { includeWarranty: fvWarranty }), fvFormat); }}
+              >Save PDF</button>
               <WABtn title="Share as PDF via WhatsApp" onClick={function () { whatsappInvoice(Object.assign({}, fullViewSale, { includeWarranty: fvWarranty }), fvFormat); }} />
               <button
                 type="button"
@@ -1550,9 +1605,8 @@ var SalesInvoices = React.memo(function (props) {
       <PrintFormatChooser
         open={printFmtOpen}
         settings={state.settings}
-        thermalId={invThermalFmt}
         title="Print invoice"
-        hint="Choose A4, A5, or Thermal for your printer."
+        hint="Choose an enabled paper size for your printer."
         onClose={function () { setPrintFmtOpen(false); }}
         onSelect={function (fmt) {
           setPrintFmtOpen(false);
@@ -1649,12 +1703,7 @@ var SalesInvoices = React.memo(function (props) {
             <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>Print Format</div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
               {(function () {
-                var paperSize = state.settings.invoiceDefaultSize || "a4";
-                var thermalSize = state.settings.invoiceThermalSize || "thermal80";
-                var opts = [
-                  [paperSize, paperSize === "a5" ? "📋 A5" : "📄 A4"],
-                  [thermalSize, thermalSize === "thermal58" ? "🖨 Thermal 58mm" : "🖨 Thermal 80mm"]
-                ];
+                var opts = buildPrintFmtOptions(state.settings || {});
                 return opts.map(function (item) {
                   var v = item[0]; var lbl = item[1];
                   var active = siFormat === v;
@@ -1671,6 +1720,7 @@ var SalesInvoices = React.memo(function (props) {
                 Include Warranty
               </label>
               <Btn col="blue" onClick={function () { printInvoice(Object.assign({}, viewSale, { includeWarranty: siWarranty }), siFormat); }}>🖨 Print Invoice</Btn>
+              <Btn col="cyan" onClick={function () { saveInvoicePdf(Object.assign({}, viewSale, { includeWarranty: siWarranty }), siFormat); }}>Save PDF</Btn>
               <WABtn title="Share as PDF via WhatsApp" onClick={function () { whatsappInvoice(Object.assign({}, viewSale, { includeWarranty: siWarranty }), siFormat); }} />
             </div>
           </div>

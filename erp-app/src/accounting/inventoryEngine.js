@@ -5,7 +5,7 @@
 import { GL, round2 } from "./generalLedger.js";
 import { stableJournalTransactionId } from "./ids.js";
 import { purchaseInventoryNetFactor } from "../tax/taxCompute.js";
-import { isVoidedTxn } from "../utils/voidInvoice.js";
+import { isVoidedTxn, isReturnParentEconomicallyActive } from "../utils/voidInvoice.js";
 
 /** Persistable snapshot of layer stacks (productId → layers). */
 export function serializeInventoryLayers(layersByProduct) {
@@ -238,7 +238,8 @@ export function deriveInventoryEconomics(state, S, opts) {
   (state.salesReturns || []).forEach(function (r) {
     if (asOfDate && String(r.date || "") > asOfDate) return;
     var parentSale = (state.sales || []).find(function (s) { return s && s.id === r.invoiceId; });
-    if (parentSale && isVoidedTxn(parentSale)) return;
+    /* Quarantine orphans / voided parents — same policy as activeSalesReturns reports. */
+    if (!isReturnParentEconomicallyActive(parentSale)) return;
     var q = Number(r.qty) || 0;
     if (q <= 0) return;
     events.push({
@@ -258,7 +259,7 @@ export function deriveInventoryEconomics(state, S, opts) {
   (state.purchaseReturns || []).forEach(function (r) {
     if (asOfDate && String(r.date || "") > asOfDate) return;
     var purchase = (state.purchases || []).find(function (p) { return p && p.id === r.purchaseId; });
-    if (purchase && isVoidedTxn(purchase)) return;
+    if (!isReturnParentEconomicallyActive(purchase)) return;
     var q = Number(r.qty) || 0;
     if (q <= 0) return;
     var purNetFactor = purchase ? purchaseInventoryNetFactor(purchase, settings) : 1;
@@ -393,7 +394,7 @@ export function deriveInventoryEconomics(state, S, opts) {
             lineCost = round2(ev.qty * (ev.unitCost || 0));
             warnings.push("FIFO cost fallback used for sale line " + lineKey + " (allowCostFallback=true)");
           } else {
-            blockingErrors.push("FIFO: no inventory layers to consume for product " + pid + " (sale line " + lineKey + "). Purchase stock first or enable allowCostFallback in Settings.");
+            blockingErrors.push("FIFO: no inventory layers to consume for product " + pid + " (sale line " + lineKey + "). Purchase stock first, run GL rebuild, or enable allowCostFallback in Settings → Accounting.");
             lineCost = 0;
           }
         } else {

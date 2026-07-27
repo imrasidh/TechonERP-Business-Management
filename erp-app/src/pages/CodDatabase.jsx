@@ -1449,7 +1449,7 @@ var CodDatabase = function (props) {
                 title="COD address label preview"
                 srcDoc={
                   "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
-                  "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap\">" +
+                  "<style>html,body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif}</style>" +
                   codAddressLabelStyleTag() +
                   "<style>body{padding:1cm 0.5cm;background:#fff;}</style>" +
                   "</head><body>" + buildCodAddressLabelHtml(labelPreview, state.settings) + "</body></html>"

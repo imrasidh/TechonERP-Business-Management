@@ -1,11 +1,15 @@
 <?php
 /**
  * get_products.php — Active products for POS clients.
- * Auth: X-TC-KEY required.
+ * Auth: device HMAC preferred; remote legacy X-TC-KEY blocked (same as sync_patch).
  */
 require_once __DIR__ . '/config.php';
 
-requireAuth();
+$auth = requireAuth();
+tcEnforceRemoteAuthPolicy($auth);
+if (!tcDeviceMayReadKey($auth, 'tc3_products')) {
+    respond(['success' => false, 'message' => 'Permission denied for products'], 403);
+}
 
 $clientId = $_SERVER['HTTP_X_TC_CLIENT_ID'] ?? '';
 $ip       = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';

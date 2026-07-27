@@ -1,9 +1,28 @@
-/**
- * When accounting admin bypass is active, detect edits that would violate strict period lock
- * and emit audit rows (append-only GL audit).
- */
-
 import { isLockedThroughDate } from "./periodLockDates.js";
+export var PERIOD_LOCK_ARRAY_KEYS = {
+  tc3_sales: 1,
+  tc3_purchases: 1,
+  tc3_expenses: 1,
+  tc3_salesReturns: 1,
+  tc3_purchaseReturns: 1,
+  tc3_manualReceivables: 1,
+  tc3_manualPayables: 1,
+  tc3_capLedger: 1,
+  tc3_assets: 1,
+  tc3_profitDist: 1,
+  tc3_raw_material_usage: 1,
+  tc3_raw_material_counts: 1,
+  tc3_repairs: 1,
+  tc3_cheques: 1,
+  tc3_damageLog: 1,
+};
+
+export function periodLockRowDate(row, key) {
+  if (!row) return "";
+  if (key === "tc3_repairs") return row.dateIn || row.date || "";
+  if (key === "tc3_cheques") return row.clearedDate || row.issuedDate || row.dueDate || row.date || "";
+  return row.date || "";
+}
 
 /** True when product unit cost changed (period-lock guard — stock moves via sales/damageLog). */
 export function productCostChanged(prev, row) {
@@ -11,9 +30,15 @@ export function productCostChanged(prev, row) {
   return Math.abs((Number(prev.cost) || 0) - (Number(row.cost) || 0)) > 1e-9;
 }
 
+/** True when product stock qty changed outside sales/purchases/damage (manual adjustment). */
+export function productStockChanged(prev, row) {
+  if (!prev || !row) return false;
+  return Math.abs((Number(prev.stock) || 0) - (Number(row.stock) || 0)) > 1e-9;
+}
+
 /**
  * Collect affected record ids that strict period lock would have blocked.
- * Mirrors strict rules in App.jsx validateAccountingMutation (keep in sync when changing lock logic).
+ * Uses PERIOD_LOCK_ARRAY_KEYS / periodLockRowDate (shared with App.jsx).
  */
 export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
   var lock = settings && settings.lockedUntilDate;
@@ -21,30 +46,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
   var out = [];
   if (!lock || !strictLock) return out;
 
-  var periodLockArrayKeys = {
-    tc3_sales: 1,
-    tc3_purchases: 1,
-    tc3_expenses: 1,
-    tc3_salesReturns: 1,
-    tc3_purchaseReturns: 1,
-    tc3_manualReceivables: 1,
-    tc3_manualPayables: 1,
-    tc3_capLedger: 1,
-    tc3_assets: 1,
-    tc3_profitDist: 1,
-    tc3_raw_material_usage: 1,
-    tc3_raw_material_counts: 1,
-    tc3_repairs: 1,
-    tc3_cheques: 1,
-    tc3_damageLog: 1,
-  };
-
-  function rowLockDate(row, key) {
-    if (!row) return "";
-    if (key === "tc3_repairs") return row.dateIn || row.date || "";
-    if (key === "tc3_cheques") return row.clearedDate || row.issuedDate || row.dueDate || row.date || "";
-    return row.date || "";
-  }
+  var periodLockArrayKeys = PERIOD_LOCK_ARRAY_KEYS;
 
   function pushId(row) {
     if (row && row.id != null) out.push(String(row.id));
@@ -66,7 +68,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
     for (var od = 0; od < oldArr.length; od++) {
       var oDel = oldArr[od];
       if (!oDel || oDel.id == null) continue;
-      if (!newIds[String(oDel.id)] && isLockedThroughDate(rowLockDate(oDel, k), lock)) {
+      if (!newIds[String(oDel.id)] && isLockedThroughDate(periodLockRowDate(oDel, k), lock)) {
         pushId(oDel);
       }
     }
@@ -76,7 +78,7 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
       var prevN = null;
       if (nrow.id != null) prevN = oldById[String(nrow.id)] || null;
       else if (li < oldArr.length && oldArr[li] && !nrow.id && !oldArr[li].id) prevN = oldArr[li];
-      if (prevN && isLockedThroughDate(rowLockDate(prevN, k), lock)) {
+      if (prevN && isLockedThroughDate(periodLockRowDate(prevN, k), lock)) {
         try {
           if (JSON.stringify(prevN) !== JSON.stringify(nrow)) {
             pushId(nrow);
@@ -138,4 +140,40 @@ export function collectStrictPeriodLockOverrideIds(k, v, oldV, settings) {
     seen[id] = true;
     return true;
   });
+}
+
+/**
+ * On LAN pull, keep local copies of period-locked rows so sync cannot mutate closed periods.
+ */
+export function preserveLockedPeriodRowsOnPull(localArr, mergedArr, key, lockUntil) {
+  if (!lockUntil || !PERIOD_LOCK_ARRAY_KEYS[key]) return mergedArr;
+  var local = Array.isArray(localArr) ? localArr : [];
+  var merged = Array.isArray(mergedArr) ? mergedArr : [];
+  var localById = {};
+  local.forEach(function (row) {
+    if (row && row.id != null) localById[String(row.id)] = row;
+  });
+  var mergedIds = {};
+  var out = merged.map(function (row) {
+    if (!row || row.id == null) return row;
+    mergedIds[String(row.id)] = true;
+    var prev = localById[String(row.id)];
+    if (!prev) return row;
+    if (isLockedThroughDate(periodLockRowDate(prev, key), lockUntil)) {
+      try {
+        if (JSON.stringify(prev) !== JSON.stringify(row)) return prev;
+      } catch (_e) {
+        return prev;
+      }
+    }
+    return row;
+  });
+  local.forEach(function (row) {
+    if (!row || row.id == null) return;
+    if (mergedIds[String(row.id)]) return;
+    if (isLockedThroughDate(periodLockRowDate(row, key), lockUntil)) {
+      out.push(row);
+    }
+  });
+  return out;
 }

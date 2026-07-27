@@ -23,6 +23,7 @@ import {
   isGlassSheetProductForm,
 } from "../utils/glassProduct.js";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
+import { cashBookEntryNavMeta, journalLineNavMeta } from "../utils/sourceDocumentNav.js";
 import { buildDocPrintHeaderHtml } from "../components/DocPrintHeader.jsx";
 import { evaluateProductNameMatch, checkProductName } from "../utils/productNameMatch.js";
 import ProductNameDuplicateHint, { useProductNameHintControls } from "../components/ProductNameDuplicateHint.jsx";
@@ -136,6 +137,9 @@ function buildCashBookEntries(opts) {
         account: cashBookAcct(m),
         moneyIn: amt > 0 ? amt : 0,
         moneyOut: amt < 0 ? -amt : 0,
+        sourceKind: "sale",
+        sourceId: s.id,
+        refLabel: s.invoiceNo || s.id.slice(0, 8),
       });
     });
   });
@@ -158,6 +162,9 @@ function buildCashBookEntries(opts) {
         account: cashBookAcct(m),
         moneyIn: amt < 0 ? -amt : 0,
         moneyOut: amt > 0 ? amt : 0,
+        sourceKind: "purchase",
+        sourceId: p.id,
+        refLabel: p.invoiceNo || p.id.slice(0, 8),
       });
     });
   });
@@ -174,6 +181,9 @@ function buildCashBookEntries(opts) {
       account: cashBookAcct(acct),
       moneyIn: 0,
       moneyOut: e.amount,
+      sourceKind: "expense",
+      sourceId: e.id,
+      refLabel: e.category || "Expense",
     });
   });
 
@@ -272,6 +282,9 @@ function buildCashBookEntries(opts) {
       account: cashBookAcct(r.refundMethod || "Cash"),
       moneyIn: r.refundAmount,
       moneyOut: 0,
+      sourceKind: "purchase-return",
+      sourceId: r.id,
+      refLabel: r.returnId || r.purchaseNo || "",
     });
   });
 
@@ -307,8 +320,26 @@ function buildCashBookEntries(opts) {
  * Cash Book from General Ledger CASH/BANK lines (preferred when journal exists).
  * Falls back caller should use buildCashBookEntries when this returns empty / no journal.
  */
+function isValidIsoDate(d) {
+  return typeof d === "string" && /^\d{4}-\d{2}-\d{2}/.test(d);
+}
+
+function fiscalYearStartIso(todayFn) {
+  var t = String((typeof todayFn === "function" ? todayFn() : todayFn) || "").slice(0, 10);
+  var y = parseInt(t.slice(0, 4), 10);
+  var m = parseInt(t.slice(5, 7), 10);
+  if (!y || isNaN(y)) {
+    var now = new Date();
+    y = now.getFullYear();
+    m = now.getMonth() + 1;
+  }
+  var startY = m >= 4 ? y : y - 1;
+  return startY + "-04-01";
+}
+
 function buildCashBookEntriesFromLedger(opts) {
   var S = opts.S;
+  var state = opts.state || {};
   var lines = S.get("tc3_journal_lines", []) || [];
   if (!lines.length) return null;
   var GL_CASH = "1000";
@@ -322,9 +353,28 @@ function buildCashBookEntriesFromLedger(opts) {
     if (s.indexOf("capital") === 0 || s === "opening_balance") return s === "opening_balance" ? "opening" : "capital";
     if (s.indexOf("profit") === 0 || s.indexOf("cod_") === 0) return "profdist";
     if (s.indexOf("cheque") >= 0 || s.indexOf("standalone") >= 0) return "cheques";
-    if (s.indexOf("manual_payable") >= 0) return "repayment";
+    if (s.indexOf("manual_payable") >= 0 || s === "borrowed") return "borrowed";
     if (s.indexOf("manual_receivable") >= 0) return "received";
     return "gl";
+  };
+  var typeLabelFromGroup = function (tg, rt) {
+    var map = {
+      opening: "Opening",
+      capital: "Capital",
+      sales: "Sale Payment",
+      purchases: "Supplier Pay",
+      expenses: "Expense",
+      assets: "Asset",
+      borrowed: "Borrowed",
+      repayment: "Repayment",
+      loanout: "Loan Given",
+      received: "Collection",
+      profdist: "Profit Dist.",
+      cheques: "Cheque",
+      returns: "Return",
+      gl: "GL",
+    };
+    return map[tg] || String(rt || "GL").replace(/_/g, " ");
   };
   var entries = [];
   lines.forEach(function (ln) {
@@ -334,21 +384,34 @@ function buildCashBookEntriesFromLedger(opts) {
     var dr = Number(ln.debit) || 0;
     var cr = Number(ln.credit) || 0;
     if (Math.abs(dr) < 0.005 && Math.abs(cr) < 0.005) return;
+    var dt = ln.date || "";
+    /* Undated cash lines must not silently drag opening/running balances. */
+    if (!isValidIsoDate(dt)) return;
     var moneyIn = dr > 0 ? dr : 0;
     var moneyOut = cr > 0 ? cr : 0;
-    var dt = ln.date || "";
     var rt = ln.referenceType || "journal";
+    var tg = typeGroupFromRef(rt);
+    var memo = String(ln.memo || "").trim();
+    var nav = journalLineNavMeta(ln, { state: state, S: S });
+    var descParts = [nav && nav.label ? nav.label : rt];
+    if (!nav && ln.referenceId) descParts.push(String(ln.referenceId).slice(0, 18));
+    if (memo) descParts.push(memo);
     entries.push({
       id: "gl_" + (ln.id || (String(ln.transactionId || "") + "_" + acctId)),
       date: dt,
       sortKey: dt + "_gl_" + (ln.id || ""),
-      type: ln.memo || rt || "GL movement",
-      typeGroup: typeGroupFromRef(rt),
-      description: rt + (ln.referenceId ? " · " + String(ln.referenceId).slice(0, 14) : "") + (ln.memo ? " — " + ln.memo : ""),
+      type: typeLabelFromGroup(tg, rt),
+      typeGroup: tg,
+      description: descParts.join(" · "),
       account: acctId === GL_BANK ? "Bank" : "Cash",
       moneyIn: moneyIn,
       moneyOut: moneyOut,
       _fromLedger: true,
+      referenceType: rt,
+      referenceId: ln.referenceId || "",
+      sourceKind: nav ? nav.sourceKind : "",
+      sourceId: nav ? nav.sourceId : "",
+      refLabel: nav ? nav.label : "",
     });
   });
   entries.sort(function (a, b) { return a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0; });
@@ -380,8 +443,27 @@ var Accounts = function (props) {
   var fmtNum = props.fmtNum;
   var fmtDate = props.fmtDate;
   var fmtDateFull = props.fmtDateFull;
+  var openSourceDocument = props.openSourceDocument;
   var C = props.C;
   var Btn = props.Btn;
+
+  var renderProofLink = function (entry, fallbackText) {
+    var nav = cashBookEntryNavMeta(entry);
+    var label = (nav && nav.label) || fallbackText || (entry && entry.description) || "—";
+    if (!nav || typeof openSourceDocument !== "function") {
+      return <span title={entry && entry.description ? entry.description : label}>{label}</span>;
+    }
+    return (
+      <button
+        type="button"
+        className="erp-stmt-ref-btn"
+        title={"Open " + label}
+        onClick={function () { openSourceDocument(nav); }}
+      >
+        {label}
+      </button>
+    );
+  };
   var Modal = props.Modal;
   var Input = props.Input;
   var Sel = props.Sel;
@@ -721,7 +803,6 @@ var Accounts = function (props) {
   var obCommit = function (draft) {
     var capital = obCalcCapital(draft);
     var final = Object.assign({}, draft, { capital: capital, completed: true, completedAt: new Date().toISOString() });
-    S.set("tc3_openBal", final);
 
     /* Write opening receivables to tc3_manualReceivables
        FIX: preserve paymentHistory from existing opening entries so partial payments
@@ -730,54 +811,81 @@ var Accounts = function (props) {
     var oldOpenRec = S.get("tc3_manualReceivables", []).filter(function (r) { return r._isOpening; });
     var obTs = new Date().toISOString();
     var newRec = (draft.receivables || []).map(function (r) {
-      /* Try to find an existing opening entry for the same person to preserve payment history */
-      var existing = oldOpenRec.find(function (o) { return o.person === r.person && Math.abs((o.amount || 0) - r.amount) < 0.01; });
+      /* Prefer stable id, then person+amount, so amount edits keep paymentHistory */
+      var existing = (r.id && oldOpenRec.find(function (o) { return o.id === r.id; }))
+        || oldOpenRec.find(function (o) { return o.person === r.person && Math.abs((o.amount || 0) - r.amount) < 0.01; })
+        || oldOpenRec.find(function (o) { return o.person === r.person; });
       return existing
-        ? Object.assign({}, existing, { amount: r.amount, note: r.note || existing.note || "" })
+        ? Object.assign({}, existing, { amount: r.amount, note: r.note || existing.note || "", person: r.person })
         : stampTransactionIsoDateTime({ id: uid(), date: draft.date || today(), person: r.person, type: "Opening Receivable", amount: r.amount, paymentMethod: "Cash", reference: "Opening Balance", note: r.note || "", paymentHistory: [], _isOpening: true, createdAt: obTs, updatedAt: obTs }, obTs);
     });
-    S.set("tc3_manualReceivables", existRec.concat(newRec));
+    var nextManualRec = existRec.concat(newRec);
 
     /* Write opening payables to tc3_manualPayables
        FIX: preserve paymentHistory from existing opening entries */
     var existPay = S.get("tc3_manualPayables", []).filter(function (p) { return !p._isOpening; });
     var oldOpenPay = S.get("tc3_manualPayables", []).filter(function (p) { return p._isOpening; });
     var newPay = (draft.payables || []).map(function (p) {
-      var existing = oldOpenPay.find(function (o) { return o.source === p.source && Math.abs((o.amount || 0) - p.amount) < 0.01; });
+      var existing = (p.id && oldOpenPay.find(function (o) { return o.id === p.id; }))
+        || oldOpenPay.find(function (o) { return o.source === p.source && Math.abs((o.amount || 0) - p.amount) < 0.01; })
+        || oldOpenPay.find(function (o) { return o.source === p.source; });
       return existing
-        ? Object.assign({}, existing, { amount: p.amount, note: p.note || existing.note || "" })
+        ? Object.assign({}, existing, { amount: p.amount, note: p.note || existing.note || "", source: p.source })
         : stampTransactionIsoDateTime({ id: uid(), date: draft.date || today(), source: p.source, type: "Opening Payable", amount: p.amount, paymentMethod: "Cash", reference: "Opening Balance", note: p.note || "", paymentHistory: [], _isOpening: true, createdAt: obTs, updatedAt: obTs }, obTs);
     });
-    S.set("tc3_manualPayables", existPay.concat(newPay));
+    var nextManualPay = existPay.concat(newPay);
 
-    /* Write opening stock to tc3_products */
-    var existProds = state.products.filter(function (p) { return !p._isOpening; });
+    /* Write opening stock to tc3_products — re-commit applies delta vs prior _openingQty (never wipe live stock). */
+    var existProds = state.products.map(function (p) { return Object.assign({}, p); });
     var newProds = [];
     var newLog = [];
     (draft.stock || []).forEach(function (s) {
       if (s._existingProduct && s._srcProdId) {
-        // Existing product - update stock quantity only
         var idx = existProds.findIndex(function(p) { return p.id === s._srcProdId; });
         if (idx >= 0) {
           var prevOb = existProds[idx];
-          existProds[idx] = stampProductStock(Object.assign({}, prevOb, { stock: s.qty, _isOpening: true }), null, prevOb);
-          newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: existProds[idx].id, productName: existProds[idx].name, qty: s.qty, reason: "Opening Balance (Existing)" });
+          var prevOpeningQty = Number(prevOb._openingQty);
+          var nextOpeningQty = Number(s.qty) || 0;
+          var newStock;
+          if (isFinite(prevOpeningQty)) {
+            newStock = Math.max(0, (Number(prevOb.stock) || 0) + (nextOpeningQty - prevOpeningQty));
+          } else {
+            /* First OB link on an existing SKU: ADD opening qty (do not wipe live stock). */
+            newStock = Math.max(0, (Number(prevOb.stock) || 0) + nextOpeningQty);
+          }
+          existProds[idx] = stampProductStock(Object.assign({}, prevOb, { stock: newStock, _openingQty: nextOpeningQty, _isOpening: true }), null, prevOb);
+          newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: existProds[idx].id, productName: existProds[idx].name, qty: isFinite(prevOpeningQty) ? (nextOpeningQty - prevOpeningQty) : nextOpeningQty, reason: "Opening Balance (Existing)" });
         }
       } else {
-        // New product - create it
-        var npBase = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true, require_comment: false, comment_label: String(s.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL };
+        var matchedIdx = existProds.findIndex(function (p) {
+          if (s.id && p.id === s.id) return true;
+          return !!p._isOpening && String(p.name || "") === String(s.name || "") && String(p.description || "") === "Opening stock";
+        });
+        if (matchedIdx >= 0) {
+          var matchedOpen = existProds[matchedIdx];
+          var prevOpeningQty2 = Number(matchedOpen._openingQty);
+          var nextOpeningQty2 = Number(s.qty) || 0;
+          var newStock2;
+          if (isFinite(prevOpeningQty2)) {
+            newStock2 = Math.max(0, (Number(matchedOpen.stock) || 0) + (nextOpeningQty2 - prevOpeningQty2));
+          } else {
+            newStock2 = nextOpeningQty2;
+          }
+          existProds[matchedIdx] = stampProductStock(Object.assign({}, matchedOpen, { stock: newStock2, cost: s.cost, price: s.price, _openingQty: nextOpeningQty2, _isOpening: true }), null, matchedOpen);
+          newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: matchedOpen.id, productName: matchedOpen.name, qty: isFinite(prevOpeningQty2) ? (nextOpeningQty2 - prevOpeningQty2) : nextOpeningQty2, reason: "Opening Balance adjust" });
+        } else {
+        var npBase = { id: uid(), productId: nextProductId(existProds.concat(newProds)), name: s.name, barcode: s.barcode || genBarcode(), category: s.category || "General", description: "Opening stock", cost: s.cost, price: s.price, stock: s.qty, damaged: 0, _isOpening: true, _openingQty: Number(s.qty) || 0, require_comment: false, comment_label: String(s.comment_label || "").trim() || DEFAULT_PRODUCT_COMMENT_LABEL };
         var np = Array.isArray(s.units) && s.units.length > 0
           ? Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", units: s.units, bulkEnabled: false, bulkUnit: "", bulkConversion: 0, bulkPrice: 0, bulkCost: 0 })
           : Object.assign(npBase, { unit: s.unit || getBusinessProfile().units[0] || "Pcs", bulkEnabled: !!(s.bulkUnit && (parseFloat(s.bulkConversion) || 0) > 0), bulkUnit: s.bulkUnit || "", bulkConversion: parseFloat(s.bulkConversion) || 0, bulkCost: parseFloat(s.bulkCost) || 0, bulkPrice: parseFloat(s.bulkPrice) || 0 });
         np = stampUpdatedAt(Object.assign(np, glassPersistFieldsFromRow(s)));
         newProds.push(np);
         newLog.push({ id: uid(), date: draft.date || today(), type: "Added", productId: np.id, productName: np.name, qty: np.stock, reason: "Opening Balance (New)" });
+        }
       }
     });
     var allProds = existProds.concat(newProds);
-    S.set("tc3_products", allProds);
     var prodLog = (state.productLog || []).concat(newLog);
-    S.set("tc3_productLog", prodLog);
 
     /* Write opening assets to tc3_assets (cashMethod:"Opening" = no cash deduction) */
     var existAssets = (state.assets || []).filter(function (a) { return !a._isOpening; });
@@ -785,16 +893,29 @@ var Accounts = function (props) {
       return { id: uid(), date: draft.date || today(), name: a.name, category: a.category || "Equipment / Machinery", amount: a.value, note: a.note || "", cashMethod: "Opening", _isOpening: true };
     });
     var allAssets = existAssets.concat(newAssets);
-    S.set("tc3_assets", allAssets);
 
     /* Write opening capital entry (cashMethod:"Opening" = no cash impact) */
     var existCap = S.get("tc3_capLedger", []).filter(function (e) { return !e._isOpening; });
     var capEntry = { id: uid(), type: "invest", amount: capital, date: draft.date || today(), note: "Opening Balance — auto calculated", ref: "Opening Balance", cashMethod: "Opening", _isOpening: true, createdAt: new Date().toISOString() };
     var newCap = existCap.concat([capEntry]);
-    S.set("tc3_capLedger", newCap);
     var capTotal = newCap.reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
     var ns = Object.assign({}, state.settings, { capitalInvested: capTotal });
-    S.set("tc3_settings", ns);
+
+    var obPairs = [
+      ["tc3_openBal", final],
+      ["tc3_manualReceivables", nextManualRec],
+      ["tc3_manualPayables", nextManualPay],
+      ["tc3_products", allProds],
+      ["tc3_productLog", prodLog],
+      ["tc3_assets", allAssets],
+      ["tc3_capLedger", newCap],
+      ["tc3_settings", ns],
+    ];
+    if (S.setMany) {
+      S.setMany(obPairs);
+    } else {
+      obPairs.forEach(function (p) { S.set(p[0], p[1]); });
+    }
 
     /* Update React state */
     setState(function (st) { return Object.assign({}, st, { products: allProds, assets: allAssets, productLog: prodLog, settings: ns }); });
@@ -804,9 +925,9 @@ var Accounts = function (props) {
     setObStep(1);
   };
 
-  /* ── Ledger tab state ── */
-  var [ledgerFrom, setLedgerFrom] = useState(today().slice(0, 4) + "-01-01");
-  var [ledgerTo, setLedgerTo] = useState(today());
+  /* ── Ledger tab state — blank From = full history (opening starts at 0) ── */
+  var [ledgerFrom, setLedgerFrom] = useState("");
+  var [ledgerTo, setLedgerTo] = useState(function () { return today(); });
   var [ledgerType, setLedgerType] = useState("all");
   var [ledgerAcct, setLedgerAcct] = useState("all");
   var [glSelAcct, setGlSelAcct] = useState("1100");
@@ -821,7 +942,7 @@ var Accounts = function (props) {
   /* Cash Book: prefer GL cash/bank lines when journal exists; else ops rebuild. */
   var cashBookEntries = useMemo(function () {
     if (atab !== "ledger") return EMPTY_CASH_BOOK;
-    var fromGl = buildCashBookEntriesFromLedger({ S: S });
+    var fromGl = buildCashBookEntriesFromLedger({ S: S, state: state });
     if (fromGl !== null) return fromGl;
     return buildCashBookEntries({
       state: state,
@@ -844,13 +965,44 @@ var Accounts = function (props) {
 
   var cashBookFiltered = useMemo(function () {
     if (atab !== "ledger") return EMPTY_CASH_BOOK;
-    return cashBookEntries.filter(function (e) {
-      if (ledgerFrom && e.date < ledgerFrom) return false;
-      if (ledgerTo && e.date > ledgerTo) return false;
-      if (ledgerType !== "all" && e.typeGroup !== ledgerType) return false;
-      if (ledgerAcct !== "all" && (e.account || "Cash") !== ledgerAcct) return false;
-      return true;
+    var matchesAcct = function (e) {
+      if (ledgerAcct === "all") return true;
+      return e.account === ledgerAcct || e.account === "All";
+    };
+    var matchesType = function (e) {
+      return ledgerType === "all" || e.typeGroup === ledgerType;
+    };
+    /* Brought-forward = cash/bank position before From date (account filter only).
+       Type filters are a drill-down — start at 0 so cards stay consistent. */
+    var openingBal = 0;
+    if (ledgerType === "all") {
+      cashBookEntries.forEach(function (e) {
+        if (!e || !isValidIsoDate(e.date)) return;
+        if (!matchesAcct(e)) return;
+        if (ledgerFrom && e.date < ledgerFrom) {
+          openingBal += (Number(e.moneyIn) || 0) - (Number(e.moneyOut) || 0);
+        }
+      });
+      openingBal = Math.round(openingBal * 100) / 100;
+    }
+    var period = [];
+    cashBookEntries.forEach(function (e) {
+      if (!e || !isValidIsoDate(e.date)) return;
+      if (ledgerFrom && e.date < ledgerFrom) return;
+      if (ledgerTo && e.date > ledgerTo) return;
+      if (!matchesType(e)) return;
+      if (!matchesAcct(e)) return;
+      period.push(e);
     });
+    /* Recompute running balance from period opening so the Balance column matches the cards. */
+    var running = openingBal;
+    var out = period.map(function (e) {
+      running += (Number(e.moneyIn) || 0) - (Number(e.moneyOut) || 0);
+      running = Math.round(running * 100) / 100;
+      return Object.assign({}, e, { balance: running, _periodOpening: openingBal });
+    });
+    out._openingBal = openingBal;
+    return out;
   }, [atab, cashBookEntries, ledgerFrom, ledgerTo, ledgerType, ledgerAcct]);
 
   var cashBookPager = usePager(cashBookFiltered, CASH_BOOK_PAGE_SIZE);
@@ -877,10 +1029,14 @@ var Accounts = function (props) {
     if (!capForm.date) { showAlert("Please select a date."); return; }
     var entry = { id: uid(), type: capForm.type, amount: parseFloat(capForm.amount), date: capForm.date, note: capForm.note || "", ref: capForm.ref || "", cashMethod: capForm.cashMethod || "Cash", createdAt: new Date().toISOString() };
     var ledger = getCapLedger().concat([entry]);
-    S.set("tc3_capLedger", ledger);
     var total = ledger.reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
     var ns = Object.assign({}, state.settings, { capitalInvested: total });
-    S.set("tc3_settings", ns);
+    if (S.setMany) {
+      S.setMany([["tc3_capLedger", ledger], ["tc3_settings", ns]]);
+    } else {
+      S.set("tc3_capLedger", ledger);
+      S.set("tc3_settings", ns);
+    }
     setState(function (st) { return Object.assign({}, st, { settings: ns }); });
     setCapForm({ type: "invest", amount: "", date: today(), note: "", ref: "", cashMethod: "Cash" });
     showAlert("Capital entry saved!");
@@ -892,11 +1048,17 @@ var Accounts = function (props) {
     pwMatchesAsync(capActionPw, storedPw).then(function (ok) {
       if (!ok) { setCapActionMsg("Incorrect password."); return; }
       var ledger = getCapLedger().map(function (e) { return e.id === capEditForm.id ? Object.assign({}, capEditForm) : e; });
-      S.set("tc3_capLedger", ledger);
       var total = ledger.reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
       var ns = Object.assign({}, state.settings, { capitalInvested: total });
-      S.set("tc3_settings", ns); setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-      S.set("tc3_capLog", getCapLog().concat([{ id: uid(), action: "Edited", entryId: capEditForm.id, type: capEditForm.type, amount: capEditForm.amount, date: capEditForm.date, reason: capActionReason, at: new Date().toISOString() }]));
+      var capLog = getCapLog().concat([{ id: uid(), action: "Edited", entryId: capEditForm.id, type: capEditForm.type, amount: capEditForm.amount, date: capEditForm.date, reason: capActionReason, at: new Date().toISOString() }]);
+      if (S.setMany) {
+        S.setMany([["tc3_capLedger", ledger], ["tc3_settings", ns], ["tc3_capLog", capLog]]);
+      } else {
+        S.set("tc3_capLedger", ledger);
+        S.set("tc3_settings", ns);
+        S.set("tc3_capLog", capLog);
+      }
+      setState(function (st) { return Object.assign({}, st, { settings: ns }); });
       setCapEditModal(null); setCapEditForm(null); setCapActionPw(""); setCapActionReason(""); setCapActionMsg("");
     });
   };
@@ -907,11 +1069,17 @@ var Accounts = function (props) {
     pwMatchesAsync(capActionPw, storedPw).then(function (ok) {
       if (!ok) { setCapActionMsg("Incorrect password."); return; }
       var ledger = getCapLedger().filter(function (e) { return e.id !== capDeleteTarget.id; });
-      S.set("tc3_capLedger", ledger);
       var total = ledger.reduce(function (a, e) { return a + (e.type === "invest" ? e.amount : -e.amount); }, 0);
       var ns = Object.assign({}, state.settings, { capitalInvested: total });
-      S.set("tc3_settings", ns); setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-      S.set("tc3_capLog", getCapLog().concat([{ id: uid(), action: "Deleted", entryId: capDeleteTarget.id, type: capDeleteTarget.type, amount: capDeleteTarget.amount, date: capDeleteTarget.date, reason: capActionReason, at: new Date().toISOString() }]));
+      var capLog = getCapLog().concat([{ id: uid(), action: "Deleted", entryId: capDeleteTarget.id, type: capDeleteTarget.type, amount: capDeleteTarget.amount, date: capDeleteTarget.date, reason: capActionReason, at: new Date().toISOString() }]);
+      if (S.setMany) {
+        S.setMany([["tc3_capLedger", ledger], ["tc3_settings", ns], ["tc3_capLog", capLog]]);
+      } else {
+        S.set("tc3_capLedger", ledger);
+        S.set("tc3_settings", ns);
+        S.set("tc3_capLog", capLog);
+      }
+      setState(function (st) { return Object.assign({}, st, { settings: ns }); });
       setCapDeleteTarget(null); setCapActionPw(""); setCapActionReason(""); setCapActionMsg("");
     });
   };
@@ -1288,7 +1456,9 @@ var Accounts = function (props) {
         /* ── Summary totals for filtered range ── */
         var filteredIn = filtered.reduce(function (a, e) { return a + e.moneyIn; }, 0);
         var filteredOut = filtered.reduce(function (a, e) { return a + e.moneyOut; }, 0);
-        var openingBal = filtered.length > 0 ? (filtered[0].balance - filtered[0].moneyIn + filtered[0].moneyOut) : 0;
+        var openingBal = typeof filtered._openingBal === "number"
+          ? filtered._openingBal
+          : (filtered.length > 0 ? (filtered[0].balance - filtered[0].moneyIn + filtered[0].moneyOut) : 0);
         var closingBal = filtered.length > 0 ? filtered[filtered.length - 1].balance : openingBal;
 
         /* ── Print function ── */
@@ -1300,7 +1470,7 @@ var Accounts = function (props) {
             escapeHtml: escapeHtml,
             showTopbar: true,
             showLogo: false,
-            metaRows: [{ label: "Period:", value: ledgerFrom + " to " + ledgerTo }],
+            metaRows: [{ label: "Period:", value: (ledgerFrom || "start") + " to " + (ledgerTo || "today") }],
           });
           h += "<div class='cards'>";
           h += "<div class='card'><div class='clbl'>Opening Balance</div><div class='cval'>" + getCurrencySymbol() + " " + Number(openingBal).toLocaleString() + "</div></div>";
@@ -1318,9 +1488,25 @@ var Accounts = function (props) {
           });
           h += "<tr style='background:#e8eeff;font-weight:800'><td colspan='5'>TOTALS</td><td style='text-align:right;color:#1b5e20'>" + getCurrencySymbol() + " " + Number(filteredIn).toLocaleString() + "</td><td style='text-align:right;color:#b71c1c'>" + getCurrencySymbol() + " " + Number(filteredOut).toLocaleString() + "</td><td style='text-align:right'>" + getCurrencySymbol() + " " + Number(closingBal).toLocaleString() + "</td></tr>";
           h += "</tbody></table>";
-          var w = window.open("", "_blank", "width=1100,height=750");
-          w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>Financial Ledger</title><style>" + css + "</style></head><body>" + h + "</body></html>");
-          w.document.close(); setTimeout(function () { w.print(); }, 400);
+          var fullHtml = "<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>Financial Ledger</title><style>" + css + "</style></head><body>" + h + "</body></html>";
+          var blobUrl = null;
+          try { blobUrl = URL.createObjectURL(new Blob([fullHtml], { type: "text/html;charset=utf-8" })); } catch (eBlob) { blobUrl = null; }
+          var w = blobUrl ? window.open(blobUrl, "_blank", "width=1100,height=750") : window.open("", "_blank", "width=1100,height=750");
+          if (!w) {
+            if (blobUrl) { try { URL.revokeObjectURL(blobUrl); } catch (eRev) {} }
+            showAlert("Popup blocked. Please allow popups and try again.");
+            return;
+          }
+          if (blobUrl) {
+            setTimeout(function () {
+              try { w.focus(); w.print(); } catch (ePr) {}
+              setTimeout(function () { try { URL.revokeObjectURL(blobUrl); } catch (eRev2) {} }, 180000);
+            }, 500);
+          } else {
+            w.document.write(fullHtml);
+            w.document.close();
+            setTimeout(function () { w.print(); }, 400);
+          }
         };
 
         var TYPE_OPTIONS = [
@@ -1353,17 +1539,22 @@ var Accounts = function (props) {
           <div className="erp-tab-content erp-acc-tab-pro erp-acc-tab-pro--ledger erp-acc-ledger-layout">
             <AccTabHead icon="💵" tone="blue" title="Cash Book" sub={(cashBookEntries[0] && cashBookEntries[0]._fromLedger) ? "From General Ledger cash & bank lines — filter, print & share" : "Cash & bank movement ledger — filter, print & share"} />
             <div className="erp-acc-stat-row">
-              <StatCard label="Opening Balance" value={openingBal} accent={C.blue} valueColor={C.blue} icon="🏁" sub="Start of period" />
+              <StatCard label="Opening Balance" value={openingBal} accent={openingBal < 0 ? C.red : C.blue} valueColor={openingBal < 0 ? C.red : C.blue} icon="🏁" sub={ledgerFrom ? ("Brought forward before " + ledgerFrom) : "Start of cash book"} />
               <StatCard label="Total Money In" value={filteredIn} accent={C.green} valueColor={C.green} icon="📥" />
               <StatCard label="Total Money Out" value={filteredOut} accent={C.red} valueColor={C.red} icon="📤" />
               <StatCard label="Closing Balance" value={closingBal} accent={closingBal >= 0 ? C.green : C.red} valueColor={closingBal >= 0 ? C.green : C.red} icon="📒" sub={filtered.length + " transactions"} />
             </div>
+            {openingBal < 0 && ledgerFrom ? (
+              <div className="erp-acc-count-badge" style={{ marginBottom: 8, color: "#b45309", background: "#fffbeb" }}>
+                Brought-forward is negative because cash/bank outflows before {ledgerFrom} exceed inflows. Clear the From date to view the full cash history from zero.
+              </div>
+            ) : null}
 
             <Card pad={10} className="erp-acc-toolbar-card">
               <div className="erp-acc-toolbar">
                 <div className="erp-acc-toolbar-field">
                   <label>From</label>
-                  <input type="date" value={ledgerFrom} onChange={function (e) { setLedgerFrom(e.target.value); }} />
+                  <input type="date" value={ledgerFrom} onChange={function (e) { setLedgerFrom(e.target.value); }} title="Leave empty to start from the first transaction" />
                 </div>
                 <div className="erp-acc-toolbar-field">
                   <label>To</label>
@@ -1385,27 +1576,28 @@ var Accounts = function (props) {
                   </div>
                 </div>
                 <div className="erp-acc-toolbar-actions">
-                  <button type="button" className="erp-acc-pill" onClick={function () { setLedgerFrom(today().slice(0, 4) + "-01-01"); setLedgerTo(today()); setLedgerType("all"); setLedgerAcct("all"); }}>Reset</button>
+                  <button type="button" className="erp-acc-pill" onClick={function () { setLedgerFrom(""); setLedgerTo(today()); setLedgerType("all"); setLedgerAcct("all"); }}>Reset</button>
+                  <button type="button" className="erp-acc-pill" onClick={function () { setLedgerFrom(fiscalYearStartIso(today)); setLedgerTo(today()); }} title="Filter to current financial year">This FY</button>
                   <Btn col="blue" onClick={printLedger}>Print</Btn>
                   <WABtn title="Share Ledger via WhatsApp" onClick={function () { shareAnyReport(printLedger, "Accounts-Ledger"); }} />
                 </div>
               </div>
-              <div className="erp-acc-count-badge">Showing {filtered.length} of {entries.length} transactions</div>
+              <div className="erp-acc-count-badge">Showing {filtered.length} of {entries.length} transactions{ledgerFrom ? (" · From " + ledgerFrom) : " · Full history"}</div>
             </Card>
 
             <div className="erp-acc-table-fill">
             <Card pad={0} className="erp-acc-data-card">
               <div className="erp-acc-table-scroll">
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
+                <table className="erp-acc-cashbook-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, tableLayout: "fixed" }}>
                   <colgroup>
-                    <col style={{ width: "48px" }} />
-                    <col style={{ width: "10%" }} />
-                    <col style={{ width: "12%" }} />
+                    <col style={{ width: "44px" }} />
+                    <col style={{ width: "96px" }} />
+                    <col style={{ width: "118px" }} />
                     <col />
-                    <col style={{ width: "11%" }} />
-                    <col style={{ width: "11%" }} />
-                    <col style={{ width: "11%" }} />
-                    <col style={{ width: "11%" }} />
+                    <col style={{ width: "88px" }} />
+                    <col style={{ width: "110px" }} />
+                    <col style={{ width: "110px" }} />
+                    <col style={{ width: "118px" }} />
                   </colgroup>
                   <thead>
                     <tr style={{ background: C.th }}>
@@ -1433,12 +1625,18 @@ var Accounts = function (props) {
                         <tr key={e.id} style={{ background: i % 2 === 0 ? "#fff" : "#f8faff", borderBottom: "1px solid " + C.borderLight }}>
                           <td style={{ padding: "9px 14px", color: C.muted, fontSize: 12 }}>{rowNum}</td>
                           <td style={{ padding: "9px 14px", fontWeight: 600, whiteSpace: "nowrap", fontSize: 12.5 }}>{e.date}</td>
-                          <td style={{ padding: "9px 14px" }}>
-                            <span style={{ background: typeColor + "18", color: typeColor, padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{e.type}</span>
+                          <td style={{ padding: "9px 10px", overflow: "hidden" }}>
+                            <span
+                              className="erp-acc-type-pill"
+                              title={e.type}
+                              style={{ background: typeColor + "18", color: typeColor, padding: "3px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}
+                            >{e.type}</span>
                           </td>
-                          <td style={{ padding: "9px 14px", color: C.textMd, fontSize: 12.5, maxWidth: 260 }}>{e.description}</td>
-                          <td style={{ padding: "9px 14px" }}>
-                            <span style={{ background: e.account === "Bank" ? "#e8f0fe" : "#f0faf4", color: e.account === "Bank" ? "#1565c0" : "#1b5e20", padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>{e.account === "Bank" ? "🏦 Bank" : "💵 Cash"}</span>
+                          <td style={{ padding: "9px 10px", color: C.textMd, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={e.description}>
+                            {renderProofLink(e, e.description)}
+                          </td>
+                          <td style={{ padding: "9px 10px", overflow: "hidden" }}>
+                            <span style={{ background: e.account === "Bank" ? "#e8f0fe" : "#f0faf4", color: e.account === "Bank" ? "#1565c0" : "#1b5e20", padding: "3px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{e.account === "Bank" ? "Bank" : "Cash"}</span>
                           </td>
                           <td style={{ padding: "9px 14px", textAlign: "right", fontWeight: isIn ? 800 : 400, color: isIn ? C.green : C.muted, fontSize: 13 }}>
                             {isIn ? getCurrencySymbol() + " " + fmtNum(e.moneyIn) : "—"}
@@ -1634,7 +1832,11 @@ var Accounts = function (props) {
                       );
                     })}
                     {tb.rows.length === 0 && (
-                      <tr><td colSpan={5} className="erp-acc-gl-empty">No journal lines yet — use Rebuild or post a transaction.</td></tr>
+                      <tr><td colSpan={5} className="erp-acc-gl-empty">
+                        {(Array.isArray(journalLinesAll) && journalLinesAll.length)
+                          ? "Chart of accounts was empty — totals will appear after the chart is restored. Use Rebuild if needed."
+                          : "No journal lines yet — use Rebuild or post a transaction."}
+                      </td></tr>
                     )}
                     <tr className="erp-acc-gl-total-row">
                       <td colSpan={3}>TOTAL</td>
@@ -1710,10 +1912,19 @@ var Accounts = function (props) {
                   <tbody>
                     {runRowsPage.map(function (rr, i) {
                       var ln = rr.line;
+                      var nav = journalLineNavMeta(ln, { state: state, S: S });
                       return (
                         <tr key={ln.id || i}>
                           <TD>{ln.date || "—"}</TD>
-                          <TD><span className="erp-acc-gl-ref">{ln.referenceType}</span></TD>
+                          <TD>
+                            {nav && typeof openSourceDocument === "function" ? (
+                              <button type="button" className="erp-stmt-ref-btn" title="Open source document" onClick={function () { openSourceDocument(nav); }}>
+                                {nav.label || ln.referenceType}
+                              </button>
+                            ) : (
+                              <span className="erp-acc-gl-ref">{ln.referenceType}</span>
+                            )}
+                          </TD>
                           <TD className="erp-acc-gl-memo">{(ln.memo || "").slice(0, 80)}</TD>
                           <TD className="is-num is-debit">{ln.debit > 0 ? fmtNum(ln.debit) : "—"}</TD>
                           <TD className="is-num is-credit">{ln.credit > 0 ? fmtNum(ln.credit) : "—"}</TD>

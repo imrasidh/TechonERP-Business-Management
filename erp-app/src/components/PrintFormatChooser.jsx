@@ -1,10 +1,9 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
-import { resolveThermalFormat } from "../utils/printFormat.js";
+import { buildPrintFmtOptions, getEnabledPrintFormats, pageFormatMeta } from "../utils/printFormat.js";
 
 /**
- * Shared print-format chooser: A4 / A5 / Thermal.
- * Used by View & Print overlays and Sales print picker.
+ * Shared print-format chooser — buttons follow Settings enable toggles (A4 / A5 / 58mm / 80mm).
  */
 var PrintFormatChooser = function (props) {
   var open = props.open === true;
@@ -14,8 +13,15 @@ var PrintFormatChooser = function (props) {
   var hint = props.hint || "Select the paper size for your printer.";
   var settings = props.settings || {};
   var zIndex = props.zIndex || 12000;
-  var thermalId = props.thermalId || resolveThermalFormat(settings);
-  var thermalLabel = thermalId === "thermal58" ? "Thermal 58mm" : "Thermal 80mm";
+
+  var options = useMemo(function () {
+    if (Array.isArray(props.options) && props.options.length) return props.options;
+    return buildPrintFmtOptions(settings);
+  }, [props.options, settings]);
+
+  var defs = useMemo(function () {
+    return getEnabledPrintFormats(settings);
+  }, [settings]);
 
   useEffect(function () {
     if (!open) return undefined;
@@ -25,21 +31,16 @@ var PrintFormatChooser = function (props) {
         onClose();
         return;
       }
-      var k = String(e.key || "").toLowerCase();
-      if (k === "1" || k === "a") {
+      var k = String(e.key || "");
+      var idx = parseInt(k, 10);
+      if (idx >= 1 && idx <= options.length) {
         e.preventDefault();
-        onSelect("a4");
-      } else if (k === "2" || k === "5") {
-        e.preventDefault();
-        onSelect("a5");
-      } else if (k === "3" || k === "t") {
-        e.preventDefault();
-        onSelect(thermalId);
+        onSelect(options[idx - 1][0]);
       }
     };
     window.addEventListener("keydown", onKey);
     return function () { window.removeEventListener("keydown", onKey); };
-  }, [open, onClose, onSelect, thermalId]);
+  }, [open, onClose, onSelect, options]);
 
   if (!open || typeof document === "undefined") return null;
 
@@ -56,27 +57,27 @@ var PrintFormatChooser = function (props) {
         <div className="erp-print-fmt-title">{title}</div>
         <div className="erp-print-fmt-hint">{hint}</div>
 
-        <button type="button" className="erp-print-fmt-btn is-a4" onClick={function () { onSelect("a4"); }}>
-          <span>
-            <span className="erp-print-fmt-main">A4</span>
-            <span className="erp-print-fmt-sub">Standard page · letter / reports</span>
-          </span>
-          <kbd>1</kbd>
-        </button>
-        <button type="button" className="erp-print-fmt-btn is-a5" onClick={function () { onSelect("a5"); }}>
-          <span>
-            <span className="erp-print-fmt-main">A5</span>
-            <span className="erp-print-fmt-sub">Half page · compact invoices</span>
-          </span>
-          <kbd>2</kbd>
-        </button>
-        <button type="button" className="erp-print-fmt-btn is-thermal" onClick={function () { onSelect(thermalId); }}>
-          <span>
-            <span className="erp-print-fmt-main">{thermalLabel}</span>
-            <span className="erp-print-fmt-sub">Receipt printer</span>
-          </span>
-          <kbd>3</kbd>
-        </button>
+        {options.map(function (opt, i) {
+          var id = opt[0];
+          var shortLabel = opt[1];
+          var def = defs.find(function (d) { return d.id === id; });
+          var meta = pageFormatMeta(id);
+          var kindClass = meta.isThermal ? "is-thermal" : ("is-" + id);
+          return (
+            <button
+              key={id}
+              type="button"
+              className={"erp-print-fmt-btn " + kindClass}
+              onClick={function () { onSelect(id); }}
+            >
+              <span>
+                <span className="erp-print-fmt-main">{def ? def.label : shortLabel}</span>
+                <span className="erp-print-fmt-sub">{def ? def.sub : ""}</span>
+              </span>
+              <kbd>{i + 1}</kbd>
+            </button>
+          );
+        })}
         <button type="button" className="erp-print-fmt-btn is-cancel" onClick={onClose}>
           <span className="erp-print-fmt-main">Cancel</span>
           <kbd>Esc</kbd>

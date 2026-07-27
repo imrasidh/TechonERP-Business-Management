@@ -3,6 +3,7 @@ import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import AddPartyModal from "../components/AddPartyModal.jsx";
 import { createAndPersistSupplier } from "../utils/supplierCreate.js";
 import { pushKeysNow } from "../utils/concurrencyGuards.js";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
 
 var Suppliers = function (props) {
   var state = props.state;
@@ -24,6 +25,7 @@ var Suppliers = function (props) {
   var TD = props.TD;
   var Modal = props.Modal;
   var Badge = props.Badge;
+  var openSourceDocument = props.openSourceDocument;
   var embedded = props.embedded;
 
   var [show, setShow] = useState(false);
@@ -236,7 +238,14 @@ var Suppliers = function (props) {
                 return (
                   <TR key={p.id} i={i}>
                     <TD>{fmtDate(p.date)}</TD>
-                    <td style={{ padding: "7px 10px" }}><span style={{ fontFamily: "monospace", fontSize: 11, color: C.accent }}>{p.invoiceNo || p.id.slice(0, 8)}</span></td>
+                    <td style={{ padding: "7px 10px" }}>
+                      <SourceDocLink
+                        nav={{ sourceKind: "purchase", sourceId: p.id, label: p.invoiceNo || p.id.slice(0, 8) }}
+                        label={p.invoiceNo || p.id.slice(0, 8)}
+                        openSourceDocument={openSourceDocument}
+                        className="erp-stmt-ref-btn"
+                      />
+                    </td>
                     <TD center>{(p.items || []).length}</TD>
                     <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(p.total)}</TD>
                     <TD color={C.green}>{getCurrencySymbol()} {fmtNum(p.paidAmount || 0)}</TD>

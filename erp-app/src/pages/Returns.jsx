@@ -44,6 +44,7 @@ var Returns = function (props) {
   var usePager = props.usePager;
   var Pager = props.Pager;
   var tcTrialGuard = props.tcTrialGuard;
+  var openSourceDocument = props.openSourceDocument;
   var [tab, setTab] = useState("salesreturn");
   var TABS = [["salesreturn", "Sales Return"], ["purchasereturn", "Purchase Return"]];
   useEffect(function () {
@@ -162,6 +163,7 @@ var Returns = function (props) {
         usePager={usePager}
         Pager={Pager}
         tcTrialGuard={tcTrialGuard}
+        openSourceDocument={openSourceDocument}
       />}
       {tab === "purchasereturn" && <PurchaseReturnTab
         state={state}
@@ -189,6 +191,7 @@ var Returns = function (props) {
         Badge={Badge}
         usePager={usePager}
         Pager={Pager}
+        openSourceDocument={openSourceDocument}
       />}
     </div>
   );
@@ -222,8 +225,16 @@ var SalesReturnTab = function (props) {
   var usePager = props.usePager;
   var Pager = props.Pager;
   var tcTrialGuard = props.tcTrialGuard;
+  var openSourceDocument = props.openSourceDocument;
 
-  /* modal steps: null | "search" | "items" */
+  var openReturnProof = function (r, kind) {
+    if (!r || typeof openSourceDocument !== "function") return;
+    openSourceDocument({ sourceKind: kind, sourceId: r.id });
+  };
+  var openLinkedInvoice = function (r) {
+    if (!r || !r.invoiceId || typeof openSourceDocument !== "function") return;
+    openSourceDocument({ sourceKind: "sale", sourceId: r.invoiceId });
+  };
   var [modal, setModal] = useState(null);
   var [custSearch, setCustSearch] = useState("");
   var [invSearch, setInvSearch] = useState("");
@@ -355,6 +366,7 @@ var SalesReturnTab = function (props) {
       var refundRecorded = false;
       var discFactor = saleReturnDiscountFactor(selInv);
       var returnSpendGross = 0;
+      var batchReturnId = genInvNo("SR");
 
       (selInv.items || []).forEach(function (it, idx) {
         var lk = saleLineReturnKey(it, idx);
@@ -370,7 +382,7 @@ var SalesReturnTab = function (props) {
         var thisRefund = (needsRefund && !refundRecorded) ? refundAmt : 0;
         if (needsRefund && !refundRecorded) refundRecorded = true;
         newReturns.push(stampTransactionIsoDateTime({
-          id: uid(), returnId: genInvNo("SR"), invoiceId: selInv.id, invoiceNo: selInv.invoiceNo,
+          id: uid(), returnId: batchReturnId, invoiceId: selInv.id, invoiceNo: selInv.invoiceNo,
           productId: it.id, productName: it.name || "Unknown Product",
           saleLineKey: lk,
           qty: q, amount: lineNet, returnTax: lineReturnTax, returnGross: lineReturnGross, cost: it.cost || 0, /* FIX 1+3: store exact cost at return time — avoids cross-period lookup errors */
@@ -449,10 +461,14 @@ var SalesReturnTab = function (props) {
         }), null, c);
       });
 
-      S.set("tc3_salesReturns", newReturns);
-      S.set("tc3_products", np);
-      S.set("tc3_sales", ns);
-      S.set("tc3_customers", nc);
+      S.setMany
+        ? S.setMany([
+            ["tc3_salesReturns", newReturns],
+            ["tc3_products", np],
+            ["tc3_sales", ns],
+            ["tc3_customers", nc],
+          ])
+        : (S.set("tc3_salesReturns", newReturns), S.set("tc3_products", np), S.set("tc3_sales", ns), S.set("tc3_customers", nc));
       addAudit("Sales Return " + getCurrencySymbol() + " " + fmtNum(returnTotal) + " (" + returnReason.trim() + ")", selInv.invoiceNo || selInv.id.slice(0, 8));
       setState(function (st) { return Object.assign({}, st, { salesReturns: newReturns, products: np, sales: ns, customers: nc }); });
       closeModal();
@@ -494,7 +510,7 @@ var SalesReturnTab = function (props) {
           <table className="erp-arap-table">
             <thead>
               <tr>
-                <th>Date</th><th>Return ID</th><th>Invoice</th><th>Customer</th><th>Product</th><th>Qty</th><th>Amount</th><th>Reason</th><th>Settlement</th>
+                <th>Date</th><th>Return ID</th><th>Invoice</th><th>Customer</th><th>Product</th><th>Qty</th><th>Amount</th><th>Reason</th><th>Settlement</th><th>Proof</th>
               </tr>
             </thead>
             <tbody>
@@ -502,8 +518,16 @@ var SalesReturnTab = function (props) {
                 return (
                   <tr key={r.id} className="table-row-hover">
                     <td style={{ color: "#64748b" }}>{r.date}</td>
-                    <td style={{ fontWeight: 800, color: "#b91c1c" }}>{r.returnId || r.id.slice(0, 8)}</td>
-                    <td style={{ color: "#2563eb" }}>{r.invoiceNo || "—"}</td>
+                    <td style={{ fontWeight: 800, color: "#b91c1c" }}>
+                      {typeof openSourceDocument === "function" ? (
+                        <button type="button" className="erp-stmt-ref-btn" onClick={function () { openReturnProof(r, "sale-return"); }}>{r.returnId || r.id.slice(0, 8)}</button>
+                      ) : (r.returnId || r.id.slice(0, 8))}
+                    </td>
+                    <td style={{ color: "#2563eb" }}>
+                      {r.invoiceNo && typeof openSourceDocument === "function" ? (
+                        <button type="button" className="erp-stmt-ref-btn" onClick={function () { openLinkedInvoice(r); }}>{r.invoiceNo}</button>
+                      ) : (r.invoiceNo || "—")}
+                    </td>
                     <td>{r.customer || "—"}</td>
                     <td className="erp-arap-src" title={r.productName || ""}>{r.productName || "Unknown"}</td>
                     <td style={{ textAlign: "center" }}>{r.qty}</td>
@@ -514,11 +538,16 @@ var SalesReturnTab = function (props) {
                         ? <span className="erp-arap-badge-cat" style={{ background: "#e6f7f2", color: "#047857" }}>Refund ({r.refundMethod})</span>
                         : <span style={{ color: "#94a3b8", fontSize: 12 }}>Balance adj.</span>}
                     </td>
+                    <td>
+                      {typeof openSourceDocument === "function" ? (
+                        <Btn col="blue" onClick={function () { openReturnProof(r, "sale-return"); }}>View</Btn>
+                      ) : "—"}
+                    </td>
                   </tr>
                 );
               })}
               {filteredHistory.length === 0 && (
-                <tr><td colSpan={9} className="erp-arap-empty">No return history yet. Click &quot;New Sales Return&quot; to get started.</td></tr>
+                <tr><td colSpan={10} className="erp-arap-empty">No return history yet. Click &quot;New Sales Return&quot; to get started.</td></tr>
               )}
             </tbody>
           </table>
@@ -709,6 +738,16 @@ var PurchaseReturnTab = function (props) {
   var usePager = props.usePager;
   var Pager = props.Pager;
   var tcTrialGuard = props.tcTrialGuard;
+  var openSourceDocument = props.openSourceDocument;
+
+  var openReturnProof = function (r, kind) {
+    if (!r || typeof openSourceDocument !== "function") return;
+    openSourceDocument({ sourceKind: kind, sourceId: r.id });
+  };
+  var openLinkedPurchase = function (r) {
+    if (!r || !r.purchaseId || typeof openSourceDocument !== "function") return;
+    openSourceDocument({ sourceKind: "purchase", sourceId: r.purchaseId });
+  };
 
   var [modal, setModal] = useState(null);
   var [suppSearch, setSuppSearch] = useState("");
@@ -837,6 +876,7 @@ var PurchaseReturnTab = function (props) {
          Only the FIRST returned item row carries it — the rest get 0.
          getCashBalances sums all rows, so storing it on every row multiplies it by item count. */
       var purRefundRecorded = false;
+      var batchReturnId = genInvNo("PR");
 
       (selPur.items || []).forEach(function (it, idx) {
         var lk = purchaseLineReturnKey(it, idx);
@@ -867,7 +907,7 @@ var PurchaseReturnTab = function (props) {
         var thisRefund = (needsRefund && !purRefundRecorded) ? refundAmt : 0;
         if (needsRefund && !purRefundRecorded) purRefundRecorded = true;
         newReturns.push(stampTransactionIsoDateTime({
-          id: uid(), returnId: genInvNo("PR"), purchaseId: selPur.id, purchaseNo: selPur.invoiceNo,
+          id: uid(), returnId: batchReturnId, purchaseId: selPur.id, purchaseNo: selPur.invoiceNo,
           purchaseLineId: it.id,
           purchaseLineKey: lk,
           productId: it.id, productName: it.name || "Unknown Product",
@@ -916,9 +956,13 @@ var PurchaseReturnTab = function (props) {
         return stampUpdatedAt(Object.assign({}, p, { total: newTotal, balance: newBal, paidAmount: newPaid, status: newStat, paymentHistory: ph }));
       });
 
-      S.set("tc3_purchaseReturns", newReturns);
-      S.set("tc3_products", np);
-      S.set("tc3_purchases", npur);
+      S.setMany
+        ? S.setMany([
+            ["tc3_purchaseReturns", newReturns],
+            ["tc3_products", np],
+            ["tc3_purchases", npur],
+          ])
+        : (S.set("tc3_purchaseReturns", newReturns), S.set("tc3_products", np), S.set("tc3_purchases", npur));
       addAudit("Purchase Return " + getCurrencySymbol() + " " + fmtNum(returnTotal) + " (" + purReturnReason.trim() + ")", selPur.invoiceNo || selPur.id.slice(0, 8));
       setState(function (st) { return Object.assign({}, st, { purchaseReturns: newReturns, products: np, purchases: npur }); });
       if (prPolicyWarnings.length) {
@@ -965,7 +1009,7 @@ var PurchaseReturnTab = function (props) {
           <table className="erp-arap-table">
             <thead>
               <tr>
-                <th>Date</th><th>Return ID</th><th>Purchase #</th><th>Supplier</th><th>Product</th><th>Qty</th><th>Amount</th><th>Cost basis</th><th>Reason</th>
+                <th>Date</th><th>Return ID</th><th>Purchase #</th><th>Supplier</th><th>Product</th><th>Qty</th><th>Amount</th><th>Cost basis</th><th>Reason</th><th>Proof</th>
               </tr>
             </thead>
             <tbody>
@@ -973,8 +1017,16 @@ var PurchaseReturnTab = function (props) {
                 return (
                   <tr key={r.id} className="table-row-hover">
                     <td style={{ color: "#64748b" }}>{r.date}</td>
-                    <td style={{ fontWeight: 800, color: "#c2410c" }}>{r.returnId || r.id.slice(0, 8)}</td>
-                    <td style={{ color: "#2563eb" }}>{r.purchaseNo || "—"}</td>
+                    <td style={{ fontWeight: 800, color: "#c2410c" }}>
+                      {typeof openSourceDocument === "function" ? (
+                        <button type="button" className="erp-stmt-ref-btn" onClick={function () { openReturnProof(r, "purchase-return"); }}>{r.returnId || r.id.slice(0, 8)}</button>
+                      ) : (r.returnId || r.id.slice(0, 8))}
+                    </td>
+                    <td style={{ color: "#2563eb" }}>
+                      {r.purchaseNo && typeof openSourceDocument === "function" ? (
+                        <button type="button" className="erp-stmt-ref-btn" onClick={function () { openLinkedPurchase(r); }}>{r.purchaseNo}</button>
+                      ) : (r.purchaseNo || "—")}
+                    </td>
                     <td>{r.supplier || "—"}</td>
                     <td className="erp-arap-src" title={r.productName || ""}>{r.productName || "Unknown"}</td>
                     <td style={{ textAlign: "center" }}>{r.qty}</td>
@@ -987,11 +1039,16 @@ var PurchaseReturnTab = function (props) {
                         : <span>WAC snapshot</span>}
                     </td>
                     <td style={{ color: "#64748b", fontSize: 12 }}>{r.reason || "—"}</td>
+                    <td>
+                      {typeof openSourceDocument === "function" ? (
+                        <Btn col="blue" onClick={function () { openReturnProof(r, "purchase-return"); }}>View</Btn>
+                      ) : "—"}
+                    </td>
                   </tr>
                 );
               })}
               {filteredHistory.length === 0 && (
-                <tr><td colSpan={9} className="erp-arap-empty">No return history yet. Click &quot;New Purchase Return&quot; to get started.</td></tr>
+                <tr><td colSpan={10} className="erp-arap-empty">No return history yet. Click &quot;New Purchase Return&quot; to get started.</td></tr>
               )}
             </tbody>
           </table>

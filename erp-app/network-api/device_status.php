@@ -13,7 +13,16 @@ require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/device_auth.php';
 
 $auth = requireAuth();
-$deviceId = isset($_GET['device_id']) ? trim((string) $_GET['device_id']) : '';
+/* Enrollment/claim may use legacy key + token_id from LAN; rate-limit below. */
+tcEnforceRemoteAuthPolicy($auth, ['allowRemoteLegacy' => true]);
+
+$ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+$deviceIdEarly = isset($_GET['device_id']) ? trim((string) $_GET['device_id']) : '';
+if (!tcRateLimitAllow('device_status_' . $ip . '_' . $deviceIdEarly, 60)) {
+    respond(['success' => false, 'message' => 'Too many status polls. Please retry shortly.'], 429);
+}
+
+$deviceId = $deviceIdEarly;
 $claimToken = isset($_GET['token_id']) ? trim((string) $_GET['token_id']) : '';
 
 if ($deviceId === '' || !preg_match(TC_DEVICE_ID_RE, $deviceId)) {

@@ -8,6 +8,16 @@ function resolvePrintedOn(printedOn) {
   try { return new Date().toLocaleString(); } catch (e) { return ""; }
 }
 
+/** Allow only safe image URLs for invoice logos (block javascript: etc.). */
+export function safeInvoiceLogoSrc(logo) {
+  var s = String(logo == null ? "" : logo).trim();
+  if (!s) return null;
+  if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(s)) return s;
+  if (/^https:\/\//i.test(s)) return s;
+  if (/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//i.test(s)) return s;
+  return null;
+}
+
 function contactLines(settings, labels) {
   labels = labels || {};
   var phoneLabel = labels.phone != null ? labels.phone : "Tel:";
@@ -47,7 +57,7 @@ export function DocPrintHeader(props) {
   var ruleMb = props.ruleMarginBottom != null ? props.ruleMarginBottom : (previewMode ? 8 : 12);
 
   var shopName = settings.shopName || "Techon ERP";
-  var logo = showLogo ? settings.invoiceLogo : null;
+  var logo = showLogo ? safeInvoiceLogoSrc(settings.invoiceLogo) : null;
   var logoW = settings.invoiceLogoSize || 72;
   if (previewMode && logoW > 56) logoW = 56;
   var lines = contactLines(settings, labels);
@@ -154,7 +164,7 @@ export function buildDocPrintHeaderHtml(opts) {
   var showLogo = opts.showLogo !== false;
   var ruleMb = opts.ruleMarginBottom != null ? opts.ruleMarginBottom : 12;
   var shopName = settings.shopName || "Techon ERP";
-  var logo = showLogo ? settings.invoiceLogo : null;
+  var logo = showLogo ? safeInvoiceLogoSrc(settings.invoiceLogo) : null;
   var logoW = settings.invoiceLogoSize || 72;
   var lines = contactLines(settings, labels);
   var px = pad ? (pad + "px") : "0";
@@ -195,6 +205,156 @@ export function buildDocPrintHeaderHtml(opts) {
     html += "</div>";
   });
   html += "</div></div>";
+  return html;
+}
+
+export var DOC_PRINT_POWERED_BY = "Powered By Techon Computers | +94 70 1234678";
+
+/**
+ * Thank-you / closing line by document type.
+ * Only sales invoices (and quotations) use Settings → Invoice Design footer text.
+ * Other docs get wording that fits that voucher / receipt / return.
+ */
+export function getPrintFooterMessage(kind, settings) {
+  var k = String(kind || "invoice").toLowerCase();
+  var custom = settings && settings.footer != null ? String(settings.footer).trim() : "";
+
+  if (k === "invoice" || k === "sale" || k === "sales") {
+    return custom || "Thank you for your purchase!";
+  }
+  if (k === "quotation" || k === "quote") {
+    return custom || "Thank you. We look forward to serving you.";
+  }
+  if (k === "purchase" || k === "purchase_invoice") {
+    return "Thank you for your supply.";
+  }
+  if (k === "sales_return" || k === "sale_return" || k === "return_sales") {
+    return "Return received. Thank you for your understanding.";
+  }
+  if (k === "purchase_return" || k === "return_purchase") {
+    return "Purchase return noted. Thank you.";
+  }
+  if (k === "money_in" || k === "receipt_in") {
+    return "Thank you for your payment.";
+  }
+  if (k === "money_out" || k === "receipt_out") {
+    return "Payment recorded. Thank you.";
+  }
+  if (k === "expense" || k === "expense_voucher") {
+    return "Expense recorded. Thank you.";
+  }
+  if (k === "repair" || k === "repair_job") {
+    return "We take care of your devices.";
+  }
+  if (k === "statement" || k === "statement_settled" || k === "statement_credit") {
+    return "This statement is for your records.";
+  }
+  if (k === "report") {
+    return "Thank you for your business.";
+  }
+  return custom || "Thank you for your business!";
+}
+
+/** @deprecated Prefer getPrintFooterMessage(kind, settings). */
+export function resolvePrintFooterText(settings, fallback) {
+  var t = settings && settings.footer != null ? String(settings.footer).trim() : "";
+  if (t) return t;
+  return fallback != null && String(fallback).trim() ? String(fallback).trim() : "Thank you for your business!";
+}
+
+/**
+ * Fixed-bottom print footer.
+ * Message depends on `kind` (invoice / purchase / return / voucher…).
+ * Powered-by line is always the same.
+ * Parent should be a flex column with page min-height so the spacer pins this to the bottom.
+ */
+export function DocPrintFooter(props) {
+  var settings = props.settings || {};
+  var accent = props.accent || DOC_PRINT_ACCENT;
+  var pad = props.padPx != null ? props.padPx : 24;
+  var px = pad + "px";
+  var compact = !!props.compact;
+  var withSpacer = props.withSpacer !== false;
+  var showPowered = props.showPowered !== false;
+  var text = props.message != null && String(props.message).trim()
+    ? String(props.message).trim()
+    : getPrintFooterMessage(props.kind || "invoice", settings);
+  var powered = props.poweredBy || DOC_PRINT_POWERED_BY;
+
+  return (
+    <React.Fragment>
+      {withSpacer ? (
+        <div style={{ flex: "1 1 auto", minHeight: compact ? 8 : 16 }} aria-hidden="true" />
+      ) : null}
+      <div
+        className="erp-doc-print-footer"
+        style={{
+          margin: "0 " + px,
+          paddingTop: compact ? 6 : 8,
+          paddingBottom: compact ? 8 : 10,
+          marginTop: withSpacer ? 0 : (compact ? 6 : 8),
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, marginBottom: compact ? 6 : 8 }}>
+          <div style={{ width: "22%", borderTop: "1px solid " + accent, opacity: 0.65 }} />
+          <div
+            style={{
+              fontSize: compact ? 11 : 12,
+              fontWeight: 700,
+              color: accent,
+              textAlign: "center",
+              fontStyle: "italic",
+              letterSpacing: "0.01em",
+              whiteSpace: "pre-wrap",
+              maxWidth: "70%",
+              lineHeight: 1.4,
+            }}
+          >
+            {text}
+          </div>
+          <div style={{ width: "22%", borderTop: "1px solid " + accent, opacity: 0.65 }} />
+        </div>
+        {showPowered ? (
+          <div style={{ textAlign: "center", fontSize: 8, color: "#000", fontWeight: 400, paddingBottom: 4 }}>
+            {powered}
+          </div>
+        ) : null}
+      </div>
+    </React.Fragment>
+  );
+}
+
+/** HTML twin of DocPrintFooter for string-built print windows. */
+export function buildDocPrintFooterHtml(opts) {
+  opts = opts || {};
+  var settings = opts.settings || {};
+  var accent = opts.accent || DOC_PRINT_ACCENT;
+  var pad = opts.padPx != null ? opts.padPx : 24;
+  var px = pad + "px";
+  var withSpacer = opts.withSpacer !== false;
+  var showPowered = opts.showPowered !== false;
+  var escapeHtml = typeof opts.escapeHtml === "function" ? opts.escapeHtml : function (s) { return String(s == null ? "" : s); };
+  var text = opts.message != null && String(opts.message).trim()
+    ? String(opts.message).trim()
+    : getPrintFooterMessage(opts.kind || "invoice", settings);
+  var powered = opts.poweredBy || DOC_PRINT_POWERED_BY;
+  var html = "";
+  if (withSpacer) {
+    html += "<div class='footer-spacer' style='flex:1 1 auto;min-height:16px;' aria-hidden='true'></div>";
+  }
+  html += "<div class='print-footer erp-doc-print-footer' style='margin:0 " + px + ";padding-top:8px;padding-bottom:12px;flex-shrink:0;'>";
+  html += "<div style='display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:8px;'>";
+  html += "<div style='width:22%;border-top:1px solid " + accent + ";opacity:0.65;'></div>";
+  html += "<div style='font-size:12px;font-weight:700;color:" + accent + ";text-align:center;font-style:italic;letter-spacing:0.01em;white-space:pre-wrap;max-width:70%;line-height:1.4;'>"
+    + escapeHtml(text) + "</div>";
+  html += "<div style='width:22%;border-top:1px solid " + accent + ";opacity:0.65;'></div>";
+  html += "</div>";
+  if (showPowered) {
+    html += "<div style='text-align:center;font-size:8px;color:#000;font-weight:400;padding-bottom:4px;'>"
+      + escapeHtml(powered) + "</div>";
+  }
+  html += "</div>";
   return html;
 }
 

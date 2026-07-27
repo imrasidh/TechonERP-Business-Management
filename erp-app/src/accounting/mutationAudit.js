@@ -4,7 +4,7 @@
  */
 
 export var FINANCIAL_MUTATION_LOG_KEY = "tc3_financial_mutation_log";
-var MAX_ROWS = 400;
+var MAX_ROWS = 200;
 
 export var MUTATION_ENTITY_BY_STORAGE_KEY = {
   tc3_sales: "sale",
@@ -23,9 +23,19 @@ export var MUTATION_ENTITY_BY_STORAGE_KEY = {
 };
 
 function safeSerialize(o, maxLen) {
-  maxLen = maxLen || 80000;
+  maxLen = maxLen || 4000;
   try {
-    var s = JSON.stringify(o);
+    /* Sample first — never stringify a full sales/products array just to truncate. */
+    var compact = o;
+    if (Array.isArray(o)) {
+      compact = { _type: "array", length: o.length, sample: o.slice(0, 3) };
+    } else if (o && typeof o === "object") {
+      var keys = Object.keys(o);
+      if (keys.length > 40) {
+        compact = { _type: "object", keys: keys.slice(0, 40), keyCount: keys.length };
+      }
+    }
+    var s = JSON.stringify(compact);
     if (s.length <= maxLen) return s;
     return s.slice(0, maxLen) + "…(truncated)";
   } catch (e) {

@@ -4,6 +4,8 @@
 
 import { reconcileInventoryToLedger, deriveInventoryEconomics } from "../accounting/inventoryEngine.js";
 import { buildInventoryReplayWindow } from "./inventoryReplayDebug.js";
+import { diagnoseGlStorage } from "../ops/glStorageHealth.js";
+import { buildOperationalHealthSnapshot } from "../ops/operationalHealth.js";
 
 function anonymizeCustomers(obj) {
   try {
@@ -47,15 +49,25 @@ export function buildSupportBundle(state, S, chart, opts) {
   var bundle = {
     exportedAt: new Date().toISOString(),
     techonSupportBundle: true,
-    version: 1,
+    version: 2,
     periodFrom: opts.periodFrom || "",
     periodTo: opts.periodTo || "",
+    appVersion: opts.appVersion || "",
     settingsSummary: {
       shopName: state.settings && state.settings.shopName,
       inventoryCostingMethod: state.settings && state.settings.inventoryCostingMethod,
       purchaseReturnCostMode: state.settings && state.settings.purchaseReturnCostMode,
       lockedUntilDate: state.settings && state.settings.lockedUntilDate,
+      booksClosedDate: state.settings && state.settings.booksClosedDate,
     },
+    backupMeta: {
+      lastAuto: S.get("tc3_last_auto_backup", null),
+      lastManual: S.get("tc3_last_manual_backup", null),
+      lastError: S.get("tc3_backup_last_error", null),
+      dailyDate: S.get("tc3_daily_bak_date", null),
+    },
+    glStorage: diagnoseGlStorage(S),
+    operationalHealth: buildOperationalHealthSnapshot(S, opts.syncMeta || null),
     reconciliationSummary: reconciliation,
     snapshotMeta: (function () {
       var snaps = S.get("tc3_financial_snapshots", []);

@@ -36,4 +36,6 @@ if (!sanitized) {
 }
 
 fs.writeFileSync(secretPath, sanitized + "\n", { encoding: "utf8", mode: 0o600 });
-console.log("[dist] Prepared tc_license_secret.txt for packaging.");
+console.log("[dist] Prepared tc_license_secret.txt for local/dev use only.");
+console.log("[dist] Public installers must NOT ship this file — set OS env LICENSE_SECRET on each PC.");
+console.log("[dist] package.json extraResources no longer includes tc_license_secret.txt.");

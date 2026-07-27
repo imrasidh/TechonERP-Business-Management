@@ -13,6 +13,7 @@ var CLIENT_BLOCKED_RESPONSE = { status: 'blocked', message: 'Restricted in clien
 
 var CLIENT_BLOCKED_METHODS = {
   saveBackup: true,
+  saveBackupAck: true,
   selectFolder: true,
   syncLicenseNow: true,
   getConnectedClients: true,
@@ -61,6 +62,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
    */
   saveBackup: guardClientMethod('saveBackup', function(payload) {
     ipcRenderer.send('save-backup', payload);
+  }),
+
+  /**
+   * Same as saveBackup, but resolves with { ok, file, bytes } / { ok:false, error }
+   * once the file has been durably written and renamed into place.
+   */
+  saveBackupAck: guardClientMethod('saveBackupAck', function(payload) {
+    return ipcRenderer.invoke('tc-save-backup', payload);
   }),
 
   selectFolder: guardClientMethod('selectFolder', function() {
@@ -166,6 +175,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Support unlock PIN — verified in main; salt never exposed to renderer. */
   verifySupportUnlock: function(payload) {
     return ipcRenderer.invoke('tc-verify-support-unlock', payload || {});
+  },
+
+  /** Sync: true when running inside a packaged .exe (no DevTools / no cert unlock). */
+  isPackaged: function() {
+    try { return ipcRenderer.sendSync('tc-is-packaged-sync') === true; } catch (e) { return false; }
   },
 
   /** { isPackaged, licenseSecretConfigured, blockWritesOnCritical } */
@@ -347,6 +361,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /** Seal login credentials into main-owned store (bootstrap / password change). */
   sealCredentials: function(payload) {
     return ipcRenderer.invoke('tc-credentials-seal', payload || {});
+  },
+  /** Clear credential seal during Settings → Reset (admin session required). */
+  clearCredentialsForReset: function() {
+    return ipcRenderer.invoke('tc-credentials-clear-for-reset');
   },
   closeSession: function() {
     return ipcRenderer.invoke('tc-session-close');

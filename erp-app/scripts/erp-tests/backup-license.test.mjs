@@ -22,5 +22,9 @@ export function runBackupLicenseTests(ctx) {
 
   if (validateJsonBackupPayload(null)) return fail("Backup: reject null");
 
+  if (validateJsonBackupPayload({ version: 2, data: { tc3_settings: {}, tc3_sales: { bad: true } } })) {
+    return fail("Backup: reject non-array tc3_sales");
+  }
+
   pass("Backup / license payload validation (v2 shape)");
 }

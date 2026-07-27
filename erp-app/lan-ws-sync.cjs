@@ -18,11 +18,14 @@ const BATCH_WINDOW_MS = 150;
 const MAX_MESSAGE_BYTES = 65536;
 const MAX_KEYS_PER_NOTIFY = 64;
 const MAX_PROCESSED_MSG_IDS = 512;
+const NOTIFY_RATE_LIMIT = 30;
+const NOTIFY_RATE_WINDOW_MS = 60000;
 const CLIENT_MSG_TYPES = { auth: 1, ping: 1, notify: 1 };
 const SERVER_MSG_TYPES = { auth_ok: 1, auth_fail: 1, pong: 1, kv_changed: 1, sync_catchup: 1 };
 
 let wss = null;
 let wsClient = null;
+const notifyRateByClient = new Map();
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let revision = 0;
@@ -89,6 +92,24 @@ function parseHostFromApiUrl(apiUrl) {
   } catch (_e) {
     return '127.0.0.1';
   }
+}
+
+function getWsBindHost(cfg) {
+  var h = parseHostFromApiUrl(cfg && cfg.apiUrl);
+  if (!h || h === 'localhost') return '127.0.0.1';
+  return h;
+}
+
+function allowNotify(clientId) {
+  var id = String(clientId || 'anon');
+  var now = Date.now();
+  var row = notifyRateByClient.get(id) || { count: 0, windowStart: now };
+  if (now - row.windowStart > NOTIFY_RATE_WINDOW_MS) {
+    row = { count: 0, windowStart: now };
+  }
+  row.count += 1;
+  notifyRateByClient.set(id, row);
+  return row.count <= NOTIFY_RATE_LIMIT;
 }
 
 function newMsgId(prefix) {
@@ -511,16 +532,28 @@ function startServer(cfg) {
   stopServer();
   var port = getWsPort(cfg);
   var apiKey = cfg.apiKey || '';
+  var bindHost = getWsBindHost(cfg);
   try {
-    wss = new WebSocket.Server({ host: '0.0.0.0', port: port, clientTracking: true, maxPayload: MAX_MESSAGE_BYTES });
+    wss = new WebSocket.Server({ host: bindHost, port: port, clientTracking: true, maxPayload: MAX_MESSAGE_BYTES });
   } catch (e) {
-    logFn('error', '[LanWS] Server start failed: ' + (e && e.message ? e.message : String(e)));
-    setStatus('disconnected', { error: 'ws_server_failed' });
-    return;
+    logFn('error', '[LanWS] Server start failed on ' + bindHost + ':' + port + ': ' + (e && e.message ? e.message : String(e)));
+    if (bindHost !== '0.0.0.0') {
+      try {
+        wss = new WebSocket.Server({ host: '0.0.0.0', port: port, clientTracking: true, maxPayload: MAX_MESSAGE_BYTES });
+        logFn('warn', '[LanWS] Fallback bind 0.0.0.0:' + port);
+      } catch (e2) {
+        logFn('error', '[LanWS] Server start failed: ' + (e2 && e2.message ? e2.message : String(e2)));
+        setStatus('disconnected', { error: 'ws_server_failed' });
+        return;
+      }
+    } else {
+      setStatus('disconnected', { error: 'ws_server_failed' });
+      return;
+    }
   }
 
   wss.on('listening', function () {
-    logFn('info', '[LanWS] Server listening on port ' + port);
+    logFn('info', '[LanWS] Server listening on ' + bindHost + ':' + port);
     setStatus('connected', { port: port, mode: 'server' });
     startServerHeartbeat();
     logHealth('server_listening');
@@ -568,6 +601,10 @@ function startServer(cfg) {
         return;
       }
       if (msg.type === 'notify') {
+        if (!allowNotify(ws._clientId || msg.client_id || '')) {
+          logFn('warn', '[LanWS] notify rate limited for client ' + String(ws._clientId || msg.client_id || 'anon'));
+          return;
+        }
         queueBroadcast(msg.keys, ws._clientId || msg.client_id || '');
       }
     });
@@ -619,7 +656,6 @@ function startClient(cfg, isReconnect) {
           deviceSecret: creds.device_secret,
           clientId: cfg._runtimeClientId || '',
           lastRevision: lastKnownRevision,
-          apiKey: cfg.apiKey || '',
         });
       } else {
         authMsg = {

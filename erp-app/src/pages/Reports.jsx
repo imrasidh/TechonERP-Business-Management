@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
-import { GL, DEFAULT_GL_CHART, sumAccount, signedBalanceForAccount } from "../accounting/generalLedger.js";
+import { GL, DEFAULT_GL_CHART, sumAccount, signedBalanceForAccount, resolveGlChart } from "../accounting/generalLedger.js";
+import { hasGlOperationalSalesMismatch } from "../ops/glStorageHealth.js";
 import { round2 } from "../utils/moneyRound.js";
 import { buildReconAutoSuggest } from "../accounting/reconAutoSuggest.js";
 import { warnIfAggregateRoundingDrift } from "../accounting/roundingDrift.js";
@@ -19,6 +20,8 @@ import { activeSales, activePurchases, activeSalesReturns, activePurchaseReturns
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { buildDocPrintHeaderHtml } from "../components/DocPrintHeader.jsx";
 import ReportsAccountsHub from "./ReportsAccountsHub.jsx";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
+import { journalLineNavMeta, expenseEntryNav } from "../utils/sourceDocumentNav.js";
 
 var Reports = React.memo(function (props) {
   var state = props.state;
@@ -58,6 +61,7 @@ var Reports = React.memo(function (props) {
           return String(Math.round(q * 1000) / 1000);
         };
   var fmtDateFull = props.fmtDateFull;
+  var openSourceDocument = props.openSourceDocument;
   var getBusinessProfile = props.getBusinessProfile;
   var getInventoryReconciliation = typeof props.getInventoryReconciliation === "function" ? props.getInventoryReconciliation : null;
   var getInventoryReconTimeTravel = typeof props.getInventoryReconTimeTravel === "function" ? props.getInventoryReconTimeTravel : null;
@@ -184,59 +188,86 @@ var Reports = React.memo(function (props) {
   }, [mainTab, tab, invReconTtFrom, invReconTtTo]);
 
   /* BUG1 FIX: Use getCashBalances() as authoritative cash figure (replaces stale manual formula) */
-  var _rptBalances = getCashBalances(state);
+  /* PERF-REPORTS-LIGHT: O(n) overview aggregates only when Overview tab is visible. */
+  var needLightOverviewRpt = mainTab === "overview";
+  var _rptBalances = needLightOverviewRpt ? getCashBalances(state) : { total: 0 };
   var cashInHand = round2(_rptBalances.total);
   var liveSalesRpt = activeSales(state.sales);
   var livePurchasesRpt = activePurchases(state.purchases);
   /* capital — used in overview and assets tabs */
   var capital = round2(state.settings.capitalInvested || 0);
-  var totalSalesIncome = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
-  var totalPurchasesPaid = round2(livePurchasesRpt.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0));
-  var totalExpenses = round2(state.expenses.reduce(function (a, e) { return a + e.amount; }, 0));
-  var totalAssetsSpent = round2((state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0));
-  var invoicedCOGS = round2(getNetCOGS(liveSalesRpt, state.salesReturns)); /* Bug 3 fix: net COGS after returns */
-  var ingredientUsageCOGS = round2(sumRawMaterialKitchenCostInRange(state, null, null));
-  var totalCOGS = round2(invoicedCOGS + ingredientUsageCOGS);
+  var totalSalesIncome = 0;
+  var totalPurchasesPaid = 0;
+  var totalExpenses = 0;
+  var totalAssetsSpent = 0;
+  var invoicedCOGS = 0;
+  /* PERF-3: heavy kitchen + ledger derives only when Overview is visible (dead hub tabs skipped). */
+  var needHeavyOverviewRpt = mainTab === "overview";
+  var ingredientUsageCOGS = needHeavyOverviewRpt
+    ? round2(sumRawMaterialKitchenCostInRange(state, null, null))
+    : 0;
+  var totalCOGS = 0;
   /* sale.total may include VAT; net of tax for profit (matches GL sales posting) */
-  var netRevenue = round2(liveSalesRpt.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0));
-  var totalTaxOnInvoices = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
+  var netRevenue = 0;
+  var totalTaxOnInvoices = 0;
   /* Sales returns: r.amount = retail value reversed; cash refunds tracked separately in getCashBalances via r.refundAmount */
   var liveSalesReturnsRpt = activeSalesReturns(state.sales, state.salesReturns);
   var livePurchaseReturnsRpt = activePurchaseReturns(state.purchases, state.purchaseReturns);
-  var totalSalesReturnAmt = round2(liveSalesReturnsRpt.reduce(function (a, r) { return a + (r.amount || 0); }, 0));
-  var totalPurchaseReturnAmt = round2(livePurchaseReturnsRpt.reduce(function (a, r) { return a + (r.amount || 0); }, 0));
-  var totalRevenue = round2(netRevenue + totalSalesReturnAmt); /* gross revenue before returns — for display */
-  var totalProfit = round2(netRevenue - totalCOGS);
-  var grossMarginPct = netRevenue > 0 ? Math.round((totalProfit / netRevenue) * 100) : 0;
+  var totalSalesReturnAmt = 0;
+  var totalPurchaseReturnAmt = 0;
+  var totalRevenue = 0;
+  var totalProfit = 0;
+  var grossMarginPct = 0;
   /* FIX 1: Exclude soft-deleted (inactive) products from Net Worth stock value */
-  var activeProductsR = state.products.filter(function (p) { return p.status !== "inactive"; });
-  var stockCostValue = round2(activeProductsR.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0));
-  var stockValue = stockCostValue;
+  var activeProductsR = needLightOverviewRpt
+    ? state.products.filter(function (p) { return p.status !== "inactive"; })
+    : [];
+  var stockCostValue = 0;
+  var stockValue = 0;
   /* BUG2/GL: receivables — ledger AR when synced */
-  var totalReceivable = typeof getTotalReceivableDerived === "function"
-    ? round2(getTotalReceivableDerived(state))
-    : (function () {
-      var fromSales = liveSalesRpt.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
-      var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
-        var paid = (mr.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
-        return a + Math.max(0, mr.amount - paid);
-      }, 0);
-      return round2(fromSales + fromManual);
-    }());
+  var totalReceivable = 0;
   /* BUG3/GL: payables — ledger AP when synced */
-  var totalPayable = typeof getTotalPayableDerived === "function"
-    ? round2(getTotalPayableDerived(state))
-    : (function () {
-      var fromSupp = getTotalSupplierPayable(state.purchases);
-      var fromManual = S.get("tc3_manualPayables", []).reduce(function (a, mp) {
-        var paid = (mp.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
-        return a + Math.max(0, mp.amount - paid);
-      }, 0);
-      return round2(fromSupp + fromManual);
-    }());
-  var glPL = typeof getProfitAndLossFromLedger === "function" ? getProfitAndLossFromLedger(null, null) : null;
-  var glBS = typeof getBalanceSheetFromLedger === "function" ? getBalanceSheetFromLedger(null) : null;
-  var jlinesRpt = (typeof S !== "undefined" && S && typeof S.get === "function") ? (S.get("tc3_journal_lines", []) || []) : [];
+  var totalPayable = 0;
+  if (needLightOverviewRpt) {
+    totalSalesIncome = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
+    totalPurchasesPaid = round2(livePurchasesRpt.reduce(function (a, p) { return a + (p.paidAmount || 0); }, 0));
+    totalExpenses = round2(state.expenses.reduce(function (a, e) { return a + e.amount; }, 0));
+    totalAssetsSpent = round2((state.assets || []).reduce(function (a, x) { return a + (x.amount || x.value || 0); }, 0));
+    invoicedCOGS = round2(getNetCOGS(liveSalesRpt, state.salesReturns)); /* Bug 3 fix: net COGS after returns */
+    totalCOGS = round2(invoicedCOGS + ingredientUsageCOGS);
+    netRevenue = round2(liveSalesRpt.reduce(function (a, s) { return a + Math.max(0, (s.total || 0) - (s.totalTax || 0)); }, 0));
+    totalTaxOnInvoices = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
+    totalSalesReturnAmt = round2(liveSalesReturnsRpt.reduce(function (a, r) { return a + (r.amount || 0); }, 0));
+    totalPurchaseReturnAmt = round2(livePurchaseReturnsRpt.reduce(function (a, r) { return a + (r.amount || 0); }, 0));
+    totalRevenue = round2(netRevenue + totalSalesReturnAmt); /* gross revenue before returns — for display */
+    totalProfit = round2(netRevenue - totalCOGS);
+    grossMarginPct = netRevenue > 0 ? Math.round((totalProfit / netRevenue) * 100) : 0;
+    stockCostValue = round2(activeProductsR.reduce(function (a, p) { return a + (p.cost || 0) * (p.stock || 0); }, 0));
+    stockValue = stockCostValue;
+    totalReceivable = typeof getTotalReceivableDerived === "function"
+      ? round2(getTotalReceivableDerived(state))
+      : (function () {
+        var fromSales = liveSalesRpt.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0);
+        var fromManual = S.get("tc3_manualReceivables", []).reduce(function (a, mr) {
+          var paid = (mr.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
+          return a + Math.max(0, mr.amount - paid);
+        }, 0);
+        return round2(fromSales + fromManual);
+      }());
+    totalPayable = typeof getTotalPayableDerived === "function"
+      ? round2(getTotalPayableDerived(state))
+      : (function () {
+        var fromSupp = getTotalSupplierPayable(state.purchases);
+        var fromManual = S.get("tc3_manualPayables", []).reduce(function (a, mp) {
+          var paid = (mp.paymentHistory || []).reduce(function (s2, p) { return s2 + p.amount; }, 0);
+          return a + Math.max(0, mp.amount - paid);
+        }, 0);
+        return round2(fromSupp + fromManual);
+      }());
+  }
+  var glPL = needHeavyOverviewRpt && typeof getProfitAndLossFromLedger === "function" ? getProfitAndLossFromLedger(null, null) : null;
+  var glBS = needHeavyOverviewRpt && typeof getBalanceSheetFromLedger === "function" ? getBalanceSheetFromLedger(null) : null;
+  var jlinesRpt = needHeavyOverviewRpt && (typeof S !== "undefined" && S && typeof S.get === "function") ? (S.get("tc3_journal_lines", []) || []) : [];
   var hasJournalRpt = jlinesRpt.length > 0;
   var ledgerAcctNetRpt = function (acctId) {
     var d = 0;
@@ -259,41 +290,57 @@ var Reports = React.memo(function (props) {
     : round2(cashInHand + stockValue + totalReceivable + totalAssetsSpent - totalPayable);
   /* BUG5 FIX (Dashboard): filter out repairs already converted to *active* POS invoices
      to match the same logic used in P&L and Full Report — prevents double-counting */
-  var totalRepairRevenue = round2(state.repairs.reduce(function (a, r) {
-    if (r.status !== "Delivered") return a;
-    var alreadyInvoiced = liveSalesRpt.some(function (s) {
-      if (s.fromRepairId === r.id) return true;
-      return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
-    });
-    return alreadyInvoiced ? a : a + (r.estimatedCost || r.cost || 0);
-  }, 0));
-  var activeRepairs = state.repairs.filter(function (r) {
-    var st = r.status || "Accepted";
-    if (st === "Accepted" || st === "Third Party" || st === "Ready" || st === "Repairing" || st === "Pending") return true;
-    var devices = Array.isArray(r.devices) ? r.devices : [];
-    if (!devices.length) return false;
-    return devices.some(function (d) {
-      var ds = (d && d.status) || "Accepted";
-      return ds === "Accepted" || ds === "Third Party" || ds === "Ready";
-    });
-  }).length;
+  var totalRepairRevenue = 0;
+  var activeRepairs = 0;
+  if (needLightOverviewRpt) {
+    totalRepairRevenue = round2(state.repairs.reduce(function (a, r) {
+      if (r.status !== "Delivered") return a;
+      var alreadyInvoiced = liveSalesRpt.some(function (s) {
+        if (s.fromRepairId === r.id) return true;
+        return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
+      });
+      return alreadyInvoiced ? a : a + (r.estimatedCost || r.cost || 0);
+    }, 0));
+    activeRepairs = state.repairs.filter(function (r) {
+      var st = r.status || "Accepted";
+      if (st === "Accepted" || st === "Third Party" || st === "Ready" || st === "Repairing" || st === "Pending") return true;
+      var devices = Array.isArray(r.devices) ? r.devices : [];
+      if (!devices.length) return false;
+      return devices.some(function (d) {
+        var ds = (d && d.status) || "Accepted";
+        return ds === "Accepted" || ds === "Third Party" || ds === "Ready";
+      });
+    }).length;
+  }
 
-  var daySales = liveSalesRpt.filter(function (s) { return s.date === reportDate; });
-  var daySalesTotal = round2(daySales.reduce(function (a, s) { return a + s.total; }, 0));
-  var dayReturns = activeSalesReturns(state.sales, (state.salesReturns || []).filter(function (r) { return r.date === reportDate; }));
-  var dayInvoicedCOGS = round2(getNetCOGSForRange(daySales, dayReturns, liveSalesRpt));
-  var dayIngredientCOGS = round2(sumRawMaterialKitchenCostInRange(state, reportDate, reportDate));
-  var dayCOGS = round2(dayInvoicedCOGS + dayIngredientCOGS);
-  var dayProfit = round2(daySalesTotal - dayCOGS);
-  var dayExpenses = round2(state.expenses.filter(function (e) { return e.date === reportDate; }).reduce(function (a, e) { return a + e.amount; }, 0));
-  var dayNetProfit = round2(dayProfit - dayExpenses);
-  var dayPaid = round2(daySales.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
-  var dayUnpaid = round2(daySales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0));
-  var dayTaxCollected = round2(daySales.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
-
-  var monthSales = liveSalesRpt.filter(function (s) { return s.date.slice(0, 7) === reportMonth; });
-  var monthSalesTotal = round2(monthSales.reduce(function (a, s) { return a + s.total; }, 0));
-  var monthReturns = activeSalesReturns(state.sales, (state.salesReturns || []).filter(function (r) { return r.date.slice(0, 7) === reportMonth; }));
+  /* Dead hub Daily/Monthly tabs are gated off — skip O(n) day/month derives every paint (PERF-REPORTS-LIGHT). */
+  var daySales = [];
+  var daySalesTotal = 0;
+  var dayReturns = [];
+  var dayInvoicedCOGS = 0;
+  var dayIngredientCOGS = 0;
+  var dayCOGS = 0;
+  var dayProfit = 0;
+  var dayExpenses = 0;
+  var dayNetProfit = 0;
+  var dayPaid = 0;
+  var dayUnpaid = 0;
+  var dayTaxCollected = 0;
+  var monthSales = [];
+  var monthSalesTotal = 0;
+  var monthReturns = [];
+  var monthInvoicedCOGS = 0;
+  var monthIngredientCOGS = 0;
+  var monthCOGS = 0;
+  var monthProfit = 0;
+  var monthExpenses = 0;
+  var monthRepairRev = 0;
+  var monthNetProfit = 0;
+  var monthPurchases = 0;
+  var monthPaid = 0;
+  var monthReceivable = 0;
+  var monthTaxCollected = 0;
+  /* monthLastStr kept for residual print/hub refs */
   var monthLastStr = (function () {
     var parts = reportMonth.split("-");
     var y = parseInt(parts[0], 10);
@@ -302,25 +349,6 @@ var Reports = React.memo(function (props) {
     var last = new Date(y, m, 0).getDate();
     return reportMonth + "-" + String(last).padStart(2, "0");
   })();
-  var monthInvoicedCOGS = round2(getNetCOGSForRange(monthSales, monthReturns, liveSalesRpt));
-  var monthIngredientCOGS = round2(sumRawMaterialKitchenCostInRange(state, reportMonth + "-01", monthLastStr));
-  var monthCOGS = round2(monthInvoicedCOGS + monthIngredientCOGS);
-  var monthProfit = round2(monthSalesTotal - monthCOGS);
-  var monthExpenses = round2(state.expenses.filter(function (e) { return e.date.slice(0, 7) === reportMonth; }).reduce(function (a, e) { return a + e.amount; }, 0));
-  var monthRepairRev = round2(state.repairs.filter(function (r) {
-    if (r.status !== "Delivered") return false;
-    if ((r.dateOut || r.date || "").slice(0, 7) !== reportMonth) return false;
-    return !liveSalesRpt.some(function (s) {
-      if (s.fromRepairId === r.id) return true;
-      return (s.items || []).some(function (it) { return it && it.fromRepairId === r.id; });
-    });
-  }).reduce(function (a, r) { return a + (r.estimatedCost || r.cost || 0); }, 0));
-  var monthNetProfit = round2(monthProfit + monthRepairRev - monthExpenses);
-  var monthPurchases = round2(livePurchasesRpt.filter(function (p) { return (p.date || "").slice(0, 7) === reportMonth; }).reduce(function (a, p) { return a + (p.total || 0); }, 0));
-  var monthPaid = round2(monthSales.reduce(function (a, s) { return a + (s.paid || 0); }, 0));
-  var monthReceivable = round2(monthSales.reduce(function (a, s) { return a + Math.max(0, s.total - (s.paid || 0)); }, 0));
-  var monthTaxCollected = round2(monthSales.reduce(function (a, s) { return a + (s.totalTax || 0); }, 0));
-
   var getProductTypeRpt = function (p) {
     var t = String((p && p.type) || "").toLowerCase();
     return t === "service" || t === "raw_material" ? t : "stock";
@@ -390,11 +418,18 @@ var Reports = React.memo(function (props) {
     var consumedCost = consumed != null ? consumed * unitCost : null;
     return { product: p, opening: opening, purchased: purchased, closing: closing, consumed: consumed, unitCost: unitCost, consumedCost: consumedCost, hasClosing: hasClosing };
   });
-  var rawReplayInvDerRpt = deriveInventoryEconomics(state, S);
-  var rawConsumedReplayCostRpt = round2(sumRawMaterialKitchenCostInRange(state, reportDate, reportDate, rawReplayInvDerRpt));
+  var rawReplayInvDerRpt = null;
+  var rawConsumedReplayCostRpt = 0;
+  var ensureRawReplayCostRpt = function () {
+    if (rawReplayInvDerRpt) return rawConsumedReplayCostRpt;
+    rawReplayInvDerRpt = deriveInventoryEconomics(state, S);
+    rawConsumedReplayCostRpt = round2(sumRawMaterialKitchenCostInRange(state, reportDate, reportDate, rawReplayInvDerRpt));
+    return rawConsumedReplayCostRpt;
+  };
   var rawNegativeRowsRpt = rawConsumptionRowsRpt.filter(function (r) { return r.consumed != null && r.consumed < 0; });
 
   var printRawConsumptionReport = function () {
+    ensureRawReplayCostRpt();
     var shopName = state.settings.shopName || "TechonERP";
     var dateLabel = reportDate;
     var rows = rawConsumptionRowsRpt.map(function (r, i) {
@@ -510,8 +545,8 @@ var Reports = React.memo(function (props) {
     printHtmlViaIframe(fullHtml, delay);
   };
 
-  /* Chromium/Electron: document.write() on multi‑MB strings (full Business Report) often fails or never prints; use a blob URL + load + print. */
-  var OPEN_PRINT_LARGE_HTML = 450000;
+  /* Chromium/Electron: prefer blob URL for report HTML to avoid document.write failures. */
+  var OPEN_PRINT_LARGE_HTML = 80000;
 
   var openPrintWindow = function (fullHtml, opts) {
     opts = opts || {};
@@ -972,7 +1007,7 @@ var Reports = React.memo(function (props) {
             h += "<h3>Sales Invoices (" + rSales.length + ")</h3><table class='dtl'><thead><tr><th>Date</th><th>Invoice</th><th>Customer</th><th style='text-align:right'>Revenue</th><th style='text-align:right'>COGS</th><th style='text-align:right'>Profit</th><th>Status</th></tr></thead><tbody>";
             rSales.forEach(function (s) {
               var sc = s.items.reduce(function (b, it) { return b + (it.cost || 0) * it.qty; }, 0); var sp = s.total - sc;
-              h += "<tr><td>" + escapeHtml(s.date) + "</td><td style='font-family:monospace'>" + escapeHtml(s.invoiceNo || s.id.slice(0, 8)) + "</td><td>" + escapeHtml(s.customerName || "Walk-in") + "</td><td style='text-align:right'>" + getCurrencySymbol() + " " + Number(s.total).toLocaleString() + "</td><td style='text-align:right'>" + getCurrencySymbol() + " " + Number(sc).toLocaleString() + "</td><td style='text-align:right;font-weight:700;color:" + (sp >= 0 ? "#1b5e20" : "#b71c1c") + "'>" + getCurrencySymbol() + " " + Number(sp).toLocaleString() + "</td><td>" + (s.payStatus || "") + "</td></tr>";
+              h += "<tr><td>" + escapeHtml(s.date) + "</td><td style='font-family:monospace'>" + escapeHtml(s.invoiceNo || s.id.slice(0, 8)) + "</td><td>" + escapeHtml(s.customerName || "Walk-in") + "</td><td style='text-align:right'>" + getCurrencySymbol() + " " + Number(s.total).toLocaleString() + "</td><td style='text-align:right'>" + getCurrencySymbol() + " " + Number(sc).toLocaleString() + "</td><td style='text-align:right;font-weight:700;color:" + (sp >= 0 ? "#1b5e20" : "#b71c1c") + "'>" + getCurrencySymbol() + " " + Number(sp).toLocaleString() + "</td><td>" + escapeHtml(s.payStatus || "") + "</td></tr>";
             });
             h += "</tbody></table>";
           }
@@ -1178,24 +1213,37 @@ var Reports = React.memo(function (props) {
 
       {mainTab === "overview" && (function () {
         var cb = getCashBalances(state);
-        var totalSales = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.total || 0); }, 0));
+        var opsTotalSales = round2(liveSalesRpt.reduce(function (a, s) { return a + (s.total || 0); }, 0));
+        var totalSales = opsTotalSales;
         var totalPurchases = round2(livePurchasesRpt.reduce(function (a, p) { return a + (p.total || 0); }, 0));
         var grossP = totalProfit;
         var netP = round2(totalProfit + totalRepairRevenue - totalExpenses);
         var ovStmtExpenses = totalExpenses;
         var ovStmtCogs = totalCOGS;
         var ovLedger = false;
+        var glSalesMismatch = hasGlOperationalSalesMismatch(S, opsTotalSales);
         /* Prefer ledger P&L when journal exists — same net as Accounts → GL. */
         if (hasJournalRpt && glPL && typeof glPL.net === "number") {
           netP = round2(glPL.net);
-          ovLedger = true;
-          if (typeof glPL.income === "number") {
-            totalSales = round2(glPL.income);
-            grossP = round2(glPL.income);
-          }
-          if (typeof glPL.expenses === "number") {
-            ovStmtExpenses = round2(glPL.expenses);
-            ovStmtCogs = 0;
+          var glIncome = typeof glPL.income === "number" ? round2(glPL.income) : null;
+          if (glIncome != null && (glIncome > 0 || opsTotalSales === 0)) {
+            totalSales = glIncome;
+            grossP = glIncome;
+            ovLedger = true;
+            if (typeof glPL.expenses === "number") {
+              ovStmtExpenses = round2(glPL.expenses);
+              ovStmtCogs = 0;
+            }
+          } else if (glSalesMismatch) {
+            ovLedger = false;
+          } else if (glIncome != null) {
+            totalSales = glIncome;
+            grossP = glIncome;
+            ovLedger = true;
+            if (typeof glPL.expenses === "number") {
+              ovStmtExpenses = round2(glPL.expenses);
+              ovStmtCogs = 0;
+            }
           }
         }
         var salesDue = round2(Math.max(0, liveSalesRpt.reduce(function (a, s) { return a + (s.total || 0); }, 0) - totalSalesIncome));
@@ -1218,11 +1266,11 @@ var Reports = React.memo(function (props) {
                 <div>
                   <div className="erp-rpt-ov-kicker">Reports · Overview</div>
                   <div className="erp-rpt-ov-title">Business Summary</div>
-                  <div className="erp-rpt-ov-sub">{ovLedger ? "Live snapshot · P&amp;L and position from General Ledger" : "Live snapshot of sales, profit, cash position and collections"}</div>
+                  <div className="erp-rpt-ov-sub">{ovLedger ? "Live snapshot · P&amp;L and position from General Ledger" : (glSalesMismatch ? "Invoice totals shown — GL sales income is zero; run Accounts → General Ledger → Rebuild ledger" : "Live snapshot of sales, profit, cash position and collections")}</div>
                 </div>
                 <div className="erp-rpt-ov-head-actions">
-                  <span className={"erp-rpt-ov-pill" + (netP >= 0 ? " is-ok" : " is-bad")}>
-                    {netP >= 0 ? "In profit" : "In loss"}
+                  <span className={"erp-rpt-ov-pill" + (netP > 0 ? " is-ok" : netP < 0 ? " is-bad" : "")}>
+                    {netP > 0 ? "In profit" : netP < 0 ? "In loss" : "Break-even"}
                   </span>
                   <button type="button" className="erp-rpt-ov-link" onClick={function () { setMainTab("accounts"); }}>
                     Generate report →
@@ -1410,7 +1458,19 @@ var Reports = React.memo(function (props) {
               {daySales.length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.muted }}>No sales on this date</div>}
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead><tr><TH>Invoice</TH><TH>Customer</TH><TH>Total</TH><TH>Tax</TH><TH>Status</TH></tr></thead>
-                <tbody>{daySales.map(function (s, i) { return <TR key={s.id} i={i}><td style={{ padding: "9px 14px", fontFamily: "monospace", fontSize: 12 }}>{s.invoiceNo || s.id.slice(0, 8)}</td><TD bold>{s.customerName || "Walk-in"}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD><TD color={C.muted}>{getCurrencySymbol()} {fmtNum(s.totalTax || 0)}</TD><td style={{ padding: "9px 14px" }}><Badge status={s.payStatus || "Paid"} /></td></TR>; })}</tbody>
+                <tbody>{daySales.map(function (s, i) {
+                  return (
+                    <TR key={s.id} i={i}>
+                      <td style={{ padding: "9px 14px" }}>
+                        <SourceDocLink nav={{ sourceKind: "sale", sourceId: s.id, label: s.invoiceNo || s.id.slice(0, 8) }} label={s.invoiceNo || s.id.slice(0, 8)} openSourceDocument={openSourceDocument} className="erp-stmt-ref-btn" />
+                      </td>
+                      <TD bold>{s.customerName || "Walk-in"}</TD>
+                      <TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD>
+                      <TD color={C.muted}>{getCurrencySymbol()} {fmtNum(s.totalTax || 0)}</TD>
+                      <td style={{ padding: "9px 14px" }}><Badge status={s.payStatus || "Paid"} /></td>
+                    </TR>
+                  );
+                })}</tbody>
               </table>
             </Card>
             <Card pad={0}>
@@ -1418,7 +1478,17 @@ var Reports = React.memo(function (props) {
               {state.expenses.filter(function (e) { return e.date === reportDate; }).length === 0 && <div style={{ padding: 20, textAlign: "center", color: C.muted }}>No expenses on this date</div>}
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead><tr><TH>Category</TH><TH>Description</TH><TH>Amount</TH></tr></thead>
-                <tbody>{state.expenses.filter(function (e) { return e.date === reportDate; }).map(function (e, i) { return <TR key={e.id} i={i}><TD>{e.category}</TD><TD>{e.description}</TD><TD bold color={C.red}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD></TR>; })}</tbody>
+                <tbody>{state.expenses.filter(function (e) { return e.date === reportDate; }).map(function (e, i) {
+                  return (
+                    <TR key={e.id} i={i}>
+                      <TD>{e.category}</TD>
+                      <TD>
+                        <SourceDocLink nav={expenseEntryNav(e)} label={e.description || "View"} openSourceDocument={openSourceDocument} />
+                      </TD>
+                      <TD bold color={C.red}>{getCurrencySymbol()} {fmtNum(e.amount)}</TD>
+                    </TR>
+                  );
+                })}</tbody>
               </table>
               <div style={{ padding: "10px 14px", borderTop: "2px solid " + C.border, fontWeight: 700, display: "flex", justifyContent: "space-between", fontSize: 13 }}><span>Net Profit (after expenses)</span><span style={{ color: dayNetProfit >= 0 ? C.green : C.red }}>{getCurrencySymbol()} {fmtNum(dayNetProfit)}</span></div>
             </Card>
@@ -1577,7 +1647,7 @@ var Reports = React.memo(function (props) {
           }
         }
         var linesR = S.get("tc3_journal_lines", []);
-        var chartR = S.get("tc3_gl_accounts", DEFAULT_GL_CHART);
+        var chartR = resolveGlChart(S.get("tc3_gl_accounts", DEFAULT_GL_CHART));
         var autoS = rec && drilldown ? buildReconAutoSuggest(state, linesR, chartR, rec, drilldown) : null;
         var kitchenReplayR = round2(sumRawMaterialKitchenCostInRange(state, invReconTtFrom, invReconTtTo));
         var kitchenLegacyEstR = round2(sumRawMaterialUsageCostInRange(state, invReconTtFrom, invReconTtTo));
@@ -1746,7 +1816,13 @@ var Reports = React.memo(function (props) {
                                         <TD style={{ fontWeight: 700 }}>{getCurrencySymbol()} {fmtNum(rw.signedImpact)}</TD>
                                         <TD>{getCurrencySymbol()} {fmtNum(rw.debit)}</TD>
                                         <TD>{getCurrencySymbol()} {fmtNum(rw.credit)}</TD>
-                                        <TD>{(rw.referenceType || "") + " · " + String(rw.referenceId || "").slice(0, 14)}</TD>
+                                        <TD>
+                                          <SourceDocLink
+                                            nav={journalLineNavMeta({ referenceType: rw.referenceType, referenceId: rw.referenceId }, { state: state, S: S })}
+                                            label={(rw.referenceType || "") + " · " + String(rw.referenceId || "").slice(0, 14)}
+                                            openSourceDocument={openSourceDocument}
+                                          />
+                                        </TD>
                                       </TR>
                                     );
                                   })}
@@ -1823,7 +1899,13 @@ var Reports = React.memo(function (props) {
                               <TD>{ln.date || "—"}</TD>
                               <TD>{getCurrencySymbol()} {fmtNum(ln.debit || 0)}</TD>
                               <TD>{getCurrencySymbol()} {fmtNum(ln.credit || 0)}</TD>
-                              <TD>{(ln.referenceType || "") + " · " + String(ln.referenceId || "").slice(0, 12)}</TD>
+                              <TD>
+                                <SourceDocLink
+                                  nav={journalLineNavMeta(ln, { state: state, S: S })}
+                                  label={(ln.referenceType || "") + " · " + String(ln.referenceId || "").slice(0, 12)}
+                                  openSourceDocument={openSourceDocument}
+                                />
+                              </TD>
                               <TD style={{ maxWidth: 220, wordBreak: "break-word" }}>{ln.memo || ""}</TD>
                             </TR>
                           );
@@ -1845,6 +1927,11 @@ var Reports = React.memo(function (props) {
                 <Input type="date" label="From" value={invReconTtFrom} onChange={function (e) { setInvReconTtFrom(e.target.value); }} />
                 <Input type="date" label="To" value={invReconTtTo} onChange={function (e) { setInvReconTtTo(e.target.value); }} />
               </div>
+              {ttSeries && ttSeries.truncated ? (
+                <div style={{ fontSize: 12, color: "#b45309", fontWeight: 600, marginBottom: 8 }}>
+                  Range truncated to {ttSeries.maxDays || 92} days for performance (requested {ttSeries.requestedDays} days). Narrow the dates for a full series.
+                </div>
+              ) : null}
               {ttSpark ? (
                 <div className="erp-rpt-recon-spark">
                   <div className="erp-rpt-recon-spark-label">Daily delta magnitude (GL − physical)</div>
@@ -1960,7 +2047,7 @@ var Reports = React.memo(function (props) {
             <div className="erp-rpt-kpi-strip" style={{ marginBottom: 8 }}>
               {[
                 { label: "Raw Materials", val: rawMaterialProductsRpt.length, color: C.blue, isCount: true, sub: reportDate },
-                { label: "Consumed Cost", val: rawConsumedReplayCostRpt, color: C.green, sub: rawCountExactRpt ? "replay / GL kitchen" : "waiting for count" },
+                { label: "Consumed Cost", val: ensureRawReplayCostRpt(), color: C.green, sub: rawCountExactRpt ? "replay / GL kitchen" : "waiting for count" },
                 { label: "Warnings", val: rawNegativeRowsRpt.length, color: rawNegativeRowsRpt.length ? C.red : C.green, isCount: true, sub: "negative rows" },
               ].map(function (k) {
                 return (
@@ -2409,7 +2496,11 @@ var Reports = React.memo(function (props) {
         var shopName = state.settings.shopName || "Techon ERP";
         var addr = state.settings.address || "";
         var phone = state.settings.phone || "";
-        var accent = state.settings.invoiceAccentColor || "#0d47a1";
+        var accentRaw = state.settings.invoiceAccentColor || "#0d47a1";
+        var accent = (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(String(accentRaw).trim())
+          || /^rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)$/.test(String(accentRaw).trim()))
+          ? String(accentRaw).trim()
+          : "#0d47a1";
         var printedOn = new Date().toLocaleString();
 
         /* ── ASSETS SIDE ── */
@@ -2700,6 +2791,23 @@ var Reports = React.memo(function (props) {
           issues.push({ label: "Products with Negative Stock", count: negStock.length, detail: negStock.map(function (p) { return p.name + " (" + p.stock + ")"; }).join(", "), severity: "error" });
         } else {
           passed.push("No products have negative stock ✓");
+        }
+
+        /* ── CHECK 2b: Concurrent Multi-PC oversell clamps (SYNC-5 visibility) ── */
+        var oversellClamp = (state.products || []).filter(function (p) {
+          return p && p.status !== "inactive" && p.stockMergeWarning === "concurrent_oversell";
+        });
+        if (oversellClamp.length > 0) {
+          warnings.push({
+            label: "Multi-PC stock conflict (clamped to 0)",
+            count: oversellClamp.length,
+            detail: oversellClamp.slice(0, 12).map(function (p) {
+              return (p.name || p.id) + (p.stockMergeRaw != null ? " (raw " + p.stockMergeRaw + ")" : "");
+            }).join(", ") + (oversellClamp.length > 12 ? "…" : ""),
+            severity: "warn",
+          });
+        } else {
+          passed.push("No unresolved Multi-PC concurrent oversell clamps ✓");
         }
 
         /* ── CHECK 3: Sales paid > total (overpayment anomaly) ── */
@@ -3087,6 +3195,17 @@ var Reports = React.memo(function (props) {
                 }());
                 var grossMargin = totalRev > 0 ? ((grossProfit / totalRev) * 100).toFixed(1) : "0.0";
                 var netMargin = totalRev > 0 ? ((netProfit / totalRev) * 100).toFixed(1) : "0.0";
+                var hasJournalPrint = (S.get("tc3_journal_lines", []) || []).length > 0;
+                if (hasJournalPrint && typeof getProfitAndLossFromLedger === "function") {
+                  var glPrint = getProfitAndLossFromLedger(rf, rt);
+                  if (glPrint && typeof glPrint.income === "number" && typeof glPrint.net === "number") {
+                    totalRev = round2(glPrint.income);
+                    netProfit = round2(glPrint.net);
+                    grossProfit = round2(totalRev - totalCOGSr);
+                    grossMargin = totalRev > 0 ? ((grossProfit / totalRev) * 100).toFixed(1) : "0.0";
+                    netMargin = totalRev > 0 ? ((netProfit / totalRev) * 100).toFixed(1) : "0.0";
+                  }
+                }
 
                 var repPending = rRep.filter(function (r) { return r.status === "Pending"; }).length;
                 var repRepairing = rRep.filter(function (r) { return r.status === "Repairing"; }).length;
@@ -3194,7 +3313,7 @@ var Reports = React.memo(function (props) {
                 html += "<table>" + tblHead(["#", "Date", "Invoice", "Supplier", "Items", "Total", "Paid", "Balance", "Status"]);
                 html += "<tbody>";
                 rPurch.forEach(function (p, i) {
-                  html += tblRow([i + 1, escapeHtml(p.date || "-"), escapeHtml(p.invoiceNo || "-"), escapeHtml(p.supplier || "-"), (p.items || []).length, getCurrencySymbol() + " " + Number(p.total).toLocaleString(), getCurrencySymbol() + " " + Number(p.paidAmount || 0).toLocaleString(), getCurrencySymbol() + " " + Number(Math.max(0, (p.total || 0) - (p.paidAmount || 0))).toLocaleString(), badge(p.status || "-", "#f0f4ff", "#555")]);
+                  html += tblRow([i + 1, escapeHtml(p.date || "-"), escapeHtml(p.invoiceNo || "-"), escapeHtml(p.supplier || "-"), (p.items || []).length, getCurrencySymbol() + " " + Number(p.total).toLocaleString(), getCurrencySymbol() + " " + Number(p.paidAmount || 0).toLocaleString(), getCurrencySymbol() + " " + Number(Math.max(0, (p.total || 0) - (p.paidAmount || 0))).toLocaleString(), badge(escapeHtml(p.status || "-"), "#f0f4ff", "#555")]);
                 });
                 html += "<tr class='tot'><td colspan='5'>TOTAL</td><td>" + getCurrencySymbol() + " " + Number(totalPurchAmt).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(totalPurchPaid).toLocaleString() + "</td><td>" + getCurrencySymbol() + " " + Number(totalPurchBal).toLocaleString() + "</td><td></td></tr>";
                 html += "</tbody></table>" + hr;
@@ -3212,7 +3331,7 @@ var Reports = React.memo(function (props) {
                 rExp.forEach(function (e) { if (!expCats[e.category || "Other"]) expCats[e.category || "Other"] = 0; expCats[e.category || "Other"] += e.amount; });
                 html += "<div style='margin:10px 0 14px'><strong style='font-size:11px;color:#555;text-transform:uppercase'>Expenses by Category: </strong>";
                 Object.keys(expCats).sort(function (a, b) { return expCats[b] - expCats[a]; }).forEach(function (cat) {
-                  html += "<span style='margin:0 8px;font-size:11px'><strong>" + cat + ":</strong> " + getCurrencySymbol() + " " + Number(expCats[cat]).toLocaleString() + "</span>";
+                  html += "<span style='margin:0 8px;font-size:11px'><strong>" + escapeHtml(cat) + ":</strong> " + getCurrencySymbol() + " " + Number(expCats[cat]).toLocaleString() + "</span>";
                 });
                 html += "</div>" + hr;
 
@@ -3327,7 +3446,14 @@ var Reports = React.memo(function (props) {
                 html += card("Total Payable", totalPay, "#b71c1c");
                 html += card("Total Assets (All-time)", state.assets ? state.assets.reduce(function (a, x) { return a + x.amount; }, 0) : 0, "#37474f");
                 html += card("Period Net Profit", netProfit, netProfit >= 0 ? "#1b5e20" : "#b71c1c");
-                html += card("Net Worth", getCashBalances(state).total + allStockCost + totalRecv + totalAssetAmt - totalPay, "#0d47a1");
+                html += card("Net Worth", hasJournalPrint && typeof getBalanceSheetFromLedger === "function"
+                  ? ((function () {
+                    var bs = getBalanceSheetFromLedger(rt);
+                    return bs && typeof bs.equityWithCurrentEarnings === "number"
+                      ? bs.equityWithCurrentEarnings
+                      : (getCashBalances(state).total + allStockCost + totalRecv + totalAssetAmt - totalPay);
+                  })())
+                  : (getCashBalances(state).total + allStockCost + totalRecv + totalAssetAmt - totalPay), "#0d47a1");
                 html += cardNum("Total Customers", state.customers.length, "#1565c0");
                 html += cardNum("Total Suppliers", state.suppliers.length, "#37474f");
                 html += "</div>";

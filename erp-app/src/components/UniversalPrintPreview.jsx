@@ -1,7 +1,7 @@
 import React, { useState, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import PrintFormatChooser from "./PrintFormatChooser.jsx";
-import { applyPageFormatToHtml, pageFormatMeta, resolveThermalFormat } from "../utils/printFormat.js";
+import { applyPageFormatToHtml, pageFormatMeta, buildPrintFmtOptions } from "../utils/printFormat.js";
 
 /**
  * Universal View & Print modal — same chrome as Reports Print Preview:
@@ -29,17 +29,16 @@ export function UniversalPrintPreview(props) {
   var showFormats = props.showFormats === true;
   var format = props.format || "a4";
   var onFormatChange = props.onFormatChange;
+  var showWarranty = props.showWarranty === true;
+  var warranty = props.warranty === true;
+  var onWarrantyChange = props.onWarrantyChange;
+  var warrantyDisabled = props.warrantyDisabled === true;
   var previewElId = props.previewElId || "tc-univ-print-body";
   var zIndex = props.zIndex != null ? props.zIndex : 12000;
 
   var [printFmtOpen, setPrintFmtOpen] = useState(false);
   var sheetRef = useRef(null);
-  var invThermalFmt = resolveThermalFormat(settings);
-  var invPrintFmtOptions = [
-    ["a4", "A4"],
-    ["a5", "A5"],
-    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
-  ];
+  var invPrintFmtOptions = buildPrintFmtOptions(settings);
 
   var isThermal = String(format).indexOf("thermal") === 0;
   var sheetW = format === "a5" ? 560 : (format === "thermal58" ? 230 : (isThermal ? 310 : 794));
@@ -168,22 +167,39 @@ export function UniversalPrintPreview(props) {
             </div>
           </div>
         </div>
-        {showFormats ? (
+        {(showFormats || showWarranty) ? (
           <div className="erp-si-fv-tools">
-            <span className="erp-si-fv-tool-label">Format</span>
-            <div className="erp-si-fv-formats" role="group" aria-label="Print format">
-              {invPrintFmtOptions.map(function (item) {
-                var v = item[0]; var lbl = item[1];
-                return (
-                  <button
-                    key={v}
-                    type="button"
-                    className={"erp-si-fv-fmt" + (format === v ? " is-active" : "")}
-                    onClick={function () { if (typeof onFormatChange === "function") onFormatChange(v); }}
-                  >{lbl}</button>
-                );
-              })}
-            </div>
+            {showFormats ? (
+              <React.Fragment>
+                <span className="erp-si-fv-tool-label">Format</span>
+                <div className="erp-si-fv-formats" role="group" aria-label="Print format">
+                  {invPrintFmtOptions.map(function (item) {
+                    var v = item[0]; var lbl = item[1];
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        className={"erp-si-fv-fmt" + (format === v ? " is-active" : "")}
+                        onClick={function () { if (typeof onFormatChange === "function") onFormatChange(v); }}
+                      >{lbl}</button>
+                    );
+                  })}
+                </div>
+              </React.Fragment>
+            ) : null}
+            {showWarranty ? (
+              <label className={"erp-si-fv-warranty" + (warranty ? " is-on" : "") + (warrantyDisabled ? " is-disabled" : "")} title={warrantyDisabled ? "Enable warranty text in Settings → Invoice Design" : "Include warranty policy on this print"}>
+                <input
+                  type="checkbox"
+                  checked={warranty}
+                  disabled={warrantyDisabled}
+                  onChange={function (e) {
+                    if (typeof onWarrantyChange === "function") onWarrantyChange(e.target.checked);
+                  }}
+                />
+                <span>Warranty</span>
+              </label>
+            ) : null}
           </div>
         ) : null}
         <div className="erp-si-fv-actions">
@@ -212,9 +228,8 @@ export function UniversalPrintPreview(props) {
       <PrintFormatChooser
         open={printFmtOpen}
         settings={settings}
-        thermalId={invThermalFmt}
         title="Print"
-        hint="Choose A4, A5, or Thermal for your printer."
+        hint="Choose an enabled paper size for your printer."
         onClose={function () { setPrintFmtOpen(false); }}
         onSelect={doPrint}
         zIndex={zIndex + 1000}

@@ -12,15 +12,22 @@ require_once __DIR__ . '/config.php';
 $auth = requireAuth();
 $authMode = is_array($auth) ? ($auth['mode'] ?? '') : '';
 $isLoopback = function_exists('tcIsLocalhostRequest') ? tcIsLocalhostRequest() : false;
+$mainActionToken = null;
+if (file_exists(__DIR__ . '/tc_main_action.php')) {
+    require_once __DIR__ . '/tc_main_action.php';
+    if (defined('TC_MAIN_ACTION_TOKEN')) $mainActionToken = (string)TC_MAIN_ACTION_TOKEN;
+}
 
 if ($authMode === 'open' && !$isLoopback) {
     respond(['success' => false, 'message' => 'OPEN_API wipe is localhost-only'], 403);
 }
-if ($authMode === 'legacy' && !$isLoopback && getenv('TECHON_ERP_ALLOW_LEGACY_SYNC') !== '1') {
-    respond(['success' => false, 'message' => 'Legacy wipe is localhost-only'], 403);
+/* Wiping the shop is Main PC only in every auth mode. The migration flag
+   TECHON_ERP_ALLOW_LEGACY_SYNC must never open a remote wipe. */
+if (!$isLoopback) {
+    respond(['success' => false, 'message' => 'Shop wipe is Main PC (localhost) only'], 403);
 }
-if ($authMode === 'device' && !$isLoopback) {
-    respond(['success' => false, 'message' => 'Shop wipe not allowed from counter device'], 403);
+if (!$mainActionToken || !hash_equals($mainActionToken, (string)($_SERVER['HTTP_X_TC_MAIN_ACTION'] ?? ''))) {
+    respond(['success' => false, 'message' => 'Main action token required'], 403);
 }
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {

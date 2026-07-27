@@ -22,6 +22,29 @@ export function isProductionViteBuild() {
   }
 }
 
+/**
+ * Certification tools (dataset generator + runner) replace the whole company database
+ * with a synthetic dataset that has a published admin password, so they stay off in
+ * production builds unless an operator deliberately arms them for an internal run.
+ */
+export var CERT_TOOLS_UNLOCK_KEY = "techon_certification_tools";
+
+export function areCertificationToolsEnabled() {
+  /* Non-production unpackaged builds: always on for developers. */
+  if (!IS_PRODUCTION && !isProductionViteBuild()) return true;
+  try {
+    /* Packaged .exe: never unlock via renderer localStorage (published cert password). */
+    if (typeof window !== "undefined" && window.electronAPI && typeof window.electronAPI.isPackaged === "function") {
+      if (window.electronAPI.isPackaged() === true) return false;
+    }
+    if (typeof window !== "undefined" && window.__TC_IS_PACKAGED === true) return false;
+    if (typeof localStorage === "undefined") return false;
+    return localStorage.getItem(CERT_TOOLS_UNLOCK_KEY) === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
 /** Enforce strict period lock in production builds (settings UX may still show toggle; loadState forces on). */
 export function enforceProductionStrictPeriodLock() {
   return isProductionViteBuild();
@@ -35,6 +58,38 @@ export function isSnapshotDeviceHmacAllowed() {
   return !isProductionViteBuild();
 }
 
+/** Credential keys that must never leave the machine in exported backups. */
+export var TC_BACKUP_EXCLUDE_KEYS = ["tc3_users", "tc3_apppass", "tc3_admin_name"];
+
+/** Strip credential material from a backup data object before export to disk/download. */
+export function sanitizeBackupDataForExport(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  var out = {};
+  Object.keys(data).forEach(function (k) {
+    if (TC_BACKUP_EXCLUDE_KEYS.indexOf(k) >= 0) return;
+    out[k] = data[k];
+  });
+  if (out.tc3_settings && typeof out.tc3_settings === "object" && !Array.isArray(out.tc3_settings)) {
+    var st = Object.assign({}, out.tc3_settings);
+    delete st.adminPin;
+    delete st.mainAdminPassHash;
+    out.tc3_settings = st;
+  }
+  return out;
+}
+
+/** Keys that must be arrays when present in a backup (mirrors TC_FULL_BACKUP_KEYS document arrays). */
+var BACKUP_ARRAY_KEYS = [
+  "tc3_products", "tc3_customers", "tc3_suppliers", "tc3_others", "tc3_sales", "tc3_purchases",
+  "tc3_expenses", "tc3_repairs", "tc3_assets", "tc3_damageLog", "tc3_productLog", "tc3_repairDeleteLog",
+  "tc3_capLedger", "tc3_capLog", "tc3_manualPayables", "tc3_manualReceivables", "tc3_profitDist",
+  "tc3_assetLog", "tc3_auditLog", "tc3_gl_audit", "tc3_financial_mutation_log", "tc3_salesReturns",
+  "tc3_purchaseReturns", "tc3_quotations", "tc3_cheques", "tc3_raw_material_counts", "tc3_raw_material_usage",
+  "tc3_labelDesigns", "tc3_journal_lines", "tc3_gl_accounts", "tc3_financial_snapshots",
+  "tc3_stock_movements", "tc3_codRecords", "tc3_codPartners", "tc3_codWithdrawals", "tc3_invoice_edit_locks",
+  "tc3_users",
+];
+
 /** Safe backup shape before writing to disk / IDB mirror */
 export function validateJsonBackupPayload(bk) {
   try {
@@ -43,6 +98,16 @@ export function validateJsonBackupPayload(bk) {
     if (!bk.data || typeof bk.data !== "object" || Array.isArray(bk.data)) return false;
     var st = bk.data.tc3_settings;
     if (st !== undefined && (typeof st !== "object" || Array.isArray(st))) return false;
+    for (var i = 0; i < BACKUP_ARRAY_KEYS.length; i++) {
+      var k = BACKUP_ARRAY_KEYS[i];
+      if (bk.data[k] !== undefined && !Array.isArray(bk.data[k])) return false;
+    }
+    if (bk.data.tc3_gl_mode !== undefined && typeof bk.data.tc3_gl_mode !== "string") return false;
+    if (bk.data.tc3_journal_hash !== undefined && typeof bk.data.tc3_journal_hash !== "string") return false;
+    if (bk.data.tc3_inventory_layers !== undefined) {
+      var layers = bk.data.tc3_inventory_layers;
+      if (typeof layers !== "object" || Array.isArray(layers)) return false;
+    }
     JSON.stringify(bk);
     return true;
   } catch (e) {
@@ -76,4 +141,5 @@ export function installProductionConsole() {
   console.debug = noop;
   console.info = noop;
   console.warn = noop;
+  console.error = noop;
 }

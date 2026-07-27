@@ -191,9 +191,43 @@ export async function loadFreshPurchaseForPayment(S, purchaseId) {
   return { purchases: purchases, purchase: findRowById(purchases, purchaseId) };
 }
 
-export async function loadFreshProductsForStock(S) {
-  var products = await refreshMergeableKeyFromServer(S, "tc3_products");
-  return products;
+export function loadFreshProductsForStock(S) {
+  return refreshMergeableKeyFromServer(S, "tc3_products");
+}
+
+/**
+ * Validate cart lines against fresh product stock (multi-PC safe).
+ * getReservedQty(prod) → base qty already in cart for that product.
+ */
+export function assertCartStockAvailable(cartLines, products, getReservedQty, isServiceProduct) {
+  var lines = Array.isArray(cartLines) ? cartLines : [];
+  var prods = Array.isArray(products) ? products : [];
+  var seen = {};
+  for (var i = 0; i < lines.length; i++) {
+    var item = lines[i];
+    if (!item || !item.id) continue;
+    if (seen[item.id]) continue;
+    seen[item.id] = true;
+    var prod = null;
+    for (var j = 0; j < prods.length; j++) {
+      if (prods[j] && prods[j].id === item.id) { prod = prods[j]; break; }
+    }
+    if (!prod) continue;
+    if (typeof isServiceProduct === "function" && isServiceProduct(prod)) continue;
+    var reserved = typeof getReservedQty === "function" ? (Number(getReservedQty(prod)) || 0) : 0;
+    var stock = Number(prod.stock) || 0;
+    if (reserved > stock + 1e-9) {
+      return {
+        ok: false,
+        productId: prod.id,
+        name: prod.name || item.name || "Product",
+        available: stock,
+        requested: reserved,
+        message: "Not enough stock for \"" + (prod.name || item.name) + "\" on the server (available " + stock + ", requested " + reserved + "). Another counter may have sold units — refresh and try again.",
+      };
+    }
+  }
+  return { ok: true };
 }
 
 /** Fire-and-forget immediate push — batches keys in ONE request so sale/cheque clears stay atomic. */

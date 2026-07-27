@@ -92,6 +92,22 @@ function tcIsVoidedDoc($row) {
     return $st === 'voided';
 }
 
+function tcSanitizePaymentHistory($ph, $docTotal, $kind) {
+    if (!is_array($ph)) return [];
+    $out = [];
+    $total = max(0.0, (float)$docTotal);
+    $maxSingle = $kind === 'sale' ? ($total * 2.0 + 0.01) : 1.0e12;
+    foreach ($ph as $p) {
+        if (!is_array($p)) continue;
+        $amt = (float)($p['amount'] ?? 0);
+        if (!is_finite($amt) || $amt < 0) continue;
+        if ($kind === 'sale' && $amt > $maxSingle) $amt = $total;
+        $p['amount'] = round($amt, 2);
+        $out[] = $p;
+    }
+    return $out;
+}
+
 function tcMergeDocumentWithPaymentHistory($a, $b, $kind) {
     $preferB = tcRecordSortTs($b) >= tcRecordSortTs($a);
     $out = array_merge($preferB ? $a : $b, $preferB ? $b : $a);
@@ -100,6 +116,7 @@ function tcMergeDocumentWithPaymentHistory($a, $b, $kind) {
     if (!$aPh && !$bPh) return $out;
 
     $merged = tcUnionPaymentHistory($aPh, $bPh);
+    $merged = tcSanitizePaymentHistory($merged, (float)($out['total'] ?? 0), $kind);
     $out['paymentHistory'] = $merged;
     if (tcIsVoidedDoc($out)) return $out;
 
@@ -383,6 +400,7 @@ function tcIsAppendOnlyArrayKey($key) {
         'tc3_raw_material_usage' => true,
         'tc3_raw_material_counts' => true,
         'tc3_auditLog' => true,
+        'tc3_users' => true,
     ];
     return !empty($appendOnly[$key]);
 }
@@ -391,7 +409,8 @@ function tcApplyFullArraySnapshot($existingArr, $incomingArr, $storageKey = null
     if (tcIsAppendOnlyArrayKey($storageKey)) {
         return tcMergeRecordArraysByNewest($existingArr, $incomingArr, $storageKey);
     }
-    /* Guard mass wipe: if incoming drops >50% of id'd rows (and server had ≥4), union instead of replace. */
+    /* Guard mass wipe: if incoming drops a large share of id'd rows, union instead of replace.
+       Tightened from 50%/≥4 so a stale counter cannot delete half a shop without forceReplace. */
     if (is_array($existingArr) && is_array($incomingArr)) {
         $exIds = 0;
         foreach ($existingArr as $er) {
@@ -401,7 +420,38 @@ function tcApplyFullArraySnapshot($existingArr, $incomingArr, $storageKey = null
         foreach ($incomingArr as $ir) {
             if (is_array($ir) && isset($ir['id'])) $inIds++;
         }
+        if ($exIds >= 8 && $inIds < (int)ceil($exIds * 0.75)) {
+            return tcMergeRecordArraysByNewest($existingArr, $incomingArr, $storageKey);
+        }
         if ($exIds >= 4 && $inIds < ($exIds * 0.5)) {
+            return tcMergeRecordArraysByNewest($existingArr, $incomingArr, $storageKey);
+        }
+        /* Empty snapshot against a populated shop is never a legitimate membership delete. */
+        if ($exIds >= 1 && $inIds === 0) {
+            return tcMergeRecordArraysByNewest($existingArr, $incomingArr, $storageKey);
+        }
+        /* Critical business tables: a small membership drop (stale counter) must not
+           delete peer rows. Intentional voids soft-delete; hard deletes use forceReplace. */
+        $criticalMembership = [
+            'tc3_sales' => true,
+            'tc3_purchases' => true,
+            'tc3_products' => true,
+            'tc3_customers' => true,
+            'tc3_suppliers' => true,
+            'tc3_cheques' => true,
+            'tc3_repairs' => true,
+            'tc3_expenses' => true,
+            'tc3_manualReceivables' => true,
+            'tc3_manualPayables' => true,
+            'tc3_salesReturns' => true,
+            'tc3_purchaseReturns' => true,
+            'tc3_quotations' => true,
+            'tc3_assets' => true,
+            'tc3_users' => true,
+        ];
+        if (!empty($criticalMembership[$storageKey]) && $exIds >= 1 && $inIds > 0 && $inIds < $exIds) {
+            /* Any membership shrink on critical tables → union merge.
+               Intentional hard deletes only via localhost _forceReplace. */
             return tcMergeRecordArraysByNewest($existingArr, $incomingArr, $storageKey);
         }
     }

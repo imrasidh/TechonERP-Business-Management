@@ -23,6 +23,12 @@ import { runRepairVoidChainTests, runVoidReturnResidualTests, runMediumLowFixTes
 import { runConcurrencyMergeTests } from "./concurrency-merge.test.mjs";
 import { runDemo360Tests } from "./demo-360.test.mjs";
 import { runGlassDimensionsTests } from "./glass-dimensions.test.mjs";
+import { runBackupPreviewTests } from "./backup-preview.test.mjs";
+import { runStandaloneSmokeTests } from "./standalone-smoke.test.mjs";
+import { runPerformanceScaleTests } from "./performance-scale.test.mjs";
+import { runMultiPcSyncTests } from "./multi-pc-sync.test.mjs";
+import { runStatementGlRefsTests } from "./statement-gl-refs.test.mjs";
+import { runSourceDocumentNavTests } from "./source-document-nav.test.mjs";
 
 function fail(name, detail) {
   console.error("FAIL —", name, detail != null ? detail : "");
@@ -111,11 +117,35 @@ runConcurrencyMergeTests(ctx);
 if (process.exitCode) {
   process.exit(process.exitCode);
 }
+runMultiPcSyncTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runStatementGlRefsTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runSourceDocumentNavTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
 runGlassDimensionsTests(ctx);
 if (process.exitCode) {
   process.exit(process.exitCode);
 }
 runDemo360Tests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runBackupPreviewTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runStandaloneSmokeTests(ctx);
+if (process.exitCode) {
+  process.exit(process.exitCode);
+}
+runPerformanceScaleTests(ctx);
 if (process.exitCode) {
   process.exit(process.exitCode);
 }

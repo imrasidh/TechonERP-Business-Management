@@ -18,7 +18,8 @@
  */
 require_once __DIR__ . '/config.php';
 
-requireAuth();
+$auth = requireAuth();
+tcEnforceRemoteAuthPolicy($auth);
 
 $checks = [
     'db_connection' => false,

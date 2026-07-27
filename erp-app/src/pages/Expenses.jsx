@@ -1,7 +1,9 @@
 import React, { useState } from "react";
 import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import { LIST_PAGE_SIZE, sortNewestFirst } from "../utils/listPage.js";
-import { stampTransactionIsoDateTime } from "../utils/stampUpdatedAt.js";
+import { stampTransactionIsoDateTime, stampUpdatedAt } from "../utils/stampUpdatedAt.js";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
+import { expenseEntryNav } from "../utils/sourceDocumentNav.js";
 
 var Expenses = function (props) {
   var state = props.state;
@@ -23,6 +25,7 @@ var Expenses = function (props) {
   var TH = props.TH;
   var TR = props.TR;
   var TD = props.TD;
+  var openSourceDocument = props.openSourceDocument;
   var Pager = props.Pager;
   var Modal = props.Modal;
   var Sel = props.Sel;
@@ -87,17 +90,36 @@ var Expenses = function (props) {
         createdAt: chTs, updatedAt: chTs
       }, chTs);
       nch = nch.concat([newCh]);
-      S.set("tc3_cheques", nch);
     }
-    S.set("tc3_expenses", ne);
+    if (typeof S.setMany === "function") {
+      var expPairs = [["tc3_expenses", ne]];
+      if (payMode === "Cheque" && amt > 0) expPairs.push(["tc3_cheques", nch]);
+      S.setMany(expPairs);
+    } else {
+      if (payMode === "Cheque" && amt > 0) S.set("tc3_cheques", nch);
+      S.set("tc3_expenses", ne);
+    }
     setState(function (st) { return Object.assign({}, st, { expenses: ne, cheques: nch }); });
     setShow(false); setF(BLANK);
   };
 
   var doDelete = function (id) {
     var ne = state.expenses.filter(function (e) { return e.id !== id; });
-    S.set("tc3_expenses", ne);
-    setState(function (st) { return Object.assign({}, st, { expenses: ne }); });
+    var nch = (state.cheques || []).map(function (c) {
+      if (!c || c.expenseId !== id) return c;
+      if (c.status === "Cleared" || c.status === "Cancelled" || c.status === "Bounced") return c;
+      return stampUpdatedAt(Object.assign({}, c, {
+        status: "Cancelled",
+        note: (c.note ? c.note + " · " : "") + "Expense deleted",
+      }), new Date().toISOString());
+    });
+    if (typeof S.setMany === "function") {
+      S.setMany([["tc3_expenses", ne], ["tc3_cheques", nch]]);
+    } else {
+      S.set("tc3_expenses", ne);
+      S.set("tc3_cheques", nch);
+    }
+    setState(function (st) { return Object.assign({}, st, { expenses: ne, cheques: nch }); });
     setDeleteId(null);
   };
 
@@ -253,10 +275,18 @@ var Expenses = function (props) {
                           <span aria-hidden="true">{ci.icon}</span> {e.category}
                         </span>
                       </td>
-                      <td className="erp-arap-src" title={e.description}>{e.description}</td>
+                      <td className="erp-arap-src" title={e.description}>
+                        <SourceDocLink nav={expenseEntryNav(e)} label={e.description || "—"} openSourceDocument={openSourceDocument} />
+                      </td>
                       <td>{e.payee || "—"}</td>
                       <td>{e.payMode || "—"}</td>
-                      <td>{e.reference || "—"}</td>
+                      <td>
+                        <SourceDocLink
+                          nav={expenseEntryNav(e)}
+                          label={e.reference || "View voucher"}
+                          openSourceDocument={openSourceDocument}
+                        />
+                      </td>
                       <td className="erp-arap-amt" style={{ color: "#b91c1c", fontWeight: 800 }}>{getCurrencySymbol()} {fmtNum(e.amount)}</td>
                       <td style={actBtnCellStyle}>
                         <ActBtn tone="red" title="Delete expense" onClick={function () { setDeleteId(e.id); }} />

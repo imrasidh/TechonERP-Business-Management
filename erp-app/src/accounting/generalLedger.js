@@ -7,7 +7,7 @@
 import { getOrCreateDeviceId, stableJournalTransactionId } from "./ids.js";
 import { deriveLineStockValue } from "../utils/purchaseValuation.js";
 import { computeReturnLineTax, computePurchaseReturnTax, computeSaleTaxFromSnapshot, isPurchaseTaxInclusive } from "../tax/taxCompute.js";
-import { isVoidedTxn } from "../utils/voidInvoice.js";
+import { isVoidedTxn, isReturnParentEconomicallyActive } from "../utils/voidInvoice.js";
 import { glassInvoiceLineTotal } from "../utils/glassProduct.js";
 
 export var GL = {
@@ -313,6 +313,7 @@ export function sumAccount(lines, accountId) {
 }
 
 export function accountBalanceMap(lines, chart) {
+  chart = resolveGlChart(chart);
   var meta = {};
   chart.forEach(function (a) { meta[a.id] = a; });
   var bal = {};
@@ -323,7 +324,13 @@ export function accountBalanceMap(lines, chart) {
   return bal;
 }
 
+/** Empty [] must never blank Trial Balance / P&L when journal lines exist. */
+export function resolveGlChart(chart) {
+  return (Array.isArray(chart) && chart.length > 0) ? chart : DEFAULT_GL_CHART;
+}
+
 export function trialBalance(lines, chart) {
+  chart = resolveGlChart(chart);
   var rows = [];
   var tDr = 0;
   var tCr = 0;
@@ -389,6 +396,24 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
       return round2(invDer.cogsBySaleId[s.id]);
     }
     return saleLineCOGS(s, state);
+  }
+
+  function collapseDuplicateFullSalePayments(paymentHistory, total) {
+    var list = Array.isArray(paymentHistory) ? paymentHistory : [];
+    var t = round2(total || 0);
+    if (t <= 0 || list.length < 2) return list;
+    var fullIdx = [];
+    for (var i = 0; i < list.length; i++) {
+      if (Math.abs(round2(list[i] && list[i].amount || 0) - t) < 0.01) fullIdx.push(i);
+    }
+    if (fullIdx.length < 2) return list;
+    var keep = {};
+    keep[fullIdx[0]] = true;
+    return list.filter(function (ph, idx) {
+      var amt = round2(ph && ph.amount || 0);
+      if (Math.abs(amt - t) < 0.01) return !!keep[idx];
+      return true;
+    });
   }
 
   function add(date, refType, refId, parts, memo, sliceKey) {
@@ -491,7 +516,7 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
     var cashPhSum = 0;
     var arRemain = tot;
     var creditRemain = 0;
-    (s.paymentHistory || []).forEach(function (ph, j) {
+    collapseDuplicateFullSalePayments(s.paymentHistory || [], tot).forEach(function (ph, j) {
       var a = round2(ph.amount || 0);
       if (Math.abs(a) < 0.005) return;
       var m = ph.cashMethod || "Cash";
@@ -758,7 +783,8 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
      never again from return.refundAmount — avoids double cash credit. ── */
   (state.salesReturns || []).forEach(function (r) {
     var parentSale = r.invoiceId != null ? salesById[r.invoiceId] : null;
-    if (parentSale && isVoidedTxn(parentSale)) return;
+    /* Quarantine orphan / voided-parent returns — matches report activeSalesReturns policy. */
+    if (!isReturnParentEconomicallyActive(parentSale)) return;
     var dt = r.date || "";
     var rowNet = round2(r.amount || 0);
     var cost = round2(round2(r.cost || 0) * (r.qty || 0));
@@ -803,7 +829,7 @@ export function rebuildJournalFromState(state, S, genId, invDer) {
      any gap posts to PUR_VAR so INV stays aligned with the inventory engine. ── */
   (state.purchaseReturns || []).forEach(function (r) {
     var parentPurchase = r.purchaseId != null ? purchasesById[r.purchaseId] : null;
-    if (parentPurchase && isVoidedTxn(parentPurchase)) return;
+    if (!isReturnParentEconomicallyActive(parentPurchase)) return;
     var dt = r.date || "";
     var costCommercial = round2(round2(r.cost || 0) * (r.qty || 0));
     var cost = costCommercial;
@@ -1038,6 +1064,7 @@ export function ledgerARAP(lines) {
 
 /** P&L from ledger for optional date filter (inclusive ISO dates) */
 export function profitAndLossFromLedger(lines, chart, fromDate, toDate) {
+  chart = resolveGlChart(chart);
   var inRange = function (d) {
     if (!fromDate && !toDate) return true;
     if (!d) return true;
@@ -1060,6 +1087,7 @@ export function profitAndLossFromLedger(lines, chart, fromDate, toDate) {
 }
 
 export function balanceSheetFromLedger(lines, chart, asOfDate) {
+  chart = resolveGlChart(chart);
   var f = asOfDate ? lines.filter(function (ln) { return !ln.date || String(ln.date) <= String(asOfDate); }) : lines;
   var assets = 0;
   var liab = 0;

@@ -34,9 +34,19 @@ export default function AddPartyModal(props) {
   var partyKindProp = props.partyKind || null;
   var defaultKind = props.defaultKind === "supplier" ? "supplier" : (props.defaultKind === "other" ? "other" : "customer");
   var hint = props.hint || "";
+  var allowedKinds = Array.isArray(props.allowedKinds) && props.allowedKinds.length
+    ? props.allowedKinds.filter(function (k) { return k === "customer" || k === "supplier" || k === "other"; })
+    : null;
 
   var kindChoice = isPartyKindChoice(context, partyKindProp);
   var lockedKind = kindChoice ? null : resolvePartyKind(context, partyKindProp);
+  if (allowedKinds && allowedKinds.length === 1) {
+    lockedKind = allowedKinds[0];
+    kindChoice = false;
+  } else if (allowedKinds && allowedKinds.length > 1) {
+    kindChoice = true;
+    lockedKind = null;
+  }
 
   var [form, setForm] = useState(EMPTY_FORM);
   var [error, setError] = useState("");
@@ -153,28 +163,34 @@ export default function AddPartyModal(props) {
         ) : null}
 
         {kindChoice ? (
-          <div className="erp-party-kind-row is-three" role="group" aria-label="Contact type">
-            <button
-              type="button"
-              className={"erp-party-kind-btn is-customer" + (selectedKind === "customer" ? " is-active" : "")}
-              onClick={function () { setSelectedKind("customer"); setError(""); }}
-            >
-              Customer
-            </button>
-            <button
-              type="button"
-              className={"erp-party-kind-btn is-supplier" + (selectedKind === "supplier" ? " is-active" : "")}
-              onClick={function () { setSelectedKind("supplier"); setError(""); }}
-            >
-              Supplier
-            </button>
-            <button
-              type="button"
-              className={"erp-party-kind-btn is-other" + (selectedKind === "other" ? " is-active" : "")}
-              onClick={function () { setSelectedKind("other"); setError(""); }}
-            >
-              Other
-            </button>
+          <div className={"erp-party-kind-row" + (allowedKinds && allowedKinds.length === 2 ? " is-two" : " is-three")} role="group" aria-label="Contact type">
+            {(!allowedKinds || allowedKinds.indexOf("customer") >= 0) ? (
+              <button
+                type="button"
+                className={"erp-party-kind-btn is-customer" + (selectedKind === "customer" ? " is-active" : "")}
+                onClick={function () { setSelectedKind("customer"); setError(""); }}
+              >
+                Customer
+              </button>
+            ) : null}
+            {(!allowedKinds || allowedKinds.indexOf("supplier") >= 0) ? (
+              <button
+                type="button"
+                className={"erp-party-kind-btn is-supplier" + (selectedKind === "supplier" ? " is-active" : "")}
+                onClick={function () { setSelectedKind("supplier"); setError(""); }}
+              >
+                Supplier
+              </button>
+            ) : null}
+            {(!allowedKinds || allowedKinds.indexOf("other") >= 0) ? (
+              <button
+                type="button"
+                className={"erp-party-kind-btn is-other" + (selectedKind === "other" ? " is-active" : "")}
+                onClick={function () { setSelectedKind("other"); setError(""); }}
+              >
+                Other
+              </button>
+            ) : null}
           </div>
         ) : null}
 

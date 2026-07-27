@@ -180,11 +180,6 @@ var Inventory = React.memo(function (props) {
   });
   var invSearchRef = useRef(null);
   var rmAcWrapRef = useRef(null);
-  useEffect(function () {
-    var handler = function (e) { if (invSearchRef.current && !invSearchRef.current.contains(e.target)) { setSearch(""); } };
-    document.addEventListener("mousedown", handler);
-    return function () { document.removeEventListener("mousedown", handler); };
-  }, []);
 
   useEffect(function () {
     if (itab !== "ingredients" || !rmAcOpen) return;
@@ -484,10 +479,19 @@ var Inventory = React.memo(function (props) {
       qty: usageRow.qty,
       reason: "Ingredient use — " + String(usageRow.qty) + " " + unitLabel + " (" + (typeof roundQty === "function" ? roundQty(consumeBase) : consumeBase) + " base)",
     }]);
-    S.set("tc3_products", np);
-    S.set("tc3_raw_material_usage", usages);
-    S.set("tc3_raw_material_counts", nextCounts);
-    S.set("tc3_productLog", pl);
+    if (S.setMany) {
+      S.setMany([
+        ["tc3_products", np],
+        ["tc3_raw_material_usage", usages],
+        ["tc3_raw_material_counts", nextCounts],
+        ["tc3_productLog", pl],
+      ]);
+    } else {
+      S.set("tc3_products", np);
+      S.set("tc3_raw_material_usage", usages);
+      S.set("tc3_raw_material_counts", nextCounts);
+      S.set("tc3_productLog", pl);
+    }
     setState(function (s) {
       return Object.assign({}, s, {
         products: np,
@@ -599,7 +603,8 @@ var Inventory = React.memo(function (props) {
     if (!tcTrialGuard(state.products, "products")) return false;
     var np = state.products.concat([prod]);
     var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Added", productId: prod.id, productName: prod.name, qty: prod.stock, reason: "New product" }]);
-    S.set("tc3_products", np); S.set("tc3_productLog", log);
+    if (S.setMany) { S.setMany([["tc3_products", np], ["tc3_productLog", log]]); }
+    else { S.set("tc3_products", np); S.set("tc3_productLog", log); }
     setState(function (s) { return Object.assign({}, s, { products: np, productLog: log }); });
     if (meta && meta.addAnother) {
       setNewP(blankProduct({ type: form.type || "stock" }));
@@ -691,7 +696,8 @@ var Inventory = React.memo(function (props) {
         return reactivated;
       });
       var log = (state.productLog || []).concat([{ id: uid(), date: today(), type: "Restored", productId: prodId, productName: (state.products.find(function(p){return p.id===prodId;})||{}).name || "", qty: 0, reason: "Restored from voided" }]);
-      S.set("tc3_products", np); S.set("tc3_productLog", log);
+      if (S.setMany) { S.setMany([["tc3_products", np], ["tc3_productLog", log]]); }
+      else { S.set("tc3_products", np); S.set("tc3_productLog", log); }
       setState(function (s) { return Object.assign({}, s, { products: np, productLog: log }); });
     });
   };
@@ -715,7 +721,8 @@ var Inventory = React.memo(function (props) {
       var dl = (state.damageLog || []).concat([stampTransactionIsoDateTime({
         id: uid(), date: today(), createdAt: dmgTs, productId: p.id, productName: p.name, qty: qty, cost: p.cost || 0, reason: reason,
       }, dmgTs)]);
-      S.set("tc3_products", np2); S.set("tc3_damageLog", dl);
+      if (S.setMany) { S.setMany([["tc3_products", np2], ["tc3_damageLog", dl]]); }
+      else { S.set("tc3_products", np2); S.set("tc3_damageLog", dl); }
       setState(function (s) { return Object.assign({}, s, { products: np2, damageLog: dl }); });
     } else if (actionP.mode === "void") {
       /* Zero-stock void — hide from POS/stock lists; record + ID kept for accounting. */
@@ -753,7 +760,8 @@ var Inventory = React.memo(function (props) {
         voidStorWrites.push(["tc3_damageLog", dlVoid]);
         voidStatePatch.damageLog = dlVoid;
       }
-      voidStorWrites.forEach(function (pair) { S.set(pair[0], pair[1]); });
+      if (S.setMany) { S.setMany(voidStorWrites); }
+      else { voidStorWrites.forEach(function (pair) { S.set(pair[0], pair[1]); }); }
       setState(function (s) { return Object.assign({}, s, voidStatePatch); });
       addAudit("Voided Product", p.name + (voidDisplayId ? (" (ID " + voidDisplayId + ")") : "") + (voidWriteOffQty > 0 ? (" — " + voidWriteOffQty + " units written off") : ""));
     } else {
@@ -772,9 +780,17 @@ var Inventory = React.memo(function (props) {
         cost: p.cost || 0,
         reason: "Stock removal: " + reason,
       }, rmTs)]);
-      S.set("tc3_products", np4);
-      S.set("tc3_damageLog", dlRemove);
-      S.set("tc3_productLog", pl2);
+      if (S.setMany) {
+        S.setMany([
+          ["tc3_products", np4],
+          ["tc3_damageLog", dlRemove],
+          ["tc3_productLog", pl2],
+        ]);
+      } else {
+        S.set("tc3_products", np4);
+        S.set("tc3_damageLog", dlRemove);
+        S.set("tc3_productLog", pl2);
+      }
       setState(function (s) { return Object.assign({}, s, { products: np4, damageLog: dlRemove, productLog: pl2 }); });
     }
     setActionP(null); setReason(""); setDmgQty("1");

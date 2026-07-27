@@ -10,9 +10,12 @@ function groupKey(ln) {
 
 function groupLinesByTransaction(lines) {
   var m = {};
-  (lines || []).forEach(function (ln) {
+  (lines || []).forEach(function (ln, idx) {
     var k = groupKey(ln);
-    if (!k) return;
+    /* Quarantine malformed lines under a stable synthetic key instead of dropping them. */
+    if (!k) {
+      k = "__orphan__:" + String((ln && ln.id) || ("i" + idx));
+    }
     if (!m[k]) m[k] = [];
     m[k].push(ln);
   });
@@ -38,7 +41,16 @@ function normalizeGroup(lines) {
 }
 
 function groupsEqual(a, b) {
-  return JSON.stringify(normalizeGroup(a)) === JSON.stringify(normalizeGroup(b));
+  var na = normalizeGroup(a);
+  var nb = normalizeGroup(b);
+  if (na.length !== nb.length) return false;
+  for (var i = 0; i < na.length; i++) {
+    if (na[i].accountId !== nb[i].accountId) return false;
+    if (na[i].date !== nb[i].date) return false;
+    if (Math.abs(na[i].debit - nb[i].debit) > 1e-9) return false;
+    if (Math.abs(na[i].credit - nb[i].credit) > 1e-9) return false;
+  }
+  return true;
 }
 
 function isReversalGroup(lines) {
@@ -374,4 +386,35 @@ export function mergeJournalLinesByTransactionId(localLines, remoteLines, logCon
     byTxn[k].forEach(function (x) { out.push(x); });
   });
   return { lines: out, appendedIds: appendedIds };
+}
+
+function lineFingerprint(ln) {
+  return [
+    String(ln && ln.accountId || ""),
+    round2(ln && ln.debit || 0),
+    round2(ln && ln.credit || 0),
+    String(ln && ln.date || "").slice(0, 10),
+    String(ln && ln.memo || "").slice(0, 80),
+  ].join("|");
+}
+
+/**
+ * After append-only journal merge, drop duplicate lines within the same transactionId
+ * (multi-PC rebuild races create identical account lines with different line ids).
+ */
+export function dedupeJournalLinesAfterMerge(lines) {
+  var input = Array.isArray(lines) ? lines : [];
+  var byTxn = groupLinesByTransaction(input);
+  var out = [];
+  Object.keys(byTxn).sort().forEach(function (t) {
+    var group = byTxn[t];
+    var seen = {};
+    group.forEach(function (ln) {
+      var fp = lineFingerprint(ln);
+      if (seen[fp]) return;
+      seen[fp] = true;
+      out.push(ln);
+    });
+  });
+  return out;
 }

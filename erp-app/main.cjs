@@ -15,7 +15,7 @@
  *      anyway — they only accelerate the user's own trial expiry.
  */
 
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -28,6 +28,10 @@ const lanWsSync = require('./lan-ws-sync.cjs');
 const { buildLanAuthHeaders, stripInternalHeaders } = require('./lan-auth.cjs');
 const { createDeviceStore } = require('./device-store.cjs');
 const appUpdater = require('./updater.cjs');
+const { sanitizeBackupContent } = require('./backup-sanitize.cjs');
+const keyStore = require('./crypto-key-store.cjs');
+
+const IS_SMOKE_RUN = process.argv.includes('--run-smoke');
 
 /** Opaque ERP login sessions (per BrowserWindow / webContents). */
 const tcErpSessions = new Map();
@@ -484,8 +488,8 @@ function readFirstSecretLineFromTxt(fp) {
 
 /** License API HMAC secret for X-TC-Token (same algorithm as PHP).
  *  1) process.env.LICENSE_SECRET (preferred) or process.env.TC_LIC_SERVER_SECRET
- *  2) tc_license_secret.txt — fallback only; production dist injects this file at build time from env
- *     (UTF-8, first non-empty non-# line), same value as server LICENSE_SECRET
+ *  2) tc_license_secret.txt beside the exe or in userData — operator-managed sidecar only.
+ *     Public installers must NOT ship this file (see package.json extraResources).
  */
 function getLicenseServerSecret() {
   const env = process.env.LICENSE_SECRET || process.env.TC_LIC_SERVER_SECRET;
@@ -502,10 +506,6 @@ function getLicenseServerSecret() {
         if (ex) fileCandidates.push(path.join(path.dirname(ex), 'tc_license_secret.txt'));
       }
     } catch (_) {}
-    const rp = process.resourcesPath;
-    if (rp && String(rp).trim()) {
-      fileCandidates.push(path.join(rp, 'tc_license_secret.txt'));
-    }
     try {
       if (typeof app.getPath === 'function') {
         fileCandidates.push(path.join(app.getPath('userData'), 'tc_license_secret.txt'));
@@ -570,9 +570,10 @@ function getCryptoRootSecret() {
   const kf = LOCAL_ENC_KEY_FILE();
   try {
     if (fs.existsSync(kf)) {
-      const s = fs.readFileSync(kf, 'utf8').trim();
-      if (s.length >= 16) {
-        _cryptoRootCached = s;
+      const fromFile = keyStore.readLocalEncKeyFile(kf, safeStorage);
+      if (fromFile && fromFile.length >= 16) {
+        _cryptoRootCached = fromFile;
+        try { keyStore.migratePlaintextKeyToDpapi(kf, safeStorage); } catch (_mDp) { /* ignore */ }
         return _cryptoRootCached;
       }
     }
@@ -587,9 +588,8 @@ function getCryptoRootSecret() {
   }
   try {
     const rnd = crypto.randomBytes(48).toString('base64');
-    fs.mkdirSync(path.dirname(kf), { recursive: true });
-    fs.writeFileSync(kf, rnd, { mode: 0o600 });
     _cryptoRootCached = rnd;
+    keyStore.writeLocalEncKeyFile(kf, rnd, safeStorage);
     return _cryptoRootCached;
   } catch (e) {
     writeLogFile('warn', '[Crypto] fallback to legacy secret: ' + e.message);
@@ -605,13 +605,46 @@ function migrateLegacyCryptoKeyFile(licensePayload) {
   if (getCryptoRootSecret() !== LEGACY_ENC_PASS) return;
   try {
     const rnd = crypto.randomBytes(48).toString('base64');
-    fs.mkdirSync(path.dirname(kf), { recursive: true });
-    fs.writeFileSync(kf, rnd, { mode: 0o600 });
     _cryptoRootCached = rnd;
+    keyStore.writeLocalEncKeyFile(kf, rnd, safeStorage);
     saveLicense(licensePayload);
   } catch (e) {
     _cryptoRootCached = null;
     writeLogFile('warn', '[Crypto] migrate key file failed: ' + e.message);
+  }
+}
+
+function readEncryptedJsonFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf8').trim();
+    if (!raw) return null;
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      return { data: JSON.parse(raw), wasPlaintext: true };
+    }
+    const data = decryptData(raw);
+    return data ? { data, wasPlaintext: false } : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function writeEncryptedJsonFile(filePath, obj) {
+  const enc = encryptData(obj);
+  if (!enc) throw new Error('encrypt failed');
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, enc, { mode: 0o600 });
+}
+
+function migrateAtRestSecretsOnStartup() {
+  try {
+    loadLicense();
+    const creds = tcLoadSealedCreds();
+    if (creds) tcSaveSealedCreds(creds);
+    const net = loadNetworkConfig();
+    if (net) saveNetworkConfig(net);
+  } catch (e) {
+    writeLogFile('warn', '[Crypto] at-rest migration: ' + e.message);
   }
 }
 
@@ -2181,17 +2214,49 @@ function tcPutErpSession(event, sessionFields) {
 /** Main-owned credential seal — login verifies against this, not renderer-supplied hashes. */
 const tcElevateTokens = new Map();
 const tcSupportUnlockAttempts = new Map();
+/** After Settings → Reset, allow one verified boot-hash login to re-seal credentials. */
+let tcBootstrapAllowUntil = 0;
 
 function tcCredsSealPath() {
   return path.join(app.getPath('userData'), 'tc_erp_creds.json');
 }
 
-function tcLoadSealedCreds() {
+/** Soft TOFU marker: once a seal has existed on this install, refuse re-bootstrap from renderer hashes. */
+function tcCredsInstallMarkerPath() {
+  return path.join(app.getPath('userData'), 'tc_erp_install.json');
+}
+
+function tcLoadInstallMarker() {
   try {
-    const p = tcCredsSealPath();
+    const p = tcCredsInstallMarkerPath();
     if (!fs.existsSync(p)) return null;
     const j = JSON.parse(fs.readFileSync(p, 'utf8'));
     return j && typeof j === 'object' ? j : null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function tcEnsureInstallMarker() {
+  try {
+    const p = tcCredsInstallMarkerPath();
+    if (fs.existsSync(p)) return tcLoadInstallMarker();
+    const marker = { installId: crypto.randomBytes(16).toString('hex'), createdAt: Date.now() };
+    fs.writeFileSync(p, JSON.stringify(marker), 'utf8');
+    return marker;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function tcLoadSealedCreds() {
+  try {
+    const wrapped = readEncryptedJsonFile(tcCredsSealPath());
+    if (!wrapped || !wrapped.data || typeof wrapped.data !== 'object') return null;
+    if (wrapped.wasPlaintext) {
+      try { tcSaveSealedCreds(wrapped.data); } catch (_m) { /* ignore */ }
+    }
+    return wrapped.data;
   } catch (_e) {
     return null;
   }
@@ -2219,8 +2284,21 @@ function tcSaveSealedCreds(creds) {
     passwordLockRequired: creds.passwordLockRequired !== false,
     updatedAt: Date.now(),
   };
-  fs.writeFileSync(tcCredsSealPath(), JSON.stringify(out), 'utf8');
+  writeEncryptedJsonFile(tcCredsSealPath(), out);
+  try { tcEnsureInstallMarker(); } catch (_m) { /* ignore */ }
   return out;
+}
+
+function tcDeleteSealedCreds() {
+  try {
+    const p = tcCredsSealPath();
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  } catch (_e) { /* ignore */ }
+}
+
+function tcClearAllErpSessions() {
+  try { tcErpSessions.clear(); } catch (_e1) { /* ignore */ }
+  try { tcElevateTokens.clear(); } catch (_e2) { /* ignore */ }
 }
 
 function tcIssueElevateToken(event, role) {
@@ -2248,6 +2326,26 @@ function tcConsumeElevateToken(event) {
  * First seal is created only by tc-session-login after a verified password match —
  * never from unauthenticated renderer-supplied hashes.
  */
+/**
+ * Settings → Reset All Data: drop main-owned credential seal so first-login setup can re-seal.
+ * Requires an active admin desktop session (reset runs while signed in).
+ */
+ipcMain.handle('tc-credentials-clear-for-reset', (event) => {
+  try {
+    const gate = tcRequireSessionRole(event, ['admin']);
+    if (!gate.ok) {
+      return { ok: false, message: gate.message || 'Admin session required to reset credentials' };
+    }
+    tcDeleteSealedCreds();
+    tcClearAllErpSessions();
+    tcBootstrapAllowUntil = Date.now() + 30 * 60 * 1000;
+    writeLogFile('info', '[Auth] Credential seal cleared for data reset');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, message: String((e && e.message) || e || 'clear failed') };
+  }
+});
+
 ipcMain.handle('tc-credentials-seal', (event, payload) => {
   try {
     const existing = tcLoadSealedCreds();
@@ -2284,8 +2382,8 @@ ipcMain.handle('tc-credentials-seal', (event, payload) => {
 });
 
 /**
- * Unauthenticated open — cashier only, unless one-time elevate token or sealed password-lock-off.
- * Role never comes from a client-asserted forge flag.
+ * Unauthenticated open — cashier only, unless one-time elevate token.
+ * Password-lock-off must NOT elevate to admin without a verified loginSession.
  */
 ipcMain.handle('tc-session-open', (event, payload) => {
   try {
@@ -2293,12 +2391,10 @@ ipcMain.handle('tc-session-open', (event, payload) => {
     const userId = String((payload && payload.userId) || '').trim();
     const name = String((payload && payload.name) || username || '').trim();
     if (!username) return { ok: false, message: 'username required' };
+    /* Elevate token (support unlock) may grant admin/manager; otherwise cashier only. */
     let role = tcConsumeElevateToken(event) || 'cashier';
+    if (role !== 'admin' && role !== 'manager') role = 'cashier';
     const sealed = tcLoadSealedCreds();
-    if (role === 'cashier' && sealed && sealed.passwordLockRequired === false) {
-      const u = tcFindLoginUser(sealed.users, username);
-      if (u) role = tcNormalizeSessionRole(u.role);
-    }
     return tcPutErpSession(event, {
       userId: userId || (sealed && tcFindLoginUser(sealed.users, username) && tcFindLoginUser(sealed.users, username).id) || username,
       username: username,
@@ -2345,7 +2441,16 @@ ipcMain.handle('tc-session-login', (event, payload) => {
 
     let sealed = tcLoadSealedCreds();
     let migrating = false;
+    const bootstrapWindowOpen = Date.now() <= tcBootstrapAllowUntil;
     if (!sealed) {
+      /* SEC-13: after first seal, refuse renderer TOFU unless Settings reset opened bootstrap window. */
+      if (tcLoadInstallMarker() && !bootstrapWindowOpen) {
+        writeLogFile('warn', '[Auth] Seal missing but install marker present — refusing boot-hash TOFU');
+        return {
+          ok: false,
+          message: 'Login credentials seal is missing. Restore from backup or reinstall, then sign in again.',
+        };
+      }
       if (!bootPasswordMatches()) {
         return { ok: false, message: 'Incorrect password' };
       }
@@ -2357,6 +2462,27 @@ ipcMain.handle('tc-session-login', (event, payload) => {
     let apppass = sealed.apppass || '';
     let mainAdminPassHash = sealed.mainAdminPassHash || '';
     let user = tcFindLoginUser(users, username);
+
+    /* Stale seal after local wipe: password matches new boot hashes but not old seal. */
+    if (!migrating && sealed && bootPasswordMatches()) {
+      const sealedPasswordOk = !!(
+        (user && user.passwordHash && tcPasswordMatchesStored(password, user.passwordHash))
+        || (apppass && tcPasswordMatchesStored(password, apppass))
+        || (mainAdminPassHash && tcPasswordMatchesStored(password, mainAdminPassHash))
+      );
+      const bootHashesDiffer = !!(
+        (bootApp && bootApp !== apppass)
+        || (bootMain && bootMain !== mainAdminPassHash)
+        || (bootUsers.length && JSON.stringify(bootUsers) !== JSON.stringify(users))
+      );
+      if (!sealedPasswordOk && (bootstrapWindowOpen || bootHashesDiffer)) {
+        users = bootUsers;
+        apppass = bootApp;
+        mainAdminPassHash = bootMain;
+        user = tcFindLoginUser(users, username);
+        migrating = true;
+      }
+    }
 
     const finish = function (fields) {
       if (migrating || !tcLoadSealedCreds()) {
@@ -2385,27 +2511,11 @@ ipcMain.handle('tc-session-login', (event, payload) => {
         });
       }
       /*
-       * Restore / demo reseed can leave tc_erp_creds.json out of sync with IndexedDB.
-       * If the live shop password matches renderer hashes, refresh the seal and continue.
+       * Never re-seal from renderer-supplied boot hashes when a seal already exists.
+       * That path let any renderer code invent matching hashes and take over admin.
+       * After restore, an admin session should call tc-credentials-seal to refresh
+       * the seal from IndexedDB (see applyBackupRestoreData).
        */
-      if (bootPasswordMatches()) {
-        users = bootUsers;
-        apppass = bootApp;
-        mainAdminPassHash = bootMain;
-        migrating = true;
-        user = tcFindLoginUser(users, username);
-        const admin = user && String(user.role || '').toLowerCase() === 'admin'
-          ? user
-          : users.find(function (u) {
-            return u && String(u.role || '').toLowerCase() === 'admin';
-          });
-        return finish({
-          userId: (admin && admin.id) || (user && user.id) || 'main-admin-sync',
-          username: (admin && admin.username) || (user && user.username) || username || 'admin',
-          name: (admin && admin.name) || (user && user.name) || String((payload && payload.name) || 'Admin'),
-          role: 'admin',
-        });
-      }
       return { ok: false, message: 'Incorrect password' };
     };
 
@@ -2485,7 +2595,8 @@ ipcMain.handle('tc-snapshot-hmac-secret', () => {
 
 ipcMain.handle('tc-snapshot-hmac-sign', (event, canonicalBody) => {
   try {
-    const gate = tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+    /* Cashiers must not use the license HMAC as a signing oracle. */
+    const gate = tcRequireSessionRole(event, ['admin', 'manager']);
     if (!gate.ok) return { ok: false, hex: '', message: gate.message };
     const secret = getLicenseServerSecret();
     if (!secret || typeof secret !== 'string') return { ok: false, hex: '' };
@@ -2555,7 +2666,9 @@ function getSupportUnlockSalt() {
       }
     }
   } catch (_eFile) { /* ignore */ }
-  /* Same default as public_html/license.techon.lk/admin Support Desk — required for verify. */
+  /* Packaged builds: no shipped default — require TC_SUPPORT_UNLOCK_SALT or salt file.
+     Unpackaged/dev keeps the legacy support-desk default for internal testing. */
+  if (app.isPackaged === true) return '';
   return 'techon-master-salt-2026';
 }
 
@@ -2610,19 +2723,27 @@ ipcMain.handle('tc-snapshot-hmac-secret-previous', () => {
 });
 
 /** Packaged production runtime guard — LICENSE_SECRET required for accounting HMAC / API. */
+ipcMain.on('tc-is-packaged-sync', (event) => {
+  try { event.returnValue = app.isPackaged === true; } catch (_e) { event.returnValue = false; }
+});
+
 ipcMain.handle('tc-runtime-production-guard', () => {
+  const packaged = app.isPackaged === true;
   try {
     const secret = getLicenseServerSecret();
     return {
-      isPackaged: app.isPackaged === true,
+      isPackaged: packaged,
       licenseSecretConfigured: !!(secret && String(secret).trim()),
       blockWritesOnCritical: process.env.TC_BLOCK_WRITES_ON_CRITICAL === '1',
     };
   } catch (e) {
+    /* Fail closed: never report unpackaged / secret-ok when the guard itself errored. */
     return {
-      isPackaged: false,
-      licenseSecretConfigured: true,
+      isPackaged: packaged,
+      licenseSecretConfigured: false,
       blockWritesOnCritical: false,
+      guardError: true,
+      error: String((e && e.message) || e || 'guard_error'),
     };
   }
 });
@@ -2631,11 +2752,17 @@ ipcMain.handle('tc-runtime-production-guard', () => {
    OPEN EXTERNAL URL
    ═══════════════════════════════════════════════════════════════════ */
 ipcMain.handle('tc-open-url', async (_event, url) => {
-  if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
-    await shell.openExternal(url);
+  try {
+    if (!url || typeof url !== 'string') return { ok: false, message: 'Invalid URL' };
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return { ok: false, message: 'Only http(s) URLs are allowed' };
+    }
+    await shell.openExternal(parsed.toString());
     return { ok: true };
+  } catch (e) {
+    return { ok: false, message: 'Invalid URL' };
   }
-  return { ok: false, message: 'Invalid URL' };
 });
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2645,25 +2772,7 @@ ipcMain.handle('tc-open-url', async (_event, url) => {
    payload: { html, filename, phone, pageFormat?, invoicePdfFolder? }
    ═══════════════════════════════════════════════════════════════════ */
 function getInvoicePdfDir(customPath) {
-  let dir = customPath;
-  if (!dir || typeof dir !== 'string' || !String(dir).trim()) {
-    dir = path.join(app.getPath('documents'), 'TechonERP', 'Invoices');
-  } else {
-    dir = String(dir).trim();
-  }
-  if (!fs.existsSync(dir)) {
-    try {
-      fs.mkdirSync(dir, { recursive: true });
-    } catch (e) {
-      dir = path.join(app.getPath('documents'), 'TechonERP', 'Invoices');
-      if (!fs.existsSync(dir)) {
-        try {
-          fs.mkdirSync(dir, { recursive: true });
-        } catch (e2) {}
-      }
-    }
-  }
-  return dir;
+  return resolveSafeWritableDir(customPath, 'Invoices');
 }
 
 ipcMain.handle('tc-share-pdf', async (_event, payload) => {
@@ -2681,9 +2790,11 @@ ipcMain.handle('tc-share-pdf', async (_event, payload) => {
       width: 1200,
       height: 900,
       webPreferences: {
+        preload: path.join(__dirname, 'print-window-preload.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
-        offscreen: false
+        sandbox: true,
+        devTools: false
       }
     });
 
@@ -2763,13 +2874,14 @@ ipcMain.handle('tc-share-pdf', async (_event, payload) => {
 
     /* ── 6. Save PDF to invoice folder (default: Documents/TechonERP/Invoices) ── */
     const invoicesDir = getInvoicePdfDir(invoicePdfFolder);
-    const baseName = (filename || 'techon-document').replace(/[^a-zA-Z0-9_\-. ]/g, '_');
-    let safeFilename = baseName + '.pdf';
+    const baseName = path.basename(String(filename || 'techon-document')).replace(/[^a-zA-Z0-9_\-. ]/g, '_').replace(/^\.+/, '') || 'techon-document';
+    let safeFilename = baseName.endsWith('.pdf') ? baseName : (baseName + '.pdf');
     let outPath = path.join(invoicesDir, safeFilename);
     let n = 0;
     while (fs.existsSync(outPath)) {
       n += 1;
-      safeFilename = baseName + '_' + n + '.pdf';
+      const stem = baseName.replace(/\.pdf$/i, '');
+      safeFilename = stem + '_' + n + '.pdf';
       outPath = path.join(invoicesDir, safeFilename);
     }
     fs.writeFileSync(outPath, pdfData);
@@ -2882,10 +2994,12 @@ async function runTcPrintHtmlPdfOnly(html) {
       width: 1200,
       height: 900,
       webPreferences: {
+        preload: path.join(__dirname, 'print-window-preload.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
         backgroundThrottling: false,
-        sandbox: false
+        sandbox: true,
+        devTools: false
       }
     });
     await printWin.loadFile(tmpFile);
@@ -2962,10 +3076,12 @@ ipcMain.handle('tc-print-html', async (_event, payload) => {
       skipTaskbar: true,
       autoHideMenuBar: true,
       webPreferences: {
+        preload: path.join(__dirname, 'print-window-preload.cjs'),
         contextIsolation: true,
         nodeIntegration: false,
         backgroundThrottling: false,
-        sandbox: false
+        sandbox: true,
+        devTools: false
       }
     });
     try {
@@ -3030,22 +3146,41 @@ ipcMain.handle('tc-print-html', async (_event, payload) => {
 /* ═══════════════════════════════════════════════════════════════════
    BACKUP HELPERS
    ═══════════════════════════════════════════════════════════════════ */
-function getBackupDir(customPath) {
+function sanitizeBackupFilename(filename) {
+  const raw = String(filename || '').replace(/\0/g, '');
+  const base = path.basename(raw);
+  if (!base || base === '.' || base === '..') return null;
+  /* Only allow simple backup / export names — blocks path traversal. */
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\-]*\.(json|bak)$/i.test(base)) return null;
+  return base;
+}
+
+function resolveSafeWritableDir(customPath, defaultSub) {
+  const docsPath = app.getPath('documents');
+  const defaultDir = path.join(docsPath, 'TechonERP', defaultSub);
   let dir = customPath;
-  if (!dir || typeof dir !== 'string') {
-    const docsPath = app.getPath('documents');
-    dir = path.join(docsPath, 'TechonERP', 'backups');
+  if (!dir || typeof dir !== 'string' || !String(dir).trim()) {
+    dir = defaultDir;
+  } else {
+    /* Absolute custom folders from the folder picker are allowed; null bytes / relative paths are not. */
+    dir = path.resolve(String(dir).trim().replace(/\0/g, ''));
+    if (!path.isAbsolute(dir)) dir = defaultDir;
   }
   if (!fs.existsSync(dir)) {
     try {
       fs.mkdirSync(dir, { recursive: true });
     } catch (e) {
-      const docsPath = app.getPath('documents');
-      dir = path.join(docsPath, 'TechonERP', 'backups');
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      if (!fs.existsSync(defaultDir)) {
+        try { fs.mkdirSync(defaultDir, { recursive: true }); } catch (e2) {}
+      }
+      dir = defaultDir;
     }
   }
   return dir;
+}
+
+function getBackupDir(customPath) {
+  return resolveSafeWritableDir(customPath, 'backups');
 }
 
 function pruneBackups(dir, keep) {
@@ -3055,17 +3190,55 @@ function pruneBackups(dir, keep) {
       .map(f => ({ name: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
     files.slice(keep).forEach(f => { try { fs.unlinkSync(path.join(dir, f.name)); } catch (e) {} });
+    /* Sweep temp files left behind by a crashed/killed write */
+    fs.readdirSync(dir)
+      .filter(f => f.startsWith('techon-backup-') && f.endsWith('.tmp'))
+      .forEach(f => { try { fs.unlinkSync(path.join(dir, f)); } catch (e) {} });
   } catch (e) {}
 }
 
+/* Write through a temp file + fsync + rename so an interrupted write can never
+   truncate or corrupt the previous good backup at the same path. */
 function writeBackup(filename, content, customPath) {
+  let tmpFile = null;
   try {
+    const safeName = sanitizeBackupFilename(filename);
+    if (!safeName) {
+      return { ok: false, error: 'Invalid backup filename.' };
+    }
+    const sanitizedContent = sanitizeBackupContent(content);
     const dir  = getBackupDir(customPath);
-    const file = path.join(dir, filename);
-    fs.writeFileSync(file, content, 'utf8');
+    const file = path.join(dir, safeName);
+    /* Final guard: resolved path must stay under dir */
+    if (path.resolve(file) !== path.resolve(dir, safeName)) {
+      return { ok: false, error: 'Invalid backup path.' };
+    }
+    tmpFile = file + '.' + process.pid + '.tmp';
+    const fd = fs.openSync(tmpFile, 'w');
+    try {
+      fs.writeFileSync(fd, sanitizedContent, 'utf8');
+      try { fs.fsyncSync(fd); } catch (eSync) { /* fsync unsupported on some volumes */ }
+    } finally {
+      fs.closeSync(fd);
+    }
+    const written = fs.statSync(tmpFile).size;
+    const expected = Buffer.byteLength(sanitizedContent, 'utf8');
+    if (written !== expected) {
+      throw new Error('Backup size mismatch (' + written + '/' + expected + ' bytes)');
+    }
+    fs.renameSync(tmpFile, file);
+    tmpFile = null;
     pruneBackups(dir, 8);
-    try { writeLogFile('info', 'JSON backup saved: ' + file); } catch (e2) {}
-  } catch (e) { console.error('Backup error:', e); }
+    try { writeLogFile('info', 'JSON backup saved: ' + file + ' (' + expected + ' bytes)'); } catch (e2) {}
+    return { ok: true, file: file, bytes: expected };
+  } catch (e) {
+    const msg = (e && e.message) ? e.message : String(e);
+    console.error('Backup error:', e);
+    try { writeLogFile('error', 'JSON backup failed: ' + msg); } catch (e3) {}
+    return { ok: false, error: msg };
+  } finally {
+    if (tmpFile) { try { fs.unlinkSync(tmpFile); } catch (e4) {} }
+  }
 }
 
 let isSafeToQuit = false;
@@ -3080,7 +3253,7 @@ function doWriteBackup(content, customPath, suffix) {
     String(n.getDate()).padStart(2,'0') + '-' +
     String(n.getHours()).padStart(2,'0') +
     String(n.getMinutes()).padStart(2,'0') + suffix + '.json';
-  writeBackup(filename, content, customPath);
+  return writeBackup(filename, content, customPath);
 }
 
 function performBackupAndQuit() {
@@ -3131,18 +3304,18 @@ function performBackupAndQuit() {
 function _doBackupAndQuit() {
   if (isSafeToQuit) return;
 
-  if (lastBackupPayload) {
-    isSafeToQuit = true;
-    try {
-      doWriteBackup(lastBackupPayload.content, lastBackupPayload.customPath, "-close");
-      console.log('Close backup written from cache.');
-    } catch (e) { console.error('Close backup (cache) failed:', e); }
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
-    app.quit();
-    return;
-  }
-
+  /* Prefer live renderer flush when the window is alive. Do NOT short-circuit
+     on lastBackupPayload (that skipped every txn since the last ack). */
   if (!mainWindow || mainWindow.isDestroyed()) {
+    if (lastBackupPayload) {
+      isSafeToQuit = true;
+      try {
+        doWriteBackup(lastBackupPayload.content, lastBackupPayload.customPath, "-close");
+        console.log('Close backup written from cache (no window).');
+      } catch (e) { console.error('Close backup (cache) failed:', e); }
+      app.quit();
+      return;
+    }
     isSafeToQuit = true;
     app.quit();
     return;
@@ -3150,17 +3323,29 @@ function _doBackupAndQuit() {
 
   try {
     mainWindow.webContents.executeJavaScript(`
-      (function(){
+      (async function(){
         try {
           const keys = [
-            "tc3_settings","tc3_products","tc3_customers","tc3_suppliers",
+            "tc3_settings","tc3_products","tc3_customers","tc3_suppliers","tc3_others",
             "tc3_sales","tc3_purchases","tc3_expenses","tc3_repairs",
             "tc3_assets","tc3_damageLog","tc3_productLog","tc3_repairDeleteLog",
             "tc3_capLedger","tc3_capLog","tc3_manualPayables","tc3_manualReceivables",
             "tc3_profitDist","tc3_assetLog","tc3_openBal","tc3_auditLog",
-            "tc3_salesReturns","tc3_purchaseReturns","tc3_quotations","tc3_cheques","tc3_labelDesigns",
-            "tc3_startup_wizard_done","tc3_businessType"
+            "tc3_gl_audit","tc3_financial_mutation_log",
+            "tc3_salesReturns","tc3_purchaseReturns","tc3_quotations","tc3_cheques",
+            "tc3_raw_material_counts","tc3_raw_material_usage","tc3_labelDesigns",
+            "tc3_journal_lines","tc3_gl_accounts","tc3_gl_mode","tc3_journal_hash",
+            "tc3_inventory_layers","tc3_financial_snapshots","tc3_stock_movements",
+            "tc3_inv_reconciliation","tc3_codRecords","tc3_codPartners",
+            "tc3_codProfitSettings","tc3_codWithdrawals","tc3_invoice_edit_locks",
+            "tc3_users","tc3_startup_wizard_done","tc3_businessType",
+            "tc3_apppass","tc3_admin_name","tc3_held_invoices"
           ];
+          try {
+            if (typeof window._tcFlushPendingIdb === "function") {
+              await window._tcFlushPendingIdb();
+            }
+          } catch (_flush) {}
           const cache = window._idbCache || window._tcCache || {};
           let backup = { version:2, timestamp:new Date().toISOString(), data:{} };
           keys.forEach(function(k){ if (cache[k] !== undefined) backup.data[k] = cache[k]; });
@@ -3173,11 +3358,22 @@ function _doBackupAndQuit() {
       if (result && result.content) {
         try {
           doWriteBackup(result.content, result.customPath, "-close");
+          try { lastBackupPayload = { content: result.content, customPath: result.customPath || null }; } catch (_e) {}
           console.log('Close backup written from renderer.');
         } catch (e) { console.error('Close backup (renderer) failed:', e); }
+      } else if (lastBackupPayload) {
+        try {
+          doWriteBackup(lastBackupPayload.content, lastBackupPayload.customPath, "-close");
+          console.log('Close backup fell back to last acknowledged payload.');
+        } catch (e2) { console.error('Close backup fallback failed:', e2); }
       }
     }).catch(function(e) {
       console.error('executeJavaScript backup failed:', e);
+      if (lastBackupPayload) {
+        try {
+          doWriteBackup(lastBackupPayload.content, lastBackupPayload.customPath, "-close");
+        } catch (e2) {}
+      }
     }).finally(function() {
       isSafeToQuit = true;
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
@@ -3247,6 +3443,8 @@ function createWindow() {
       preload         : path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration : false,
+      /* Packaged builds: block DevTools (closes localStorage cert unlock + seal attacks). */
+      devTools: app.isPackaged !== true,
       /* Required for window.open('','_blank') + document.write + print() used by Reports / invoices */
       nativeWindowOpen  : true
     }
@@ -3254,6 +3452,23 @@ function createWindow() {
 
   loadMainRenderer(mainWindow);
   mainWindow.removeMenu();
+  /* Print/preview windows must not inherit the ERP preload (label XSS / IPC surface). */
+  try {
+    mainWindow.webContents.setWindowOpenHandler(function () {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          webPreferences: {
+            preload: path.join(__dirname, 'print-window-preload.cjs'),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            devTools: false,
+          },
+        },
+      };
+    });
+  } catch (_woh) { /* older Electron */ }
   /* Native right-click menu for text copy/paste in renderer fields. */
   mainWindow.webContents.on('context-menu', function (_event, params) {
     const hasSelection = !!(params && params.selectionText && params.selectionText.trim());
@@ -3293,15 +3508,52 @@ function createWindow() {
    APP EVENTS
    ═══════════════════════════════════════════════════════════════════ */
 app.whenReady().then(() => {
+  if (IS_SMOKE_RUN) {
+    try {
+      const { runMainProcessSmoke } = require('./scripts/main-process-smoke.cjs');
+      runMainProcessSmoke({
+        safeStorage,
+        getCryptoRootSecret,
+        encryptData,
+        decryptData,
+      });
+      app.exit(0);
+    } catch (e) {
+      console.error('FAIL — main-process smoke:', e && e.message ? e.message : String(e));
+      app.exit(1);
+    }
+    return;
+  }
   if (_legacyMigrationFrom) {
     writeLogFile('info', '[Startup] Migrated legacy user data from ' + _legacyMigrationFrom);
   }
-  ipcMain.on('save-backup', (_event, payload) => {
+  if (process.env.TECHON_ERP_ALLOW_LEGACY_SYNC === '1') {
+    writeLogFile('warn', '[Security] TECHON_ERP_ALLOW_LEGACY_SYNC=1 — remote legacy API-key sync is enabled; use only during migration.');
+  }
+  try { migrateAtRestSecretsOnStartup(); } catch (_eAtRest) { /* ignore */ }
+  try { rotateMainActionTokenOnLaunch(); } catch (_eTokLaunch) { /* ignore */ }
+  ipcMain.on('save-backup', (event, payload) => {
     if (isNetworkClientRole()) return;
+    const gate = tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+    if (!gate.ok) return;
     if (payload && payload.filename && payload.content) {
-      lastBackupPayload = { content: payload.content, customPath: payload.customPath || null };
-      writeBackup(payload.filename, payload.content, payload.customPath);
+      const safeContent = sanitizeBackupContent(payload.content);
+      lastBackupPayload = { content: safeContent, customPath: payload.customPath || null };
+      writeBackup(payload.filename, safeContent, payload.customPath);
     }
+  });
+
+  /* Acknowledged variant: the renderer only records a successful backup when
+     the file is fully written and renamed into place. */
+  ipcMain.handle('tc-save-backup', (event, payload) => {
+    if (isNetworkClientRole()) return { ok: false, error: 'Backups are disabled on counter PCs.' };
+    const gate = tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+    if (!gate.ok) return { ok: false, error: gate.message || 'Sign in required.' };
+    if (!payload || !payload.filename || !payload.content) {
+      return { ok: false, error: 'Invalid backup payload.' };
+    }
+    lastBackupPayload = { content: sanitizeBackupContent(payload.content), customPath: payload.customPath || null };
+    return writeBackup(payload.filename, payload.content, payload.customPath);
   });
 
   ipcMain.handle('tc-select-folder', async () => {
@@ -3384,14 +3636,18 @@ const NET_CONFIG_FILE = path.join(app.getPath('userData'), 'tc_network.json');
 
 function loadNetworkConfig() {
   try {
-    if (!fs.existsSync(NET_CONFIG_FILE)) return null;
-    return JSON.parse(fs.readFileSync(NET_CONFIG_FILE, 'utf8'));
+    const wrapped = readEncryptedJsonFile(NET_CONFIG_FILE);
+    if (!wrapped || !wrapped.data || typeof wrapped.data !== 'object') return null;
+    if (wrapped.wasPlaintext) {
+      try { saveNetworkConfig(wrapped.data); } catch (_m) { /* ignore */ }
+    }
+    return wrapped.data;
   } catch (e) { return null; }
 }
 
 function saveNetworkConfig(cfg) {
   try {
-    fs.writeFileSync(NET_CONFIG_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+    writeEncryptedJsonFile(NET_CONFIG_FILE, cfg);
     return true;
   } catch (e) { return false; }
 }
@@ -3481,15 +3737,47 @@ ipcMain.handle('tc-lan-request', async (event, payload) => {
   if (/save_license\.php/i.test(relPath)) {
     return { success: false, message: 'save_license is main-process only' };
   }
-  if (/device_manage\.php/i.test(relPath) || (/check_license\.php/i.test(relPath) && method === 'POST')) {
+  /* Allowlist shop API endpoints — block arbitrary path traversal under apiUrl. */
+  if (!/^(sync_patch|server_state|health_check|get_products|get_customers|wipe_shop_data|ping|check_license|device_register|device_status|device_manage)\.php(\?|$)/i.test(relPath)) {
+    return { success: false, message: 'Path not allowed' };
+  }
+  const isWipe = /wipe_shop_data\.php/i.test(relPath);
+  const isSyncPatch = /sync_patch\.php/i.test(relPath);
+  if (
+    /device_manage\.php/i.test(relPath)
+    || (/check_license\.php/i.test(relPath) && method === 'POST')
+    || isWipe
+  ) {
     const gate = tcRequireSessionRole(event, ['admin']);
     if (!gate.ok) {
       return { success: false, message: gate.message || 'Admin session required.' };
     }
   }
+  /* Pushing shop data requires a signed-in operator (any shop role).
+     Hard-replace (_forceReplace) is Main-PC restore/reset — admin only (match tc-sync-patch). */
+  if (isSyncPatch && method === 'POST') {
+    const bodyPeek = (payload && payload.body) || {};
+    const patches = Array.isArray(bodyPeek.patches) ? bodyPeek.patches : [];
+    const isForce = patches.some(function (p) { return p && p._forceReplace; });
+    const gate = isForce ? tcRequireAdminOrFirstRun(event) : tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+    if (!gate.ok) {
+      return {
+        success: false,
+        message: gate.message || (isForce
+          ? 'Admin session required for force-replace sync.'
+          : 'Sign in required to sync shop data.'),
+      };
+    }
+  }
+  /* Shop data reads/writes require a signed-in operator (any shop role). */
+  const isShopSync = /sync_patch\.php|server_state\.php|health_check\.php|get_products\.php|get_customers\.php/i.test(relPath);
+  if (isShopSync && !isSyncPatch) {
+    const gate = tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+    if (!gate.ok) {
+      return { success: false, message: gate.message || 'Sign in required to read shop data.' };
+    }
+  }
   /* Main-PC shop sync/wipe must hit loopback — LAN IP rejects legacy API-key auth. */
-  const isWipe = /wipe_shop_data\.php/i.test(relPath);
-  const isShopSync = /sync_patch\.php|server_state\.php|health_check\.php/i.test(relPath);
   const useLoopback = cfg.role === 'network_server' && (isWipe || isShopSync);
   const fullUrl = useLoopback
     ? (lanMainLoopbackUrl(cfg, relPath) || (cfg.apiUrl + relPath))
@@ -3499,6 +3787,17 @@ ipcMain.handle('tc-lan-request', async (event, payload) => {
     : (isWipe || isShopSync ? 120000 : 10000);
   const extra = Object.assign({}, (payload && payload.headers) || {});
   if (payload && payload.clientId) extra['X-TC-Client-ID'] = String(payload.clientId);
+  if (isWipe || (isSyncPatch && method === 'POST')) {
+    try {
+      const bodyPeek = (payload && payload.body) || {};
+      const patches = Array.isArray(bodyPeek.patches) ? bodyPeek.patches : [];
+      const isForce = patches.some(function (p) { return p && p._forceReplace; });
+      if (isWipe || isForce) {
+        const tok = syncMainActionTokenToApi((cfg && cfg.xamppPath) || detectXamppPath());
+        if (tok) extra['X-TC-MAIN-ACTION'] = tok;
+      }
+    } catch (_eTok) { /* ignore */ }
+  }
   try {
     if (method === 'GET') {
       const data = await lanGet(fullUrl, cfg);
@@ -3512,14 +3811,35 @@ ipcMain.handle('tc-lan-request', async (event, payload) => {
   }
 });
 
-/** Build auth headers only (no secret returned). For renderer fetch fallback. */
-ipcMain.handle('tc-device-auth-headers', (_event, payload) => {
+/** Device HMAC headers for renderer fetch fallback — never return legacy X-TC-KEY. */
+ipcMain.handle('tc-device-auth-headers', (event, payload) => {
+  const gate = tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+  if (!gate.ok) {
+    return { headers: {}, mode: 'denied', message: gate.message || 'Sign in required.' };
+  }
   const cfg = loadNetworkConfig();
   const method = (payload && payload.method) ? String(payload.method) : 'GET';
   const url = (payload && payload.url) ? String(payload.url) : '';
   const body = (payload && payload.body != null) ? String(payload.body) : '';
-  const headers = buildLanHeaders(method, url, body, cfg, (payload && payload.extraHeaders) || {});
-  return { headers: headers, mode: headers['X-TC-DEVICE-ID'] ? 'device' : (cfg && cfg.apiKey ? 'legacy' : 'none') };
+  const bodyStr = body == null ? '' : body;
+  const built = buildLanAuthHeaders({
+    method,
+    url,
+    body: bodyStr,
+    networkConfig: cfg,
+    deviceStore: getDeviceStore(),
+    userDataPath: app.getPath('userData'),
+    extraHeaders: (payload && payload.extraHeaders) || {},
+    forceLegacy: false,
+  });
+  const mode = built && built._authMode ? built._authMode : 'none';
+  const headers = stripInternalHeaders(built);
+  /* Legacy API key stays main-process-only — never mint X-TC-KEY into the renderer. */
+  if (headers['X-TC-KEY']) {
+    delete headers['X-TC-KEY'];
+    return { headers: headers, mode: 'legacy_withheld' };
+  }
+  return { headers: headers, mode: mode };
 });
 
 ipcMain.handle('tc-device-credentials-load', () => {
@@ -3975,8 +4295,10 @@ function tryStartService(name) {
   });
 }
 
-ipcMain.handle('tc-start-xampp-services', async (_event, { xamppPath }) => {
+ipcMain.handle('tc-start-xampp-services', async (event, { xamppPath }) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireAdminOrFirstRun(event);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   const base = xamppPath || detectXamppPath();
   if (!base) return { ok: false, message: 'XAMPP not found.' };
 
@@ -4006,6 +4328,9 @@ ipcMain.handle('tc-start-xampp-services', async (_event, { xamppPath }) => {
     }
   }
   writeLogFile('info', '[XAMPP] MySQL start result: ' + mysqlOk);
+  if (!process.env.DB_PASS && process.env.TECHON_ERP_ALLOW_DEV_DB_DEFAULTS !== '1') {
+    writeLogFile('warn', '[XAMPP] MySQL may be using default root/empty password — set DB_USER and DB_PASS for production LAN servers.');
+  }
 
   if (!apacheOk && !mysqlOk) {
     return { ok: false, message: 'Could not start Apache or MySQL. Try opening the XAMPP Control Panel manually.' };
@@ -4016,8 +4341,10 @@ ipcMain.handle('tc-start-xampp-services', async (_event, { xamppPath }) => {
   return { ok: true };
 });
 
-ipcMain.handle('tc-stop-xampp-services', async (_event, { xamppPath }) => {
+ipcMain.handle('tc-stop-xampp-services', async (event, { xamppPath }) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireAdminOrFirstRun(event);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   const base = xamppPath || detectXamppPath();
   if (!base) return { ok: false, message: 'XAMPP not found.' };
 
@@ -4032,8 +4359,10 @@ ipcMain.handle('tc-stop-xampp-services', async (_event, { xamppPath }) => {
 /* ═══════════════════════════════════════════════════════════════════
    OPEN XAMPP INSTALLER
    ═══════════════════════════════════════════════════════════════════ */
-ipcMain.handle('tc-open-xampp-installer', async () => {
+ipcMain.handle('tc-open-xampp-installer', async (event) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireAdminOrFirstRun(event);
+  if (!gate.ok) return { ok: false, error: gate.message || 'Admin session required.' };
   /* Search for bundled installer in several locations (handles .exe and .exe.exe) */
   const candidates = [
     path.join(__dirname, 'build', 'setup-bundles', 'xampp-installer.exe.exe'),
@@ -4130,8 +4459,66 @@ function copyDirRecursive(src, dest) {
   }
 }
 
-ipcMain.handle('tc-copy-api-files', (_event, { xamppPath }) => {
+function tcRequireAdminOrFirstRun(event) {
+  const sealed = tcLoadSealedCreds();
+  if (!sealed) {
+    /* Post-setup installs must not re-open first-run destructive IPC if the seal file is removed. */
+    const netCfg = loadNetworkConfig();
+    if (tcLoadInstallMarker() || (netCfg && netCfg.wizardComplete)) {
+      return { ok: false, message: 'Admin session required — setup is already complete.' };
+    }
+    return { ok: true, firstRun: true };
+  }
+  return tcRequireSessionRole(event, ['admin']);
+}
+
+let _mainActionTokenSession = null;
+
+function rotateMainActionTokenOnLaunch() {
+  const token = crypto.randomBytes(32).toString('hex');
+  _mainActionTokenSession = token;
+  const tokenFile = path.join(app.getPath('userData'), 'tc_main_action_token.txt');
+  try { fs.writeFileSync(tokenFile, token, 'utf8'); } catch (_eWrite) { /* ignore */ }
+  try {
+    const cfg = loadNetworkConfig();
+    if (cfg && cfg.role === 'network_server') {
+      syncMainActionTokenToApi((cfg && cfg.xamppPath) || detectXamppPath());
+    }
+  } catch (_eSync) { /* ignore */ }
+  return token;
+}
+
+function getMainActionToken() {
+  if (_mainActionTokenSession) return _mainActionTokenSession;
+  const tokenFile = path.join(app.getPath('userData'), 'tc_main_action_token.txt');
+  try {
+    if (fs.existsSync(tokenFile)) {
+      const existing = String(fs.readFileSync(tokenFile, 'utf8') || '').trim();
+      if (existing) {
+        _mainActionTokenSession = existing;
+        return existing;
+      }
+    }
+  } catch (_eRead) { /* ignore */ }
+  return rotateMainActionTokenOnLaunch();
+}
+
+function syncMainActionTokenToApi(xamppBase) {
+  const base = xamppBase || detectXamppPath();
+  if (!base) return null;
+  const apiDir = path.join(base, 'htdocs', 'api');
+  if (!fs.existsSync(apiDir)) return null;
+  const token = getMainActionToken();
+  const tokenFile = path.join(apiDir, 'tc_main_action.php');
+  const content = '<?php\ndefine(\'TC_MAIN_ACTION_TOKEN\', \'' + String(token).replace(/'/g, '') + '\');\n?>';
+  fs.writeFileSync(tokenFile, content, 'utf8');
+  return token;
+}
+
+ipcMain.handle('tc-copy-api-files', (event, { xamppPath }) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireAdminOrFirstRun(event);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   try {
     const base = xamppPath || detectXamppPath();
     if (!base) return { ok: false, message: 'XAMPP path not found.' };
@@ -4147,6 +4534,7 @@ ipcMain.handle('tc-copy-api-files', (_event, { xamppPath }) => {
     }
 
     copyDirRecursive(src, dest);
+    try { syncMainActionTokenToApi(base); } catch (_eTok) { /* ignore */ }
     return { ok: true, dest };
   } catch (e) {
     return { ok: false, message: e.message };
@@ -4156,8 +4544,10 @@ ipcMain.handle('tc-copy-api-files', (_event, { xamppPath }) => {
 /* ═══════════════════════════════════════════════════════════════════
    DATABASE SETUP  (create DB + import schema.sql via mysql CLI)
    ═══════════════════════════════════════════════════════════════════ */
-ipcMain.handle('tc-setup-database', async (_event, { xamppPath }) => {
+ipcMain.handle('tc-setup-database', async (event, { xamppPath }) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireAdminOrFirstRun(event);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   try {
     const base     = xamppPath || detectXamppPath();
     if (!base) return { ok: false, message: 'XAMPP not found.' };
@@ -4183,13 +4573,17 @@ ipcMain.handle('tc-setup-database', async (_event, { xamppPath }) => {
 /* ═══════════════════════════════════════════════════════════════════
    API KEY GENERATION + WRITE TO XAMPP
    ═══════════════════════════════════════════════════════════════════ */
-ipcMain.handle('tc-generate-api-key', () => {
+ipcMain.handle('tc-generate-api-key', (event) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireAdminOrFirstRun(event);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   return { key: crypto.randomBytes(32).toString('hex') };
 });
 
-ipcMain.handle('tc-write-api-key', (_event, { xamppPath, key }) => {
+ipcMain.handle('tc-write-api-key', (event, { xamppPath, key }) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireAdminOrFirstRun(event);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   try {
     const base = xamppPath || detectXamppPath();
     if (!base) return { ok: false, message: 'XAMPP not found.' };
@@ -4201,6 +4595,7 @@ ipcMain.handle('tc-write-api-key', (_event, { xamppPath, key }) => {
 
     const content = '<?php\ndefine(\'TC_API_KEY\', \'' + String(key).replace(/'/g, '') + '\');\n?>';
     fs.writeFileSync(keyFile, content, 'utf8');
+    try { syncMainActionTokenToApi(base); } catch (_eTok) { /* ignore */ }
     writeLogFile('info', 'API key written to ' + keyFile);
     return { ok: true };
   } catch (e) {
@@ -4211,8 +4606,10 @@ ipcMain.handle('tc-write-api-key', (_event, { xamppPath, key }) => {
 /* ═══════════════════════════════════════════════════════════════════
    DATABASE BACKUP  (mysqldump → Documents/TechonERP/backups/)
    ═══════════════════════════════════════════════════════════════════ */
-ipcMain.handle('tc-backup-database', async (_event, payload) => {
+ipcMain.handle('tc-backup-database', async (event, payload) => {
   if (isNetworkClientRole()) return clientModeBlockedIpc();
+  const gate = tcRequireSessionRole(event, ['admin']);
+  if (!gate.ok) return { ok: false, message: gate.message || 'Admin session required.' };
   try {
     const cfg       = loadNetworkConfig();
     const xamppBase = (payload && payload.xamppPath) || (cfg && cfg.xamppPath) || detectXamppPath();
@@ -4270,7 +4667,7 @@ ipcMain.handle('tc-write-log', (_event, { level, message }) => {
 });
 
 /** Push ERP data patches to LAN sync_patch.php (main + counter). Reads fresh network config from disk. */
-ipcMain.handle('tc-sync-patch', async (_event, payload) => {
+ipcMain.handle('tc-sync-patch', async (event, payload) => {
   const cfg = loadNetworkConfig();
   const patches = payload && Array.isArray(payload.patches) ? payload.patches : [];
   const keys = patches.map(function (p) { return p && p.key; }).filter(Boolean).join(',');
@@ -4284,13 +4681,25 @@ ipcMain.handle('tc-sync-patch', async (_event, payload) => {
     if (!patches.length) {
       return { success: false, message: 'No patches provided' };
     }
+    const isForce = patches.some(function (p) { return p && p._forceReplace; });
+    /* forceReplace is Main-PC restore/reset — admin only (or first-run migration). Normal sync needs any shop role. */
+    const gate = isForce ? tcRequireAdminOrFirstRun(event) : tcRequireSessionRole(event, ['admin', 'manager', 'cashier']);
+    if (!gate.ok) {
+      writeLogFile('error', '[SyncEngine:IPC] blocked — ' + (gate.message || 'session required'));
+      return { success: false, message: gate.message || 'Sign in required to sync shop data.' };
+    }
     /* Main PC must POST legacy-key sync via loopback — LAN IP is blocked by PHP. */
     const postUrl = (cfg.role === 'network_server')
       ? (lanMainLoopbackUrl(cfg, 'sync_patch.php') || (cfg.apiUrl + 'sync_patch.php'))
       : (cfg.apiUrl + 'sync_patch.php');
     const extra = {};
     if (clientId) extra['X-TC-Client-ID'] = clientId;
-    const isForce = patches.some(function (p) { return p && p._forceReplace; });
+    if (isForce) {
+      try {
+        const tok = syncMainActionTokenToApi((cfg && cfg.xamppPath) || detectXamppPath());
+        if (tok) extra['X-TC-MAIN-ACTION'] = tok;
+      } catch (_eTok) { /* ignore */ }
+    }
     const timeoutMs = isForce || patches.length > 8 ? 120000 : 30000;
     writeLogFile('info', '[SyncEngine:HTTP] POST ' + postUrl + ' keys=[' + keys + ']');
     const r = await lanPost(

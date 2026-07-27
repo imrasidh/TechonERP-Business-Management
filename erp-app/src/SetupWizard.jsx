@@ -392,28 +392,23 @@ function ServerSetup({ onComplete, onCancel, migrateTitle }) {
 
       if (patches.length === 0) { setMigrating(false); setMigrated(true); return; }
 
+      if (!window.electronAPI || typeof window.electronAPI.lanRequest !== 'function') {
+        throw new Error('Desktop migration bridge unavailable');
+      }
       try {
-        await fetch(migrateBase + 'wipe_shop_data.php', {
+        await window.electronAPI.lanRequest({
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-TC-Client-ID': 'migration',
-            ...(generatedKey ? { 'X-TC-KEY': generatedKey } : {}),
-          },
-          body: JSON.stringify({ confirm: 'WIPE_SHOP_DATA' }),
-          signal: AbortSignal.timeout(30000),
+          path: 'wipe_shop_data.php',
+          body: { confirm: 'WIPE_SHOP_DATA' },
+          clientId: 'migration',
+          timeoutMs: 30000,
         });
       } catch (_eWipe) { /* continue — forceReplace patches still help */ }
 
-      const headers = { 'Content-Type': 'application/json', 'X-TC-Client-ID': 'migration' };
-      if (generatedKey) headers['X-TC-KEY'] = generatedKey;
-
-      const res  = await fetch(migrateBase + 'sync_patch.php', {
-        method: 'POST', headers,
-        body: JSON.stringify({ patches, client_id: 'migration' }),
-        signal: AbortSignal.timeout(120000),
+      const json = await window.electronAPI.syncPatch({
+        patches: patches,
+        client_id: 'migration',
       });
-      const json = await res.json();
       if (!json.success) throw new Error(json.message || 'Migration failed');
       setMigrated(true);
     } catch (err) {
@@ -934,7 +929,9 @@ export default function SetupWizard({ onComplete }) {
     <>
       <style>{`
         @keyframes tc-spin { to { transform: rotate(360deg); } }
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800;900&display=swap');
+        .tc-wizard-root, .tc-wizard-root button, .tc-wizard-root input {
+          font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        }
         .tc-wizard-modes-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -964,7 +961,7 @@ export default function SetupWizard({ onComplete }) {
       <div style={{
         position: 'fixed', inset: 0, background: C.bg,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif", zIndex: 9999,
+        fontFamily: "'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif", zIndex: 9999,
         padding: 16,
       }}>
         <div style={{ width: '100%', maxWidth: 980 }}>

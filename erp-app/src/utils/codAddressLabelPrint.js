@@ -92,7 +92,7 @@ export function codAddressLabelStyleTag() {
   return "<style>" + COD_ADDRESS_LABEL_CSS + "</style>";
 }
 
-var FONT_LINK = "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;700;800&display=swap\">";
+var FONT_LINK = "<style>html,body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif}</style>";
 
 export function printCodAddressLabel(record, settings, onBlocked) {
   if (!record) return false;

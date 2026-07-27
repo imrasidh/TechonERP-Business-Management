@@ -3,6 +3,7 @@ import { ActBtn, ActBtnGroup, actBtnCellStyle } from "../components/ActBtn.jsx";
 import AddPartyModal from "../components/AddPartyModal.jsx";
 import { createAndPersistCustomer } from "../utils/customerCreate.js";
 import { LIST_PAGE_SIZE } from "../utils/listPage.js";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
 
 var Customers = function (props) {
   var state = props.state;
@@ -27,6 +28,7 @@ var Customers = function (props) {
   var Pager = props.Pager;
   var Modal = props.Modal;
   var Badge = props.Badge;
+  var openSourceDocument = props.openSourceDocument;
   var getCustomerOutstandingBalance = props.getCustomerOutstandingBalance;
   var embedded = props.embedded;
 
@@ -222,7 +224,7 @@ var Customers = function (props) {
             <thead><tr style={{ background: "#f8fafc" }}><TH>Invoice</TH><TH>Date</TH><TH>Total</TH><TH>Paid</TH><TH>Balance</TH><TH>Status</TH></tr></thead>
             <tbody>
               {state.sales.filter(function (s) { return s.customerId === sel.id || s.customerName === sel.name; }).map(function (s, i) {
-                return <TR key={s.id} i={i}><td style={{ padding: "7px 10px", fontFamily: "monospace", fontSize: 11 }}>{s.invoiceNo || s.id.slice(0, 8)}</td><TD>{fmtDate(s.date)}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD><TD color={C.green}>{getCurrencySymbol()} {fmtNum(s.paid || 0)}</TD><TD color={C.red}>{getCurrencySymbol()} {fmtNum(s.total - (s.paid || 0))}</TD><td style={{ padding: "7px 10px" }}><Badge status={s.payStatus || "Paid"} /></td></TR>;
+                return <TR key={s.id} i={i}><td style={{ padding: "7px 10px" }}><SourceDocLink nav={{ sourceKind: "sale", sourceId: s.id, label: s.invoiceNo || s.id.slice(0, 8) }} label={s.invoiceNo || s.id.slice(0, 8)} openSourceDocument={openSourceDocument} className="erp-stmt-ref-btn" /></td><TD>{fmtDate(s.date)}</TD><TD bold color={C.blue}>{getCurrencySymbol()} {fmtNum(s.total)}</TD><TD color={C.green}>{getCurrencySymbol()} {fmtNum(s.paid || 0)}</TD><TD color={C.red}>{getCurrencySymbol()} {fmtNum(s.total - (s.paid || 0))}</TD><td style={{ padding: "7px 10px" }}><Badge status={s.payStatus || "Paid"} /></td></TR>;
               })}
             </tbody>
           </table>

@@ -147,7 +147,7 @@ export async function verifySnapshotHmac(canonicalBody, hexSig) {
  */
 export async function verifySnapshotHmacFlexible(snapshot, canon) {
   if (!snapshot || !snapshot.integrityHmac) {
-    return { ok: true, matched: "none", reason: "no_hmac" };
+    return { ok: false, matched: "none", reason: "no_hmac" };
   }
   var algo = snapshot.algorithm || "";
   if (algo === "hmac-sha256-v2" || algo === "") {

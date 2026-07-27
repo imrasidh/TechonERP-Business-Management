@@ -3,6 +3,9 @@
  */
 
 import { reconcileMergedVoidReturnState } from "./reconcileVoidReturns.js";
+import { preserveLockedPeriodRowsOnPull } from "../accounting/periodLockOverride.js";
+import { dedupeJournalLinesAfterMerge } from "../accounting/journalMerge.js";
+import { sanitizeMergedPullState, sanitizeClientPullDocuments } from "./syncPullGuards.js";
 
 export var MERGEABLE_RECORD_ARRAY_KEYS = {
   tc3_sales: true,
@@ -58,6 +61,7 @@ export var APPEND_ONLY_RECORD_ARRAY_KEYS = {
   tc3_financial_mutation_log: true,
   tc3_raw_material_usage: true,
   tc3_raw_material_counts: true,
+  tc3_users: true,
 };
 
 function recordSortTs(row) {
@@ -238,6 +242,22 @@ export function mergeProductRow(a, b) {
     if (a.stockBefore != null) out.stockBefore = a.stockBefore;
     if (a.stockBaseAt != null) out.stockBaseAt = a.stockBaseAt;
   }
+  return out;
+}
+
+/** Products that hit concurrent oversell during Multi-PC merge (stock clamped to 0). */
+export function collectConcurrentOversellWarnings(products) {
+  var out = [];
+  (products || []).forEach(function (p) {
+    if (p && p.stockMergeWarning === "concurrent_oversell") {
+      out.push({
+        id: p.id,
+        name: p.name || p.id,
+        stockMergeRaw: p.stockMergeRaw,
+        stock: p.stock,
+      });
+    }
+  });
   return out;
 }
 
@@ -508,18 +528,22 @@ function mergeRecordArraysLocalMembership(localArr, remoteArr, storageKey) {
 }
 
 function mergeRecordArraysForPull(localArr, remoteArr, storageKey) {
+  var merged;
   /* Append-only / audit rows: always union by id — never let a partial server snapshot drop local lines. */
   if (APPEND_ONLY_RECORD_ARRAY_KEYS[storageKey] || storageKey === "tc3_inventory_layers") {
-    return mergeRecordArraysByNewest(localArr, remoteArr, storageKey);
+    merged = mergeRecordArraysByNewest(localArr, remoteArr, storageKey);
+  } else if (isRestoreGraceActive()) {
+    merged = mergeRecordArraysLocalMembership(localArr, remoteArr, storageKey);
+  } else if (isRecentLocalWrite(storageKey)) {
+    merged = mergeRecordArraysByNewest(localArr, remoteArr, storageKey);
+    merged = applyRecentLocalMembership(localArr, merged, storageKey);
+  } else {
+    merged = mergeRecordArraysServerMembership(localArr, remoteArr, storageKey);
   }
-  if (isRestoreGraceActive()) {
-    return mergeRecordArraysLocalMembership(localArr, remoteArr, storageKey);
+  if (storageKey === "tc3_journal_lines") {
+    return dedupeJournalLinesAfterMerge(merged);
   }
-  if (isRecentLocalWrite(storageKey)) {
-    var merged = mergeRecordArraysByNewest(localArr, remoteArr, storageKey);
-    return applyRecentLocalMembership(localArr, merged, storageKey);
-  }
-  return mergeRecordArraysServerMembership(localArr, remoteArr, storageKey);
+  return merged;
 }
 
 /** If local was recently edited, prefer local for pending keys only — do not strip peer rows. */
@@ -611,16 +635,53 @@ export function mergeServerStateWithLocal(localCache, serverData) {
         if (localCache[key] !== undefined) out[key] = localCache[key];
         return;
       }
+      /* Never let empty server placeholders wipe a good local COA / layers / hash. */
+      if (key === "tc3_gl_accounts") {
+        var remChart = serverData[key];
+        var locChart = localCache[key];
+        var remChartEmpty = !Array.isArray(remChart) || remChart.length === 0;
+        var locChartOk = Array.isArray(locChart) && locChart.length > 0;
+        if (remChartEmpty && locChartOk) { out[key] = locChart; return; }
+      }
+      if (key === "tc3_inventory_layers") {
+        var remLay = serverData[key];
+        var locLay = localCache[key];
+        var remLayEmpty = remLay == null || Array.isArray(remLay) || (typeof remLay === "object" && Object.keys(remLay).length === 0);
+        var locLayOk = locLay && typeof locLay === "object" && !Array.isArray(locLay) && Object.keys(locLay).length > 0;
+        if (remLayEmpty && locLayOk) { out[key] = locLay; return; }
+        if (Array.isArray(out[key])) out[key] = locLayOk ? locLay : {};
+      }
+      if (key === "tc3_gl_mode" || key === "tc3_journal_hash") {
+        var remScal = serverData[key];
+        var locScal = localCache[key];
+        var remScalBad = remScal == null || remScal === "" || Array.isArray(remScal);
+        var locScalOk = typeof locScal === "string" && locScal.length > 0;
+        if (remScalBad && locScalOk) { out[key] = locScal; return; }
+        if (key === "tc3_gl_mode" && remScalBad) {
+          out[key] = locScalOk ? locScal : "live";
+          return;
+        }
+        if (key === "tc3_journal_hash" && Array.isArray(out[key])) {
+          out[key] = locScalOk ? locScal : "";
+          return;
+        }
+      }
       if (out[key] === undefined && localCache[key] !== undefined) out[key] = localCache[key];
       return;
     }
     var remoteArr = Array.isArray(serverData[key]) ? serverData[key] : [];
     var localArr = Array.isArray(localCache[key]) ? localCache[key] : [];
     out[key] = mergeRecordArraysForPull(localArr, remoteArr, key);
+    var lockUntil = localCache && localCache.tc3_settings && localCache.tc3_settings.lockedUntilDate;
+    if (lockUntil) {
+      out[key] = preserveLockedPeriodRowsOnPull(localArr, out[key], key, lockUntil);
+    }
   });
   /* Partners UI reads profit settings; keep legacy partners array aligned. */
   if (out.tc3_codProfitSettings && typeof out.tc3_codProfitSettings === "object" && Array.isArray(out.tc3_codProfitSettings.shareholders)) {
     out.tc3_codPartners = out.tc3_codProfitSettings.shareholders.slice();
   }
+  out = sanitizeMergedPullState(out, localCache);
+  out = sanitizeClientPullDocuments(out);
   return reconcileMergedVoidReturnState(out, localCache, serverData);
 }

@@ -24,7 +24,7 @@ import {
   isRepair3pInternalProduct,
   isRepair3pSoldProduct,
 } from "../utils/repair3pProduct.js";
-import { buildDocPrintHeaderHtml } from "../components/DocPrintHeader.jsx";
+import { buildDocPrintHeaderHtml, buildDocPrintFooterHtml } from "../components/DocPrintHeader.jsx";
 
 var Repairs = function (props) {
   var state = props.state;
@@ -697,7 +697,11 @@ var Repairs = function (props) {
       });
       storWrites[0] = ["tc3_repairs", updates.repairs];
     }
-    storWrites.forEach(function (entry) { S.set(entry[0], entry[1]); });
+    if (typeof S.setMany === "function") {
+      S.setMany(storWrites);
+    } else {
+      storWrites.forEach(function (entry) { S.set(entry[0], entry[1]); });
+    }
     setState(function (st) { return Object.assign({}, st, updates, { _payTs: Date.now() }); });
     addAudit("3rd Party device received", repair.customer + " | " + supplierName + " | Cost " + getCurrencySymbol() + " " + fmtNum(amount) + " | Sell " + getCurrencySymbol() + " " + fmtNum(sellAmount) + " | " + payMode);
     if (printAfterSave) {
@@ -769,13 +773,20 @@ var Repairs = function (props) {
     var voidState = Object.assign({}, state, { codRecords: S.get("tc3_codRecords", []) });
     var res = buildVoidSaleUpdates(voidState, voidSaleTarget.id, voidReason, null, { confirmRefund: voidRefundConfirm === true });
     if (!res.ok) { showAlert(res.error); return; }
-    S.set("tc3_products", res.products);
-    S.set("tc3_customers", res.customers);
-    S.set("tc3_sales", res.sales);
-    S.set("tc3_cheques", res.cheques);
-    if (res.codRecords) S.set("tc3_codRecords", res.codRecords);
+    var voidPairs = [
+      ["tc3_products", res.products],
+      ["tc3_customers", res.customers],
+      ["tc3_sales", res.sales],
+      ["tc3_cheques", res.cheques],
+    ];
+    if (res.codRecords) voidPairs.push(["tc3_codRecords", res.codRecords]);
     var repairs = rollbackRepairDevicesOnVoidSale(state.repairs || [], res.voidedSale || voidSaleTarget, actionToday());
-    if (repairs !== (state.repairs || [])) S.set("tc3_repairs", repairs);
+    if (repairs !== (state.repairs || [])) voidPairs.push(["tc3_repairs", repairs]);
+    if (S.setMany) {
+      S.setMany(voidPairs);
+    } else {
+      voidPairs.forEach(function (p) { S.set(p[0], p[1]); });
+    }
     setState(function (st) {
       return Object.assign({}, st, {
         products: res.products,
@@ -1078,11 +1089,27 @@ var Repairs = function (props) {
       reason: deleteReason,
       restoredInternalParts: internal.length > 0,
     }]);
-    S.set("tc3_repairs", nr);
-    S.set("tc3_repairDeleteLog", log);
+    var deletePairs = [
+      ["tc3_repairs", nr],
+      ["tc3_repairDeleteLog", log],
+    ];
     if (internal.length) {
-      S.set("tc3_products", np);
-      S.set("tc3_damageLog", dl);
+      deletePairs.push(["tc3_products", np]);
+      deletePairs.push(["tc3_damageLog", dl]);
+    }
+    if (typeof S.setMany === "function") {
+      var delRes = S.setMany(deletePairs);
+      if (delRes && delRes.ok === false) {
+        showAlert((delRes && delRes.message) || "Could not save repair delete. Try again.");
+        return;
+      }
+    } else {
+      S.set("tc3_repairs", nr);
+      S.set("tc3_repairDeleteLog", log);
+      if (internal.length) {
+        S.set("tc3_products", np);
+        S.set("tc3_damageLog", dl);
+      }
     }
     setState(function (st) {
       return Object.assign({}, st, {
@@ -1315,11 +1342,6 @@ var Repairs = function (props) {
           reason: "Repair internal use — " + (r.customer || "") + " (#" + String(r.id || "").slice(0, 8).toUpperCase() + ")",
         }, useTs);
       }));
-      S.set("tc3_products", np);
-      S.set("tc3_productLog", pl);
-      S.set("tc3_damageLog", dl);
-      setState(function (st) { return Object.assign({}, st, { products: np, productLog: pl, damageLog: dl }); });
-      addAudit("Repair internal stock used", (r.customer || "") + " | " + usedRows.map(function (u) { return u.name + " x" + fmtNum(u.qty); }).join(", "));
       var nr = (state.repairs || []).map(function (rep) {
         if (rep.id !== r.id) return rep;
         return stampUpdatedAt(Object.assign({}, rep, {
@@ -1327,8 +1349,16 @@ var Repairs = function (props) {
           internalPartsCost: Number((rep.internalPartsCost || 0) + totalPartsCost)
         }));
       });
-      S.set("tc3_repairs", nr);
-      setState(function (st) { return Object.assign({}, st, { repairs: nr }); });
+      S.setMany
+        ? S.setMany([
+            ["tc3_products", np],
+            ["tc3_productLog", pl],
+            ["tc3_damageLog", dl],
+            ["tc3_repairs", nr],
+          ])
+        : (S.set("tc3_products", np), S.set("tc3_productLog", pl), S.set("tc3_damageLog", dl), S.set("tc3_repairs", nr));
+      setState(function (st) { return Object.assign({}, st, { products: np, productLog: pl, damageLog: dl, repairs: nr }); });
+      addAudit("Repair internal stock used", (r.customer || "") + " | " + usedRows.map(function (u) { return u.name + " x" + fmtNum(u.qty); }).join(", "));
     }
     var prefill = {
       customerName: r.customer,
@@ -1464,17 +1494,14 @@ var Repairs = function (props) {
 
     body += "<div class='sig-row'><div class='sig-box'>Customer Signature</div><div class='sig-box'>Technician / Staff</div></div>";
 
-    /* Spacer pushes footer to bottom of page — same pattern as sales / quotation invoice */
-    body += "<div class='footer-spacer'></div>";
-
-    body += "<div class='print-footer'>";
-    body += "<div style='display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:8px;'>";
-    body += "<div style='width:22%;border-top:1px solid " + accent + ";opacity:0.65;'></div>";
-    body += "<div style='font-size:12px;font-weight:700;color:" + accent + ";text-align:center;font-style:italic;letter-spacing:0.01em;'>We take care of your devices</div>";
-    body += "<div style='width:22%;border-top:1px solid " + accent + ";opacity:0.65;'></div>";
-    body += "</div>";
-    body += "<div style='text-align:center;font-size:8px;color:#000;font-weight:400;padding-bottom:4px;'>Powered By Techon Computers | +94 70 1234678</div>";
-    body += "</div>";
+    body += buildDocPrintFooterHtml({
+      settings: settings,
+      accent: accent,
+      padPx: 24,
+      escapeHtml: escapeHtml,
+      withSpacer: true,
+      kind: "repair",
+    });
     body += "</div>";
     return body;
   };

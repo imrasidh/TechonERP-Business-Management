@@ -3091,6 +3091,10 @@
   grid-template-columns: 1fr 1fr 1fr;
 }
 
+.erp-modal-overlay .erp-modal-shell.erp-party-modal .erp-party-kind-row.is-two {
+  grid-template-columns: 1fr 1fr;
+}
+
 .erp-modal-overlay .erp-modal-shell.erp-party-modal .erp-party-modal-hint.is-other {
   background: #ecfdf5 !important;
   border: 1px solid #99f6e4 !important;

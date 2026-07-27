@@ -76,6 +76,11 @@ export function activePurchaseReturns(purchases, purchaseReturns) {
   });
 }
 
+/** True when a return's parent document exists and is not voided (shared by reports + GL + inventory). */
+export function isReturnParentEconomicallyActive(parent) {
+  return !!(parent && !isVoidedTxn(parent));
+}
+
 function isServiceProduct(p) {
   return String((p && p.type) || "stock").toLowerCase() === "service";
 }

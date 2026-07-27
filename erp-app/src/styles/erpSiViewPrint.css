@@ -190,9 +190,19 @@
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  padding: 0 6px 0 8px;
+  padding: 0 8px 0 10px;
   border-left: 1px solid rgba(148, 163, 184, 0.22);
   height: 26px;
+  border-radius: 0 6px 6px 0;
+}
+
+.erp-si-fv-warranty.is-on {
+  color: #93c5fd;
+}
+
+.erp-si-fv-warranty.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .erp-si-fv-warranty input {
@@ -201,6 +211,10 @@
   margin: 0;
   accent-color: #3b82f6;
   cursor: pointer;
+}
+
+.erp-si-fv-warranty.is-disabled input {
+  cursor: not-allowed;
 }
 
 .erp-si-fv-actions {
@@ -354,6 +368,36 @@
 .erp-si-fv-sheet.is-thermal {
   border-radius: 10px;
   padding: 4px;
+}
+
+/* Wide A5 landscape-half voucher slips (expense, money in/out) */
+.erp-si-fv-sheet.is-voucher-slip {
+  width: 794px;
+  min-width: 794px;
+  max-width: calc(100% - 8px);
+  min-height: 340px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.erp-si-fv-sheet.is-voucher-slip .erp-voucher-slip {
+  box-shadow:
+    0 0 0 1px rgba(15, 23, 42, 0.08),
+    0 18px 40px rgba(15, 23, 42, 0.28);
+  border-radius: 6px;
+}
+
+.erp-si-fv-sheet.is-voucher-slip.is-thermal {
+  width: 310px;
+  min-width: 310px;
+  padding: 4px;
+}
+
+.erp-si-fv-sheet.is-voucher-slip.is-thermal .erp-voucher-slip {
+  width: 100% !important;
+  min-height: 0;
 }
 
 /* Universal preview: real paper box (do not stretch to stage width) */

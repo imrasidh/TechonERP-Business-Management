@@ -1,5 +1,5 @@
 import React from "react";
-import { DocPrintHeader, DOC_PRINT_ACCENT } from "./DocPrintHeader.jsx";
+import { DocPrintHeader, DocPrintFooter, DOC_PRINT_ACCENT } from "./DocPrintHeader.jsx";
 
 /**
  * Formal Purchase Invoice document (mirrors sales InvoiceA4 layout).
@@ -67,7 +67,7 @@ export function PurchaseInvoiceDoc(props) {
         </div>
       </div>
 
-      <div style={{ padding: "0 " + px, flex: 1 }}>
+      <div style={{ padding: "0 " + px }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: accent, color: "#fff" }}>
@@ -96,7 +96,7 @@ export function PurchaseInvoiceDoc(props) {
         </table>
       </div>
 
-      <div style={{ padding: "16px " + px + " 28px", display: "flex", justifyContent: "space-between", gap: 24, alignItems: "flex-end" }}>
+      <div style={{ padding: "16px " + px + " 8px", display: "flex", justifyContent: "space-between", gap: 24, alignItems: "flex-end" }}>
         <div style={{ fontSize: fs, color: "#555", lineHeight: 1.6 }}>
           <div><strong>Payment:</strong> {getCurrencySymbol()} {fmtNum(paid)} paid</div>
           <div><strong>Balance due:</strong> {getCurrencySymbol()} {fmtNum(balance)}</div>
@@ -112,6 +112,8 @@ export function PurchaseInvoiceDoc(props) {
           </div>
         </div>
       </div>
+
+      <DocPrintFooter settings={settings} accent={accent} padPx={pad} kind="purchase" />
     </div>
   );
 }

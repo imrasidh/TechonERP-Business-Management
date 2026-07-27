@@ -6,7 +6,31 @@ Header always set X-Content-Type-Options "nosniff"
     Require all denied
 </Files>
 
-# Block direct access to config
+# Block direct access to config / secret files (must only be included by PHP)
 <Files "config.php">
     Require all denied
 </Files>
+<Files "tc_api_key.php">
+    Require all denied
+</Files>
+<Files "tc_main_action.php">
+    Require all denied
+</Files>
+<Files "tc_device_master.php">
+    Require all denied
+</Files>
+<Files "device_auth.php">
+    Require all denied
+</Files>
+<Files "merge_records.php">
+    Require all denied
+</Files>
+<Files "env_load.php">
+    Require all denied
+</Files>
+<Files "cors_utils.php">
+    Require all denied
+</Files>
+<FilesMatch "^(tc_api_key|tc_device_master|tc_main_action)\.php$">
+    Require all denied
+</FilesMatch>

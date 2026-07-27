@@ -19,10 +19,14 @@ import {
   readInvoiceEditLocks,
 } from "../utils/invoiceEditLocks.js";
 import { MoneyInOutModal } from "../components/MoneyInOutModal.jsx";
+import { PartyPaymentModal } from "../components/PartyPaymentModal.jsx";
 import { PurchaseInvoiceDoc } from "../components/PurchaseInvoiceDoc.jsx";
 import { MoneyReceiptDoc } from "../components/MoneyReceiptDoc.jsx";
 import PrintFormatChooser from "../components/PrintFormatChooser.jsx";
-import { resolveThermalFormat } from "../utils/printFormat.js";
+import { buildPrintFmtOptions, resolveDefaultPrintFormat } from "../utils/printFormat.js";
+import { saveDocPdf, shareDocWhatsApp } from "../utils/docPrintActions.js";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
+import { payableEntryNav } from "../utils/sourceDocumentNav.js";
 
 /* ═══════════════════════════════════════════════════════════
    ENHANCED PAYABLES — Purchase invoices + Manual (Borrowed, Other)
@@ -50,6 +54,7 @@ var EnhancedPayables = function (props) {
   var TR = props.TR;
   var TD = props.TD;
   var fmtDateFull = props.fmtDateFull;
+  var openSourceDocument = props.openSourceDocument;
   var SplitPaymentModal = props.SplitPaymentModal;
   var usePager = props.usePager;
   var Pager = props.Pager;
@@ -89,6 +94,7 @@ var EnhancedPayables = function (props) {
   var [ptab, setPtab] = useState("all");
   var [search, setSearch] = useState("");
   var [addModal, setAddModal] = useState(false);
+  var [partyPayOpen, setPartyPayOpen] = useState(false);
   var [payModal, setPayModal] = useState(null);
   var [splitPayModal, setSplitPayModal] = useState(null);
   var [payAmt, setPayAmt] = useState("");
@@ -100,7 +106,7 @@ var EnhancedPayables = function (props) {
   var [docView, setDocView] = useState(null); /* purchase object for purchase invoice */
   var [receiptView, setReceiptView] = useState(null); /* manual money-in receipt */
   var [editReceipt, setEditReceipt] = useState(null); /* manual money-in for MoneyInOutModal edit */
-  var [docFmt, setDocFmt] = useState(function () { return (state.settings && state.settings.invoiceDefaultSize) || "a4"; });
+  var [docFmt, setDocFmt] = useState(function () { return resolveDefaultPrintFormat(state.settings || {}); });
   var [printFmtOpen, setPrintFmtOpen] = useState(false);
   var [pendingPrintFmt, setPendingPrintFmt] = useState(null);
   var [printTarget, setPrintTarget] = useState(null); /* "purchase" | "receipt" */
@@ -113,21 +119,17 @@ var EnhancedPayables = function (props) {
   var escapeHtml = props.escapeHtml || function (s) { return String(s == null ? "" : s); };
   var shareViaWhatsApp = props.shareViaWhatsApp;
 
-  var invThermalFmt = resolveThermalFormat(state.settings || {});
-  var invPrintFmtOptions = [
-    ["a4", "A4"],
-    ["a5", "A5"],
-    [invThermalFmt, invThermalFmt === "thermal58" ? "58mm" : "80mm"],
-  ];
+  var invPrintFmtOptions = buildPrintFmtOptions(state.settings || {});
 
-  var printDocById = function (elId, title, fmt) {
+  var printDocById = function (elId, title, fmt, opts) {
     var el = document.getElementById(elId);
     if (!el) return;
     var isA5 = fmt === "a5";
     var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
-    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
-    var margin = isThermal ? "3mm" : "8mm";
-    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + " portrait;margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
+    var isVoucher = opts && opts.voucherSlip;
+    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : (isVoucher && isA5) ? "A5 landscape" : isA5 ? "A5" : "A4";
+    var margin = isThermal ? "3mm" : (isVoucher ? "6mm" : "8mm");
+    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
     var w = window.open("", "_blank", "width=900,height=760");
     if (!w) return;
     w.document.write("<!DOCTYPE html><html><head>" + PRINT_FONT_LINK + "<title>" + escapeHtml(title || "Document") + "</title>" + css + "</head><body>" + el.innerHTML + "</body></html>");
@@ -135,17 +137,28 @@ var EnhancedPayables = function (props) {
     setTimeout(function () { w.focus(); w.print(); }, 500);
   };
 
-  var whatsappDocById = function (elId, filename, phone, fmt) {
-    var el = document.getElementById(elId);
-    if (!el) { showAlert("Document preview not ready. Please try again."); return; }
-    if (typeof shareViaWhatsApp !== "function") { showAlert("WhatsApp share is not available."); return; }
-    var isA5 = fmt === "a5";
-    var isThermal = fmt === "thermal" || fmt === "thermal58" || fmt === "thermal80";
-    var pageSize = fmt === "thermal58" ? "58mm auto" : (fmt === "thermal80" || fmt === "thermal") ? "80mm auto" : isA5 ? "A5" : "A4";
-    var margin = isThermal ? "3mm" : "8mm";
-    var css = "<style>*{box-sizing:border-box;margin:0;padding:0;}html,body{height:auto;}body{background:#fff;font-family:'Segoe UI',Arial,sans-serif;}@page{size:" + pageSize + (isThermal ? "" : " portrait") + ";margin:" + margin + ";}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}</style>";
-    var pageFormat = isThermal ? (fmt === "thermal58" ? "thermal58" : "thermal80") : (isA5 ? "a5" : "a4");
-    shareViaWhatsApp(el.innerHTML, filename, phone || "", { headStyles: css, pageFormat: pageFormat });
+  var whatsappDocById = function (elId, filename, phone, fmt, extra) {
+    shareDocWhatsApp({
+      elId: elId,
+      fmt: fmt,
+      filename: filename,
+      phone: phone || "",
+      shareViaWhatsApp: shareViaWhatsApp,
+      showAlert: showAlert,
+      extra: extra || {},
+    });
+  };
+
+  var saveDocPdfById = function (elId, title, fmt, extra) {
+    saveDocPdf({
+      elId: elId,
+      title: title,
+      fmt: fmt,
+      printFontLink: PRINT_FONT_LINK,
+      escapeHtml: escapeHtml,
+      showAlert: showAlert,
+      extra: extra || {},
+    });
   };
 
   useEffect(function () {
@@ -155,7 +168,7 @@ var EnhancedPayables = function (props) {
       if (printTarget === "purchase" && docView) {
         printDocById("arap-pur-preview-" + docView.id, "Purchase " + (docView.invoiceNo || ""), fmt);
       } else if (printTarget === "receipt" && receiptView) {
-        printDocById("arap-rcp-preview-" + receiptView.id, "Receipt " + (receiptView.receiptNo || ""), fmt);
+        printDocById("arap-rcp-preview-" + receiptView.id, "Receipt " + (receiptView.receiptNo || ""), fmt, { voucherSlip: true });
       }
       setPendingPrintFmt(null);
       setPrintTarget(null);
@@ -248,7 +261,8 @@ var EnhancedPayables = function (props) {
         if (pur) {
           var updPur = stampUpdatedAt(Object.assign({}, pur, { paymentHistory: (pur.paymentHistory || []).concat(phEntries) }));
           var np0 = state.purchases.map(function (p) { return p.id === item.id ? updPur : p; });
-          S.set("tc3_purchases", np0); S.set("tc3_cheques", nch);
+          if (S.setMany) { S.setMany([["tc3_purchases", np0], ["tc3_cheques", nch]]); }
+          else { S.set("tc3_purchases", np0); S.set("tc3_cheques", nch); }
           addAudit(chequeList.length + " Cheque(s) Issued " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.reference || "");
           setState(function (st) { return Object.assign({}, st, { purchases: np0, cheques: nch }); });
         }
@@ -257,7 +271,9 @@ var EnhancedPayables = function (props) {
         var upd0 = list0.map(function (mp) {
           return mp.id !== item.id ? mp : stampUpdatedAt(Object.assign({}, mp, { paymentHistory: (mp.paymentHistory || []).concat(phEntries) }));
         });
-        S.set("tc3_manualPayables", upd0); S.set("tc3_cheques", nch);
+        S.setMany
+          ? S.setMany([["tc3_manualPayables", upd0], ["tc3_cheques", nch]])
+          : (S.set("tc3_manualPayables", upd0), S.set("tc3_cheques", nch));
         addAudit(chequeList.length + " Cheque(s) Issued " + getCurrencySymbol() + " " + fmtNum(chqTotal), item.source || "");
         setState(function (st) { return Object.assign({}, st, { cheques: nch, _payTs: Date.now() }); });
       }
@@ -360,7 +376,8 @@ var EnhancedPayables = function (props) {
         var newPaid = (pur.paidAmount || 0) + totalNonCheque; var newBal = pur.total - newPaid;
         var updPur = stampUpdatedAt(Object.assign({}, pur, { paidAmount: newPaid, balance: newBal, status: newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid", paymentHistory: newPh }));
         var np = (purchasesBase || state.purchases).map(function (p) { return p.id === pur.id ? updPur : p; });
-        S.set("tc3_purchases", np); S.set("tc3_cheques", newCheques);
+        if (S.setMany) { S.setMany([["tc3_purchases", np], ["tc3_cheques", newCheques]]); }
+        else { S.set("tc3_purchases", np); S.set("tc3_cheques", newCheques); }
         try { pushKeysNow([["tc3_purchases", np], ["tc3_cheques", newCheques]]); } catch (_e) { /* ignore */ }
         setState(function (st) { return Object.assign({}, st, { purchases: np, cheques: newCheques }); });
         setSplitPayModal(null);
@@ -403,11 +420,116 @@ var EnhancedPayables = function (props) {
       });
       if (!fitManSplit.ok) { showAlert(fitManSplit.message); return; }
       var updMan = manPays.map(function (mp) { return mp.id === entry.id ? stampUpdatedAt(Object.assign({}, mp, { paymentHistory: (mp.paymentHistory || []).concat(newPh2) })) : mp; });
-      S.set("tc3_manualPayables", updMan); S.set("tc3_cheques", newCheques);
+      if (S.setMany) { S.setMany([["tc3_manualPayables", updMan], ["tc3_cheques", newCheques]]); }
+      else { S.set("tc3_manualPayables", updMan); S.set("tc3_cheques", newCheques); }
       setState(function (st) { return Object.assign({}, st, { cheques: newCheques }); });
     }
     setSplitPayModal(null);
     addAudit("Payment " + getCurrencySymbol() + " " + fmtNum(totalAdded), entry.reference || entry.id.slice(0, 8));
+  };
+
+  var savePartyPaymentPay = function (payload, done) {
+    var lines = payload.lines || [];
+    var payment = payload.payment || {};
+    var party = payload.party;
+    var method = payment.method || "Cash";
+    var note = payment.note || "";
+    var chequeNo = String(payment.chequeNo || "").trim();
+    var chequeBank = String(payment.chequeBankName || "").trim();
+    var chequeDue = payment.chequeDueDate || today();
+
+    var purchases = (state.purchases || []).slice();
+    var manualPays = S.get("tc3_manualPayables", []).slice();
+    var cheques = (state.cheques || []).slice();
+    var totalRecorded = 0;
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      var entry = line.entry;
+      var amt = parseFloat(line.amount) || 0;
+      if (amt <= 0) continue;
+
+      if (entry._type === "purchase") {
+        var purIdx = purchases.findIndex(function (p) { return p.id === entry.id; });
+        if (purIdx < 0) { showAlert("Purchase not found. Refresh and try again."); done(); return; }
+        var pur = purchases[purIdx];
+        if (isVoidedTxn(pur)) { showAlert("Cannot record payment on a voided purchase."); done(); return; }
+        var fitPur = assertPaymentFitsPurchaseBalance(pur, amt, {
+          includePendingCheques: true,
+          cheques: cheques,
+        });
+        if (!fitPur.ok) { showAlert(fitPur.message); done(); return; }
+        var newPh = (pur.paymentHistory || []).slice();
+        var nonCheque = 0;
+        if (method === "Cheque") {
+          var chTs = new Date().toISOString();
+          var newChq = stampTransactionIsoDateTime({
+            id: uid(), type: "outgoing", status: "Pending", chequeNo: chequeNo, bankName: chequeBank,
+            amount: amt, dueDate: chequeDue, issuedDate: today(),
+            supplierName: pur.supplier || (party && party.name) || "",
+            purchaseId: pur.id, purchaseNo: pur.invoiceNo || "", note: note, createdAt: chTs, updatedAt: chTs,
+          }, chTs);
+          cheques.push(newChq);
+          newPh.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + chequeNo + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + chequeDue + ")" + (note ? " | " + note : ""), chequeId: newChq.id });
+        } else {
+          var cm = (method === "Bank" || method === "Online" || method === "Card") ? "Bank" : "Cash";
+          nonCheque = amt;
+          newPh.push({ id: uid(), date: today(), amount: amt, cashMethod: cm, note: method + (note ? ": " + note : "") });
+        }
+        var newPaid = (pur.paidAmount || 0) + nonCheque;
+        var newBal = pur.total - newPaid;
+        purchases[purIdx] = stampUpdatedAt(Object.assign({}, pur, {
+          paidAmount: newPaid, balance: newBal,
+          status: newBal <= 0 ? "Paid" : newPaid > 0 ? "Partial" : "Unpaid",
+          paymentHistory: newPh,
+        }));
+        totalRecorded += amt;
+      } else if (entry._type === "manual") {
+        var manIdx = manualPays.findIndex(function (m) { return m.id === entry.id; });
+        if (manIdx < 0) { showAlert("Payable record not found."); done(); return; }
+        var mp = manualPays[manIdx];
+        var fitMan = assertPaymentFitsManualBalance(entry, amt, {
+          includePendingCheques: true,
+          cheques: cheques,
+          chequeLinkField: "manualPayableId",
+        });
+        if (!fitMan.ok) { showAlert(fitMan.message); done(); return; }
+        var newPhMan = (mp.paymentHistory || []).slice();
+        if (method === "Cheque") {
+          var chTs2 = new Date().toISOString();
+          var newChq2 = stampTransactionIsoDateTime({
+            id: uid(), type: "outgoing", status: "Pending", chequeNo: chequeNo, bankName: chequeBank,
+            amount: amt, dueDate: chequeDue, issuedDate: today(),
+            manualPayableId: mp.id, note: note, createdAt: chTs2, updatedAt: chTs2,
+          }, chTs2);
+          cheques.push(newChq2);
+          newPhMan.push({ id: uid(), date: today(), amount: 0, cashMethod: "Cheque", note: "Cheque #" + chequeNo + " " + getCurrencySymbol() + " " + fmtNum(amt) + " (Pending — due " + chequeDue + ")" + (note ? " | " + note : ""), chequeId: newChq2.id });
+        } else {
+          var cm2 = (method === "Bank" || method === "Online" || method === "Card") ? "Bank" : method;
+          newPhMan.push({ id: uid(), date: today(), amount: amt, cashMethod: cm2, note: note || "Payment made" });
+        }
+        manualPays[manIdx] = stampUpdatedAt(Object.assign({}, mp, { paymentHistory: newPhMan }));
+        totalRecorded += amt;
+      }
+    }
+
+    if (totalRecorded <= 0) { showAlert("No payment amounts to save."); done(); return; }
+
+    if (S.setMany) {
+      S.setMany([["tc3_purchases", purchases], ["tc3_manualPayables", manualPays], ["tc3_cheques", cheques]]);
+    } else {
+      S.set("tc3_purchases", purchases);
+      S.set("tc3_manualPayables", manualPays);
+      S.set("tc3_cheques", cheques);
+    }
+    try { pushKeysNow([["tc3_purchases", purchases], ["tc3_manualPayables", manualPays], ["tc3_cheques", cheques]]); } catch (_e) { /* ignore */ }
+    setState(function (st) { return Object.assign({}, st, { purchases: purchases, cheques: cheques, _payTs: Date.now() }); });
+    addAudit("Party payment " + getCurrencySymbol() + " " + fmtNum(totalRecorded), (party && party.name) || "Party");
+    setPartyPayOpen(false);
+    if (method === "Cheque") {
+      showAlert("✅ Payment recorded. " + lines.length + " cheque(s) pending — clear them in Cheque Register when paid.");
+    }
+    done();
   };
 
   var deleteManual = function (id) {
@@ -426,7 +548,8 @@ var EnhancedPayables = function (props) {
         }
         return ch;
       });
-      S.set("tc3_manualPayables", list); S.set("tc3_cheques", nch);
+      if (S.setMany) { S.setMany([["tc3_manualPayables", list], ["tc3_cheques", nch]]); }
+      else { S.set("tc3_manualPayables", list); S.set("tc3_cheques", nch); }
       setState(function (st) { return Object.assign({}, st, { cheques: nch, _payTs: Date.now() }); });
       if (viewItem && viewItem.id === id) setViewItem(null);
     });
@@ -482,10 +605,16 @@ var EnhancedPayables = function (props) {
               <span className="erp-arap-kpi-sub">{getCurrencySymbol()} {fmtNum(totalPaidAll)}</span>
             </div>
           </div>
-          <button type="button" className="erp-arap-add is-in" onClick={function () { setAddModal(true); }}>
-            <span className="erp-arap-add-ico" aria-hidden="true">↑</span>
-            <span>Money In</span>
-          </button>
+          <div className="erp-arap-topbar-actions">
+            <button type="button" className="erp-arap-add is-pay-party" onClick={function () { setPartyPayOpen(true); }}>
+              <span className="erp-arap-add-ico" aria-hidden="true">{getCurrencySymbol()}</span>
+              <span>Pay</span>
+            </button>
+            <button type="button" className="erp-arap-add is-in" onClick={function () { setAddModal(true); }}>
+              <span className="erp-arap-add-ico" aria-hidden="true">↑</span>
+              <span>Money In</span>
+            </button>
+          </div>
         </div>
         <div className="erp-arap-tabs" role="tablist" aria-label="Payable filters">
           {PTABS.map(function (t) {
@@ -569,7 +698,13 @@ var EnhancedPayables = function (props) {
                           ? <span className="erp-arap-bal is-out">{getCurrencySymbol()} {fmtNum(e.balance)}</span>
                           : <span className="erp-arap-bal is-ok">Cleared</span>}
                       </td>
-                      <td className="erp-arap-ref" title={e.reference || ""}>{e.reference || "—"}</td>
+                      <td className="erp-arap-ref" title={e.reference || ""}>
+                        <SourceDocLink
+                          nav={payableEntryNav(e)}
+                          label={e.reference || "—"}
+                          openSourceDocument={openSourceDocument}
+                        />
+                      </td>
                       <td style={actBtnCellStyle}>
                         <ActBtnGroup>
                           <ActBtn tone="cyan" title="View details" onClick={function () { setViewItem(e); }} />
@@ -654,6 +789,32 @@ var EnhancedPayables = function (props) {
         />
       )}
 
+      {partyPayOpen ? (
+        <PartyPaymentModal
+          mode="pay"
+          entries={allEntries}
+          cheques={state.cheques || []}
+          customers={state.customers || []}
+          suppliers={state.suppliers || []}
+          others={state.others || []}
+          onSave={savePartyPaymentPay}
+          onClose={function () { setPartyPayOpen(false); }}
+          openSourceDocument={openSourceDocument}
+          showAlert={showAlert}
+          Modal={Modal}
+          Btn={Btn}
+          Input={Input}
+          today={today}
+          fmtNum={fmtNum}
+          fmtDate={fmtDateFull}
+          getCurrencySymbol={getCurrencySymbol}
+          S={S}
+          setState={setState}
+          uid={uid}
+          tcTrialGuard={tcTrialGuard}
+        />
+      ) : null}
+
       {/* Payment Modal */}
       {splitPayModal && (
         <SplitPaymentModal
@@ -722,18 +883,13 @@ var EnhancedPayables = function (props) {
                 <div className="erp-arap-view-doclink">
                   <div>
                     <div className="erp-arap-view-card-title">Purchase invoice</div>
-                    <button
-                      type="button"
+                    <SourceDocLink
+                      nav={pur ? { sourceKind: "purchase", sourceId: pur.id, label: invNo } : null}
+                      label={invNo}
+                      openSourceDocument={openSourceDocument}
                       className="erp-arap-inv-link is-pay"
-                      onClick={function () {
-                        if (!pur) { showAlert("Purchase record not found."); return; }
-                        setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                        setDocView(pur);
-                      }}
                       title="Open actual purchase invoice"
-                    >
-                      {invNo}
-                    </button>
+                    />
                     <div className="erp-arap-view-muted">Click invoice number to open the purchase invoice</div>
                   </div>
                   <button
@@ -741,8 +897,7 @@ var EnhancedPayables = function (props) {
                     className="erp-arap-doc-btn is-pay-tone"
                     onClick={function () {
                       if (!pur) { showAlert("Purchase record not found."); return; }
-                      setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                      setDocView(pur);
+                      if (typeof openSourceDocument === "function") openSourceDocument({ sourceKind: "purchase", sourceId: pur.id });
                     }}
                   >
                     Open purchase
@@ -756,17 +911,13 @@ var EnhancedPayables = function (props) {
                     <div>
                       <div className="erp-arap-view-card-title">Money In receipt</div>
                       {hasRcp ? (
-                        <button
-                          type="button"
+                        <SourceDocLink
+                          nav={{ sourceKind: "manual-ap", sourceId: (viewItem._manualObj || viewItem).id, label: rcpNo || "Receipt" }}
+                          label={rcpNo || "Receipt"}
+                          openSourceDocument={openSourceDocument}
                           className="erp-arap-inv-link is-pay"
-                          onClick={function () {
-                            setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                            setReceiptView(viewItem._manualObj || viewItem);
-                          }}
                           title="Open receipt"
-                        >
-                          {rcpNo || "Receipt"}
-                        </button>
+                        />
                       ) : (
                         <b style={{ fontSize: 14 }}>{viewItem.reference || "—"}</b>
                       )}
@@ -774,8 +925,9 @@ var EnhancedPayables = function (props) {
                     </div>
                     {hasRcp ? (
                       <button type="button" className="erp-arap-doc-btn is-pay-tone" onClick={function () {
-                        setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
-                        setReceiptView(viewItem._manualObj || viewItem);
+                        if (typeof openSourceDocument === "function") {
+                          openSourceDocument({ sourceKind: "manual-ap", sourceId: (viewItem._manualObj || viewItem).id });
+                        }
                       }}>
                         Open receipt
                       </button>
@@ -873,7 +1025,7 @@ var EnhancedPayables = function (props) {
               <div className="erp-arap-view-actions">
                 {isPur && pur ? (
                   <button type="button" className="erp-arap-doc-btn is-ghost" onClick={function () {
-                    setDocFmt((state.settings && state.settings.invoiceDefaultSize) || "a4");
+                    setDocFmt(resolveDefaultPrintFormat(state.settings || {}));
                     setDocView(pur);
                   }}>
                     View actual purchase
@@ -938,6 +1090,17 @@ var EnhancedPayables = function (props) {
                   className="erp-si-fv-btn is-print"
                   onClick={function () { setPrintTarget("purchase"); setPrintFmtOpen(true); }}
                 >Print</button>
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () {
+                    saveDocPdfById(
+                      "arap-pur-preview-" + docView.id,
+                      "Purchase " + (docView.invoiceNo || ""),
+                      docFmt
+                    );
+                  }}
+                >Save PDF</button>
                 {WABtn ? (
                   <WABtn
                     title="Share as PDF via WhatsApp"
@@ -1022,11 +1185,23 @@ var EnhancedPayables = function (props) {
                   className="erp-si-fv-btn is-print"
                   onClick={function () { setPrintTarget("receipt"); setPrintFmtOpen(true); }}
                 >Print</button>
+                <button
+                  type="button"
+                  className="erp-si-fv-btn is-convert"
+                  onClick={function () {
+                    saveDocPdfById(
+                      "arap-rcp-preview-" + rcp.id,
+                      "Receipt " + rcpNo,
+                      docFmt,
+                      { voucherSlip: true }
+                    );
+                  }}
+                >Save PDF</button>
                 {WABtn ? (
                   <WABtn
                     title="Share as PDF via WhatsApp"
                     onClick={function () {
-                      whatsappDocById("arap-rcp-preview-" + rcp.id, "Receipt-" + rcpNo, "", docFmt);
+                      whatsappDocById("arap-rcp-preview-" + rcp.id, "Receipt-" + rcpNo, "", docFmt, { voucherSlip: true });
                     }}
                   />
                 ) : null}
@@ -1034,7 +1209,7 @@ var EnhancedPayables = function (props) {
               </div>
             </div>
             <div className="erp-si-fv-stage">
-              <div id={"arap-rcp-preview-" + rcp.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper")}>
+              <div id={"arap-rcp-preview-" + rcp.id} className={"erp-si-fv-sheet" + ((docFmt === "thermal58" || docFmt === "thermal80") ? " is-thermal" : " is-paper") + " is-voucher-slip"}>
                 <MoneyReceiptDoc
                   receipt={rcp}
                   mode="in"
@@ -1053,9 +1228,8 @@ var EnhancedPayables = function (props) {
       <PrintFormatChooser
         open={printFmtOpen}
         settings={state.settings}
-        thermalId={invThermalFmt}
         title={printTarget === "receipt" ? "Print receipt" : "Print purchase invoice"}
-        hint="Choose A4, A5, or Thermal for your printer."
+        hint="Choose an enabled paper size for your printer."
         onClose={function () { setPrintFmtOpen(false); setPrintTarget(null); }}
         onSelect={function (fmt) {
           setPrintFmtOpen(false);

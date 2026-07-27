@@ -1372,7 +1372,16 @@ export default function LicenseGate() {
   const [licStatus,      setLicStatus]      = useState(null);
   const [showActivation, setShowActivation] = useState(false);
   const [prodSecretGate, setProdSecretGate] = useState(function () {
-    if (typeof window === 'undefined' || !window.electronAPI || !window.electronAPI.getProductionGuard) {
+    if (typeof window === 'undefined' || !window.electronAPI) {
+      return { ok: true, blocked: false };
+    }
+    if (!window.electronAPI.getProductionGuard) {
+      /* Packaged Electron without guard API → fail closed. */
+      try {
+        if (typeof window.electronAPI.isPackaged === 'function' && window.electronAPI.isPackaged()) {
+          return { ok: true, blocked: true };
+        }
+      } catch (_e) { /* ignore */ }
       return { ok: true, blocked: false };
     }
     return null;
@@ -1426,9 +1435,15 @@ export default function LicenseGate() {
   useEffect(function () {
     if (!licStatus || networkConfig === null) return;
     var api = window.electronAPI;
+    var isDev = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV;
+    var packagedHint = false;
+    try {
+      packagedHint = !!(api && typeof api.isPackaged === 'function' && api.isPackaged());
+    } catch (_ePkg) { /* ignore */ }
     if (!api || !api.getProductionGuard) {
-      setProdSecretGate({ ok: true, blocked: false });
-      setPackagedMissingLicenseSecretBlock(false);
+      var blockMissing = !isDev && packagedHint;
+      setProdSecretGate({ ok: true, blocked: blockMissing });
+      setPackagedMissingLicenseSecretBlock(blockMissing);
       return;
     }
     api.getProductionGuard().then(function (g) {
@@ -1436,11 +1451,22 @@ export default function LicenseGate() {
         window.__TC_OP_GUARD_BLOCK__ = !!(g && g.blockWritesOnCritical);
       } catch (e) { /* ignore */ }
       var blocked = !!(g && g.isPackaged && !g.licenseSecretConfigured);
+      if (g && g.guardError && g.isPackaged) blocked = true;
       setProdSecretGate({ ok: true, blocked: blocked });
       setPackagedMissingLicenseSecretBlock(blocked);
     }).catch(function () {
-      setProdSecretGate({ ok: true, blocked: false });
-      setPackagedMissingLicenseSecretBlock(false);
+      /* Fail closed when packaged. Dev Vite stays open. Unknown Electron → block. */
+      var blocked = false;
+      if (!isDev) {
+        try {
+          if (typeof api.isPackaged === 'function') blocked = !!api.isPackaged();
+          else blocked = true;
+        } catch (_e2) {
+          blocked = true;
+        }
+      }
+      setProdSecretGate({ ok: true, blocked: blocked });
+      setPackagedMissingLicenseSecretBlock(blocked);
     });
   }, [licStatus, networkConfig]);
 

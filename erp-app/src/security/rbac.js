@@ -49,10 +49,21 @@ export function hasPermission(user, permission) {
 
 export function canAccessPageByRole(user, pageId) {
   var role = normalizeRole(user && user.role);
-  if (role === ROLE_ADMIN || role === ROLE_CASHIER) return true;
+  if (role === ROLE_ADMIN) return true;
   if (role === ROLE_MANAGER) {
     if (pageId === "auditlog" || pageId === "accounts") return false;
     return true;
+  }
+  /* Cashier: day-to-day ops only — reports/settings/accounts/audit are admin/manager. */
+  if (
+    pageId === "reports" ||
+    pageId === "settings" ||
+    pageId === "accounts" ||
+    pageId === "auditlog" ||
+    pageId === "expenses" ||
+    pageId === "assets"
+  ) {
+    return false;
   }
   return true;
 }
@@ -185,6 +196,16 @@ export function closeMainSession() {
   return Promise.resolve({ ok: true });
 }
 
+/** After restore/reset: drop renderer session hints so login / first-time setup can run. */
+export function prepareLoginScreenAfterAuthWipe() {
+  try {
+    sessionStorage.removeItem("tc3_current_user");
+    sessionStorage.setItem("tc3_force_login_once", "1");
+  } catch (_e) { /* ignore */ }
+  try { setSessionActor(null); } catch (_e2) { /* ignore */ }
+  return closeMainSession();
+}
+
 function isVoidedRow(row) {
   if (!row) return false;
   if (row.voided) return true;
@@ -244,6 +265,7 @@ export function assertRoleAllowsStorageMutation(user, key, newV, oldV) {
       tc3_settings: 1, tc3_openBal: 1, tc3_gl_accounts: 1, tc3_journal_lines: 1,
       tc3_gl_last_error: 1, tc3_gl_prefer_ledger: 1, tc3_gl_mode: 1, tc3_journal_hash: 1,
       tc3_financial_snapshots: 1, tc3_capLedger: 1, tc3_apppass: 1, tc3_admin_name: 1,
+      tc3_users: 1, tc3_startup_wizard_done: 1, tc3_businessType: 1,
       tc3_device_id: 1, tc3_net_config: 1, tc3_audit: 1,
     };
     if (bootstrapOk[key] || String(key || "").indexOf("tc3_gl_") === 0) {
@@ -262,14 +284,62 @@ export function assertRoleAllowsStorageMutation(user, key, newV, oldV) {
     return { ok: false, message: "Permission denied: settings changes require admin/manager access." };
   }
 
+  /* Managers may change shop settings but not security / period-lock policy (UI-bypass hardening). */
+  if (key === "tc3_settings" && role === ROLE_MANAGER && oldV && newV && typeof oldV === "object" && typeof newV === "object") {
+    var securityFields = [
+      "adminPin", "mainAdminPassHash", "requirePasswordOnLogin", "autoLockEnabled", "autoLockMinutes",
+      "lockedUntilDate", "strictPeriodLock", "booksClosedDate",
+    ];
+    for (var si = 0; si < securityFields.length; si++) {
+      var sf = securityFields[si];
+      try {
+        if (JSON.stringify(oldV[sf]) !== JSON.stringify(newV[sf])) {
+          return { ok: false, message: "Permission denied: only admin can change security or period-lock settings." };
+        }
+      } catch (_se) {
+        return { ok: false, message: "Permission denied: only admin can change security or period-lock settings." };
+      }
+    }
+  }
+
+  if (role === ROLE_MANAGER) {
+    var managerBlockedKeys = {
+      tc3_openBal: 1,
+      tc3_gl_accounts: 1,
+      tc3_journal_lines: 1,
+      tc3_gl_mode: 1,
+      tc3_journal_hash: 1,
+      tc3_gl_audit: 1,
+      tc3_financial_snapshots: 1,
+      tc3_capLedger: 1,
+      tc3_capLog: 1,
+      tc3_profitDist: 1,
+      tc3_manualReceivables: 1,
+      tc3_manualPayables: 1,
+    };
+    if (managerBlockedKeys[key] || String(key || "").indexOf("tc3_gl_") === 0) {
+      return { ok: false, message: "Permission denied: accounting ledger changes require admin." };
+    }
+  }
+
   if (key === "tc3_apppass" || key === "tc3_admin_name") {
     return { ok: false, message: "Permission denied: admin credentials cannot be changed by this role." };
   }
 
   if ((key === "tc3_sales" || key === "tc3_purchases") && Array.isArray(newV)) {
     var oldMap = indexById(oldV);
+    var newMap = indexById(newV);
     var canEdit = hasPermission(user, "invoices.edit");
     var canDelete = hasPermission(user, "invoices.delete");
+    if (Array.isArray(oldV)) {
+      for (var oi = 0; oi < oldV.length; oi++) {
+        var oRow = oldV[oi];
+        if (!oRow || oRow.id == null) continue;
+        if (!newMap[String(oRow.id)] && !canDelete) {
+          return { ok: false, message: "Permission denied: deleting invoices requires admin." };
+        }
+      }
+    }
     for (var i = 0; i < newV.length; i++) {
       var row = newV[i];
       if (!row || row.id == null) continue;
@@ -312,6 +382,29 @@ export function assertRoleAllowsStorageMutation(user, key, newV, oldV) {
       } catch (_qe) {
         return { ok: false, message: "Permission denied: editing quotations requires admin." };
       }
+    }
+  }
+
+  /* Align storage ACL with page ACL for cashiers (UI-bypass hardening). */
+  if (role === ROLE_CASHIER) {
+    var cashierBlockedKeys = {
+      tc3_expenses: 1,
+      tc3_assets: 1,
+      tc3_assetLog: 1,
+      tc3_openBal: 1,
+      tc3_capLedger: 1,
+      tc3_capLog: 1,
+      tc3_profitDist: 1,
+      tc3_journal_lines: 1,
+      tc3_gl_accounts: 1,
+      tc3_gl_audit: 1,
+      tc3_financial_snapshots: 1,
+      tc3_manualReceivables: 1,
+      tc3_manualPayables: 1,
+      tc3_auditLog: 1,
+    };
+    if (cashierBlockedKeys[key] || String(key || "").indexOf("tc3_gl_") === 0) {
+      return { ok: false, message: "Permission denied: cashiers cannot change " + key + "." };
     }
   }
 

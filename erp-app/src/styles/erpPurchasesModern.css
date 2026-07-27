@@ -446,19 +446,24 @@
 }
 
 .erp-pur-search-wrap-pro::before {
-  content: "🔍";
+  content: "⌕";
   position: absolute;
-  left: 8px;
+  left: 9px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 11px;
-  opacity: 0.55;
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 700;
+  color: #64748b;
+  opacity: 0.85;
   pointer-events: none;
   z-index: 1;
 }
 
-.erp-pur-search-wrap-pro input.erp-pur-field-ctrl {
+.erp-pur-search-wrap-pro input.erp-pur-field-ctrl,
+.erp-app-root .erp-page-content .erp-pur-modern .erp-pur-search-wrap-pro input.erp-pur-field-ctrl {
   padding-left: 28px !important;
+  padding-right: 8px !important;
 }
 
 .erp-pur-toolbar {

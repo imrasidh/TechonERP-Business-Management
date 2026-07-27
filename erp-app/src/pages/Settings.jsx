@@ -11,8 +11,12 @@ import {
   computeRawMaterialPricingBackfillPlan,
   applyRawMaterialPricingPlanToProducts,
 } from "../utils/rawMaterialPricingBackfill.js";
-import { ROLE_ADMIN, ROLE_LABELS, CASHIER_ACCESS_SUMMARY, normalizeRole } from "../security/rbac.js";
-import { COMPUTER_SHOP_EDITION, validateJsonBackupPayload } from "../productionConfig.js";
+import { ROLE_ADMIN, ROLE_LABELS, CASHIER_ACCESS_SUMMARY, normalizeRole, prepareLoginScreenAfterAuthWipe } from "../security/rbac.js";
+import { COMPUTER_SHOP_EDITION, validateJsonBackupPayload, sanitizeBackupDataForExport } from "../productionConfig.js";
+import { safeInvoiceLogoSrc } from "../components/DocPrintHeader.jsx";
+import { PRINT_FORMAT_DEFS, clampPrintFormatDefaults } from "../utils/printFormat.js";
+import CertificationDatasetPanel from "../certification/CertificationDatasetPanel.jsx";
+import CertificationRunnerPanel from "../certification/CertificationRunnerPanel.jsx";
 import {
   isFreeItemsEnabled,
   isPosLineCommentsEnabled,
@@ -28,6 +32,8 @@ import {
 } from "../utils/featureFlags.js";
 import { getToolbarKeys, persistToolbarKeys } from "../utils/toolbarConfig.js";
 import { safeStr } from "../utils/syncDataNormalize.js";
+import { summarizeBackupForRestore, formatBackupPreviewText } from "../ops/backupPreview.js";
+import { runStandaloneBookRepair } from "../ops/bookRepair.js";
 import { pushKeysToServer, wipeShopDataOnServer, NETWORK_KV_KEYS } from "../sync/SyncEngine.js";
 import { ServerSetup } from "../SetupWizard.jsx";
 import {
@@ -147,7 +153,17 @@ var Settings = function (props) {
   var buildCloudSyncPayload = props.buildCloudSyncPayload;
   var cloudSyncBump = props.cloudSyncBump || 0;
   var currentUser = props.currentUser || null;
+  /* Certification generator: Super Admin only (hidden on network clients). */
+  var isSuperAdminUser = !!(props.isAdminMode) && (
+    !currentUser
+    || normalizeRole(currentUser.role) === ROLE_ADMIN
+    || String(currentUser.username || "").toLowerCase() === "admin"
+  );
+  var showCertificationTools = !isNetworkClient
+    && isSuperAdminUser
+    && props.showCertificationGenerator === true;
   var canManageUsers = props.canManageUsers === true;
+  var isAdminRole = !!(currentUser && normalizeRole(currentUser.role) === ROLE_ADMIN);
   var _idbCache = props._idbCache;
   var _idbWrite = props._idbWrite;
   var applyBackupRestore = typeof props.applyBackupRestore === "function" ? props.applyBackupRestore : null;
@@ -258,6 +274,10 @@ var Settings = function (props) {
     invoiceAccentColor: state.settings.invoiceAccentColor || "#0284c7",
     invoiceDefaultSize: state.settings.invoiceDefaultSize || "a4",
     invoiceThermalSize: state.settings.invoiceThermalSize || "thermal80",
+    invoiceFormatA4: state.settings.invoiceFormatA4 !== false,
+    invoiceFormatA5: state.settings.invoiceFormatA5 !== false,
+    invoiceFormatThermal58: state.settings.invoiceFormatThermal58 !== false,
+    invoiceFormatThermal80: state.settings.invoiceFormatThermal80 !== false,
     invoiceLogo: state.settings.invoiceLogo || "",
     invoiceLogoSize: state.settings.invoiceLogoSize || 56,
     invoiceLogoAlign: state.settings.invoiceLogoAlign || "left",
@@ -307,6 +327,7 @@ var Settings = function (props) {
   var [resetPw, setResetPw] = useState("");
   var [resetMsg, setResetMsg] = useState(null);
   var [bakMsg, setBakMsg] = useState(null);
+  var [repairMsg, setRepairMsg] = useState(null);
   var [capForm, setCapForm] = useState({ type: "invest", amount: "", date: today(), note: "", ref: "", cashMethod: "Cash" });
   var [capEditModal, setCapEditModal] = useState(null);
   var [capEditForm, setCapEditForm] = useState(null);
@@ -517,12 +538,20 @@ var Settings = function (props) {
     if (!canManageUsers) { setUserMsg({ type: "error", text: "Only admin can remove users." }); return; }
     if (normalizeUsername(u.username) === "admin") { setUserMsg({ type: "error", text: "Primary admin cannot be removed." }); return; }
     showConfirm("Remove user " + (u.username || u.name) + "?", function () {
-      var next = users.filter(function (x) { return x.id !== u.id; });
+      /* Soft-deactivate so Multi-PC union-merge cannot resurrect a hard-deleted row. */
+      var next = users.map(function (x) {
+        if (x.id !== u.id) return x;
+        return Object.assign({}, x, { active: false, updatedAt: new Date().toISOString() });
+      });
       saveUsers(next, { type: "success", text: "User removed." });
     });
   };
 
   var saveAdminSecuritySettings = function () {
+    if (!isAdminRole) {
+      showAlert("Only an administrator can change security settings.");
+      return;
+    }
     if (f.adminPin && f.adminPin.length > 0 && f.adminPin.length < 4) {
       showAlert("PIN must be at least 4 digits.");
       return;
@@ -590,6 +619,10 @@ var Settings = function (props) {
   };
 
   var toggleRequirePasswordOnLogin = function () {
+    if (!isAdminRole) {
+      showAlert("Only an administrator can change login protection.");
+      return;
+    }
     var next = f.requirePasswordOnLogin === false;
     setF(function (x) { return Object.assign({}, x, { requirePasswordOnLogin: next }); });
     var ns = Object.assign({}, state.settings, f, { requirePasswordOnLogin: next });
@@ -651,10 +684,16 @@ var Settings = function (props) {
 
   useEffect(function () {
     if (!isNetworkClient) return;
-    setClientNetUrl((systemConfig.apiUrl || "").replace(/\/?$/, ""));
-    /* apiKey is stripped from load — keep typed key or leave blank for re-entry. */
-    setClientNetKey(systemConfig.apiKey || clientNetKey || "");
-  }, [isNetworkClient, systemConfig.apiUrl, systemConfig.apiKey]);
+    var nextUrl = String(systemConfig.apiUrl || "").replace(/\/?$/, "");
+    setClientNetUrl(nextUrl);
+  }, [isNetworkClient, systemConfig.apiUrl]);
+
+  useEffect(function () {
+    if (!isNetworkClient) return;
+    var nextKey = String(systemConfig.apiKey || "");
+    if (!nextKey) return;
+    setClientNetKey(nextKey);
+  }, [isNetworkClient, systemConfig.apiKey]);
 
   var revealServerSecurityKey = function () {
     var api = window.electronAPI;
@@ -730,6 +769,7 @@ var Settings = function (props) {
   var buildBackupObject = function () {
     var backup = { version: 2, timestamp: new Date().toISOString(), shopName: state.settings.shopName || "Techon", data: {} };
     ALL_KEYS.forEach(function (k) { var v = _idbCache[k]; if (v !== undefined) { backup.data[k] = v; } });
+    backup.data = sanitizeBackupDataForExport(backup.data);
     return backup;
   };
 
@@ -753,9 +793,20 @@ var Settings = function (props) {
     try {
       var backup = buildBackupObject();
       var ts = new Date().toISOString().split(":").join("-").split(".").join("-").slice(0, 19);
-      downloadJson(backup, "techon-safety-before-restore-" + ts + ".json");
-      return true;
-    } catch (e) { return false; }
+      var filename = "techon-safety-before-restore-" + ts + ".json";
+      var content = JSON.stringify(backup, null, 2);
+      if (!content || content.length < 10) return Promise.resolve(false);
+      var api = typeof window !== "undefined" ? window.electronAPI : null;
+      var folder = (state.settings && state.settings.backupFolder) || null;
+      /* Confirmed disk write only — never treat fire-and-forget or browser download as OK. */
+      if (api && typeof api.saveBackupAck === "function") {
+        return Promise.resolve()
+          .then(function () { return api.saveBackupAck({ filename: filename, content: content, customPath: folder }); })
+          .then(function (res) { return !!(res && res.ok === true); })
+          .catch(function () { return false; });
+      }
+      return Promise.resolve(false);
+    } catch (e) { return Promise.resolve(false); }
   };
 
   /* Network role changes need a main-process admin session (UI login can exist without it). */
@@ -960,73 +1011,63 @@ var Settings = function (props) {
       return;
     }
 
-    /* FIX #7: Download safety backup FIRST and confirm it succeeded before wiping */
-    var backupOk = false;
-    try {
-      var bakObj = buildBackupObject();
-      var bakStr = JSON.stringify(bakObj, null, 2);
-      if (!bakStr || bakStr.length < 10) throw new Error("Backup appears empty");
-      var blob = new Blob([bakStr], { type: "application/json" });
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement("a");
-      var d = new Date().toISOString().slice(0, 16).replace("T", "-").replace(":", "");
-      a.href = url; a.download = "techon-safety-backup-before-reset-" + d + ".json"; a.click();
-      URL.revokeObjectURL(url);
-      backupOk = true;
-    } catch (e) {
-      setResetMsg({ type: "error", text: "Safety backup failed: " + e.message + ". Reset aborted — your data is safe." });
-      return; /* ABORT if backup fails */
-    }
+    /* FIX #7: Confirmed disk safety backup BEFORE wiping */
+    doSafetyBackup().then(function (backupOk) {
+      if (!backupOk) {
+        setResetMsg({ type: "error", text: "Safety backup could not be confirmed on disk. Reset aborted — your data is safe." });
+        return;
+      }
 
-    if (!backupOk) {
-      setResetMsg({ type: "error", text: "Safety backup could not be created. Reset aborted." });
-      return;
-    }
+      setResetMsg({ type: "success", text: "✅ Safety backup saved. Wiping all data..." });
 
-    setResetMsg({ type: "success", text: "✅ Safety backup downloaded. Wiping all data..." });
+      var resetFinished = false;
+      var reloadSoon = function (msg) {
+        if (resetFinished) return;
+        resetFinished = true;
+        try {
+          if (window.TC_SYNC && typeof window.TC_SYNC.discardPendingSync === "function") {
+            window.TC_SYNC.discardPendingSync("reset_reload");
+          }
+        } catch (eDisc) { /* ignore */ }
+        try { window.__TC_ALLOW_UNLOAD__ = true; } catch (eAllow) { /* ignore */ }
+        try { prepareLoginScreenAfterAuthWipe(); } catch (ePrep) { /* ignore */ }
+        setResetMsg({ type: "success", text: msg || "✅ System reset complete. Reloading..." });
+        setTimeout(function () {
+          try { window.location.reload(); } catch (eRel) {
+            try { window.location.href = window.location.href; } catch (e2) {}
+          }
+        }, 1500);
+      };
 
-    var resetFinished = false;
-    var reloadSoon = function (msg) {
-      if (resetFinished) return;
-      resetFinished = true;
-      try {
-        if (window.TC_SYNC && typeof window.TC_SYNC.discardPendingSync === "function") {
-          window.TC_SYNC.discardPendingSync("reset_reload");
+      wipeAllDataForReset({
+        pushServer: isNetworkServer,
+        authConfig: systemConfig,
+      }).then(function (res) {
+        if (res && res.ok === false) {
+          setResetMsg({ type: "error", text: "Reset failed: " + (res.message || "Could not clear all data. Close other TechonERP windows and try again.") });
+          return;
         }
-      } catch (eDisc) { /* ignore */ }
-      try { window.__TC_ALLOW_UNLOAD__ = true; } catch (eAllow) { /* ignore */ }
-      setResetMsg({ type: "success", text: msg || "✅ System reset complete. Reloading..." });
+        var salesLeft = (S.get("tc3_sales", []) || []).length;
+        var productsLeft = (S.get("tc3_products", []) || []).length;
+        if (salesLeft > 0 || productsLeft > 0) {
+          setResetMsg({ type: "error", text: "Reset incomplete — " + salesLeft + " sales and " + productsLeft + " products still found. Close other windows and retry." });
+          return;
+        }
+        reloadSoon("✅ System reset complete. Reloading...");
+      }).catch(function (err) {
+        setResetMsg({ type: "error", text: "Reset failed: " + (err && err.message ? err.message : String(err)) });
+      });
+
+      /* Absolute safety: never leave the UI stuck on "Wiping..." forever — fail closed, no auto-reload. */
       setTimeout(function () {
-        try { window.location.reload(); } catch (eRel) {
-          try { window.location.href = window.location.href; } catch (e2) {}
-        }
-      }, 1500);
-    };
-
-    wipeAllDataForReset({
-      pushServer: isNetworkServer,
-      authConfig: systemConfig,
-    }).then(function (res) {
-      if (res && res.ok === false) {
-        setResetMsg({ type: "error", text: "Reset failed: " + (res.message || "Could not clear all data. Close other TechonERP windows and try again.") });
-        return;
-      }
-      var salesLeft = (S.get("tc3_sales", []) || []).length;
-      var productsLeft = (S.get("tc3_products", []) || []).length;
-      if (salesLeft > 0 || productsLeft > 0) {
-        setResetMsg({ type: "error", text: "Reset incomplete — " + salesLeft + " sales and " + productsLeft + " products still found. Close other windows and retry." });
-        return;
-      }
-      reloadSoon("✅ System reset complete. Reloading...");
-    }).catch(function (err) {
-      setResetMsg({ type: "error", text: "Reset failed: " + (err && err.message ? err.message : String(err)) });
+        if (resetFinished) return;
+        resetFinished = true;
+        setResetMsg({
+          type: "error",
+          text: "Reset timed out before confirmation. Do not assume wipe completed — verify sales/products, then restore from the safety backup if needed. Do not reload until you have checked or restored.",
+        });
+      }, 15000);
     });
-
-    /* Absolute safety: never leave the UI stuck on "Wiping..." forever. */
-    setTimeout(function () {
-      if (resetFinished) return;
-      reloadSoon("✅ Reset taking too long — forcing reload now...");
-    }, 15000);
   };
 
   var doRestore = function (e) {
@@ -1040,27 +1081,24 @@ var Settings = function (props) {
           setBakMsg({ type: "error", text: "Invalid backup file format." });
           return;
         }
-        showConfirm("Restore from backup dated " + (backup.timestamp ? new Date(backup.timestamp).toLocaleString() : "unknown") + "?\n\nThis will first download a SAFETY BACKUP of your current data, then restore. Continue?", function () {
-          doSafetyBackup();
+        var preview = summarizeBackupForRestore(backup);
+        if (!preview.valid) {
+          setBakMsg({ type: "error", text: "Backup file failed validation. Choose a TechonERP v2 backup." });
+          return;
+        }
+        var previewText = formatBackupPreviewText(preview);
+        showConfirm("RESTORE PREVIEW\n\n" + previewText + "\n\nA safety backup of your current data will be saved to disk first.\n\nContinue with restore?", function () {
+          doSafetyBackup().then(function (ok) {
+            if (!ok) {
+              setBakMsg({ type: "error", text: "Safety backup of your current data could not be confirmed on disk — restore cancelled." });
+              return;
+            }
           var salesCount = (backup.data && backup.data.tc3_sales && backup.data.tc3_sales.length) || 0;
-          var restoreFn = applyBackupRestore || function (data) {
-            return new Promise(function (resolve, reject) {
-              try {
-                ALL_KEYS.forEach(function (k) {
-                  if (data[k] !== undefined) {
-                    _idbCache[k] = data[k];
-                    _idbWrite(k, data[k]);
-                    try { localStorage.setItem(k, JSON.stringify(data[k])); } catch (e2) { /* quota */ }
-                  }
-                });
-                if (data.tc3_businessType !== undefined) {
-                  _idbCache.tc3_businessType = data.tc3_businessType;
-                  try { localStorage.setItem("tc3_businessType", JSON.stringify(data.tc3_businessType)); } catch (e3) { /* ignore */ }
-                }
-                resolve();
-              } catch (err) { reject(err); }
-            });
-          };
+          if (typeof applyBackupRestore !== "function") {
+            setBakMsg({ type: "error", text: "Restore engine unavailable in this build. Update the app and try again — no data was changed." });
+            return;
+          }
+          var restoreFn = applyBackupRestore;
           restoreFn(backup.data).then(function () {
             var loadedSales = (S.get("tc3_sales", []) || []).length;
             var msg = "Restore complete (" + (loadedSales || salesCount) + " sales)";
@@ -1089,6 +1127,7 @@ var Settings = function (props) {
             setTimeout(function () { window.location.reload(); }, 2000);
           }).catch(function (err) {
             setBakMsg({ type: "error", text: "Restore failed: " + (err && err.message ? err.message : String(err)) });
+          });
           });
         });
       } catch (err) { setBakMsg({ type: "error", text: "Restore failed: " + err.message }); }
@@ -1166,6 +1205,11 @@ var Settings = function (props) {
     ns.defaultInvoiceLang = "en";
     ns.optionalInvoiceLangs = [];
     ns.customInvoiceLangs = [];
+    ns.invoiceFormatA4 = ns.invoiceFormatA4 !== false;
+    ns.invoiceFormatA5 = ns.invoiceFormatA5 !== false;
+    ns.invoiceFormatThermal58 = ns.invoiceFormatThermal58 !== false;
+    ns.invoiceFormatThermal80 = ns.invoiceFormatThermal80 !== false;
+    Object.assign(ns, clampPrintFormatDefaults(ns));
     updateCurrencySymbol(ns.currency); // Update live currency symbol
     S.set("tc3_settings", ns);
     setState(function (st) { return Object.assign({}, st, { settings: ns }); });
@@ -1556,6 +1600,7 @@ var Settings = function (props) {
   var TABS = [["profile", "Shop Profile"], ["shop", "Business Settings"], ["features", "Modules"], ["invoice", "Invoice Design"], ["backup", "Backup"], ["accounting", "Accounting"], ["users", "Security & Users"]];
   if (isRestaurantBusiness) TABS.splice(2, 0, ["restaurantsetup", "Restaurant Setup"]);
   TABS.push(["activity", "Activity Log"]);
+  if (showCertificationTools) TABS.push(["developer", "Developer Tools"]);
   /* Always show Network tab (standalone can Enable Multi-PC; server/client manage sync). */
   if (!isNetworkClient) TABS.push(["network", "Network"]);
   TABS.push(["about", "About"]);
@@ -2633,67 +2678,77 @@ var Settings = function (props) {
           <div className="erp-invd-wrap">
             <Card className="erp-invd-card">
               <div className="erp-invd-brand">
-                <div className="erp-invd-brand-ico" aria-hidden="true">🧾</div>
+                <div className="erp-invd-brand-ico" aria-hidden="true">ID</div>
                 <div>
                   <div className="erp-invd-title">Invoice Design</div>
-                  <div className="erp-invd-sub">Footer, warranty, logo, paper size and live preview</div>
+                  <div className="erp-invd-sub">Print text, enabled sizes, layout, and live preview</div>
                 </div>
               </div>
 
-              <div className="erp-invd-top">
-                <div className="erp-invd-block">
-                  <div className="erp-invd-block-label">Footer Message</div>
-                  <Input compact={denseWiz} label="Shown at bottom of printed invoices" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
-                </div>
-
-                <div className="erp-invd-block">
-                  <div className="erp-invd-block-label">Warranty Policy</div>
-                  <label className={"erp-invd-check" + (f.warrantyEnabled ? " is-on" : "")}>
-                    <input type="checkbox" checked={f.warrantyEnabled} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyEnabled: e.target.checked }); }); }} />
-                    <span className="erp-invd-check-title">Enable warranty text on invoices</span>
-                  </label>
-                  {f.warrantyEnabled ? (
-                    <textarea
-                      className="erp-invd-textarea"
-                      value={f.warrantyText || ""}
-                      onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyText: e.target.value }); }); }}
-                      rows={5}
-                      placeholder="Warranty terms…"
-                    />
-                  ) : null}
-                </div>
-
-                <div className="erp-invd-block">
-                  <div className="erp-invd-block-label">WhatsApp PDF Folder</div>
-                  <div className="erp-invd-note is-blue">PDFs shared via WhatsApp save here (not Downloads). Default: Documents/TechonERP/Invoices.</div>
-                  <div className="erp-invd-path">{f.invoicePdfFolder || "Documents/TechonERP/Invoices (default)"}</div>
-                  <div className="erp-invd-tools">
-                    <Btn col="blue" onClick={async function () {
-                      if (window.electronAPI && window.electronAPI.selectFolder) {
-                        var folder = await window.electronAPI.selectFolder();
-                        if (folder) {
-                          setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: folder }); });
-                          var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: folder });
-                          S.set("tc3_settings", ns);
-                          setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-                          showAlert("Invoice PDF folder saved.");
-                        }
-                      } else {
-                        showAlert("Folder selection is only available in the desktop app.");
-                      }
-                    }}>Select folder</Btn>
-                    {f.invoicePdfFolder ? (
-                      <Btn col="gray" onClick={function () {
-                        setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: "" }); });
-                        var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: "" });
-                        S.set("tc3_settings", ns);
-                        setState(function (st) { return Object.assign({}, st, { settings: ns }); });
-                        showAlert("Reset to default folder (Documents/TechonERP/Invoices).");
-                      }}>Use default</Btn>
-                    ) : null}
+              <div className="erp-invd-body">
+                <section className="erp-invd-panel">
+                  <div className="erp-invd-panel-head">
+                    <span className="erp-invd-step">1</span>
+                    <div>
+                      <div className="erp-invd-panel-title">Invoice content</div>
+                      <div className="erp-invd-panel-sub">Sales footer text, warranty, and WhatsApp PDF folder — other receipts use their own closing line</div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                  <div className="erp-invd-top">
+                    <div className="erp-invd-block">
+                      <div className="erp-invd-block-label">Footer message</div>
+                      <Input compact={denseWiz} label="Shown at bottom of sales invoices & quotations" value={f.footer || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { footer: e.target.value }); }); }} placeholder="Thank you for shopping with us!" />
+                    </div>
+
+                    <div className="erp-invd-block">
+                      <div className="erp-invd-block-label">Warranty policy</div>
+                      <label className={"erp-invd-check" + (f.warrantyEnabled ? " is-on" : "")}>
+                        <input type="checkbox" checked={f.warrantyEnabled} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyEnabled: e.target.checked }); }); }} />
+                        <span className="erp-invd-check-title">Enable warranty text on invoices</span>
+                      </label>
+                      {f.warrantyEnabled ? (
+                        <textarea
+                          className="erp-invd-textarea"
+                          value={f.warrantyText || ""}
+                          onChange={function (e) { setF(function (x) { return Object.assign({}, x, { warrantyText: e.target.value }); }); }}
+                          rows={4}
+                          placeholder="Warranty terms…"
+                        />
+                      ) : null}
+                    </div>
+
+                    <div className="erp-invd-block">
+                      <div className="erp-invd-block-label">WhatsApp PDF folder</div>
+                      <div className="erp-invd-note is-blue">PDFs shared via WhatsApp save here. Default: Documents/TechonERP/Invoices.</div>
+                      <div className="erp-invd-path">{f.invoicePdfFolder || "Documents/TechonERP/Invoices (default)"}</div>
+                      <div className="erp-invd-tools">
+                        <Btn col="blue" onClick={async function () {
+                          if (window.electronAPI && window.electronAPI.selectFolder) {
+                            var folder = await window.electronAPI.selectFolder();
+                            if (folder) {
+                              setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: folder }); });
+                              var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: folder });
+                              S.set("tc3_settings", ns);
+                              setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+                              showAlert("Invoice PDF folder saved.");
+                            }
+                          } else {
+                            showAlert("Folder selection is only available in the desktop app.");
+                          }
+                        }}>Select folder</Btn>
+                        {f.invoicePdfFolder ? (
+                          <Btn col="gray" onClick={function () {
+                            setF(function (x) { return Object.assign({}, x, { invoicePdfFolder: "" }); });
+                            var ns = Object.assign({}, state.settings, f, { invoicePdfFolder: "" });
+                            S.set("tc3_settings", ns);
+                            setState(function (st) { return Object.assign({}, st, { settings: ns }); });
+                            showAlert("Reset to default folder (Documents/TechonERP/Invoices).");
+                          }}>Use default</Btn>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </section>
 
               {(function () {
                 var isA4A5 = invFmt === "a4a5";
@@ -2704,12 +2759,16 @@ var Settings = function (props) {
                     {f.invoiceLogo ? (
                       <div className="erp-invd-logo">
                         <div className="erp-invd-logo-row">
+                          {safeInvoiceLogoSrc(f.invoiceLogo) ? (
                           <img
-                            src={f.invoiceLogo}
+                            src={safeInvoiceLogoSrc(f.invoiceLogo)}
                             alt="logo"
                             className="erp-invd-logo-img"
                             style={{ width: isA4A5 ? (f.invoiceLogoSize || 80) : (f.thermalLogoSize || 40) }}
                           />
+                          ) : (
+                            <span className="erp-invd-slider-label">Logo blocked (unsafe URL). Remove and re-upload.</span>
+                          )}
                           <Btn sm col="red" onClick={removeLogo}>Remove</Btn>
                         </div>
                         {isA4A5 ? (
@@ -2766,26 +2825,30 @@ var Settings = function (props) {
                 var a4a5Controls = (
                   <div className="erp-invd-controls">
                     <div className="erp-invd-section">
-                      <div className="erp-invd-section-label">Default Paper Size</div>
-                      <div className="erp-invd-choice">
-                        {[["a4", "A4", "Full page"], ["a5", "A5", "Half page"]].map(function (s) {
+                      <div className="erp-invd-section-label">Default when opening print</div>
+                      <div className="erp-invd-seg">
+                        {[["a4", "A4"], ["a5", "A5"]].filter(function (s) {
+                          return s[0] === "a4" ? f.invoiceFormatA4 !== false : f.invoiceFormatA5 !== false;
+                        }).map(function (s) {
                           var active = (f.invoiceDefaultSize || "a4") === s[0];
                           return (
                             <button
                               key={s[0]}
                               type="button"
-                              className={"erp-invd-choice-btn" + (active ? " is-active" : "")}
+                              className={"erp-invd-seg-btn" + (active ? " is-active" : "")}
                               onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceDefaultSize: s[0] }); }); }}
                             >
-                              <div>{active ? "✓ " : ""}{s[1]}</div>
-                              <div className="erp-invd-choice-sub">{s[2]}</div>
+                              {s[1]}
                             </button>
                           );
                         })}
                       </div>
+                      {(f.invoiceFormatA4 === false && f.invoiceFormatA5 === false) ? (
+                        <div className="erp-invd-hint">Enable A4 or A5 in Print formats first.</div>
+                      ) : null}
                     </div>
                     <div className="erp-invd-section">
-                      <div className="erp-invd-section-label">Shop Name Size</div>
+                      <div className="erp-invd-section-label">Shop name size</div>
                       <div className="erp-invd-slider-row">
                         <span>S</span>
                         <input type="range" min="10" max="36" step="1" value={f.shopNameFontSize || 15} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopNameFontSize: parseInt(e.target.value) }); }); }} />
@@ -2797,7 +2860,7 @@ var Settings = function (props) {
                       </div>
                     </div>
                     <div className="erp-invd-section">
-                      <div className="erp-invd-section-label">Address / Phone / Email Size</div>
+                      <div className="erp-invd-section-label">Address / phone / email size</div>
                       <div className="erp-invd-slider-row">
                         <span>S</span>
                         <input type="range" min="8" max="16" step="1" value={f.shopInfoFontSize || 11} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { shopInfoFontSize: parseInt(e.target.value) }); }); }} />
@@ -2818,26 +2881,30 @@ var Settings = function (props) {
                 var thermalControls = (
                   <div className="erp-invd-controls">
                     <div className="erp-invd-section">
-                      <div className="erp-invd-section-label">Default Thermal Size</div>
-                      <div className="erp-invd-choice">
-                        {[["thermal58", "58mm", "Narrow"], ["thermal80", "80mm", "Standard POS"]].map(function (s) {
+                      <div className="erp-invd-section-label">Default when opening print</div>
+                      <div className="erp-invd-seg">
+                        {[["thermal58", "58mm"], ["thermal80", "80mm"]].filter(function (s) {
+                          return s[0] === "thermal58" ? f.invoiceFormatThermal58 !== false : f.invoiceFormatThermal80 !== false;
+                        }).map(function (s) {
                           var active = (f.invoiceThermalSize || "thermal80") === s[0];
                           return (
                             <button
                               key={s[0]}
                               type="button"
-                              className={"erp-invd-choice-btn is-thermal" + (active ? " is-active" : "")}
+                              className={"erp-invd-seg-btn is-thermal" + (active ? " is-active" : "")}
                               onClick={function () { setF(function (x) { return Object.assign({}, x, { invoiceThermalSize: s[0] }); }); }}
                             >
-                              <div>{active ? "✓ " : ""}{s[1]}</div>
-                              <div className="erp-invd-choice-sub">{s[2]}</div>
+                              {s[1]}
                             </button>
                           );
                         })}
                       </div>
+                      {(f.invoiceFormatThermal58 === false && f.invoiceFormatThermal80 === false) ? (
+                        <div className="erp-invd-hint">Enable 58mm or 80mm in Print formats first.</div>
+                      ) : null}
                     </div>
                     <div className="erp-invd-section">
-                      <div className="erp-invd-section-label">Shop Name Size</div>
+                      <div className="erp-invd-section-label">Shop name size</div>
                       <div className="erp-invd-slider-row">
                         <span>S</span>
                         <input type="range" min="10" max="28" step="1" value={f.thermalShopNameSize || 18} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalShopNameSize: parseInt(e.target.value) }); }); }} />
@@ -2849,7 +2916,7 @@ var Settings = function (props) {
                       </div>
                     </div>
                     <div className="erp-invd-section">
-                      <div className="erp-invd-section-label">Address / Phone / Email Size</div>
+                      <div className="erp-invd-section-label">Address / phone / email size</div>
                       <div className="erp-invd-slider-row">
                         <span>S</span>
                         <input type="range" min="7" max="13" step="1" value={f.thermalInfoSize || 10} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { thermalInfoSize: parseInt(e.target.value) }); }); }} />
@@ -2868,19 +2935,19 @@ var Settings = function (props) {
                 var previews = isA4A5 ? (
                   <div className="erp-invd-previews">
                     <div className="erp-invd-preview-head">
-                      <span>A4 — Live Preview</span>
+                      <span>A4 — Live preview</span>
                       <button type="button" className="erp-invd-view" onClick={function () { setPreviewInv("a4"); }}>View Full</button>
                     </div>
-                    <div className="erp-invd-preview-frame" style={{ height: 320 }}>
+                    <div className="erp-invd-preview-frame" style={{ height: 300 }}>
                       <div style={{ transform: "scale(0.38)", transformOrigin: "top left", width: "263%", pointerEvents: "none" }}>
                         <InvoiceA4 inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} size="a4" />
                       </div>
                     </div>
                     <div className="erp-invd-preview-head">
-                      <span>A5 — Live Preview</span>
+                      <span>A5 — Live preview</span>
                       <button type="button" className="erp-invd-view" onClick={function () { setPreviewInv("a5"); }}>View Full</button>
                     </div>
-                    <div className="erp-invd-preview-frame" style={{ height: 260 }}>
+                    <div className="erp-invd-preview-frame" style={{ height: 240 }}>
                       <div style={{ transform: "scale(0.46)", transformOrigin: "top left", width: "217%", pointerEvents: "none" }}>
                         <InvoiceA4 inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} size="a5" />
                       </div>
@@ -2890,10 +2957,10 @@ var Settings = function (props) {
                   <div className="erp-invd-previews is-thermal-row">
                     <div className="erp-invd-preview-col">
                       <div className="erp-invd-preview-head">
-                        <span>80mm — Live Preview</span>
+                        <span>80mm</span>
                         <button type="button" className="erp-invd-view is-thermal" onClick={function () { setPreviewInv("thermal80"); }}>View Full</button>
                       </div>
-                      <div className="erp-invd-preview-frame" style={{ height: 320 }}>
+                      <div className="erp-invd-preview-frame" style={{ height: 300 }}>
                         <div style={{ transform: "scale(0.75)", transformOrigin: "top left", width: "133%", pointerEvents: "none" }}>
                           <InvoiceThermal inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} width={302} />
                         </div>
@@ -2901,10 +2968,10 @@ var Settings = function (props) {
                     </div>
                     <div className="erp-invd-preview-col">
                       <div className="erp-invd-preview-head">
-                        <span>58mm — Live Preview</span>
+                        <span>58mm</span>
                         <button type="button" className="erp-invd-view is-thermal" onClick={function () { setPreviewInv("thermal58"); }}>View Full</button>
                       </div>
-                      <div className="erp-invd-preview-frame" style={{ height: 320 }}>
+                      <div className="erp-invd-preview-frame" style={{ height: 300 }}>
                         <div style={{ transform: "scale(0.75)", transformOrigin: "top left", width: "133%", pointerEvents: "none" }}>
                           <InvoiceThermal inv={sampleInv} settings={f} invoiceLang={f.defaultInvoiceLang || "en"} width={218} />
                         </div>
@@ -2914,40 +2981,102 @@ var Settings = function (props) {
                 );
 
                 return (
-                  <div className="erp-invd-design">
-                    <div className="erp-invd-fmt" role="tablist" aria-label="Invoice format">
-                      {[["a4a5", "A4 / A5 Invoice"], ["thermal", "Thermal Receipt"]].map(function (tab) {
-                        var active = invFmt === tab[0];
-                        return (
-                          <button
-                            key={tab[0]}
-                            type="button"
-                            role="tab"
-                            aria-selected={active}
-                            className={"erp-invd-fmt-btn" + (active ? " is-active" : "") + (tab[0] === "thermal" ? " is-thermal" : "")}
-                            onClick={function () { setInvFmt(tab[0]); }}
-                          >
-                            {tab[1]}
-                          </button>
-                        );
-                      })}
-                    </div>
+                  <React.Fragment>
+                    <section className="erp-invd-panel">
+                      <div className="erp-invd-panel-head">
+                        <span className="erp-invd-step">2</span>
+                        <div>
+                          <div className="erp-invd-panel-title">Print formats</div>
+                          <div className="erp-invd-panel-sub">Only sizes turned on appear in View &amp; Print across the ERP</div>
+                        </div>
+                      </div>
+                      <div className="erp-invd-fmt-toggles">
+                        {PRINT_FORMAT_DEFS.map(function (d) {
+                          var on = f[d.settingKey] !== false;
+                          return (
+                            <button
+                              key={d.id}
+                              type="button"
+                              className={"erp-invd-fmt-toggle" + (d.kind === "thermal" ? " is-thermal" : "") + (on ? " is-on" : "")}
+                              aria-pressed={on}
+                              onClick={function () {
+                                setF(function (x) {
+                                  var turningOff = x[d.settingKey] !== false;
+                                  if (turningOff) {
+                                    var othersOn = PRINT_FORMAT_DEFS.some(function (o) {
+                                      return o.id !== d.id && x[o.settingKey] !== false;
+                                    });
+                                    if (!othersOn) {
+                                      showAlert("Keep at least one print format enabled.");
+                                      return x;
+                                    }
+                                  }
+                                  var patch = {};
+                                  patch[d.settingKey] = !turningOff;
+                                  return clampPrintFormatDefaults(Object.assign({}, x, patch));
+                                });
+                              }}
+                            >
+                              <span className="erp-invd-fmt-toggle-main">
+                                <span className="erp-invd-fmt-toggle-name">{d.shortLabel}</span>
+                                <span className="erp-invd-fmt-toggle-sub">{d.kind === "thermal" ? "Receipt" : "Paper"}</span>
+                              </span>
+                              <span className={"erp-invd-switch" + (on ? " is-on" : "")} aria-hidden="true">
+                                <i />
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </section>
 
-                    <div className="erp-invd-main">
-                      <div className="erp-invd-block erp-invd-settings">
-                        <div className="erp-invd-block-label">{isA4A5 ? "A4 / A5 Settings" : "Thermal Settings"}</div>
-                        {isA4A5 ? a4a5Controls : thermalControls}
+                    <section className="erp-invd-panel erp-invd-panel-studio">
+                      <div className="erp-invd-panel-head">
+                        <span className="erp-invd-step">3</span>
+                        <div>
+                          <div className="erp-invd-panel-title">Layout &amp; preview</div>
+                          <div className="erp-invd-panel-sub">Defaults, fonts, logo, and live sample</div>
+                        </div>
                       </div>
-                      <div className="erp-invd-block erp-invd-live">
-                        <div className="erp-invd-block-label">Live Preview</div>
-                        {previews}
+
+                      <div className="erp-invd-fmt" role="tablist" aria-label="Invoice format">
+                        {[["a4a5", "A4 / A5 Invoice"], ["thermal", "Thermal Receipt"]].map(function (tab) {
+                          var active = invFmt === tab[0];
+                          return (
+                            <button
+                              key={tab[0]}
+                              type="button"
+                              role="tab"
+                              aria-selected={active}
+                              className={"erp-invd-fmt-btn" + (active ? " is-active" : "") + (tab[0] === "thermal" ? " is-thermal" : "")}
+                              onClick={function () { setInvFmt(tab[0]); }}
+                            >
+                              {tab[1]}
+                            </button>
+                          );
+                        })}
                       </div>
-                    </div>
-                  </div>
+
+                      <div className="erp-invd-main">
+                        <div className="erp-invd-block erp-invd-settings">
+                          <div className="erp-invd-block-label">{isA4A5 ? "A4 / A5 settings" : "Thermal settings"}</div>
+                          {isA4A5 ? a4a5Controls : thermalControls}
+                        </div>
+                        <div className="erp-invd-block erp-invd-live">
+                          <div className="erp-invd-block-label">Live preview</div>
+                          {previews}
+                        </div>
+                      </div>
+                    </section>
+                  </React.Fragment>
                 );
               })()}
 
-              <button type="button" className="erp-invd-save" onClick={save}>Save Invoice Design</button>
+                <div className="erp-invd-footer">
+                  <div className="erp-invd-footer-hint">Changes apply after you save.</div>
+                  <button type="button" className="erp-invd-save" onClick={save}>Save Invoice Design</button>
+                </div>
+              </div>
             </Card>
           </div>
         </div>
@@ -3048,6 +3177,19 @@ var Settings = function (props) {
               {bakMsg ? (
                 <div className={"erp-bak-banner" + (bakMsg.type === "error" ? " is-err" : " is-ok")}>{bakMsg.text}</div>
               ) : null}
+
+              {(function () {
+                var bakErr = S.get("tc3_backup_last_error", null);
+                if (!bakErr || !bakErr.ts) return null;
+                var lastOk = S.get("tc3_last_auto_backup", null);
+                if (lastOk && new Date(lastOk).getTime() >= new Date(bakErr.ts).getTime()) return null;
+                return (
+                  <div className="erp-bak-banner is-err">
+                    Automatic backup file could not be saved ({bakErr.error || "unknown error"}). Download a manual
+                    backup now and check the backup folder permissions and free disk space.
+                  </div>
+                );
+              })()}
 
               {(function () {
                 var manualT = S.get("tc3_last_manual_backup", null);
@@ -3165,6 +3307,29 @@ var Settings = function (props) {
                     Choose Backup File to Restore
                     <input type="file" accept=".json" onChange={doRestore} style={{ display: "none" }} />
                   </label>
+                </div>
+              </div>
+
+              <div className="erp-bak-block">
+                <div className="erp-bak-block-label">Support bundle</div>
+                <div className="erp-bak-note is-blue">
+                  Export anonymized diagnostics for Techon support (no passwords). Includes GL health, backup status, and inventory reconciliation summary.
+                </div>
+                <div className="erp-bak-tools">
+                  <Btn col="gray" onClick={function () {
+                    if (!exportSupportBundle || !downloadSupportBundleJson) {
+                      setBakMsg({ type: "error", text: "Support export unavailable in this build." });
+                      return;
+                    }
+                    try {
+                      var bundle = exportSupportBundle({ anonymize: true });
+                      var d = new Date().toISOString().slice(0, 10);
+                      downloadSupportBundleJson(bundle, "techon-support-" + d + ".json");
+                      setBakMsg({ type: "success", text: "Support bundle downloaded (anonymized)." });
+                    } catch (e) {
+                      setBakMsg({ type: "error", text: "Support bundle failed: " + (e && e.message ? e.message : String(e)) });
+                    }
+                  }}>Export Support Bundle</Btn>
                 </div>
               </div>
 
@@ -3320,9 +3485,45 @@ var Settings = function (props) {
                 Bookkeeping options for accountants. Everyday shop setup stays on <strong>Shop Profile</strong> — leave defaults unless your accountant asks otherwise.
               </div>
 
+              {repairMsg ? (
+                <div className={"erp-bak-banner" + (repairMsg.type === "error" ? " is-err" : " is-ok")}>{repairMsg.text}</div>
+              ) : null}
+
+              <div className="erp-acct-block">
+                <div className="erp-acct-block-label">Repair my books</div>
+                <div className="erp-acct-note is-blue">
+                  Safe repair heals empty chart-of-accounts metadata and removes duplicate journal lines. It does <strong>not</strong> delete sales or purchases.
+                </div>
+                <button
+                  type="button"
+                  className="erp-acct-btn-sec"
+                  onClick={function () {
+                    showConfirm("Run safe book repair now?\n\nThis fixes COA metadata and duplicate journal lines only.", function () {
+                      try {
+                        var result = runStandaloneBookRepair({ get: S.get.bind(S) }, function (k, v) { S.set(k, v); });
+                        var parts = [];
+                        if (result.removedDuplicates > 0) parts.push("removed " + result.removedDuplicates + " duplicate journal line(s)");
+                        if (result.actions && result.actions.length) parts.push(result.actions.join("; "));
+                        if (!parts.length) parts.push("no issues found");
+                        addAudit("Safe book repair", "book_repair", { actions: result.actions, removedDuplicates: result.removedDuplicates });
+                        setRepairMsg({
+                          type: result.diagnosis && result.diagnosis.ok ? "success" : "error",
+                          text: "Repair complete — " + parts.join(". ") + (result.journalBalanced ? "" : " Journal may still need a full rebuild from Accounts → General Ledger."),
+                        });
+                        setState(function (st) { return Object.assign({}, st); });
+                      } catch (err) {
+                        setRepairMsg({ type: "error", text: "Repair failed: " + (err && err.message ? err.message : String(err)) });
+                      }
+                    });
+                  }}
+                >
+                  Run safe repair
+                </button>
+              </div>
+
               <div className="erp-acct-block">
                 <div className="erp-acct-block-label">Period Close</div>
-                <div className="erp-acct-note is-blue">Soft warning when editing records dated before the books-closed date.</div>
+                <div className="erp-acct-note is-blue">Soft warning only — prompts before editing old records. For a hard block, use <strong>Lock date</strong> below.</div>
                 <div className="erp-acct-inline">
                   <div className="erp-acct-field grow">
                     <Input compact={denseWiz} label="Books Closed Date" type="date" value={f.booksClosedDate || ""} onChange={function (e) { setF(function (x) { return Object.assign({}, x, { booksClosedDate: e.target.value }); }); }} />
@@ -3401,7 +3602,7 @@ var Settings = function (props) {
                   </div>
                 </div>
                 {f.lockedUntilDate ? (
-                  <div className="erp-acct-hint">Blocked through <strong>{fmtDate(f.lockedUntilDate)}</strong> unless Admin (PIN) is unlocked.</div>
+                  <div className="erp-acct-hint">Blocked through <strong>{fmtDate(f.lockedUntilDate)}</strong>. Clear this date in Settings to reopen the period.</div>
                 ) : null}
               </div>
 
@@ -4370,6 +4571,36 @@ var Settings = function (props) {
                     {f.requirePasswordOnLogin === false ? (
                       <div className="erp-usr-warn">Password protection is off — anyone can open the app on this PC.</div>
                     ) : null}
+                    <div className="erp-usr-toggle-card" style={{ marginTop: 12 }}>
+                      <div className="erp-usr-toggle-text">
+                        <div className="erp-usr-toggle-title">Allow admin password on cashier login</div>
+                        <div className="erp-usr-toggle-sub">
+                          {f.allowAdminPasswordElevation !== false
+                            ? "Cashiers can sign in with the admin password (opens as admin)"
+                            : "Cashiers must use their own password only"}
+                        </div>
+                      </div>
+                      <div
+                        role="switch"
+                        tabIndex={0}
+                        className={"erp-usr-switch" + (f.allowAdminPasswordElevation !== false ? " is-on" : "")}
+                        onClick={function () {
+                          var next = f.allowAdminPasswordElevation === false;
+                          setF(function (x) { return Object.assign({}, x, { allowAdminPasswordElevation: next }); });
+                        }}
+                        onKeyDown={function (e) {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            var next = f.allowAdminPasswordElevation === false;
+                            setF(function (x) { return Object.assign({}, x, { allowAdminPasswordElevation: next }); });
+                          }
+                        }}
+                        aria-checked={f.allowAdminPasswordElevation !== false}
+                        aria-label="Allow admin password on cashier login"
+                      >
+                        <span className="erp-usr-switch-knob" />
+                      </div>
+                    </div>
                   </div>
 
                   <div className="erp-usr-field-group">
@@ -4466,8 +4697,8 @@ var Settings = function (props) {
                     </div>
 
                     <div className="erp-usr-field-group is-table">
-                      <div className="erp-usr-field-label">Current users · {users.length}</div>
-                      {users.length === 0 ? (
+                      <div className="erp-usr-field-label">Current users · {users.filter(function (u) { return u && u.active !== false; }).length}</div>
+                      {users.filter(function (u) { return u && u.active !== false; }).length === 0 ? (
                         <div className="erp-usr-empty">No users yet. Add a cashier or manager above.</div>
                       ) : (
                         <div className="erp-usr-table-wrap">
@@ -4482,7 +4713,7 @@ var Settings = function (props) {
                               </tr>
                             </thead>
                             <tbody>
-                              {users.map(function (u) {
+                              {users.filter(function (u) { return u && u.active !== false; }).map(function (u) {
                                 var roleKey = normalizeRole(u.role);
                                 var roleLbl = ROLE_LABELS[roleKey] || "Cashier";
                                 var roleCls = roleKey === "admin" ? "is-admin" : (roleKey === "manager" ? "is-mgr" : "is-cash");
@@ -4597,6 +4828,19 @@ var Settings = function (props) {
 
       {stab === "activity" && (
         <SettingsActivityPanel S={S} Card={Card} />
+      )}
+
+      {stab === "developer" && showCertificationTools && (
+        <div className="erp-acct-page" style={{ overflow: "auto", padding: "4px 2px 16px" }}>
+          <CertificationDatasetPanel
+            C={C}
+            showAlert={showAlert}
+            applyBackupRestore={applyBackupRestore}
+            buildCurrentBackup={buildBackupObject}
+          />
+          <div style={{ height: 1, background: "#e2e8f0", margin: "22px 0" }} />
+          <CertificationRunnerPanel C={C} showAlert={showAlert} />
+        </div>
       )}
 
       {stab === "about" && (

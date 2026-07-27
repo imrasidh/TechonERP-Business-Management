@@ -44,6 +44,8 @@ export default function MoneyPartyPicker(props) {
   var onValueChange = props.onValueChange;
   var onSelectParty = props.onSelectParty;
   var isIn = props.isIn !== false;
+  var searchOnly = !!props.searchOnly;
+  var allowedKinds = props.allowedKinds || null;
   var label = props.label;
   var placeholder = props.placeholder;
   var S = props.S;
@@ -62,20 +64,25 @@ export default function MoneyPartyPicker(props) {
   var [createInitial, setCreateInitial] = useState({ name: "", phone: "", address: "", email: "", note: "" });
 
   var allParties = useMemo(function () {
-    return buildPartyRows(customers, suppliers, others);
-  }, [customers, suppliers, others]);
+    var rows = buildPartyRows(customers, suppliers, others);
+    if (!allowedKinds || !allowedKinds.length) return rows;
+    return rows.filter(function (p) { return allowedKinds.indexOf(p.kind) >= 0; });
+  }, [customers, suppliers, others, allowedKinds]);
 
   var filtered = useMemo(function () {
     var q = String(value || "").trim().toLowerCase();
-    if (!q) return allParties.slice(0, 10);
+    if (!q) return searchOnly ? [] : allParties.slice(0, 10);
     return allParties.filter(function (p) {
       return p.name.toLowerCase().includes(q) || String(p.phone || "").includes(q);
-    }).slice(0, 10);
-  }, [allParties, value]);
+    }).slice(0, 12);
+  }, [allParties, value, searchOnly]);
 
   var exactMatch = useMemo(function () {
-    return !!findExactParty(customers, suppliers, others, value);
-  }, [customers, suppliers, others, value]);
+    var hit = findExactParty(customers, suppliers, others, value);
+    if (!hit) return false;
+    if (!allowedKinds || !allowedKinds.length) return true;
+    return allowedKinds.indexOf(hit.kind) >= 0;
+  }, [customers, suppliers, others, value, allowedKinds]);
 
   var typedName = String(value || "").trim();
   var canAdd = typedName && !exactMatch && !selectedParty;
@@ -105,7 +112,11 @@ export default function MoneyPartyPicker(props) {
   };
 
   var openPartyCreate = function () {
-    setPartyModalKind(isIn ? "customer" : "supplier");
+    var preferred = isIn ? "customer" : "supplier";
+    if (allowedKinds && allowedKinds.length && allowedKinds.indexOf(preferred) < 0) {
+      preferred = allowedKinds[0];
+    }
+    setPartyModalKind(preferred);
     setCreateInitial({ name: typedName, phone: "", address: "", email: "", note: "" });
     setShowPartyModal(true);
     closeDrop();
@@ -130,16 +141,20 @@ export default function MoneyPartyPicker(props) {
           className={"erp-money-party-input" + (selectedParty ? " is-selected" : "")}
           value={value}
           placeholder={placeholder}
-          onFocus={function () { setIsOpen(true); }}
+          onFocus={function () {
+            if (!searchOnly || String(value || "").trim()) setIsOpen(true);
+          }}
           onChange={function (e) {
-            onValueChange(e.target.value);
+            var next = e.target.value;
+            onValueChange(next);
             onSelectParty(null);
             setDropIdx(-1);
-            setIsOpen(true);
+            setIsOpen(!!String(next || "").trim() || !searchOnly);
           }}
           onKeyDown={function (e) {
             if (e.key === "ArrowDown") {
               e.preventDefault();
+              if (searchOnly && !String(value || "").trim()) return;
               setIsOpen(true);
               setDropIdx(function (i) { return Math.min(i + 1, Math.max(listCount - 1, 0)); });
               return;
@@ -215,6 +230,7 @@ export default function MoneyPartyPicker(props) {
         onSaved={handlePartySaved}
         context="money"
         defaultKind={partyModalKind}
+        allowedKinds={allowedKinds}
         initialValues={createInitial}
         customers={customers}
         suppliers={suppliers}

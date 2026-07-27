@@ -23,7 +23,8 @@ function enumerateInclusiveDays(fromStr, toStr) {
   var end = new Date(Date.UTC(y2, m2 - 1, d2));
   if (isNaN(dt.getTime()) || isNaN(end.getTime()) || end < dt) return out;
   var guard = 0;
-  while (dt <= end && guard < 800) {
+  var MAX_RECON_DAYS = 92; /* ~3 months — bound full-replay cost (PERF-7) */
+  while (dt <= end && guard < MAX_RECON_DAYS) {
     out.push(dt.toISOString().slice(0, 10));
     dt.setUTCDate(dt.getUTCDate() + 1);
     guard++;
@@ -33,9 +34,22 @@ function enumerateInclusiveDays(fromStr, toStr) {
 
 /**
  * @returns {{ date: string, physicalValue: number, glBalance: number, delta: number }[]}
+ * Also attaches `truncated` / `requestedDays` on the array object when the range exceeds MAX_RECON_DAYS.
  */
 export function buildInventoryReconTimeSeries(state, S, lines, chart, fromDate, toDate) {
   var days = enumerateInclusiveDays(fromDate, toDate);
+  var requestedDays = 0;
+  try {
+    var a = String(fromDate || "").slice(0, 10);
+    var b = String(toDate || "").slice(0, 10);
+    if (a && b && a.length >= 10 && b.length >= 10) {
+      var t0 = Date.parse(a + "T00:00:00Z");
+      var t1 = Date.parse(b + "T00:00:00Z");
+      if (!isNaN(t0) && !isNaN(t1) && t1 >= t0) {
+        requestedDays = Math.floor((t1 - t0) / 86400000) + 1;
+      }
+    }
+  } catch (_e) { requestedDays = days.length; }
   var out = [];
   var i;
   for (i = 0; i < days.length; i++) {
@@ -49,6 +63,11 @@ export function buildInventoryReconTimeSeries(state, S, lines, chart, fromDate, 
       glBalance: round2(gl),
       delta: round2(round2(gl) - round2(phys)),
     });
+  }
+  if (requestedDays > days.length) {
+    out.truncated = true;
+    out.requestedDays = requestedDays;
+    out.maxDays = 92;
   }
   return out;
 }

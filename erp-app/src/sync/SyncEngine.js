@@ -120,7 +120,12 @@ function normalizeNetConfig(cfg) {
   var apiUrl = String(cfg.apiUrl || '').trim();
   if (!apiUrl) return null;
   if (apiUrl.charAt(apiUrl.length - 1) !== '/') apiUrl += '/';
-  return Object.assign({}, cfg, { role: role, apiUrl: apiUrl });
+  var out = Object.assign({}, cfg, { role: role, apiUrl: apiUrl });
+  /* Never keep legacy API key in renderer sync config — main process signs LAN requests. */
+  if (out.apiKey) {
+    out = Object.assign({}, out, { apiKey: '', hasApiKey: true });
+  }
+  return out;
 }
 
 function logConfigDebug(where) {
@@ -393,12 +398,38 @@ async function saveQueue() {
   await idbSet(QUEUE_IDB_KEY, _queue.length > 0 ? _queue : null);
 }
 
+var _queuePersistPromise = Promise.resolve();
+
+async function awaitQueuePersisted() {
+  try {
+    if (_queuePersistPromise) await _queuePersistPromise;
+  } catch (_e) { /* logged in enqueue */ }
+}
+
 function enqueue(key, value) {
   /* Replace existing entry for same key (only keep latest value) */
   _queue = _queue.filter(e => e.key !== key);
   _queue.push({ id: Date.now() + '_' + Math.random().toString(36).slice(2, 6), key, value, attempts: 0, ts: Date.now() });
-  saveQueue(); /* async — fire and forget */
   TC_SYNC.pendingCount = _queue.length;
+  /* Keep a promise so flush/drain can await durability before assuming the queue is on disk. */
+  _queuePersistPromise = saveQueue().catch(function (e) {
+    log('error', 'saveQueue failed: ' + (e && e.message ? e.message : e));
+  });
+  return _queuePersistPromise;
+}
+
+/** Stable-enough id for direct (non-queued) pushes so the server can dedup retries. */
+function makeDirectPatchId(key) {
+  var rand = '';
+  try {
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      var buf = new Uint8Array(6);
+      crypto.getRandomValues(buf);
+      for (var i = 0; i < buf.length; i++) rand += buf[i].toString(16).padStart(2, '0');
+    }
+  } catch (_e) { /* ignore */ }
+  if (!rand) rand = Math.random().toString(36).slice(2, 10);
+  return 'd_' + Date.now() + '_' + rand + '_' + String(key || 'k');
 }
 
 async function dequeue(keys) {
@@ -464,6 +495,13 @@ function chunkPatches(patches) {
       /* Flush current group first */
       if (current.length > 0) { groups.push(current); current = []; currentSize = 0; }
 
+      var keepIds = [];
+      for (var ki = 0; ki < patch.value.length; ki++) {
+        var row = patch.value[ki];
+        if (row && row.id != null) keepIds.push(String(row.id));
+      }
+      var sliceCount = Math.ceil(patch.value.length / CHUNK_SIZE);
+
       for (let i = 0; i < patch.value.length; i += CHUNK_SIZE) {
         /* Each chunk gets a unique patch_id derived from the original so server can dedup per chunk */
         const chunkPatchId = patch.patch_id ? patch.patch_id + '_c' + (i / CHUNK_SIZE) : undefined;
@@ -474,6 +512,11 @@ function chunkPatches(patches) {
           entry._forceReplace = true;
         } else {
           entry._chunk = true;
+        }
+        /* Last chunk on Main PC (loopback): prune ids not in full snapshot membership. */
+        if ((i / CHUNK_SIZE) === sliceCount - 1 && keepIds.length) {
+          entry._chunkFinal = true;
+          entry._keepIds = keepIds;
         }
         groups.push([entry]);
       }
@@ -506,7 +549,13 @@ async function postSyncPatch(body) {
         return json;
       }
       if (json && json.success === false) {
-        log('error', '[push:IPC] rejected keys=[' + keys + '] msg=' + (json.message || 'failed') + ' — trying fetch fallback');
+        var denyMsg = String(json.message || 'failed');
+        /* Session / auth rejects must NOT fall through to key-only fetch (SEC-11). */
+        if (/sign in|session|admin|required|not in network|no patches/i.test(denyMsg)) {
+          log('error', '[push:IPC] rejected keys=[' + keys + '] msg=' + denyMsg + ' — no fetch fallback');
+          return json;
+        }
+        log('error', '[push:IPC] rejected keys=[' + keys + '] msg=' + denyMsg + ' — trying fetch fallback');
       } else if (json && typeof json === 'object') {
         return json;
       }
@@ -539,7 +588,17 @@ async function post(endpoint, body) {
     'Content-Type': 'application/json',
     'X-TC-Client-ID': getClientId(),
   };
-  if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
+  /* Do not attach legacy apiKey from renderer config — main IPC signs with disk key. */
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.getDeviceAuthHeaders === 'function') {
+      const ah = await window.electronAPI.getDeviceAuthHeaders({
+        method: 'POST',
+        url: apiUrl + String(endpoint).replace(/^\//, ''),
+        body: JSON.stringify(body),
+      });
+      if (ah && ah.headers) Object.assign(headers, ah.headers);
+    }
+  } catch (_eAh) { /* device headers optional */ }
 
   var fetchOpts = {
     method:  'POST',
@@ -579,7 +638,6 @@ async function get(endpoint) {
   }
 
   const headers = { 'X-TC-Client-ID': getClientId() };
-  if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
   try {
     if (window.electronAPI && window.electronAPI.getDeviceAuthHeaders) {
       const ah = await window.electronAPI.getDeviceAuthHeaders({
@@ -589,7 +647,7 @@ async function get(endpoint) {
       });
       if (ah && ah.headers) Object.assign(headers, ah.headers);
     }
-  } catch (_e) { /* legacy only */ }
+  } catch (_e) { /* device headers optional */ }
 
   const res = await fetch(apiUrl + endpoint, {
     headers,
@@ -611,6 +669,14 @@ async function get(endpoint) {
 async function sendBatch(patches) {
   const groups   = chunkPatches(patches);
   const sentKeys = [];
+  const keyChunkPlan = {};
+  patches.forEach(function (p) {
+    if (!p || !p.key) return;
+    if (Array.isArray(p.value) && p.value.length > CHUNK_SIZE) {
+      keyChunkPlan[p.key] = Math.ceil(p.value.length / CHUNK_SIZE);
+    }
+  });
+  const keyChunkDone = {};
   const patchKeys = patches.map(function (p) { return p && p.key; }).filter(Boolean).join(',');
   log('info', '[push:sendBatch] keys=[' + patchKeys + '] groups=' + groups.length);
 
@@ -628,17 +694,20 @@ async function sendBatch(patches) {
           throw new Error(json.message || 'Server rejected patch');
         }
 
-        /* Chunked patches may not return per-key confirmed (server merges) */
-        if (successKeys.length === 0 && group.every(p => p._chunk)) {
-          /* For chunk groups treat as success if server responded ok */
-          sentKeys.push(...group.map(p => p.key));
-        } else {
-          sentKeys.push(...successKeys);
-        }
-
-        if (successKeys.length === 0 && !group.every(p => p._chunk)) {
+        /* Never clear the queue without per-key confirmation (chunk or full). */
+        if (successKeys.length === 0) {
           log('error', 'Server returned no confirmed saves — keys not cleared: ' + group.map(p => p.key).join(','));
+          throw new Error('Server returned no confirmed saves for keys: ' + group.map(function (p) { return p.key; }).join(','));
         }
+        successKeys.forEach(function (key) {
+          if (keyChunkPlan[key]) {
+            keyChunkDone[key] = (keyChunkDone[key] || 0) + 1;
+            if (keyChunkDone[key] >= keyChunkPlan[key]) sentKeys.push(key);
+          } else {
+            sentKeys.push(key);
+          }
+        });
+
         break;
       } catch (err) {
         if (attempt < MAX_RETRIES) {
@@ -655,6 +724,7 @@ async function sendBatch(patches) {
 
 /* ─── Flush the in-memory pending map → queue → server ─────────── */
 async function flush() {
+  await awaitQueuePersisted();
   const cfg = getActiveConfig();
   if (!cfg || !cfg.apiUrl || Object.keys(_pending).length === 0) return;
 
@@ -678,6 +748,7 @@ async function flush() {
 
 /* ─── Drain the persistent queue ───────────────────────────────── */
 async function drainQueue() {
+  await awaitQueuePersisted();
   if (_queue.length === 0) {
     setStatus(SYNC_STATUS.IDLE, { failedKeys: [], pendingCount: 0 });
     return;
@@ -755,7 +826,7 @@ export async function syncStorageKeyNow(key, optValue) {
   _inflightKeys[key] = true;
   try {
     log('info', '[push:syncStorageKeyNow] key=' + key + ' role=' + cfg.role + ' apiUrl=' + cfg.apiUrl);
-    const sent = await sendBatch([{ key, value }]);
+    const sent = await sendBatch([{ key, value, patch_id: makeDirectPatchId(key) }]);
     const ok = sent.indexOf(key) >= 0;
     if (ok) {
       log('info', '[push:syncStorageKeyNow] server saved ' + key);
@@ -812,7 +883,7 @@ export async function syncStorageKeysNow(keysAndValues) {
       log('error', 'syncStorageKeysNow validate ' + key + ': ' + err);
       continue;
     }
-    patches.push({ key: key, value: value });
+    patches.push({ key: key, value: value, patch_id: makeDirectPatchId(key) });
     _pending[key] = value;
     _keyPendingValues[key] = value;
   }
@@ -994,14 +1065,13 @@ export async function loadStateFromServer(apiUrl, keys = null, opts = null) {
   }
 
   const headers = { 'X-TC-Client-ID': getClientId() };
-  if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
   try {
     if (window.electronAPI && window.electronAPI.getDeviceAuthHeaders) {
       const fullUrl = apiUrl + url;
       const ah = await window.electronAPI.getDeviceAuthHeaders({ method: 'GET', url: fullUrl, body: '' });
       if (ah && ah.headers) Object.assign(headers, ah.headers);
     }
-  } catch (_e) { /* legacy */ }
+  } catch (_e) { /* device headers optional */ }
 
   const res = await fetch(apiUrl + url, { headers, signal: AbortSignal.timeout(20000) });
   if (!res.ok) throw new Error('Server returned HTTP ' + res.status);
@@ -1042,7 +1112,7 @@ export async function pushKeysToServer(keys, opts = null) {
       else if (k === 'tc3_admin_name') v = '';
       else v = [];
     }
-    var patch = { key: k, value: v };
+    var patch = { key: k, value: v, patch_id: makeDirectPatchId(k) };
     if (forceReplace) patch._forceReplace = true;
     patches.push(patch);
   });
@@ -1092,33 +1162,22 @@ export async function wipeShopDataOnServer(opts = null) {
           log('info', 'wipeShopDataOnServer ok deleted=' + ((json.data && json.data.deletedKeys) || '?'));
           return { ok: true, deletedKeys: json.data && json.data.deletedKeys };
         }
-        if (json && json.message) {
-          log('warn', 'wipeShopDataOnServer rejected: ' + json.message);
-        }
-      } else {
-        log('warn', 'wipeShopDataOnServer IPC: ' + ((r && r.message) || 'failed'));
+        return { ok: false, message: (json && json.message) || 'Wipe rejected by server' };
       }
+      var denyMsg = String((r && r.message) || 'failed');
+      /* Session / admin rejects must NOT fall through to key-only fetch (match postSyncPatch SEC-11). */
+      if (/sign in|session|admin|required|not in network/i.test(denyMsg)) {
+        log('error', 'wipeShopDataOnServer IPC denied — no fetch fallback: ' + denyMsg);
+        return { ok: false, message: denyMsg };
+      }
+      log('warn', 'wipeShopDataOnServer IPC: ' + denyMsg);
+      return { ok: false, message: denyMsg };
     }
   } catch (eIpc) {
     log('warn', 'wipeShopDataOnServer IPC failed: ' + (eIpc && eIpc.message ? eIpc.message : eIpc));
   }
-  /* Fallback: direct localhost fetch (Main PC only — avoids LAN IP timeout). */
-  try {
-    const base = (cfg.role === 'network_server') ? loopbackApiUrl(cfg.apiUrl) : String(cfg.apiUrl).replace(/\/?$/, '/');
-    const headers = { 'Content-Type': 'application/json', 'X-TC-Client-ID': getClientId() };
-    if (cfg.apiKey) headers['X-TC-KEY'] = cfg.apiKey;
-    const res = await fetch(base + 'wipe_shop_data.php', {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify(body),
-      signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(60000) : undefined,
-    });
-    const json = await res.json();
-    if (json && json.success) return { ok: true, deletedKeys: json.data && json.data.deletedKeys };
-    return { ok: false, message: (json && json.message) || 'Wipe failed' };
-  } catch (eFetch) {
-    return { ok: false, message: eFetch && eFetch.message ? eFetch.message : String(eFetch) };
-  }
+  /* No renderer fetch fallback — wipe is admin-gated IPC only (prevents X-TC-KEY bypass). */
+  return { ok: false, message: 'Wipe requires desktop sync bridge with an admin session.' };
 }
 
 /** If MySQL kv_store is empty or behind local data, upload from this PC. */
@@ -1167,10 +1226,10 @@ function patchStorageSet() {
   _origSset = window._tcS.set.bind(window._tcS);
   window._tcS.set = function (k, v) {
     _origSset(k, v);
-    queuePatch(k, v);
+    /* Do not queue here — S.set schedules LAN sync only after IndexedDB durability. */
   };
   window._tcS.__synced = true;
-  log('info', 'Storage.set patched for network sync');
+  log('info', 'Storage.set patched for network sync (durable-before-sync)');
 }
 
 function unpatchStorageSet() {

@@ -25,6 +25,7 @@ export function ErpClassicShellLayout(props) {
   var periodLockText = p.periodLockText;
   var licenseReadOnlyBanner = p.licenseReadOnlyBanner;
   var licenseWarningBanner = p.licenseWarningBanner;
+  var glHealthBanner = p.glHealthBanner;
   var dbHealthError = p.dbHealthError;
   var onDismissDbHealth = p.onDismissDbHealth;
   var isNetworkServer = p.isNetworkServer;
@@ -157,6 +158,9 @@ export function ErpClassicShellLayout(props) {
           ) : null}
           {licenseWarningBanner ? (
             <div className="erp-banner erp-banner-warn">{licenseWarningBanner}</div>
+          ) : null}
+          {glHealthBanner ? (
+            <div className="erp-banner erp-banner-critical">{glHealthBanner}</div>
           ) : null}
 
           <div className="erp-page-header">

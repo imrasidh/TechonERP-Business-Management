@@ -3,6 +3,7 @@ import "../styles/erpDashboard.css";
 import { round2 } from "../utils/moneyRound.js";
 import { activeSales, activePurchases } from "../utils/voidInvoice.js";
 import { sortNewestFirst } from "../utils/listPage.js";
+import { SourceDocLink } from "../components/SourceDocLink.jsx";
 
 function pad2(n) {
   return String(n).padStart(2, "0");
@@ -183,21 +184,50 @@ var Dashboard = function (props) {
   var fmtDate = props.fmtDate;
   var today = props.today;
   var licenseInfo = props.licenseInfo;
+  var S = props.S;
+  var openSourceDocument = props.openSourceDocument;
+  var getProfitAndLossFromLedger = props.getProfitAndLossFromLedger;
   var cur = getCurrencySymbol();
   var t = today();
   var yday = shiftDateIso(t, -1);
   var monthKey = t.slice(0, 7);
   var [chartPeriod, setChartPeriod] = React.useState("month");
 
-  var balancesRaw = getCashBalances(state);
+  var balancesRaw = React.useMemo(function () {
+    return getCashBalances(state);
+  }, [state.sales, state.purchases, state.expenses, state.assets, state.cheques]);
   var cash = round2(balancesRaw.cash);
   var bank = round2(balancesRaw.bank);
 
-  var liveSales = activeSales(state.sales);
-  var livePurchases = activePurchases(state.purchases || []);
+  var liveSales = React.useMemo(function () {
+    return activeSales(state.sales);
+  }, [state.sales]);
+  var livePurchases = React.useMemo(function () {
+    return activePurchases(state.purchases || []);
+  }, [state.purchases]);
+
+  var salesByDate = React.useMemo(function () {
+    var map = {};
+    liveSales.forEach(function (s) {
+      var d = String(s.date || "");
+      if (!map[d]) map[d] = [];
+      map[d].push(s);
+    });
+    return map;
+  }, [liveSales]);
+
+  var salesByMonth = React.useMemo(function () {
+    var map = {};
+    liveSales.forEach(function (s) {
+      var key = String(s.date || "").slice(0, 7);
+      if (!key) return;
+      map[key] = (map[key] || 0) + saleNet(s);
+    });
+    return map;
+  }, [liveSales]);
 
   function salesOn(day) {
-    return liveSales.filter(function (s) { return s.date === day; });
+    return salesByDate[day] || [];
   }
   function sumSales(list) {
     return round2(list.reduce(function (a, s) { return a + saleNet(s); }, 0));
@@ -212,6 +242,29 @@ var Dashboard = function (props) {
   var ydaySales = sumSales(ydaySalesList);
   var todayProfit = sumProfit(todaySalesList);
   var ydayProfit = sumProfit(ydaySalesList);
+
+  var journalLineCount = React.useMemo(function () {
+    if (!S || typeof S.get !== "function") return 0;
+    var jl = S.get("tc3_journal_lines", []);
+    return Array.isArray(jl) ? jl.length : 0;
+  }, [S, state.sales, state.purchases, state.expenses]);
+
+  var glTodayProfit = React.useMemo(function () {
+    if (!journalLineCount || typeof getProfitAndLossFromLedger !== "function") return null;
+    var pl = getProfitAndLossFromLedger(t, t);
+    if (!pl || typeof pl.net !== "number" || !isFinite(pl.net)) return null;
+    return round2(pl.net);
+  }, [journalLineCount, getProfitAndLossFromLedger, t]);
+
+  var glYdayProfit = React.useMemo(function () {
+    if (!journalLineCount || typeof getProfitAndLossFromLedger !== "function") return null;
+    var pl = getProfitAndLossFromLedger(yday, yday);
+    if (!pl || typeof pl.net !== "number" || !isFinite(pl.net)) return null;
+    return round2(pl.net);
+  }, [journalLineCount, getProfitAndLossFromLedger, yday]);
+
+  var displayTodayProfit = glTodayProfit != null ? glTodayProfit : todayProfit;
+  var displayYdayProfit = glYdayProfit != null ? glYdayProfit : ydayProfit;
 
   var monthSalesList = liveSales.filter(function (s) {
     return String(s.date || "").slice(0, 7) === monthKey;
@@ -245,9 +298,9 @@ var Dashboard = function (props) {
   var lowStock = lowStockAll.slice(0, 5);
   var lowStockTotal = lowStockAll.length;
 
-  var recentSales = sortNewestFirst(liveSales).slice(0, 5);
-  var recentPurchases = sortNewestFirst(livePurchases).slice(0, 5);
-  var recentRepairs = sortNewestFirst(state.repairs || []).slice(0, 5);
+  var recentSales = sortNewestFirst(liveSales).slice(0, 6);
+  var recentPurchases = sortNewestFirst(livePurchases).slice(0, 6);
+  var recentRepairs = sortNewestFirst(state.repairs || []).slice(0, 6);
 
   var last7 = [];
   for (var di = 6; di >= 0; di--) {
@@ -286,9 +339,7 @@ var Dashboard = function (props) {
         var md = new Date(t + "T12:00:00");
         md.setMonth(md.getMonth() - mi);
         var key = md.getFullYear() + "-" + pad2(md.getMonth() + 1);
-        var val = sumSales(liveSales.filter(function (s) {
-          return String(s.date || "").slice(0, 7) === key;
-        }));
+        var val = round2(salesByMonth[key] || 0);
         pts.push({
           label: md.toLocaleDateString("en-GB", { month: "short" }),
           value: val,
@@ -307,7 +358,9 @@ var Dashboard = function (props) {
     return pts;
   }
 
-  var chartPoints = buildChartPoints();
+  var chartPoints = React.useMemo(function () {
+    return buildChartPoints();
+  }, [chartPeriod, liveSales, salesByDate, salesByMonth, t]);
 
   function go(page) {
     if (page) setActive(page);
@@ -334,10 +387,30 @@ var Dashboard = function (props) {
 
   function dashMoneyTd(children, color, bold) {
     return (
-      <td style={{ padding: "5px 8px", textAlign: "right", color: color || C.text, fontWeight: bold ? 700 : 500, whiteSpace: "nowrap", fontSize: 11, fontVariantNumeric: "tabular-nums" }}>
+      <td style={{ padding: "6px 8px", textAlign: "right", color: color || C.text, fontWeight: bold ? 700 : 500, whiteSpace: "nowrap", fontSize: 10, fontVariantNumeric: "tabular-nums" }}>
         {children}
       </td>
     );
+  }
+
+  function dashClipTd(extra) {
+    return Object.assign({
+      maxWidth: 0,
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+      fontSize: 10,
+    }, extra || {});
+  }
+
+  function dashRefTd(extra) {
+    return Object.assign({
+      padding: "6px 8px",
+      verticalAlign: "middle",
+      whiteSpace: "normal",
+      wordBreak: "break-all",
+      lineHeight: 1.25,
+    }, extra || {});
   }
 
   function repairDevice(r) {
@@ -436,13 +509,38 @@ var Dashboard = function (props) {
         );
       })()}
 
+      {(function () {
+        if (!S || typeof S.get !== "function") return null;
+        var lastBk = S.get("tc3_last_auto_backup", null) || S.get("tc3_last_manual_backup", null);
+        if (!lastBk) {
+          return (
+            <div className="erp-md-trial" style={{ borderColor: "#f59e0b" }}>
+              <div className="erp-md-trial-row">
+                <span>No backup recorded yet</span>
+                <span style={{ color: "#b45309" }}>Settings → Backup</span>
+              </div>
+            </div>
+          );
+        }
+        var ageDays = (Date.now() - new Date(lastBk).getTime()) / (1000 * 60 * 60 * 24);
+        if (ageDays < 2) return null;
+        return (
+          <div className="erp-md-trial" style={{ borderColor: "#f59e0b" }}>
+            <div className="erp-md-trial-row">
+              <span>Last backup {Math.floor(ageDays)} day(s) ago</span>
+              <span style={{ color: "#b45309" }}>Back up now in Settings</span>
+            </div>
+          </div>
+        );
+      })()}
+
       <div className="erp-md-dash-body">
       <div className="erp-md-stat-row">
         <DashStatWrap onClick={function () { go("pos"); }}>
           <StatCard label="Today's Sales" value={todaySales} accent={C.blue} valueColor={C.blue} icon="💰" sub={deltaSub(todaySales, ydaySales)} />
         </DashStatWrap>
         <DashStatWrap onClick={function () { go("reports"); }}>
-          <StatCard label="Today's Profit" value={todayProfit} accent={todayProfit >= 0 ? C.green : C.red} valueColor={todayProfit >= 0 ? C.green : C.red} icon="📈" sub={deltaSub(todayProfit, ydayProfit)} />
+          <StatCard label="Today's Profit" value={displayTodayProfit} accent={displayTodayProfit >= 0 ? C.green : C.red} valueColor={displayTodayProfit >= 0 ? C.green : C.red} icon="📈" sub={deltaSub(displayTodayProfit, displayYdayProfit) + (glTodayProfit != null ? " · GL" : "")} />
         </DashStatWrap>
         <DashStatWrap onClick={function () { go("accounts"); }}>
           <StatCard label="Cash in Hand" value={cash} accent={C.purple} valueColor={C.purple} icon="💵" sub="Current balance" />
@@ -552,18 +650,18 @@ var Dashboard = function (props) {
         <div className="erp-dash-panel">
           <Card pad={10}>
             <CardTitle
-              sub="Latest 5 invoices"
+              sub="Latest 6 invoices"
               action={<button type="button" className="erp-dash-link" onClick={function () { go("invoices"); }}>View all →</button>}
             >
               Recent Sales
             </CardTitle>
-            <div className="erp-dash-inv-table-wrap">
+            <div className="erp-dash-inv-table-wrap is-filled">
             <table className="erp-dash-inv-table" style={{ minWidth: 420 }}>
               <thead>
                 <tr>
-                  <th style={Object.assign({}, invThStyle(), { width: "26%" })}>Invoice #</th>
-                  <th style={Object.assign({}, invThStyle(), { width: "34%" })}>Customer</th>
-                  <th style={Object.assign({}, invThStyle(), { width: "18%" })}>Date</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "34%" })}>Invoice #</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "28%" })}>Customer</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "16%" })}>Date</th>
                   <th style={Object.assign({}, invThStyle("right"), { width: "22%" })}>Total</th>
                 </tr>
               </thead>
@@ -579,13 +677,18 @@ var Dashboard = function (props) {
                   var invNo = s.invoiceNo || String(s.id).slice(0, 8);
                   return (
                     <TR key={s.id} i={i} onClick={function () { go("invoices"); }}>
-                      <td style={{ padding: "10px 12px", maxWidth: 0 }}>
-                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{invNo}</span>
+                      <td className="erp-dash-cell-ref" style={dashRefTd()} onClick={function (ev) { ev.stopPropagation(); }}>
+                        <SourceDocLink
+                          nav={{ sourceKind: "sale", sourceId: s.id, label: invNo }}
+                          label={invNo}
+                          openSourceDocument={openSourceDocument}
+                          className="erp-dash-ref-btn"
+                        />
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={s.customerName || s.customer || "Walk-in"}>
+                      <td style={dashClipTd({ padding: "6px 8px", fontWeight: 600, color: C.text })} title={s.customerName || s.customer || "Walk-in"}>
                         {s.customerName || s.customer || "Walk-in"}
                       </td>
-                      <TD color={C.muted}>{fmtDate(s.date)}</TD>
+                      <TD color={C.muted} style={{ fontSize: 10, padding: "6px 8px" }}>{fmtDate(s.date)}</TD>
                       {dashMoneyTd(money(s.total), C.blue, true)}
                     </TR>
                   );
@@ -599,19 +702,19 @@ var Dashboard = function (props) {
         <div className="erp-dash-panel">
           <Card pad={10}>
             <CardTitle
-              sub="Latest purchase bills"
+              sub="Latest 6 purchase bills"
               action={<button type="button" className="erp-dash-link" onClick={function () { go("purchases"); }}>View all →</button>}
             >
               Recent Purchases
             </CardTitle>
-            <div className="erp-dash-inv-table-wrap">
+            <div className="erp-dash-inv-table-wrap is-filled">
             <table className="erp-dash-inv-table" style={{ minWidth: 460 }}>
               <thead>
                 <tr>
-                  <th style={Object.assign({}, invThStyle(), { width: "24%" })}>Invoice #</th>
-                  <th style={Object.assign({}, invThStyle(), { width: "32%" })}>Supplier</th>
-                  <th style={Object.assign({}, invThStyle(), { width: "18%" })}>Date</th>
-                  <th style={Object.assign({}, invThStyle("right"), { width: "26%" })}>Total</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "34%" })}>Invoice #</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "26%" })}>Supplier</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "16%" })}>Date</th>
+                  <th style={Object.assign({}, invThStyle("right"), { width: "24%" })}>Total</th>
                 </tr>
               </thead>
               <tbody>
@@ -626,13 +729,18 @@ var Dashboard = function (props) {
                   var invNo = p.invoiceNo || p.billNo || String(p.id).slice(0, 8);
                   return (
                     <TR key={p.id} i={i} onClick={function () { go("purchases"); }}>
-                      <td style={{ padding: "10px 12px", maxWidth: 0 }}>
-                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{invNo}</span>
+                      <td className="erp-dash-cell-ref" style={dashRefTd()} onClick={function (ev) { ev.stopPropagation(); }}>
+                        <SourceDocLink
+                          nav={{ sourceKind: "purchase", sourceId: p.id, label: invNo }}
+                          label={invNo}
+                          openSourceDocument={openSourceDocument}
+                          className="erp-dash-ref-btn"
+                        />
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.supplierName || p.supplier || "—"}>
+                      <td style={dashClipTd({ padding: "6px 8px", fontWeight: 600, color: C.text })} title={p.supplierName || p.supplier || "—"}>
                         {p.supplierName || p.supplier || "—"}
                       </td>
-                      <TD color={C.muted}>{fmtDate(p.date)}</TD>
+                      <TD color={C.muted} style={{ fontSize: 10, padding: "6px 8px" }}>{fmtDate(p.date)}</TD>
                       {dashMoneyTd(money(p.total), C.blue, true)}
                     </TR>
                   );
@@ -646,18 +754,18 @@ var Dashboard = function (props) {
         <div className="erp-dash-panel">
           <Card pad={10}>
             <CardTitle
-              sub="Latest repair jobs"
+              sub="Latest 6 repair jobs"
               action={<button type="button" className="erp-dash-link" onClick={function () { go("repairs"); }}>View all →</button>}
             >
               Recent Repairs
             </CardTitle>
-            <div className="erp-dash-inv-table-wrap">
+            <div className="erp-dash-inv-table-wrap is-filled">
             <table className="erp-dash-inv-table" style={{ minWidth: 440 }}>
               <thead>
                 <tr>
-                  <th style={Object.assign({}, invThStyle(), { width: "22%" })}>Job No.</th>
-                  <th style={Object.assign({}, invThStyle(), { width: "28%" })}>Customer</th>
-                  <th style={Object.assign({}, invThStyle(), { width: "30%" })}>Device</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "20%" })}>Job No.</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "22%" })}>Customer</th>
+                  <th style={Object.assign({}, invThStyle(), { width: "38%" })}>Device</th>
                   <th style={Object.assign({}, invThStyle(), { width: "20%" })}>Date</th>
                 </tr>
               </thead>
@@ -671,16 +779,19 @@ var Dashboard = function (props) {
                   </tr>
                 ) : recentRepairs.map(function (r, i) {
                   var jobNo = r.jobNo || r.repairNo || String(r.id).slice(0, 8);
+                  var deviceLabel = repairDevice(r);
                   return (
                     <TR key={r.id} i={i} onClick={function () { go("repairs"); }}>
-                      <td style={{ padding: "10px 12px", maxWidth: 0 }}>
-                        <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: C.accent, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{jobNo}</span>
+                      <td className="erp-dash-cell-ref" style={dashRefTd()} title={jobNo}>
+                        <span className="erp-dash-ref-text">{jobNo}</span>
                       </td>
-                      <td style={{ padding: "10px 12px", fontWeight: 600, color: C.text, fontSize: 13, maxWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.customer || r.customerName || "—"}>
+                      <td style={dashClipTd({ padding: "6px 8px", fontWeight: 600, color: C.text })} title={r.customer || r.customerName || "—"}>
                         {r.customer || r.customerName || "—"}
                       </td>
-                      <TD color={C.textMd}>{repairDevice(r)}</TD>
-                      <TD color={C.muted}>{fmtDate(r.dateIn || r.date)}</TD>
+                      <td style={dashClipTd({ padding: "6px 8px", color: C.textMd })} title={deviceLabel}>
+                        {deviceLabel}
+                      </td>
+                      <TD color={C.muted} style={{ width: "20%", whiteSpace: "nowrap", fontSize: 10, padding: "6px 8px" }}>{fmtDate(r.dateIn || r.date)}</TD>
                     </TR>
                   );
                 })}

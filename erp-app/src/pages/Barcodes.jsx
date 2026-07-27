@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { productMatchesSearch } from "../utils/productSearch.js";
 import { isRepair3pInternalProduct } from "../utils/repair3pProduct.js";
+import { getJsBarcodeInlineScriptTag } from "../utils/jsBarcodeLib.js";
 
 /* ═══════════════════════════════════════════════════════════════════
    UNIFIED BARCODE LABELS COMPONENT
@@ -29,6 +30,37 @@ var BarcodePrinter = function (props) {
   var fmtSumQty = props.fmtSumQty;
   var showConfirm = props.showConfirm;
   var JsBarcodeWidget = props.JsBarcodeWidget;
+
+  /* Whitelist CSS attribute values used in print HTML — never interpolate raw design fields. */
+  var safeCssColor = function (c, fallback) {
+    var s = String(c == null ? "" : c).trim();
+    if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s)) return s;
+    if (/^(rgb|rgba|hsl|hsla)\(\s*[\d.%]+\s*(,\s*[\d.%]+\s*){2,3}\)$/i.test(s)) return s;
+    if (/^[a-zA-Z]{1,20}$/.test(s)) return s.toLowerCase();
+    return fallback || "#000000";
+  };
+  var safeCssFontSize = function (n, fallback) {
+    var x = parseFloat(n);
+    if (!isFinite(x) || x < 4 || x > 72) return fallback || 8;
+    return Math.round(x * 100) / 100;
+  };
+  var safeCssFontWeight = function (w) {
+    var s = String(w == null ? "400" : w).trim().toLowerCase();
+    if (/^(normal|bold|bolder|lighter)$/.test(s)) return s;
+    if (/^[1-9]00$/.test(s)) return s;
+    return "400";
+  };
+  var safeCssAlign = function (a) {
+    var s = String(a || "left").toLowerCase();
+    if (s === "center" || s === "right" || s === "left") return s;
+    return "left";
+  };
+  /* Clamp label mm dimensions — never interpolate unsanitized design fields into CSS. */
+  var safeCssMm = function (n, fallback) {
+    var x = parseFloat(n);
+    if (!isFinite(x) || x < 10 || x > 300) return fallback || 60;
+    return Math.round(x * 100) / 100;
+  };
   /* ── Tab State ── */
   var [tab, setTab] = useState("print"); // "print" or "design"
 
@@ -263,7 +295,7 @@ var BarcodePrinter = function (props) {
     var items = buildItemsFromQueue();
     if (!items.length) { setMsg({ type: "error", text: "Add products to queue first." }); return; }
     var d = activeDesign;
-    var labelWmm = d.labelW; var labelHmm = d.labelH;
+    var labelWmm = safeCssMm(d.labelW, 60); var labelHmm = safeCssMm(d.labelH, 40);
     var w = window.open("", "_blank", "width=900,height=700");
     var css = [
       "*{box-sizing:border-box;margin:0;padding:0;}",
@@ -277,7 +309,7 @@ var BarcodePrinter = function (props) {
     items.forEach(function (it, idx) {
       var costEncoded = encodeCost(it.cost, state.settings.costCodeWord);
       var shop = state.settings.shopName || "";
-      html += "<div class=\"lbl\" style=\"background:" + (d.bgColor || "#fff") + ";border:" + (d.borderStyle === "none" ? "none" : "1px solid #ccc") + ";\">";
+      html += "<div class=\"lbl\" style=\"background:" + safeCssColor(d.bgColor, "#ffffff") + ";border:" + (d.borderStyle === "none" ? "none" : "1px solid #ccc") + ";\">";
       d.elements.forEach(function (el) {
         if (!el.visible) return;
         var val = "";
@@ -300,11 +332,13 @@ var BarcodePrinter = function (props) {
           return;
         }
         var pct = function(v, total) { return (v / total * 100).toFixed(2) + "%"; };
-        html += "<div style=\"position:absolute;left:" + pct(el.x, labelWmm) + ";top:" + pct(el.y, labelHmm) + ";width:" + pct(el.w, labelWmm) + ";height:" + pct(el.h, labelHmm) + ";font-size:" + el.fontSize + "px;font-weight:" + el.fontWeight + ";color:" + el.color + ";overflow:hidden;display:flex;align-items:center;justify-content:" + (el.align === "center" ? "center" : el.align === "right" ? "flex-end" : "flex-start") + ";\"><span style=\"width:100%;text-align:" + el.align + "\">" + escapeHtml(val) + "</span></div>";
+        var elAlign = safeCssAlign(el.align);
+        var justify = elAlign === "center" ? "center" : elAlign === "right" ? "flex-end" : "flex-start";
+        html += "<div style=\"position:absolute;left:" + pct(el.x, labelWmm) + ";top:" + pct(el.y, labelHmm) + ";width:" + pct(el.w, labelWmm) + ";height:" + pct(el.h, labelHmm) + ";font-size:" + safeCssFontSize(el.fontSize, 8) + "px;font-weight:" + safeCssFontWeight(el.fontWeight) + ";color:" + safeCssColor(el.color, "#000000") + ";overflow:hidden;display:flex;align-items:center;justify-content:" + justify + ";\"><span style=\"width:100%;text-align:" + elAlign + "\">" + escapeHtml(val) + "</span></div>";
       });
       html += "</div>";
     });
-    html += "<script src=\"https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js\"><\/script>";
+    html += getJsBarcodeInlineScriptTag();
     html += "<script>window.onload=function(){setTimeout(function(){document.querySelectorAll('svg[data-val]').forEach(function(s){try{JsBarcode(s,s.getAttribute('data-val'),{format:'CODE128',width:parseFloat(s.getAttribute('data-bw')||1.2),height:parseInt(s.getAttribute('data-h')||20),displayValue:false,margin:0});s.setAttribute('preserveAspectRatio','none');s.style.width='100%';s.style.height='100%';}catch(e){}});setTimeout(function(){window.print();},400);},600);};<\/script>";
     html += "</body></html>";
     w.document.write(html); w.document.close();
